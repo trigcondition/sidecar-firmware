@@ -1,14 +1,21 @@
 // pi/ui/sidecar_display.cpp - see sidecar_display.h. Based on Circle's addon/lvgl/lvgl.cpp (GPL-3.0, R. Stange),
 // changed: the touch screen and mouse are bound late (they enumerate after USB's plug-and-play), raw touch values are
 // scaled here (Circle's USB touch driver reports the HID logical range unscaled), synchronous flushes, a tick callback,
-// the firmware's DSI display preferred and its touch (CRPiTouchScreen) as a second touch source (docs/pi-display.md).
+// the firmware's DSI display preferred and its touch (CRPiTouchScreen) as a second touch source; on the Pi 5 the DSI
+// display driven by Circle's addon/rp1dsi instead (docs/pi-display.md, docs/pi5.md).
 #include "sidecar_display.h"
 #include "sidecar_splash.h"
 #include "lvgl.h"
 #include <circle/bcmpropertytags.h>
 #include <circle/devicenameservice.h>
 #include <circle/input/mouse.h>
-#include <circle/input/rpitouchscreen.h>
+#if RASPPI >= 5
+#include <rp1dsi/rpitouchscreen.h>		// the Pi 5's DSI display and its touch (Circle's addon/rp1dsi, GPL-3.0)
+#include <circle/i2cmaster.h>
+#include <circle/interrupt.h>
+#else
+#include <circle/input/rpitouchscreen.h>	// the firmware's DSI touch buffer (Pi 4)
+#endif
 #include <circle/input/touchscreen.h>
 #include <circle/koptions.h>
 #include <circle/logger.h>
@@ -40,13 +47,21 @@ CSidecarDisplay::CSidecarDisplay (unsigned nWidth, unsigned nHeight)
 :	m_nReqWidth (nWidth),
 	m_nReqHeight (nHeight),
 	m_pFB (0),
+	m_pOut (0),
 	m_nDisplay (0),
 	m_bDsiSeen (FALSE),
 	m_bDsiUnknown (FALSE),
 	m_bFrameBuffer (FALSE),
+	m_bRp1Tried (FALSE),
 	m_bOn (FALSE),
 	m_nWidth (0),
 	m_nHeight (0),
+	m_nFbWidth (0),
+	m_nFbHeight (0),
+	m_bScaled (FALSE),
+	m_pXMap (0),
+	m_pScaleBuf (0),
+	m_pSplash (0),
 	m_pBuffer (0),
 	m_nLastUpdate (0),
 	m_nMaxUs (0),
@@ -102,7 +117,35 @@ boolean CSidecarDisplay::OpenFrameBuffer (void)
 {
 	if (m_bFrameBuffer) return TRUE;
 	if (m_pFB) return FALSE;				// tried, failed
+#if RASPPI >= 5
+	if (!m_bRp1Tried)					// the DSI display first (once), else HDMI
+	{
+		m_bRp1Tried = TRUE;
+		if (OpenRp1Dsi ()) return TRUE;
+	}
+#endif
 	unsigned nDisplays = CBcmFrameBuffer::GetNumDisplays ();
+#if RASPPI >= 5
+	// The Pi 5's firmware sets up HDMI itself at power-on and reports 0 displays when it saw none then (measured on
+	// the Pi 5 with the Waveshare HDMI LCD: "firmware 0 display(s)"); Circle then makes no frame buffer. Not marked
+	// as tried, so Initialize asks again (Circle asks the firmware anew while it answers 0). The fix is in config.txt:
+	// hdmi_force_hotplug=1 (docs/pi5.md, "HDMI display").
+	if (nDisplays == 0)
+	{
+		CBcmPropertyTags Tags;
+		TPropertyTagDisplayDimensions Dim;
+		boolean bDim = Tags.GetTag (PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim);
+		LOGWARN ("firmware reports no display (dimensions %s %ux%u): HDMI0 (next to USB-C), on before power-on, "
+			 "config.txt hdmi_force_hotplug=1", bDim ? "answered" : "not answered",
+			 bDim ? Dim.nWidth : 0, bDim ? Dim.nHeight : 0);
+		return FALSE;
+	}
+	// The frame buffer's size is the firmware's (Circle on the Pi 5 cannot set it; measured: the Waveshare LCD gets
+	// 1920x1080, config.txt's framebuffer_width/height and hdmi_cvt ignored). cmdline.txt's width=/height= are the
+	// UI's size instead (ScaleSetup), so they are not passed to Circle.
+	unsigned nUiWidth = m_nReqWidth, nUiHeight = m_nReqHeight;
+	m_nReqWidth = m_nReqHeight = 0;
+#endif
 	boolean bPreferDsi = CKernelOptions::Get ()->GetAppOptionDecimal ("dsi", 1) != 0;
 	CString List;
 	m_nDisplay = 0;
@@ -131,6 +174,15 @@ boolean CSidecarDisplay::OpenFrameBuffer (void)
 	m_bDsiUnknown = !bIdAnswered;
 	m_pFB = new CBcmFrameBuffer (m_nReqWidth, m_nReqHeight, 16, 0, 0, m_nDisplay);
 	m_bFrameBuffer = m_pFB->Initialize ();
+	m_pOut = m_pFB;
+	if (m_bFrameBuffer)
+	{
+		m_nFbWidth = m_nWidth = m_pFB->GetWidth ();
+		m_nFbHeight = m_nHeight = m_pFB->GetHeight ();
+#if RASPPI >= 5
+		ScaleSetup (nUiWidth, nUiHeight);
+#endif
+	}
 	LOGNOTE ("firmware %u display(s):%s%s -> frame buffer on %u %ux%u%s", nDisplays, (const char *) List,
 		 bIdAnswered ? "" : " (display id not answered)", m_nDisplay,
 		 m_bFrameBuffer ? m_pFB->GetWidth () : 0, m_bFrameBuffer ? m_pFB->GetHeight () : 0,
@@ -138,9 +190,211 @@ boolean CSidecarDisplay::OpenFrameBuffer (void)
 	return m_bFrameBuffer;
 }
 
+// UI pixels (rArea in the UI's coordinates, pPixels its rows, the area's width each) to the frame buffer: as they are,
+// or on the Pi 5 scaled up nearest-neighbour to the whole frame buffer (non-uniform: an 800x480 UI on 1920x1080 is
+// x2.4 y2.25, which a 5:3 panel showing a 16:9 signal stretches back). Frame buffer column X shows UI column
+// X * W / FW (m_pXMap), row Y row Y * H / FH; the area's frame buffer rows are those that map into it, so
+// neighbouring areas meet without gaps. Each UI row is scaled once, its repeats copied, ScaleRows rows per DMA.
+void CSidecarDisplay::Put (const CDisplay::TArea &rArea, const u16 *pPixels)
+{
+	if (!m_bScaled)
+	{
+		m_pOut->SetArea (rArea, pPixels);
+		return;
+	}
+	const unsigned W = m_nWidth, H = m_nHeight, FW = m_nFbWidth, FH = m_nFbHeight;
+	const unsigned X1 = (rArea.x1 * FW + W - 1) / W, X2 = ((rArea.x2 + 1) * FW + W - 1) / W - 1;
+	const unsigned Y1 = (rArea.y1 * FH + H - 1) / H, Y2 = ((rArea.y2 + 1) * FH + H - 1) / H - 1;
+	if (X2 < X1 || Y2 < Y1 || X2 >= FW || Y2 >= FH) return;
+	const unsigned nOut = X2 - X1 + 1, nStride = rArea.x2 - rArea.x1 + 1;
+	const u16 *pMap = m_pXMap + X1;
+	for (unsigned Y = Y1; Y <= Y2; )
+	{
+		unsigned n = Y2 - Y + 1 < ScaleRows ? Y2 - Y + 1 : ScaleRows;
+		u16 *pOut = m_pScaleBuf;
+		unsigned nPrev = ~0u;
+		for (unsigned k = 0; k < n; k++, pOut += nOut)
+		{
+			unsigned sy = (Y + k) * H / FH;
+			if (sy == nPrev)
+			{
+				memcpy (pOut, pOut - nOut, nOut * sizeof (u16));
+				continue;
+			}
+			nPrev = sy;
+			const u16 *pIn = pPixels + (sy - rArea.y1) * nStride;
+			const unsigned x1 = rArea.x1;
+			for (unsigned i = 0; i < nOut; i++) pOut[i] = pIn[pMap[i] - x1];
+		}
+		CDisplay::TArea Out = {X1, X2, Y, Y + n - 1};
+		m_pFB->SetArea (Out, m_pScaleBuf);
+		Y += n;
+	}
+}
+
+#if RASPPI >= 5
+// The Pi 5's DSI display (docs/pi5.md "DSI display"): Circle's addon/rp1dsi drives the official 7" display v1 (an ATTiny
+// regulator at I2C 0x45, the TC358762 DSI bridge, an FT5x06 touch at 0x38) and v2 itself: the RP1's DSI host, no firmware.
+// cmdline.txt: dsi=0 (HDMI only), dsi_port=0|1 (CAM/DISP 0 or 1; default: 0, then 1), dsi_rotate=180 (the picture and the
+// touch turned, for an upside-down mount), dsitouch_inv=1|2|3 (x, y, both mirrored). Each port's display regulator is
+// read first (its id logged); with none on either port both ports' I2C buses are scanned and the answering addresses
+// logged (another panel: docs/pi-display.md "If the DSI screen is not firmware-compatible"). If the display does not
+// start with its touch (a touch controller rp1dsi does not know), it is started again without touch.
+static const unsigned DsiI2CBus[2] = {6, 4};		// rp1dsi's CRPiTouchScreen: DISP0 RP1 I2C6 (GPIO38/39), DISP1 I2C4 (GPIO40/41)
+
+static int DsiReadReg (CI2CMaster &rI2C, u8 uchAddr, u8 uchReg)	// the register's byte, or -1 (no answer)
+{
+	u8 b;
+	if (rI2C.Write (uchAddr, &uchReg, 1) != 1) return -1;
+	CTimer::SimpleusDelay (5000);			// as rp1dsi's GetRegID
+	return rI2C.Read (uchAddr, &b, 1) == 1 ? b : -1;
+}
+
+static int DsiRegulatorId (unsigned nPort)
+{
+	CI2CMaster I2C (DsiI2CBus[nPort]);
+	return I2C.Initialize () ? DsiReadReg (I2C, 0x45, 0x01) : -1;
+}
+
+static void DsiScan (unsigned nPort)
+{
+	CI2CMaster I2C (DsiI2CBus[nPort]);
+	if (!I2C.Initialize ()) return;
+	CString List;
+	for (unsigned a = 0x08; a < 0x78; a++)
+	{
+		u8 b;
+		if (I2C.Read ((u8) a, &b, 1) != 1) continue;
+		CString Item;
+		Item.Format (" 0x%02X", a);
+		List.Append (Item);
+	}
+	LOGNOTE ("DSI: DISP%u I2C%u answers at:%s", nPort, DsiI2CBus[nPort], List.GetLength () ? (const char *) List : " none");
+}
+
+static CDevice *DsiTouchDevice (CDevice *pBefore[8], boolean bNew)	// !bNew: touch1..8 into pBefore; bNew: the one new since
+{
+	CDeviceNameService *pNames = CDeviceNameService::Get ();
+	for (unsigned i = 0; i < 8; i++)
+	{
+		CString Name;
+		Name.Format ("touch%u", i + 1);
+		CDevice *pDev = pNames->GetDevice (Name, FALSE);
+		if (!bNew) pBefore[i] = pDev;
+		else if (pDev && pDev != pBefore[i]) return pDev;
+	}
+	return 0;
+}
+
+boolean CSidecarDisplay::OpenRp1Dsi (void)
+{
+	CKernelOptions *pOpt = CKernelOptions::Get ();
+	if (pOpt->GetAppOptionDecimal ("dsi", 1) == 0)
+	{
+		LOGNOTE ("DSI: off (dsi=0), HDMI");
+		return FALSE;
+	}
+	unsigned nWant = pOpt->GetAppOptionDecimal ("dsi_port", 2);	// 2: both, DISP0 first
+	unsigned nRotate = pOpt->GetAppOptionDecimal ("dsi_rotate", 0) == 180 ? 180 : 0;
+	unsigned nInv = pOpt->GetAppOptionDecimal ("dsitouch_inv", 0);
+	m_nDsiInvert = nInv <= 3 ? nInv : 0;
+	boolean bAny = FALSE;
+	for (unsigned nPort = 0; nPort < 2; nPort++)
+	{
+		if (nWant < 2 && nPort != nWant) continue;
+		int nId = DsiRegulatorId (nPort);
+		if (nId < 0)
+		{
+			LOGNOTE ("DSI: DISP%u: no display regulator at I2C%u 0x45", nPort, DsiI2CBus[nPort]);
+			continue;
+		}
+		bAny = TRUE;
+		unsigned k = nId & 0x0F;
+		LOGNOTE ("DSI: DISP%u: display regulator id 0x%02X (%s)", nPort, nId,
+			 k == 0x01 || k == 0x04 ? "Touch Display 2, 7\"" : k == 0x08 || k == 0x09 ? "Touch Display 2, 5\""
+			 : "official 7\" v1 or compatible: TC358762, FT5x06");
+		for (unsigned nTry = 0; nTry < 2; nTry++)		// with touch, then without
+		{
+			boolean bTouch = nTry == 0;
+			CDevice *pBefore[8];
+			DsiTouchDevice (pBefore, FALSE);
+			CRPiTouchScreen *pDsi = new CRPiTouchScreen (CInterruptSystem::Get (), 16, nPort, bTouch);
+			pDsi->SetRotation (nRotate);
+			if (!pDsi->Initialize ())
+			{
+				LOGWARN ("DSI: DISP%u: not started%s (the rp1touch/rp1dsi lines above say why)", nPort,
+					 bTouch ? " with touch" : "");
+				delete pDsi;
+				continue;
+			}
+			m_pRPiTouch = pDsi;
+			m_pOut = pDsi;
+			m_bFrameBuffer = TRUE;
+			m_nFbWidth = m_nWidth = pDsi->GetWidth ();
+			m_nFbHeight = m_nHeight = pDsi->GetHeight ();
+			CDevice *pTouch = bTouch ? DsiTouchDevice (pBefore, TRUE) : 0;
+			if (pTouch)
+			{
+				m_pDsiTouch = pTouch;
+				((CTouchScreenDevice *) pTouch)->Setup (pDsi);
+				((CTouchScreenDevice *) pTouch)->RegisterEventHandler (H::DsiTouchHandler);
+			}
+			LOGNOTE ("DSI: DISP%u %ux%u (rp1dsi, no scaling), rotation %u, touch %s%s", nPort, m_nWidth, m_nHeight,
+				 nRotate, pTouch ? "FT5x06 polled" : "none", pTouch && m_nDsiInvert ? ", inverted" : "");
+			return TRUE;
+		}
+	}
+	if (!bAny)
+	{
+		for (unsigned nPort = 0; nPort < 2; nPort++)
+			if (nWant >= 2 || nPort == nWant) DsiScan (nPort);
+		LOGNOTE ("DSI: no display found, HDMI");
+	}
+	return FALSE;
+}
+
+// The UI's size on the Pi 5: cmdline.txt's width= and height= if both are given, else 800x480 (the size the UI is
+// laid out for) when the frame buffer is bigger than 1024x600, else the frame buffer's. Never bigger than the frame
+// buffer (no downscaling); equal to it: no scaling.
+void CSidecarDisplay::ScaleSetup (unsigned nWidth, unsigned nHeight)
+{
+	const unsigned FW = m_nFbWidth, FH = m_nFbHeight;
+	if (nWidth == 0 || nHeight == 0)
+	{
+		nWidth = FW > 1024 || FH > 600 ? 800 : FW;
+		nHeight = FW > 1024 || FH > 600 ? 480 : FH;
+	}
+	if (nWidth > FW) nWidth = FW;
+	if (nHeight > FH) nHeight = FH;
+	if (nWidth < 320 || nHeight < 240 || (nWidth == FW && nHeight == FH)) return;
+	m_pXMap = new u16[FW];
+	m_pScaleBuf = new (HEAP_DMA30) u16[FW * ScaleRows];
+	if (!m_pXMap || !m_pScaleBuf)
+	{
+		LOGWARN ("no memory for the scaler: the UI at %ux%u", FW, FH);
+		return;
+	}
+	for (unsigned X = 0; X < FW; X++) m_pXMap[X] = X * nWidth / FW;
+	m_nWidth = nWidth;
+	m_nHeight = nHeight;
+	m_bScaled = TRUE;
+	LOGNOTE ("UI %ux%u scaled to the frame buffer's %ux%u (x %u.%02u, y %u.%02u; width=/height= in cmdline.txt set the UI's size)",
+		 nWidth, nHeight, FW, FH, FW / nWidth, FW * 100 / nWidth % 100, FH / nHeight, FH * 100 / nHeight % 100);
+}
+#endif
+
 boolean CSidecarDisplay::Splash (void)
 {
 	if (!OpenFrameBuffer ()) return FALSE;
+	if (m_bScaled || m_pOut != m_pFB)			// scaled, or the Pi 5's DSI (no frame buffer pointer)
+	{
+		m_pSplash = new u16[m_nWidth * m_nHeight];	// drawn at the UI's size, scaled as the UI is
+		if (!m_pSplash) return TRUE;
+		sidecar_splash_draw (m_pSplash, m_nWidth, m_nWidth, m_nHeight);
+		CDisplay::TArea Area = {0, m_nWidth - 1, 0, m_nHeight - 1};
+		Put (Area, m_pSplash);
+		return TRUE;
+	}
 	sidecar_splash_draw ((u16 *) (uintptr) m_pFB->GetBuffer (), m_pFB->GetPitch () / 2,
 			     m_pFB->GetWidth (), m_pFB->GetHeight ());
 	return TRUE;
@@ -149,6 +403,14 @@ boolean CSidecarDisplay::Splash (void)
 void CSidecarDisplay::SplashStep (unsigned nStep)
 {
 	if (!m_bFrameBuffer || m_bOn) return;
+	if (m_bScaled || m_pOut != m_pFB)
+	{
+		if (!m_pSplash) return;
+		sidecar_splash_progress (m_pSplash, m_nWidth, m_nWidth, m_nHeight, nStep, SplashSteps);
+		CDisplay::TArea Area = {0, m_nWidth - 1, m_nHeight / 2, m_nHeight - 1};	// the bar is in the lower half
+		Put (Area, m_pSplash + m_nWidth * (m_nHeight / 2));
+		return;
+	}
 	sidecar_splash_progress ((u16 *) (uintptr) m_pFB->GetBuffer (), m_pFB->GetPitch () / 2,
 				 m_pFB->GetWidth (), m_pFB->GetHeight (), nStep, SplashSteps);
 }
@@ -160,8 +422,8 @@ boolean CSidecarDisplay::Initialize (void)
 		LOGWARN ("no frame buffer: the display is off");
 		return FALSE;
 	}
-	m_nWidth = m_pFB->GetWidth ();
-	m_nHeight = m_pFB->GetHeight ();
+	delete [] m_pSplash;					// LVGL's screen replaces it
+	m_pSplash = 0;
 
 	lv_init ();
 	lv_tick_set_cb (H::Tick);
@@ -198,6 +460,9 @@ boolean CSidecarDisplay::Initialize (void)
 void CSidecarDisplay::OpenDsiTouch (void)
 {
 	if (CKernelOptions::Get ()->GetAppOptionDecimal ("dsi", 1) == 0) return;
+#if RASPPI >= 5
+	if (!m_pRPiTouch) LOGNOTE ("touch: no DSI display, no DSI touch");	// else set up with the display (OpenRp1Dsi)
+#else
 	if (!m_bDsiSeen && !m_bDsiUnknown)
 	{
 		LOGNOTE ("touch: no DSI display reported, no firmware touch");
@@ -233,6 +498,7 @@ void CSidecarDisplay::OpenDsiTouch (void)
 	pTouch->Setup (m_pFB);
 	pTouch->RegisterEventHandler (H::DsiTouchHandler);
 	LOGNOTE ("touch: DSI (firmware) touch buffer set up%s", m_nDsiInvert ? ", inverted" : "");
+#endif
 }
 
 const char *CSidecarDisplay::GetInput (void) const
@@ -251,14 +517,18 @@ void CSidecarDisplay::BindInput (void)
 		CTouchScreenDevice *pTouch = (CTouchScreenDevice *) pNames->GetDevice (Name, FALSE);
 		if (pTouch && (CDevice *) pTouch != m_pDsiTouch)
 		{
-			pTouch->Setup (m_pFB);		// no SetCalibration: raw values (Map scales them)
+			pTouch->Setup (m_pOut);		// no SetCalibration: raw values (Map scales them)
 			pTouch->RegisterEventHandler (H::TouchHandler);
 			pTouch->RegisterRemovedHandler (H::TouchRemoved, this);
 			m_pTouch = pTouch;
 			LOGNOTE ("touch screen bound (%s)", (const char *) Name);
 		}
 	}
+#if RASPPI >= 5
+	const char *pSource = m_pTouch ? "USB" : m_pDsiTouch ? "DSI (rp1dsi)" : 0;
+#else
 	const char *pSource = m_pTouch ? "USB" : m_pDsiTouch ? "DSI (firmware)" : 0;
+#endif
 	if (pSource != m_pSource)
 	{
 		m_pSource = pSource;
@@ -267,7 +537,7 @@ void CSidecarDisplay::BindInput (void)
 	if (!m_pTouch && !m_pDsiTouch && !m_pMouse)
 	{
 		CMouseDevice *pMouse = (CMouseDevice *) pNames->GetDevice ("mouse1", FALSE);
-		if (pMouse && pMouse->Setup (m_pFB, FALSE))
+		if (pMouse && pMouse->Setup (m_pOut, FALSE))
 		{
 			pMouse->RegisterEventHandler (H::MouseHandler);
 			pMouse->RegisterRemovedHandler (H::MouseRemoved, this);
@@ -303,14 +573,22 @@ void CSidecarDisplay::Blank (boolean bOn)
 		{
 			Area.x1 = 0; Area.x2 = m_nWidth - 1;
 			Area.y1 = y; Area.y2 = (y + 40 < m_nHeight ? y + 40 : m_nHeight) - 1;
-			m_pFB->SetArea (Area, m_pBuffer);
+			Put (Area, m_pBuffer);
 		}
 	}
-	CBcmPropertyTags Tags;
-	TPropertyTagSimple Tag;
-	Tag.nValue = bOn ? 1 : 0;
-	boolean bOK = Tags.GetTag (PROPTAG_BLANK_SCREEN, &Tag, sizeof Tag, 4);
-	if (bOn) LOGNOTE ("screensaver: blank after %u min without a touch (firmware blank %s)", m_nSaverMin, bOK ? "ok" : "refused");
+	boolean bOK;
+#if RASPPI >= 5
+	if (m_pOut != m_pFB)					// the Pi 5's DSI display: its backlight off (rp1dsi's 200 back on)
+		bOK = ((CRPiTouchScreen *) m_pOut)->SetBacklightBrightness (bOn ? 0 : 200);
+	else
+#endif
+	{
+		CBcmPropertyTags Tags;
+		TPropertyTagSimple Tag;
+		Tag.nValue = bOn ? 1 : 0;
+		bOK = Tags.GetTag (PROPTAG_BLANK_SCREEN, &Tag, sizeof Tag, 4);
+	}
+	if (bOn) LOGNOTE ("screensaver: blank after %u min without a touch (%s blank %s)", m_nSaverMin, m_pOut != m_pFB ? "backlight" : "firmware", bOK ? "ok" : "refused");
 	else
 	{
 		lv_obj_invalidate (lv_screen_active ());	// everything drawn again
@@ -415,7 +693,7 @@ void H::Flush (lv_display_t *pDisplay, const lv_area_t *pArea, u8 *pBuffer)
 	Area.x2 = pArea->x2;
 	Area.y1 = pArea->y1;
 	Area.y2 = pArea->y2;
-	CSidecarDisplay::s_pThis->m_pFB->SetArea (Area, pBuffer);		// no completion routine: DMA and wait
+	CSidecarDisplay::s_pThis->Put (Area, (const u16 *) pBuffer);		// no completion routine: DMA and wait
 	lv_display_flush_ready (pDisplay);
 }
 
@@ -478,7 +756,7 @@ void H::TouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, uns
 	p->m_nTouchSeq = p->m_nTouchSeq + 1;
 }
 
-// the DSI panel's coordinates (800x480) to the screen's, unless a USB touch screen is bound (it has priority)
+// the DSI panel's coordinates (Pi 4: 800x480; Pi 5: the panel's) to the screen's, unless a USB touch screen is bound (it has priority)
 void H::DsiTouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, unsigned nPosY)
 {
 	CSidecarDisplay *p = CSidecarDisplay::s_pThis;
@@ -492,11 +770,16 @@ void H::DsiTouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, 
 	}
 	else
 	{
-		unsigned x = nPosX < 800 ? nPosX : 799, y = nPosY < 480 ? nPosY : 479;
-		if (p->m_nDsiInvert & 1) x = 799 - x;
-		if (p->m_nDsiInvert & 2) y = 479 - y;
-		x = x * p->m_nWidth / 800;
-		y = y * p->m_nHeight / 480;
+#if RASPPI >= 5
+		const unsigned PW = p->m_nWidth, PH = p->m_nHeight;	// rp1dsi: the panel's pixels, the UI's size
+#else
+		const unsigned PW = 800, PH = 480;			// the firmware's touch buffer
+#endif
+		unsigned x = nPosX < PW ? nPosX : PW - 1, y = nPosY < PH ? nPosY : PH - 1;
+		if (p->m_nDsiInvert & 1) x = PW - 1 - x;
+		if (p->m_nDsiInvert & 2) y = PH - 1 - y;
+		x = x * p->m_nWidth / PW;
+		y = y * p->m_nHeight / PH;
 		p->m_nRaw = (nPosY & 0xFFFF) << 16 | (nPosX & 0xFFFF);
 		p->m_nPointer = 1u << 31 | (u32) y << 16 | (u32) x;
 	}
@@ -511,6 +794,11 @@ void H::MouseHandler (TMouseEvent Event, unsigned nButtons, unsigned nPosX, unsi
 	if (Event == MouseEventMouseDown && (nButtons & MOUSE_BUTTON_LEFT)) nDown = 1u << 31;
 	else if (Event == MouseEventMouseUp && (nButtons & MOUSE_BUTTON_LEFT)) nDown = 0;
 	p->m_nRaw = (nPosY & 0xFFFF) << 16 | (nPosX & 0xFFFF);
+	if (p->m_bScaled)						// the mouse moves in frame buffer pixels
+	{
+		nPosX = nPosX * p->m_nWidth / p->m_nFbWidth;
+		nPosY = nPosY * p->m_nHeight / p->m_nFbHeight;
+	}
 	p->m_nPointer = nDown | (nPosY & 0x7FFF) << 16 | (nPosX & 0x7FFF);
 	p->m_nTouchSeq = p->m_nTouchSeq + 1;
 }

@@ -5,6 +5,22 @@
 #ifndef _gadget_h
 #define _gadget_h
 
+#ifdef SIDECAR_NO_GADGET
+// Pi 5 (Makefile): no gadget in Circle there; a stand-in that never starts (docs/pi5.md)
+#include <circle/device.h>
+#include <circle/interrupt.h>
+#include <circle/logger.h>
+#include <circle/types.h>
+class CSidecarMIDIGadget
+{
+public:
+	CSidecarMIDIGadget (CInterruptSystem *) {}
+	boolean Start (void)				{ return FALSE; }
+	void Poll (void)				{}
+	boolean IsMIDIDevice (const CDevice *) const	{ return FALSE; }
+	void LogStats (CLogger *)			{}
+};
+#else
 #include <circle/usb/gadget/usbmidigadget.h>
 #include <circle/interrupt.h>
 #include <circle/logger.h>
@@ -31,5 +47,6 @@ private:
 	unsigned m_nLastIRQs = 0;
 	u64 m_nLastTicks = 0, m_nLastStamp = 0;
 };
+#endif
 
 #endif

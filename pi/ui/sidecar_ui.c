@@ -672,6 +672,10 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 	for (int i = 0; i < SIDECAR_UI_TRACKS; i++)
 		set_text (s_Track[i], s->track[i] && s->track[i][0] ? s->track[i] : "-");
 	set_text (s_Note, s->note ? s->note : "");
+	static int s_nNoteBad = -1;		// the supply warning (power_state.h) in red; restyled only on a change
+	int nNoteBad = s->note && strncmp (s->note, "POWER", 5) == 0;
+	if (nNoteBad != s_nNoteBad) lv_obj_set_style_text_color (s_Note, lv_color_hex (nNoteBad ? C_BAD : C_DIM), 0);
+	s_nNoteBad = nNoteBad;
 	set_text (s_Project, s->project[0] ? s->project : "-");
 	for (int i = 0; i < 5; i++)
 	{

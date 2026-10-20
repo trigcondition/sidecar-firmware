@@ -16,6 +16,7 @@
 #include "fsweb.h"
 #include "wifi_conf.h"
 #include "hosted/web_page.h"	// build.sh: www/index.html as WebPage[] (a raw string)
+#include "hosted/web_page_gz.h"	// build.sh: the same, gzip -9n, as WebPageGz[] (what "/" sends)
 #include "user/lists.h"
 #include "user/um.h"
 
@@ -71,20 +72,42 @@ unsigned CLogTee::ReadSince (u64 nSince, char *pOut, unsigned nMax, u64 *pStart,
 	return n;
 }
 
-unsigned CWebServer::s_nWorkers = 0, CWebServer::s_nRefused = 0;
+unsigned CWebServer::s_nWorkers = 0, CWebServer::s_nRefused = 0, CWebServer::s_nIdle = 0, CWebServer::s_nMaxLifeMs = 0;
 unsigned CWebServer::s_nRequests, CWebServer::s_nMaxUs, CWebServer::s_nCommands;
+CWebServer *CWebServer::s_pWorker[MaxWorkers];
 
 CWebServer::CWebServer (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, void *pParam,
 			CSocket *pSocket)
-:	CHTTPDaemon (pNet, pSocket, MaxContent, 80, MaxMultipart, 5),	// a request that stalls 5 s is dropped
-	m_pNet (pNet), m_pLog (pLog), m_pConsole (pConsole), m_pStatus (pStatus), m_pParam (pParam), m_bWorker (pSocket != 0)
+:	CHTTPDaemon (pNet, pSocket, MaxContent, 80, MaxMultipart, Timeout),	// a request that stalls Timeout s is dropped
+	m_pNet (pNet), m_pLog (pLog), m_pConsole (pConsole), m_pStatus (pStatus), m_pParam (pParam), m_bWorker (pSocket != 0),
+	m_nStart (CTimer::GetClockTicks ()), m_bServed (FALSE)
 {
-	if (m_bWorker) s_nWorkers++;
+	if (!m_bWorker) return;
+	s_nWorkers++;
+	for (unsigned i = 0; i < MaxWorkers; i++) if (s_pWorker[i] == 0) { s_pWorker[i] = this; break; }
 }
 
 CWebServer::~CWebServer (void)
 {
-	if (m_bWorker) s_nWorkers--;
+	if (!m_bWorker) return;
+	s_nWorkers--;
+	for (unsigned i = 0; i < MaxWorkers; i++) if (s_pWorker[i] == this) s_pWorker[i] = 0;
+	unsigned ms = (CTimer::GetClockTicks () - m_nStart) / 1000;
+	if (ms > s_nMaxLifeMs) s_nMaxLifeMs = ms;
+	if (!m_bServed) s_nIdle++;		// ended in ParseRequest: Circle's "Receive failed", or closed before a request
+}
+
+void CWebServer::LogStats (CLogger *pLogger)
+{
+	static unsigned s_nReq, s_nRef, s_nIdl;
+	if (s_nRequests == s_nReq && s_nRefused == s_nRef && s_nIdle == s_nIdl) return;
+	pLogger->Write ("web", LogNotice, "web: %u requests, %u refused (503), %u closed without a request, longest connection %u ms, "
+			"%u open (in the last minute: +%u, +%u, +%u)", s_nRequests, s_nRefused, s_nIdle, s_nMaxLifeMs, s_nWorkers,
+			s_nRequests - s_nReq, s_nRefused - s_nRef, s_nIdle - s_nIdl);
+	s_nReq = s_nRequests;
+	s_nRef = s_nRefused;
+	s_nIdl = s_nIdle;
+	s_nMaxLifeMs = 0;
 }
 
 // At most MaxWorkers connections at once (each is one of Circle's tasks): with Wi-Fi's tasks, Circle's own limit of 10
@@ -98,6 +121,16 @@ CHTTPDaemon *CWebServer::CreateWorker (CNetSubSystem *pNet, CSocket *pSocket)
 		static const char k503[] = "HTTP/1.0 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Type: text/plain\r\n"
 					   "Content-Length: 9\r\nConnection: close\r\n\r\n503 busy\n";
 		s_nRefused++;
+		static unsigned s_nWarnAt = 0;		// the busy line at most every 10 s: the oldest connection's age
+		unsigned now = CTimer::GetClockTicks (), nOldest = 0;
+		for (unsigned i = 0; i < MaxWorkers; i++)
+			if (s_pWorker[i] != 0 && now - s_pWorker[i]->m_nStart > nOldest) nOldest = now - s_pWorker[i]->m_nStart;
+		if (s_nWarnAt == 0 || now - s_nWarnAt > 10000000)
+		{
+			s_nWarnAt = now | 1;
+			CLogger::Get ()->Write (From, LogWarning, "busy: %u connections open (the oldest %u ms): 503 (%u so far)",
+						s_nWorkers, nOldest / 1000, s_nRefused);
+		}
 		pSocket->Send (k503, sizeof k503 - 1, MSG_DONTWAIT);
 		delete pSocket;
 		return 0;
@@ -318,19 +351,28 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 	unsigned t0 = CTimer::GetClockTicks ();
 	THTTPStatus Status = HTTPOK;
 	s_nRequests++;
+	m_bServed = TRUE;
 	if (strcmp (pPath, "/") == 0 || strcmp (pPath, "/index.html") == 0)
 	{
-		unsigned n = sizeof WebPage - 1;
+		// gzip (about a quarter of the 120 KB over Wi-Fi; every browser takes it). Circle's daemon writes only
+		// Content-Type, so the other headers ride in its value (each line ends in CRLF there). no-cache: a reload asks
+		// again (Circle answers no 304), so a new kernel's page is never stale. ?raw: plain, for tools (curl without
+		// --compressed).
+		boolean bRaw = strstr (pParams, "raw") != 0;
+		unsigned n = bRaw ? sizeof WebPage - 1 : sizeof WebPageGz;
 		if (n > *pLength) return HTTPInternalServerError;
-		memcpy (pBuffer, WebPage, n);
+		memcpy (pBuffer, bRaw ? (const void *) WebPage : (const void *) WebPageGz, n);
 		*pLength = n;
-		*ppContentType = "text/html; charset=utf-8";
+		*ppContentType = bRaw ? "text/html; charset=utf-8\r\nCache-Control: no-store"
+				      : "text/html; charset=utf-8\r\nContent-Encoding: gzip\r\nVary: Accept-Encoding\r\nCache-Control: no-cache";
 	}
 	else if (strcmp (pPath, "/status") == 0)
 	{
 		CString s;
-		s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u},",
-			  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused);
+		s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u,"
+			  "\"idle\":%u,\"open\":%u},",
+			  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused,
+			  s_nIdle, s_nWorkers);
 		(*m_pStatus) (&s, m_pParam);
 		s.Append ("}");
 		unsigned n = s.GetLength ();

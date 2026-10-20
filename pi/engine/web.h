@@ -11,6 +11,7 @@
 #define _web_h
 
 #include <circle/device.h>
+#include <circle/logger.h>
 #include <circle/net/httpdaemon.h>
 #include <circle/net/netsubsystem.h>
 #include <circle/sched/task.h>
@@ -57,16 +58,27 @@ public:
 	static unsigned Requests (void)		{ return s_nRequests; }
 	static unsigned MaxUs (void)		{ return s_nMaxUs; }	// the longest GetContent, in us
 	static unsigned Commands (void)		{ return s_nCommands; }
+	// One log line (kernel.cpp, once a minute): requests, refused (503), connections closed without a request
+	// (Circle's "httpd: Receive failed (-12)": nothing arrived within Timeout s, e.g. a browser's spare connection), the
+	// longest connection. Nothing when nothing happened since the last line.
+	static void LogStats (CLogger *pLogger);
 	~CWebServer (void);
 	static const unsigned MaxWorkers = 4;	// connections served at once (CreateWorker)
+	// Circle's receive timeout per Receive (seconds): a connection that sends nothing for this long ends (its worker
+	// with it), so a browser's idle spare connections, or the ones of a client gone with a link change, free their
+	// slot after it. A request trickling a byte at a time could hold a slot longer: none of the page's do.
+	static const unsigned Timeout = 3;
 private:
-	static unsigned s_nWorkers, s_nRefused;
+	static unsigned s_nWorkers, s_nRefused, s_nIdle, s_nMaxLifeMs;
+	static CWebServer *s_pWorker[MaxWorkers];	// the live workers (the oldest one's age in the busy line)
 	CNetSubSystem *m_pNet;
 	CLogTee *m_pLog;
 	CConsole *m_pConsole;
 	TWebStatus *m_pStatus;
 	void *m_pParam;
 	boolean m_bWorker;
+	unsigned m_nStart;			// the connection's start, CTimer::GetClockTicks
+	boolean m_bServed;			// GetContent ran (FALSE at the end: closed without a request)
 	static unsigned s_nRequests, s_nMaxUs, s_nCommands;
 };
 

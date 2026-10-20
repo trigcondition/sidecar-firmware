@@ -347,7 +347,7 @@ Licence: newlib: BSD-style licences (see the newlib COPYING.NEWLIB); libgcc and 
 
 
 ##############################################################################
-# RASPBERRY PI 4B BUILD
+# RASPBERRY PI 4B AND PI 5 BUILD
 ##############################################################################
 
 ------------------------------------------------------------------------------
@@ -437,7 +437,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 ------------------------------------------------------------------------------
 Circle Wi-Fi driver (addon/wlan: the BCM4343x driver from Plan 9)
-Licence: Plan 9 software, released under the GNU GPL version 2 (text below). Used only when Wi-Fi is turned on; the SD card package ships Wi-Fi off and no Wi-Fi chip firmware.
+Licence: Plan 9 software, released under the GNU GPL version 2 (text below). Used only when Wi-Fi is turned on; the SD card package ships Wi-Fi off; the chip firmware it carries is listed below.
 ------------------------------------------------------------------------------
 The University of California, Berkeley, has been authorised by
 Alcatel-Lucent to release all Plan 9 software previously governed by
@@ -752,12 +752,17 @@ Licence: SIL Open Font License 1.1, Copyright 2011 The Montserrat Project Author
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+Circle addon/rp1dsi (Rene Stange), linked into the Raspberry Pi 5 kernel
+Licence: GNU GPL version 3 (or later), like Circle itself: licenses/GPL-3.0.txt. DSI display and FT5x06 touch driver for the Pi 5's RP1; source as Circle's, see the written offer in README.md.
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
 Font Awesome 5 Free symbols (built into LVGL)
 Licence: Icons: CC BY 4.0; font: SIL OFL 1.1 (https://fontawesome.com/license/free).
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-Raspberry Pi boot firmware (start4.elf, fixup4.dat)
+Raspberry Pi boot firmware (start4.elf, fixup4.dat, the device trees and overlays; the Pi 5 keeps its own in EEPROM)
 Licence: Redistributable in binary form for Raspberry Pi devices; ships with LICENCE.broadcom on the SD card.
 ------------------------------------------------------------------------------
 Copyright (c) 2006, Broadcom Corporation.
@@ -806,6 +811,12 @@ Modified version for the Raspberry Pi 4 which allows using FIQ with Circle
 ##############################################################################
 # RYTM MODS (patch files)
 ##############################################################################
+
+------------------------------------------------------------------------------
+Wi-Fi chip firmware for the CYW43455 (brcmfmac43455-sdio.bin, .clm_blob, .txt), on the Raspberry Pi SD card only
+Licence: .bin and .clm_blob: Cypress Semiconductor (Infineon) binary-redistribution licence, which permits redistribution in binary form with this notice and no modification, for use with Cypress/Infineon chips; .txt: GPL-2.0 (Copyright 2018 Linaro Ltd, 2018 Raspberry Pi (Trading) Ltd). Used only when Wi-Fi is turned on.
+Not in this repository: pi/circle/make-sd-dual.sh downloads the files, unmodified, from https://github.com/RPi-Distro/firmware-nonfree at the commit Circle's addon/wlan/firmware/Makefile pins, and copies the full licence text out of that repository's debian/copyright to firmware/LICENCE.cypress on the card, with a firmware/NOTICE naming the files and the commit.
+------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
 elekloader core (irpina and contributors)

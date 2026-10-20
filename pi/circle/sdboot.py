@@ -7,7 +7,11 @@ put in place; the replaced file is kept as <name>.prev, and config.txt/cmdline.t
   sdboot.py ls                         the card's root
   sdboot.py get NAME [OUT]             a file (to stdout, or OUT)
   sdboot.py scratch                    the write path's test (64 KB written, read back, deleted)
-  sdboot.py install [IMG]              IMG (default pi/engine/kernel8-rpi4.img) -> engine.img (header + image)
+  sdboot.py install [IMG ...]          each IMG to its board's file, by what the image is (default
+                                       pi/engine/kernel8-rpi4.img): a Pi 4 kernel -> engine.img (header + image), a
+                                       Pi 5 kernel (RASPPI=5) -> kernel_2712.img (plain, the old one kept as .prev);
+                                       on a Pi 4 + Pi 5 card (make-sd-dual.sh) from either board, the other board's
+                                       kernel is left as it is. Anything else is refused.
   sdboot.py previous                   engine.img.prev back as engine.img (the two swap: run it again to undo)
   sdboot.py bootloader [IMG]           IMG (default pi/circle/out/sdboot.img, build-sdboot.sh) -> sdboot-try.img
   sdboot.py tryboot                    tryboot.txt = config.txt + the sdboot lines (kernel=sdboot-try.img if it is on
@@ -18,6 +22,11 @@ put in place; the replaced file is kept as <name>.prev, and config.txt/cmdline.t
   sdboot.py restore-config             config.txt.bak (the original) back as config.txt
   sdboot.py cmdline [LINE]             show cmdline.txt, or replace it with LINE (the original kept as cmdline.txt.bak)
   sdboot.py reboot                     the engine stops and reboots
+  sdboot.py pi5-try [IMG]              Pi 5 (no sdboot there, docs/pi5.md): IMG (default pi/engine/kernel_2712.img) ->
+                                       sdboot-try.img, tryboot.txt = config.txt + "[pi5] kernel=sdboot-try.img", then
+                                       a one-shot tryboot reboot (a power cycle boots kernel_2712.img as before)
+  sdboot.py pi5-commit                 sdboot-try.img -> kernel_2712.img (the old one kept as kernel_2712.img.prev)
+  sdboot.py pi5-previous               kernel_2712.img.prev back as kernel_2712.img (the two swap)
   sdboot.py usbreset                   a USB reset of the FT232R serial adapter (0403:6001; needs Homebrew's libusb):
                                        after a flasher killed mid-upload the Mac's writes to it can hang (measured
                                        2026-10-16: the Pi then hears nothing, not even the reboot magic)
@@ -35,8 +44,10 @@ ENGINE_ADDR = 0x02000000          # sdboot.patch's SDB_ADDR
 BEGIN = "# sidecar sdboot begin (pi/circle/sdboot.py disable removes this block; config.txt.bak is the original)"
 END = "# sidecar sdboot end"
 def block(kernel="sdboot.img"):
-    # disable_splash: no rainbow square; boot_delay=0: the firmware does not wait its default 1 s before the kernel
-    return (f"{BEGIN}\n[all]\nkernel={kernel}\ninitramfs engine.img 0x{ENGINE_ADDR:08x}\n"
+    # disable_splash: no rainbow square; boot_delay=0: the firmware does not wait its default 1 s before the kernel.
+    # [pi4], not [all]: sdboot and engine.img are the Pi 4's; a Pi 5 reading the same card (make-sd-dual.sh) skips
+    # these lines and keeps its own [pi5] kernel=kernel_2712.img. On a Pi 4 [pi4] matches as [all] did.
+    return (f"{BEGIN}\n[pi4]\nkernel={kernel}\ninitramfs engine.img 0x{ENGINE_ADDR:08x}\n"
             f"disable_splash=1\nboot_delay=0\n{END}\n")
 
 
@@ -175,6 +186,20 @@ def with_block(cfg, kernel="sdboot.img"):
     return cfg + block(kernel)
 
 
+SDBOOT_MAX = 256 * 1024           # sdboot.img is about 4 KB; a kernel (2+ MB) as sdboot-try.img is pi5-try's
+
+
+def board(img):
+    """4 or 5: the board a Pi engine kernel image was built for (RASPPI); else SystemExit."""
+    if b"==== rytm-pi engine" not in img:
+        raise SystemExit("not a Pi engine kernel image (no '==== rytm-pi engine' in it)")
+    return 5 if b"gadget: none on this board (Pi 5 build)" in img else 4
+
+
+def sizes(pi):
+    return {l.split(" ", 1)[1]: int(l.split(" ", 1)[0]) for l in pi.ls()}
+
+
 def names(pi):
     return {l.split(" ", 1)[1] for l in pi.ls()}
 
@@ -226,21 +251,32 @@ def run(c, a, pi):
     elif c == "scratch":
         print(pi.cmd("SCRATCH"))
     elif c == "install":
-        p = a[1] if len(a) > 1 else os.path.join(REPO, "pi/engine/kernel8-rpi4.img")
-        pi.put("engine.img", wrap(open(p, "rb").read()))
+        imgs = [open(p, "rb").read() for p in (a[1:] or [os.path.join(REPO, "pi/engine/kernel8-rpi4.img")])]
+        for img in imgs:
+            board(img)              # all checked before anything is written
+        for img in imgs:
+            if board(img) == 5:
+                pi.put("kernel_2712.img", img)
+            else:
+                pi.put("engine.img", wrap(img))
     elif c == "previous":
         pi.put("engine.img", pi.get("engine.img.prev"))
     elif c == "bootloader":
         p = a[1] if len(a) > 1 else os.path.join(HERE, "out/sdboot.img")
         pi.put("sdboot-try.img", open(p, "rb").read())
     elif c == "tryboot":
-        k = "sdboot-try.img" if "sdboot-try.img" in names(pi) else "sdboot.img"
+        sz = sizes(pi)
+        k = "sdboot-try.img" if "sdboot-try.img" in sz else "sdboot.img"
+        if sz.get(k, 0) > SDBOOT_MAX:
+            raise SystemExit(f"{k} is {sz[k]} bytes: a Pi 5 kernel from pi5-try, not sdboot (pi5-commit it on the Pi 5)")
         need(pi, [k, "engine.img"])
         cfg = pi.get("config.txt").decode()
         pi.put("tryboot.txt", with_block(cfg, k).encode())
         print(f"tryboot with {k}:", pi.cmd("TRYBOOT"))
     elif c == "commit":
         need(pi, ["sdboot-try.img"])
+        if sizes(pi)["sdboot-try.img"] > SDBOOT_MAX:
+            raise SystemExit("sdboot-try.img is a Pi 5 kernel from pi5-try, not sdboot: on the Pi 5, pi5-commit")
         pi.put("sdboot.img", pi.get("sdboot-try.img"))
         print("DEL sdboot-try.img:", pi.cmd("DEL sdboot-try.img"))
     elif c == "enable":
@@ -268,6 +304,25 @@ def run(c, a, pi):
             print(b.decode().strip() if b is not None else "(no cmdline.txt)")
     elif c == "reboot":
         print(pi.cmd("REBOOT"))
+    elif c == "pi5-try":
+        p = a[1] if len(a) > 1 else os.path.join(REPO, "pi/engine/kernel_2712.img")
+        img = open(p, "rb").read()
+        if board(img) != 5:
+            raise SystemExit(f"{p} is a Pi 4 kernel: pi5-try takes a RASPPI=5 build (kernel_2712.img)")
+        pi.put("sdboot-try.img", img)
+        cfg = without_block(pi.get("config.txt").decode())
+        pi.put("tryboot.txt", (cfg.rstrip("\n") + "\n[pi5]\nkernel=sdboot-try.img\n").encode())
+        print("tryboot with sdboot-try.img:", pi.cmd("TRYBOOT"))
+    elif c == "pi5-commit":
+        need(pi, ["sdboot-try.img"])
+        img = pi.get("sdboot-try.img")
+        if board(img) != 5:
+            raise SystemExit("sdboot-try.img is not a Pi 5 kernel (a Pi 4 sdboot from 'bootloader'?): not committed")
+        pi.put("kernel_2712.img", img)
+        print("DEL sdboot-try.img:", pi.cmd("DEL sdboot-try.img"))
+    elif c == "pi5-previous":
+        need(pi, ["kernel_2712.img.prev"])
+        pi.put("kernel_2712.img", pi.get("kernel_2712.img.prev"))
     else:
         raise SystemExit(f"unknown command {c} (sdboot.py --help)")
 

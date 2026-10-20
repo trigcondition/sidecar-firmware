@@ -36,6 +36,7 @@
   .tile .v { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tile .d { font:11px var(--mono); color:var(--mut); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tile.bad .v { color:var(--warn); }
+  .pwarn { border:1px solid var(--warn); color:var(--warn); border-radius:8px; padding:8px 12px; margin:0 0 10px; font-weight:600; }
   .tile.good .v { color:var(--ok); }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:4px 0; }
   .row label { color:var(--mut); min-width:110px; }
@@ -155,6 +156,7 @@
   </nav>
 
   <div class="tab" id="tab-status">
+    <div class="pwarn" id="pwarn" role="alert" hidden></div>
     <div class="tiles" id="tiles"></div>
     <section id="wifi" aria-labelledby="wf-h">
       <h2 id="wf-h">Wi-Fi</h2>
@@ -397,11 +399,29 @@
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
+// ---- every request through one gate: at most 2 at once from this page. The Pi serves 4 connections (pi/engine/web.h
+// MaxWorkers; a 5th gets "503 busy"), and a browser keeps spare connections of its own, so the page's polls (status,
+// log, Wi-Fi, lists) wait their turn here instead of piling up there. A 503 is tried again after 0.3/0.6/1.2 s.
+{
+  const raw = window.fetch.bind(window), wait = [];
+  let busy = 0;
+  const take = () => busy < 2 ? (busy++, Promise.resolve()) : new Promise((ok) => wait.push(ok));
+  const give = () => { const n = wait.shift(); if (n) n(); else busy--; };
+  window.fetch = async (url, opt) => {
+    for (let i = 0; ; i++) {
+      await take();
+      let r;
+      try { r = await raw(url, opt); } finally { give(); }
+      if (r.status !== 503 || i >= 3 || (opt && opt.signal && opt.signal.aborted)) return r;
+      await new Promise((ok) => setTimeout(ok, 300 << i));
+    }
+  };
+}
 // ---- the LFO tab: web/seg.js's Pending and web/lfo.js, put here by build.sh / tests/mock_web.py (shared with the Mini's page)
 /*@include web/seg.js@*/
 /*@include web/lfo.js@*/
 const TILES = [["cpu","CPU (cores 1/2/3)"],["fifo","FIFO"],["under","Underruns"],["ob","Overbridge"],
-  ["rytm","Rytm"],["gadget","USB-C"],["temp","Temperature"],["web","This page"]];
+  ["rytm","Rytm"],["gadget","USB-C"],["temp","Temperature"],["power","Power"],["web","This page"]];
 $("#tiles").innerHTML = TILES.map(([k,n]) => `<div class="tile" id="t-${k}"><div class="k">${n}</div><div class="v">-</div><div class="d">&nbsp;</div></div>`).join("");
 function tile(k, v, d, cls) {
   const t = $("#t-" + k);
@@ -639,7 +659,15 @@ function renderStats() {
     tile("gadget", st.gadget === "0" ? "off" : st.gadget, d);
   }
   if (st.temp !== undefined) tile("temp", st.temp + " °C", "SoC", st.temp >= 80 ? "bad" : "");
-  if (st.web) tile("web", st.web.requests + " req", `max ${st.web.maxus} us · ${st.web.commands} commands`);
+  if (st.power) {                    // the supply (pi/engine/power_state.h): get_throttled, the Pi 5's USB-PD current
+    const p = st.power, bad = !!p.warn;
+    tile("power", !p.known ? "unknown" : bad ? "too weak" : "ok",
+      (p.maxCurrent != null ? (p.maxCurrent / 1000) + " A · " : "") + (p.uvNow ? "under-voltage now" : p.uvBoot ? "under-voltage since boot" : "no under-voltage")
+      + (p.throttledNow || p.cappedNow ? " · throttled" : ""), bad ? "bad" : p.known ? "good" : "");
+    $("#pwarn").hidden = !bad;
+    if (bad) $("#pwarn").textContent = "⚠ " + p.warn.charAt(0).toUpperCase() + p.warn.slice(1) + " (Wi-Fi and the web page suffer first).";
+  }
+  if (st.web) tile("web", st.web.requests + " req", `max ${st.web.maxus} us · ${st.web.commands} commands` + (st.web.refused ? ` · ${st.web.refused} busy` : ""));
   settle();
   if (st.fxin) fxinShow(st.fxin);
   if (st.lfo) lfoUi.show(st.lfo);   // the LFO tab (/status "lfo": core/lfo.cpp json)

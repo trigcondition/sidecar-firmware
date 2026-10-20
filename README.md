@@ -1,11 +1,11 @@
 # Sidecar | Expander: firmware
 
 The source of the Sidecar firmware: the engine that runs on **Sidecar Mini** (Teensy 4.1) and **Sidecar**
-(Raspberry Pi 4B), a voice and send-effect expander on the USB port of an Analog Rytm MKII.
+(Raspberry Pi 4B and Pi 5), a voice and send-effect expander on the USB port of an Analog Rytm MKII.
 
-This repository holds the source of **Sidecar 0.1.0**.
+This repository holds the source of **Sidecar 0.2.0**.
 
-- Release, binaries and install guides: <https://github.com/trigcondition/sidecar-expander/releases/tag/v0.1.0>
+- Release, binaries and install guides: <https://github.com/trigcondition/sidecar-expander/releases/tag/v0.2.0>
 - Documentation, the browser patcher and the web console: <https://trigcondition.github.io/sidecar-expander/>
 - The Rytm side (the OS mods the Sidecar talks to): [sidecar-mods](https://github.com/trigcondition/sidecar-mods)
 
@@ -36,7 +36,7 @@ setup scripts clone each at a pinned commit into git-ignored folders. See `NOTIC
 
 - Engine core on macOS: `make -C core engines && make -C core test` (the last line says `ALL CORE TESTS PASS`).
 - Sidecar Mini: arduino-cli with Teensyduino, `teensy/run_sketch.sh` (`docs/TEENSY-FIRST-TEST.md`).
-- Sidecar (Pi 4B): Docker, `pi/engine/build.sh` (`docs/pi-engine.md`).
+- Sidecar (Pi 4B and Pi 5): Docker, `pi/engine/build.sh` (`docs/pi-engine.md`, `docs/pi5.md`); one SD card for both boards: `pi/circle/make-sd-dual.sh`.
 - Plugins: `make -C plugins/sc_acid` and so on (`docs/plugins.md`).
 - Starter content: `content/make_content.sh`.
 
@@ -50,6 +50,15 @@ make -C core engines && make -C core test    # macOS
 ```
 
 Both run on every pull request (`.github/workflows/test.yml`).
+
+## Written offer of source
+
+The released binaries (Sidecar Mini, Sidecar for Pi 4B and Pi 5, version 0.2.0) contain GPL and LGPL code, among it Circle
+(GPL-3.0-or-later, with its `addon/rp1dsi` display driver linked into the Pi 5 kernel) and the Teensyduino core and SPI library
+(LGPL-2.1). The complete corresponding source of version 0.2.0 is this repository at tag `v0.2.0`, plus the third-party
+sources the build scripts fetch at the pinned commits named in `NOTICE` (Circle with `pi/circle/*.patch`). For three years
+from the release, anyone who received a binary can also ask for it on a physical medium for the cost of that medium, or for
+the materials needed to relink the Teensy firmware with a modified LGPL part: open an issue in this repository.
 
 ## Contributing
 

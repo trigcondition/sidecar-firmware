@@ -8,6 +8,9 @@
 #include "sidecar_display.h"
 
 #include <circle/alloc.h>
+#include <circle/bcmpropertytags.h>
+#include <circle/devicetreeblob.h>
+#include <circle/machineinfo.h>
 #include <circle/memory.h>
 #include <circle/startup.h>
 #include <circle/string.h>
@@ -151,6 +154,7 @@ boolean CKernel::Initialize (void)
 	if (bOK) bOK = m_Timer.Initialize ();
 	if (!bOK) return FALSE;
 	m_Logger.Write (From, LogNotice, "==== rytm-pi engine ==== Sidecar " SIDECAR_VERSION_FULL ", CPU %u MHz", m_CPUThrottle.GetClockRate () / 1000000);
+	ReadPower (TRUE);				// the supply's state in the boot log (a weak one: Wi-Fi and the SD fail first)
 	// the boot screen first (sidecar_splash.h; display=0: none), one bar step per stage below, LVGL's home screen last
 	if (m_Options.GetAppOptionDecimal ("display", 1) != 0)
 	{
@@ -233,9 +237,16 @@ boolean CKernel::Initialize (void)
 	// USB-C, the computer's side: gadget=sidecar (default: UAC2 + USB MIDI, sidecar_gadget.h), midi (P1's MIDI
 	// echo, gadget.h) or 0. The default can be built in (GADGET=midi pi/engine/build.sh): the serial bootloader
 	// card's cmdline.txt is not edited from the Mac. A gadget that fails to start is left alone (no destructor).
+#ifdef SIDECAR_NO_GADGET
+	const char *pGadgetMode = "0";			// Pi 5: no gadget in Circle (docs/pi5.md); gadget= is ignored
+	m_pGadgetMode = pGadgetMode;
+	m_Logger.Write (From, LogNotice, "gadget: none on this board (Pi 5 build)");
+	if (0)
+#else
 	const char *pGadgetMode = m_Options.GetAppOptionString ("gadget", GADGET_DEFAULT);
 	m_pGadgetMode = pGadgetMode;
 	if (strcmp (pGadgetMode, "sidecar") == 0)
+#endif
 	{
 		CSidecarGadget *pSidecar = new CSidecarGadget (&m_Interrupt);
 		if (pSidecar->Start ()) m_pSidecar = pSidecar;
@@ -249,7 +260,9 @@ boolean CKernel::Initialize (void)
 		m_Logger.Write (From, m_pGadget ? LogNotice : LogError, "gadget: USB-C MIDI device %s",
 				m_pGadget ? "up (Sidecar)" : "failed to start");
 	}
+#ifndef SIDECAR_NO_GADGET
 	else m_Logger.Write (From, LogNotice, "gadget: off");
+#endif
 	// the network: one stack on one device (Circle), Ethernet (static: the direct cable has no DHCP server) or, with
 	// wifi=1 and a stored network, Wi-Fi (DHCP unless wifi.txt has ip=); mDNS: sidecar.local on either (web.h)
 	m_pWifi = new CWifi;				// reads /.rytm/wifi.txt (the card is mounted by bridge::begin)
@@ -337,6 +350,12 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  SIDECAR_DIRTY ? "true" : "false", __DATE__, __TIME__, CIRCLE_NAME, CIRCLE_VERSION_STRING, k->m_nSaverMin, k->m_nBright, k->m_bTouchHidden ? 0u : 1u,
 		  k->m_pDisplay != 0 ? "true" : "false", k->m_pDisplay != 0 && k->m_pDisplay->IsBlank () ? "true" : "false");
 	pOut->Append (s);
+	{
+		char Power[400];		// the supply (power_state.h): the page's warning
+		powerstate::json (k->m_Power, Power, sizeof Power);
+		pOut->Append (",");
+		pOut->Append (Power);
+	}
 	if (k->m_pWifi != 0) { pOut->Append (",\"wifi\":"); k->m_pWifi->Status (pOut); }
 	rec_pi::Status (pOut);			// the Record tab
 	{
@@ -672,6 +691,7 @@ void CKernel::PushUi (void)
 	u.underruns = g_Output.Underflows ();
 	for (int v = 0; v < SIDECAR_UI_TRACKS; v++) u.track[v] = bridge::machine_name (v);
 	u.note = m_pTransport == &m_Tcp ? "link: tcp" : m_pTransport == &m_SelfTest ? "link: self-test" : "link: usb";
+	if (powerstate::short_warning (m_Power) != 0) u.note = powerstate::short_warning (m_Power);	// red on the display
 	u.notes = CEngineCores::NotesOn ();
 	u.out_tracks = g_Output.GetMode () == Output::kTracks;
 	u.mac = m_pSidecar != 0 ? (m_pSidecar->MacOn () ? 1 : 0) : -1;
@@ -789,6 +809,9 @@ void CKernel::LogStats (void)
 		m_Usb.MIDIOutBytes (), m_Usb.MIDIOutMessages (), m_Usb.MIDIOutFailed (),
 		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + s_nToHostFull + bridge::to_host_dropped (), (unsigned) (g_Output.TakePeak () * 1000),
 		m_CPUThrottle.GetTemperature ());
+	static unsigned s_nPowerTick;
+	if (++s_nPowerTick % 10 == 0) ReadPower (FALSE);	// every 10 s (a mailbox call)
+	if (s_nPowerTick % 60 == 0 && m_bWeb) CWebServer::LogStats (&m_Logger);	// the web page's connections, once a minute
 	if (m_pGadget != 0) m_pGadget->LogStats (&m_Logger);
 	if (m_pSidecar != 0) m_pSidecar->LogStats (&m_Logger);
 	g_Guard.LogNews (&m_Logger);
@@ -803,6 +826,38 @@ void CKernel::LogStats (void)
 			Muted.Append (One);
 		}
 		m_Logger.Write (From, LogNotice, "engine: muted %s", (const char *) Muted);
+	}
+}
+
+// The supply (power_state.h): get_throttled read without clearing (request value 0 keeps the sticky bits), and on the
+// Pi 5 the firmware's /chosen/power/max_current (read once: the PD negotiation is done before the kernel starts).
+// Logged at boot, at once when the flags change (a warning while a problem shows), and once a minute.
+void CKernel::ReadPower (boolean bLog)
+{
+	static boolean s_bMaxRead = FALSE;
+	static unsigned s_nLogged = ~0u, s_nCalls = 0;
+	if (!s_bMaxRead)
+	{
+		s_bMaxRead = TRUE;
+		m_Power.board = RASPPI >= 5 ? 5 : 4;	// the warning names this board's official supply
+		const CDeviceTreeBlob *pDTB = CMachineInfo::Get ()->GetDTB ();
+		const TDeviceTreeNode *pNode = pDTB != 0 ? pDTB->FindNode ("/chosen/power") : 0;
+		const TDeviceTreeProperty *pProp = pNode != 0 ? pDTB->FindProperty (pNode, "max_current") : 0;
+		if (pProp != 0 && pDTB->GetPropertyValueLength (pProp) == 4) m_Power.max_ma = (int) pDTB->GetPropertyValueWord (pProp, 0);
+	}
+	CBcmPropertyTags Tags;
+	TPropertyTagSimple Throttled;
+	Throttled.nValue = 0;
+	m_Power.known = Tags.GetTag (PROPTAG_GET_THROTTLED, &Throttled, sizeof Throttled, 4);
+	m_Power.throttled = m_Power.known ? Throttled.nValue : 0;
+	unsigned nKey = m_Power.known ? m_Power.throttled : ~1u;
+	boolean bChanged = nKey != s_nLogged;
+	if (bLog || bChanged || ++s_nCalls % 6 == 0)
+	{
+		char Line[256];
+		powerstate::line (m_Power, Line, sizeof Line);
+		m_Logger.Write (From, powerstate::warning (m_Power) != 0 ? LogWarning : LogNotice, "power: %s", Line);
+		s_nLogged = nKey;
 	}
 }
 

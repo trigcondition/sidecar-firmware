@@ -35,6 +35,10 @@ build/test_rec_play: test_rec_play.cpp ../rec_play.cpp ../rec_play.h $(CORE)/rec
 build/test_fsweb: test_fsweb.cpp ../fsweb.cpp ../fsweb.h $(RMPSRC)/rmp_loader.cpp check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -DFSWEB_HOST -I$(RMPSRC) -o $@ $< ../fsweb.cpp $(RMPSRC)/rmp_loader.cpp
+# the power supply's state (power_state.cpp): get_throttled and the Pi 5's max_current to the warning and /status
+build/test_power_state: test_power_state.cpp ../power_state.cpp ../power_state.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $< ../power_state.cpp
 # the Wi-Fi settings (wifi_conf.cpp) on a temp folder
 build/test_wifi_conf: test_wifi_conf.cpp ../wifi_conf.cpp ../wifi_conf.h check.h
 	@mkdir -p build

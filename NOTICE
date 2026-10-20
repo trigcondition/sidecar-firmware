@@ -52,5 +52,12 @@ Fetched at build time:
   Teensyduino, USBHost_t36,     (MIT and others; installed
   SdFat, LittleFS                with Teensyduino)          see THIRD_PARTY_LICENSES
 
-The Raspberry Pi build links Circle (GPL-3.0-or-later): a Pi engine binary is
-therefore distributed under GPL version 3, which GPL-2.0-or-later allows.
+Shipped on the Raspberry Pi SD card, not in this repository (the card script pi/circle/make-sd-dual.sh downloads
+them, at the commit pinned by Circle's addon/wlan/firmware/Makefile, from RPi-Distro/firmware-nonfree, and copies the licence
+text next to them as firmware/LICENCE.cypress): the Cypress/Infineon CYW43455 Wi-Fi firmware (brcmfmac43455-sdio.bin,
+.clm_blob: Cypress binary-redistribution licence; .txt: GPL-2), used only when Wi-Fi is turned on; and the Raspberry Pi boot
+files (start4.elf, fixup4.dat, device trees; Broadcom/Raspberry Pi binary-redistribution licence, LICENCE.broadcom).
+
+The Raspberry Pi build (Pi 4B and Pi 5) links Circle (GPL-3.0-or-later): a Pi engine binary is
+therefore distributed under GPL version 3, which GPL-2.0-or-later allows. The Pi 5 kernel also links Circle's
+addon/rp1dsi (the DSI display and touch driver, GPL-3.0-or-later).

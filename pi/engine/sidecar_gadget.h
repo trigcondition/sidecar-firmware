@@ -28,6 +28,31 @@
 #ifndef _sidecar_gadget_h
 #define _sidecar_gadget_h
 
+#ifdef SIDECAR_NO_GADGET
+// Pi 5 (Makefile): no gadget in Circle there; a stand-in that is never made (Get () is 0; docs/pi5.md)
+#include <circle/interrupt.h>
+#include <circle/logger.h>
+#include <circle/types.h>
+class CSidecarGadget
+{
+public:
+	static const unsigned ChIn = 12, ChOut = 12;
+	CSidecarGadget (CInterruptSystem *) {}
+	static CSidecarGadget *Get (void)		{ return 0; }
+	boolean Start (void)				{ return FALSE; }
+	void Poll (void)				{}
+	void LogStats (CLogger *)			{}
+	boolean MacOn (void) const			{ return FALSE; }
+	boolean Command (const char *)			{ return FALSE; }
+	void FromRytmBlock (const u8 *)			{}
+	void FromEngine (const s32 (*)[12], unsigned)	{}
+	void ToRytm (s32 (*)[12], const s16 (*)[8], unsigned, boolean) {}
+	void FromRytmMIDI (const u8 *)			{}
+	boolean ForRytm (u32 *)				{ return FALSE; }
+	boolean ForRytmInSysEx (void) const		{ return FALSE; }
+	void RytmMIDIConnected (boolean)		{}
+};
+#else
 #include <circle/usb/gadget/dwusbgadget.h>
 #include <circle/usb/gadget/dwusbgadgetendpoint.h>
 #include <circle/interrupt.h>
@@ -204,5 +229,7 @@ private:
 	u64 m_nLastTicks, m_nLastStamp;
 	u8 m_StringBuffer[80];
 };
+
+#endif	// SIDECAR_NO_GADGET
 
 #endif

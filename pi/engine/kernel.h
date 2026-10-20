@@ -28,6 +28,7 @@
 #include "selftest.h"
 #include "tcp_link.h"
 #include "web.h"
+#include "power_state.h"
 #include "sidecar_ui.h"
 
 class CWifi;				// wifi.h: Wi-Fi (off by default)
@@ -57,6 +58,7 @@ private:
 	void LogBench (void);
 	void SetSelfTest (boolean bOn, const char *pWhy);
 	void LogStats (void);
+	void ReadPower (boolean bLog);				// the supply (power_state.h): at boot, every 10 s, logged on a change and once a minute
 	void PushUi (void);					// the display's state, read back from the engine (docs/pi-display.md)
 	static void UiCommand (const char *pCmd, void *pParam);	// a display control: the console's parser, then a re-read
 	void StopAndReboot (const char *pWhy, boolean bTryboot = FALSE);
@@ -96,6 +98,7 @@ private:
 	const char		*m_pGadgetMode;		// gadget= (sidecar, midi, 0)
 	boolean			m_bNetOK;		// m_Net.Initialize succeeded: link=tcp refused without it
 	CSidecarDisplay		*m_pDisplay;		// display=1 (default) and a frame buffer; else 0
+	powerstate::State	m_Power;		// the supply as the firmware reports it (ReadPower)
 	sidecar_ui_status_t	m_Ui;			// what the display shows (LogStats: the load and counters; PushUi: the rest)
 	boolean			m_bUiPending;		// a display command was sent: re-read at m_nUiAt (us, m_Timer.GetClockTicks)
 	unsigned		m_nUiAt;

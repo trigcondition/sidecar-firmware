@@ -11,7 +11,7 @@ failed one reverts (the previous settings back). join/forget/power need the same
 (logged) and /fs/* over CARD_DIR with fsweb.cpp's rules: the boot files and config.txt.bak read-only ("ro":1), the
 kept folders /.rytm, /Samples, /Plugins ("ro":2), put via <path>.part with its CRC, mkdir?p=1. A sketch of the
 rules for the page's tests, not their reference: make -C pi/engine/tests (test_fsweb) is."""
-import json, os, re, struct, sys, tempfile, time, zlib
+import gzip, json, os, re, struct, sys, tempfile, time, zlib
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlsplit, parse_qs
 
@@ -23,6 +23,13 @@ T0 = time.time()
 import random
 REFUSE = float(os.environ.get("MOCK_REFUSE", "0") or 0)
 REFUSED = [0]
+# the supply (power_state.cpp's json): MOCK_POWER=weak: a Pi 5 on a hub port (3 A mode, under-voltage since boot)
+POWER = ({"known": True, "throttled": 0x50000, "uvNow": False, "uvBoot": True, "throttledNow": False, "throttledBoot": True,
+          "cappedNow": False, "cappedBoot": False, "maxCurrent": 3000,
+          "warn": "power supply too weak (no 5 A USB-PD: 3 A mode): use the 27 W (5 V 5 A) adapter directly"}
+         if os.environ.get("MOCK_POWER") == "weak" else
+         {"known": True, "throttled": 0, "uvNow": False, "uvBoot": False, "throttledNow": False, "throttledBoot": False,
+          "cappedNow": False, "cappedBoot": False, "maxCurrent": 5000, "warn": None})
 LOG = []
 BOOT = {"config.txt", "config.txt.bak", "cmdline.txt", "bootcode.bin", "licence.broadcom", "issue.txt"}
 BOOTP = ("sdboot", "engine.img", "kernel", "start", "fixup", "armstub", "tryboot.txt", "bcm27")
@@ -459,11 +466,22 @@ class H(BaseHTTPRequestHandler):
                     return self.send_error(400)
                 return self.send(json.dumps({"ok": True} if e == "" else {"ok": False, "code": 400, "error": e}), "application/json")
             return self.send_error(404)
-        if p in ("/", "/index.html"):
-            return self.send(page(), "text/html; charset=utf-8")
+        if p in ("/", "/index.html"):           # as web.cpp: gzip, no-cache; ?raw plain
+            if "raw" in u.query:
+                return self.send(page(), "text/html; charset=utf-8")
+            pg = page()
+            body = gzip.compress(pg if isinstance(pg, bytes) else pg.encode(), 9, mtime=0)
+            self.send_response(200)
+            for k, v in (("Content-Type", "text/html; charset=utf-8"), ("Content-Encoding", "gzip"),
+                         ("Vary", "Accept-Encoding"), ("Cache-Control", "no-cache"), ("Content-Length", str(len(body)))):
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if p == "/status":
             return self.send(json.dumps({
-                "host": "sidecar", "uptime": int(time.time() - T0), "web": {"requests": 1, "maxus": 900, "commands": 0, "refused": REFUSED[0]},
+                "host": "sidecar", "uptime": int(time.time() - T0), "web": {"requests": 1, "maxus": 900, "commands": 0, "refused": REFUSED[0], "idle": 0, "open": 1},
+                "power": POWER,
                 "ip": "169.254.61.60", "link": "usb", "gadget": "sidecar", "sidecar": True, "mac": STATE["mac"], "streaming": True,
                 "rytmMidi": True, "temp": 57, "out": STATE["out"], "notes": STATE["notes"], "drone": STATE["drone"], "fifoTarget": STATE["fifo"], "underruns": 0,
                 "machines": STATE["machines"],
