@@ -77,6 +77,13 @@ private:
 #if RASPPI >= 5
 	boolean OpenRp1Dsi (void);					// the DSI display through addon/rp1dsi (OpenFrameBuffer)
 	void ScaleSetup (unsigned nWidth, unsigned nHeight);		// the UI's size and the scaler (OpenFrameBuffer)
+	void RotateSetup (unsigned nRot);				// a portrait DSI panel: the UI turned (OpenRp1Dsi)
+	void PutRotated (const CDisplay::TArea &rArea, const u16 *pPixels);	// Put, turned
+	void DsiSetArea (const CDisplay::TArea &rArea, const u16 *pPixels);	// to rp1dsi, converted to its depth
+	unsigned	m_nDsiDepth;		// rp1dsi's frame buffer: 16 (RGB565) or 32 (ARGB8888, cmdline dsi_depth=32)
+	u32		*m_pConv;		// dsi_depth=32: a band converted from RGB565
+	unsigned	m_nRot;			// rp1dsi portrait panel (Touch Display 2): 90 or 270, the UI turned in Put; else 0
+	u16		*m_pYMap;		// m_nRot: the UI column of each panel row (m_pXMap: the UI row of each panel column)
 #endif
 	friend struct TSidecarDisplayHooks;	// the LVGL and Circle callbacks (sidecar_display.cpp)
 
