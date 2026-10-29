@@ -22,7 +22,7 @@ The same engine as on the Pi 4 (`docs/pi-engine.md`), built with `RASPPI=5`, wit
 | Ethernet / web UI / mDNS `sidecar.local` | BCM54213 | RP1's MACB/GEM (Circle picks it) |
 | Wi-Fi | CYW43455 | the same chip, firmware files with the Pi 5's names (in the SD set): **works** (*measured* 2026-10-19: credentials entered on the web page, saved, connected) |
 | HDMI display (LVGL) | yes | needs `hdmi_force_hotplug=1`; the firmware's frame buffer is 1920x1080, the 800x480 UI is scaled to it ("HDMI display"); `display=0` turns it off |
-| DSI display + touch | the firmware's (frame buffer + FT5406 buffer) | Circle's `addon/rp1dsi` (display and FT5x06 or GT911 touch, no firmware), preferred over HDMI; the 7" v1: 800x480 unscaled (built, not run); the Touch Display 2: the UI turned onto its portrait panel ("Touch Display 2"; the 5" measured) |
+| DSI display + touch | the firmware's (frame buffer + FT5406 buffer) | Circle's `addon/rp1dsi` (display and FT5x06 or GT911 touch, no firmware), preferred over HDMI; the 7" v1: 800x480 unscaled (built, not run); the Touch Display 2: the UI turned onto its portrait panel ("Touch Display 2"; the 5" measured with a development build, not this exact build) |
 | USB-C gadget (UAC2 12/12 + MIDI to the computer) | yes | **compiled out** (`SIDECAR_NO_GADGET`); the boot log says `gadget: none on this board (Pi 5 build)` |
 | serial console | GPIO14/15, 921600 | GPIO14/15, 921600 (default, `PI5_UART=0`), or the 3-pin debug connector (`PI5_UART=10`) |
 | `sdboot` (serial bootloader + `engine.img`) and `flash.sh` | yes | not yet: see "Updating the kernel" |

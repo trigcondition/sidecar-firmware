@@ -128,7 +128,7 @@ redraws the area it uncovers in 48-line bands, about the cost of that first draw
 | GeeekPi EP-0194 7" IPS HDMI (1024x600, USB capacitive touch, HDMI in) | Display measured (`display: 1024x600`). Touch (USB 0416:c169 "TSTP MTouch"): stock Circle took it for a keyboard (`input none`). Its boot-keyboard interface's 84-byte descriptor (measured) is an absolute mouse (ID 2, button 1 = finger, X/Y 0..32767): `circle-touch-pointer.patch` binds it as a single-touch screen ("USB touch screens" below), to be confirmed on the panel. config.txt as in "Screen sizes". |
 | Official Raspberry Pi 7" Touch Display v1 (DSI, 800x480) | Expected on both boards, not yet measured here. Pi 4: firmware frame buffer + `CRPiTouchScreen` (firmware touch buffer). Pi 5: Circle's `addon/rp1dsi` (display and touch, no firmware). |
 | OSOYOO 7" IPS DSI V4.0 (800x480, 15-pin DSI) | Expected, to be confirmed: sold as plug-and-play on Raspberry Pi OS, which normally means it emulates the official display (ATTiny regulator at I2C 0x45, TC358762 bridge, FT5x06 touch at 0x38). The boot log names what answers ("DSI on the Pi 5"). |
-| Raspberry Pi Touch Display 2 | Pi 4: not supported (needs a KMS DSI panel driver and a Goodix touch driver, which Circle does not have on the Pi 4). Pi 5: `addon/rp1dsi` drives it with `pi/circle/circle-rp1dsi.patch`; the UI is turned a quarter onto the 720x1280 portrait panel. The 5" is measured (picture and touch, with a limitation after a warm restart); the 7" is untested. Details: docs/pi5.md, "Touch Display 2". |
+| Raspberry Pi Touch Display 2 | Pi 4: not supported (needs a KMS DSI panel driver and a Goodix touch driver, which Circle does not have on the Pi 4). Pi 5: `addon/rp1dsi` drives it with `pi/circle/circle-rp1dsi.patch`; the UI is turned a quarter onto the 720x1280 portrait panel. The 5" was measured on hardware with a development build this code was cut from (picture and touch; this exact build has not been run on the panel yet), and after a software restart its touch did not answer until a power cycle; the 7" is untested. Details: docs/pi5.md, "Touch Display 2". |
 
 ### USB touch screens
 
@@ -282,7 +282,8 @@ On the Pi 5 see "DSI on the Pi 5" below. On the Pi 4:
 The Pi 5's firmware does not drive a DSI display: the engine drives it itself with Circle's `addon/rp1dsi` (Circle
 51.1.1, GPL-3.0; `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi.patch` (Touch Display 2 only) and builds
 `librp1dsi.a` in the Pi 5 tree). The v1 path is *inferred* from Circle's sources, not yet run on hardware; the Touch
-Display 2 5" is measured (docs/pi5.md, "Touch Display 2").
+Display 2 5" was measured with a development build of this code, not this exact build, and with no touch after a software
+restart (docs/pi5.md, "Touch Display 2").
 
 - At boot (the boot screen), unless `dsi=0`: the engine reads the display regulator (I2C address 0x45, register 1) on
   each DSI port, **CAM/DISP 0 first, then CAM/DISP 1** (`dsi_port=0` or `1` in cmdline.txt: only that one). DISP0's I2C
