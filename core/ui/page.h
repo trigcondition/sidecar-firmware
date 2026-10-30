@@ -56,6 +56,9 @@ class Source {
   virtual int peaks(int id, const int8_t** peaks, const uint8_t** slices, int* nslices) const;   // default: none
   virtual const char* text(int id) const;   // default: ""
   virtual int voice() const;                // the voice it reads (0..7), -1 none (default)
+  // rui1038: P(k+1) as a source code (GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST: bank * 128 + index, the bank
+  // the fraction's top 3 bits; core/lib/srclib.h): default the voice's 14-bit report, else param(k) (bank A)
+  virtual int code(int k) const;
 };
 
 class PageView {

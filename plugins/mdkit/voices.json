@@ -1,0 +1,1040 @@
+{
+ "pi_bd": {
+  "name": "PI-BD",
+  "id": 64,
+  "state": 10764,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    35
+   ],
+   [
+    "HARD",
+    100
+   ],
+   [
+    "HAMR",
+    0
+   ],
+   [
+    "TENS",
+    127
+   ],
+   [
+    "DAMP",
+    100
+   ]
+  ]
+ },
+ "pi_sd": {
+  "name": "PI-SD",
+  "id": 65,
+  "state": 10804,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    64
+   ],
+   [
+    "HARD",
+    10
+   ],
+   [
+    "RING",
+    40
+   ],
+   [
+    "TENS",
+    90
+   ],
+   [
+    "RVOL",
+    80
+   ],
+   [
+    "RDEC",
+    80
+   ]
+  ]
+ },
+ "pi_mt": {
+  "name": "PI-MT",
+  "id": 66,
+  "state": 10804,
+  "controls": [
+   [
+    "PTCH",
+    20
+   ],
+   [
+    "DEC",
+    20
+   ],
+   [
+    "HARD",
+    127
+   ],
+   [
+    "HAMR",
+    127
+   ],
+   [
+    "TUNE",
+    127
+   ],
+   [
+    "DAMP",
+    80
+   ],
+   [
+    "SIZE",
+    90
+   ],
+   [
+    "POS",
+    64
+   ]
+  ]
+ },
+ "pi_ml": {
+  "name": "PI-ML",
+  "id": 67,
+  "state": 4632,
+  "controls": [
+   [
+    "PTCH",
+    0
+   ],
+   [
+    "DEC",
+    64
+   ],
+   [
+    "HARD",
+    127
+   ],
+   [
+    "TENS",
+    0
+   ]
+  ]
+ },
+ "pi_ma": {
+  "name": "PI-MA",
+  "id": 68,
+  "state": 408,
+  "controls": [
+   [
+    "GRNS",
+    90
+   ],
+   [
+    "DEC",
+    0
+   ],
+   [
+    "GLEN",
+    72
+   ],
+   [
+    "SIZE",
+    96
+   ],
+   [
+    "HARD",
+    64
+   ]
+  ]
+ },
+ "pi_rs": {
+  "name": "PI-RS",
+  "id": 69,
+  "state": 10804,
+  "controls": [
+   [
+    "PTCH",
+    90
+   ],
+   [
+    "DEC",
+    48
+   ],
+   [
+    "HARD",
+    64
+   ],
+   [
+    "RING",
+    64
+   ],
+   [
+    "RVOL",
+    64
+   ],
+   [
+    "RDEC",
+    64
+   ]
+  ]
+ },
+ "pi_rc": {
+  "name": "PI-RC",
+  "id": 70,
+  "state": 270952,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    70
+   ],
+   [
+    "HARD",
+    96
+   ],
+   [
+    "RING",
+    32
+   ],
+   [
+    "AG",
+    127
+   ],
+   [
+    "AU",
+    127
+   ],
+   [
+    "BR",
+    64
+   ],
+   [
+    "GRAB",
+    127
+   ]
+  ]
+ },
+ "pi_cc": {
+  "name": "PI-CC",
+  "id": 71,
+  "state": 270952,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    70
+   ],
+   [
+    "HARD",
+    90
+   ],
+   [
+    "RING",
+    32
+   ],
+   [
+    "AG",
+    127
+   ],
+   [
+    "AU",
+    127
+   ],
+   [
+    "BR",
+    64
+   ],
+   [
+    "GRAB",
+    127
+   ]
+  ]
+ },
+ "pi_hh": {
+  "name": "PI-HH",
+  "id": 72,
+  "state": 270952,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    70
+   ],
+   [
+    "CLSN",
+    100
+   ],
+   [
+    "RING",
+    30
+   ],
+   [
+    "AG",
+    127
+   ],
+   [
+    "AU",
+    127
+   ],
+   [
+    "BR",
+    60
+   ],
+   [
+    "CLOS",
+    127
+   ]
+  ]
+ },
+ "efm_bd": {
+  "name": "EFM-BD",
+  "id": 32,
+  "state": 200,
+  "controls": [
+   [
+    "PTCH",
+    0
+   ],
+   [
+    "DEC",
+    64
+   ],
+   [
+    "RAMP",
+    32
+   ],
+   [
+    "RDEC",
+    127
+   ],
+   [
+    "MOD",
+    35
+   ],
+   [
+    "MFRQ",
+    14
+   ],
+   [
+    "MDEC",
+    64
+   ],
+   [
+    "MFB",
+    24
+   ]
+  ]
+ },
+ "efm_sd": {
+  "name": "EFM-SD",
+  "id": 33,
+  "state": 384,
+  "controls": [
+   [
+    "PTCH",
+    27
+   ],
+   [
+    "DEC",
+    60
+   ],
+   [
+    "NOIS",
+    14
+   ],
+   [
+    "NDEC",
+    79
+   ],
+   [
+    "MOD",
+    0
+   ],
+   [
+    "MFRQ",
+    5
+   ],
+   [
+    "MDEC",
+    127
+   ],
+   [
+    "HPF",
+    29
+   ]
+  ]
+ },
+ "efm_xt": {
+  "name": "EFM-XT",
+  "id": 34,
+  "state": 2192,
+  "controls": [
+   [
+    "PTCH",
+    25
+   ],
+   [
+    "DEC",
+    50
+   ],
+   [
+    "RAMP",
+    127
+   ],
+   [
+    "RDEC",
+    111
+   ],
+   [
+    "MOD",
+    5
+   ],
+   [
+    "MFRQ",
+    4
+   ],
+   [
+    "MDEC",
+    79
+   ],
+   [
+    "CLIC",
+    0
+   ]
+  ]
+ },
+ "efm_cp": {
+  "name": "EFM-CP",
+  "id": 35,
+  "state": 376,
+  "controls": [
+   [
+    "PTCH",
+    50
+   ],
+   [
+    "DEC",
+    40
+   ],
+   [
+    "CLPS",
+    127
+   ],
+   [
+    "CDEC",
+    24
+   ],
+   [
+    "MOD",
+    115
+   ],
+   [
+    "MFRQ",
+    36
+   ],
+   [
+    "MDEC",
+    87
+   ],
+   [
+    "HPF",
+    8
+   ]
+  ]
+ },
+ "efm_rs": {
+  "name": "EFM-RS",
+  "id": 36,
+  "state": 400,
+  "controls": [
+   [
+    "PTCH",
+    67
+   ],
+   [
+    "DEC",
+    10
+   ],
+   [
+    "MOD",
+    8
+   ],
+   [
+    "HPF",
+    15
+   ],
+   [
+    "SNAR",
+    38
+   ],
+   [
+    "SPTC",
+    25
+   ],
+   [
+    "SDEC",
+    59
+   ],
+   [
+    "SMOD",
+    0
+   ]
+  ]
+ },
+ "efm_cb": {
+  "name": "EFM-CB",
+  "id": 37,
+  "state": 392,
+  "controls": [
+   [
+    "PTCH",
+    54
+   ],
+   [
+    "DEC",
+    61
+   ],
+   [
+    "SNAP",
+    92
+   ],
+   [
+    "FB",
+    56
+   ],
+   [
+    "MOD",
+    17
+   ],
+   [
+    "MFRQ",
+    112
+   ],
+   [
+    "MDEC",
+    42
+   ]
+  ]
+ },
+ "efm_hh": {
+  "name": "EFM-HH",
+  "id": 38,
+  "state": 392,
+  "controls": [
+   [
+    "PTCH",
+    26
+   ],
+   [
+    "DEC",
+    54
+   ],
+   [
+    "TREM",
+    26
+   ],
+   [
+    "TFRQ",
+    47
+   ],
+   [
+    "MOD",
+    0
+   ],
+   [
+    "MFRQ",
+    86
+   ],
+   [
+    "MDEC",
+    93
+   ],
+   [
+    "FB",
+    75
+   ]
+  ]
+ },
+ "efm_cy": {
+  "name": "EFM-CY",
+  "id": 39,
+  "state": 412,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    72
+   ],
+   [
+    "FB",
+    96
+   ],
+   [
+    "HPF",
+    92
+   ],
+   [
+    "MOD",
+    45
+   ],
+   [
+    "MFRQ",
+    32
+   ],
+   [
+    "MDEC",
+    64
+   ]
+  ]
+ },
+ "trx_bd": {
+  "name": "TRX-BD",
+  "id": 16,
+  "state": 1392,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    64
+   ],
+   [
+    "RAMP",
+    0
+   ],
+   [
+    "RDEC",
+    0
+   ],
+   [
+    "STRT",
+    0
+   ],
+   [
+    "NOIS",
+    0
+   ],
+   [
+    "HARM",
+    0
+   ],
+   [
+    "CLIP",
+    0
+   ]
+  ]
+ },
+ "trx_sd": {
+  "name": "TRX-SD",
+  "id": 17,
+  "state": 856,
+  "controls": [
+   [
+    "PTCH",
+    35
+   ],
+   [
+    "DEC",
+    7
+   ],
+   [
+    "BUMP",
+    0
+   ],
+   [
+    "BENV",
+    64
+   ],
+   [
+    "SNAP",
+    127
+   ],
+   [
+    "TONE",
+    0
+   ],
+   [
+    "TUNE",
+    100
+   ],
+   [
+    "CLIP",
+    90
+   ]
+  ]
+ },
+ "trx_xt": {
+  "name": "TRX-XT",
+  "id": 18,
+  "state": 556,
+  "controls": [
+   [
+    "PTCH",
+    70
+   ],
+   [
+    "DEC",
+    25
+   ],
+   [
+    "RAMP",
+    50
+   ],
+   [
+    "RDEC",
+    30
+   ],
+   [
+    "DAMP",
+    64
+   ],
+   [
+    "DIST",
+    32
+   ],
+   [
+    "DTYP",
+    0
+   ]
+  ]
+ },
+ "trx_cp": {
+  "name": "TRX-CP",
+  "id": 19,
+  "state": 1808,
+  "controls": [
+   [
+    "CLPY",
+    50
+   ],
+   [
+    "TONE",
+    100
+   ],
+   [
+    "HARD",
+    7
+   ],
+   [
+    "RICH",
+    127
+   ],
+   [
+    "RATE",
+    40
+   ],
+   [
+    "ROOM",
+    64
+   ],
+   [
+    "RSIZ",
+    0
+   ],
+   [
+    "RTUN",
+    90
+   ]
+  ]
+ },
+ "trx_rs": {
+  "name": "TRX-RS",
+  "id": 20,
+  "state": 1448,
+  "controls": [
+   [
+    "PTCH",
+    50
+   ],
+   [
+    "DEC",
+    0
+   ],
+   [
+    "DIST",
+    50
+   ]
+  ]
+ },
+ "trx_cb": {
+  "name": "TRX-CB",
+  "id": 21,
+  "state": 992,
+  "controls": [
+   [
+    "PTCH",
+    100
+   ],
+   [
+    "DEC",
+    50
+   ],
+   [
+    "ENH",
+    127
+   ],
+   [
+    "DAMP",
+    127
+   ],
+   [
+    "TONE",
+    0
+   ],
+   [
+    "BUMP",
+    0
+   ]
+  ]
+ },
+ "trx_ch": {
+  "name": "TRX-CH",
+  "id": 22,
+  "state": 1000,
+  "controls": [
+   [
+    "GAP",
+    0
+   ],
+   [
+    "DEC",
+    8
+   ],
+   [
+    "HPF",
+    0
+   ],
+   [
+    "LPF",
+    127
+   ],
+   [
+    "MTAL",
+    0
+   ]
+  ]
+ },
+ "trx_oh": {
+  "name": "TRX-OH",
+  "id": 23,
+  "state": 1000,
+  "controls": [
+   [
+    "GAP",
+    50
+   ],
+   [
+    "DEC",
+    60
+   ],
+   [
+    "HPF",
+    8
+   ],
+   [
+    "LPF",
+    127
+   ],
+   [
+    "MTAL",
+    0
+   ]
+  ]
+ },
+ "trx_cy": {
+  "name": "TRX-CY",
+  "id": 24,
+  "state": 1164,
+  "controls": [
+   [
+    "RICH",
+    127
+   ],
+   [
+    "DEC",
+    0
+   ],
+   [
+    "TOP",
+    0
+   ],
+   [
+    "TTUN",
+    127
+   ],
+   [
+    "SIZE",
+    0
+   ],
+   [
+    "PEAK",
+    127
+   ]
+  ]
+ },
+ "trx_ma": {
+  "name": "TRX-MA",
+  "id": 25,
+  "state": 1800,
+  "controls": [
+   [
+    "ATT",
+    32
+   ],
+   [
+    "SUS",
+    32
+   ],
+   [
+    "REV",
+    0
+   ],
+   [
+    "DAMP",
+    0
+   ],
+   [
+    "RATL",
+    64
+   ],
+   [
+    "RTYP",
+    64
+   ],
+   [
+    "TONE",
+    64
+   ],
+   [
+    "HARD",
+    64
+   ]
+  ]
+ },
+ "trx_cl": {
+  "name": "TRX-CL",
+  "id": 26,
+  "state": 944,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    32
+   ],
+   [
+    "DUAL",
+    64
+   ],
+   [
+    "ENH",
+    0
+   ],
+   [
+    "TUNE",
+    64
+   ],
+   [
+    "CLIC",
+    0
+   ]
+  ]
+ },
+ "trx_xc": {
+  "name": "TRX-XC",
+  "id": 27,
+  "state": 556,
+  "controls": [
+   [
+    "PTCH",
+    64
+   ],
+   [
+    "DEC",
+    32
+   ],
+   [
+    "RAMP",
+    32
+   ],
+   [
+    "RDEC",
+    100
+   ],
+   [
+    "DAMP",
+    0
+   ],
+   [
+    "DIST",
+    0
+   ],
+   [
+    "DTYP",
+    0
+   ]
+  ]
+ },
+ "trx_b2": {
+  "name": "TRX-B2",
+  "id": 28,
+  "state": 440,
+  "controls": [
+   [
+    "PTCH",
+    60
+   ],
+   [
+    "DEC",
+    65
+   ],
+   [
+    "RAMP",
+    41
+   ],
+   [
+    "HOLD",
+    62
+   ],
+   [
+    "TICK",
+    91
+   ],
+   [
+    "NOIS",
+    44
+   ],
+   [
+    "DIRT",
+    56
+   ],
+   [
+    "DIST",
+    58
+   ]
+  ]
+ }
+}

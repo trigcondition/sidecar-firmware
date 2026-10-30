@@ -1,6 +1,8 @@
 // pi/engine/sendfx_pi.cpp - see sendfx_pi.h.
 #include "sendfx_pi.h"
 
+#include "fx/insert.h"
+#include "fx/out.h"
 #include "fx/send_fx.h"
 #include "platform.h"
 #include "spsc.h"
@@ -11,11 +13,11 @@
 
 namespace sendfx_pi {
 
-struct Stem { float v[8]; };
+struct Stem { float v[8], vs[3]; };   // vs: the Sidecar voices' sends to the buses (fx-ins)
 struct Ret { float l, r, pl, pr, s[4]; };   // the PRE pair (onto 2/3) and the POST pair (onto 0/1), each slot's effect and STUTTER on the pair its P1 names
 static Spsc<Stem, kRing> s_Stems;
 static Spsc<Ret, kRing> s_Rets;
-// Built by Init() (CKernel::Initialize, core 0, after the logger), not as a static object: SendFx is 4.8 MB with
+// Built by Init() (CKernel::Initialize, core 0, after the logger), not as a static object: SendFx is 5.9 MB with
 // lookup tables and a full clear, which would otherwise run inside sysinit's static constructors, before the first
 // log line, with nothing printed if it ever stalled. Its memory is the platform's (Init), reserved once at boot and
 // not in .bss (Circle's KERNEL_MAX_SIZE counts .bss); hosted (the Mac tests), Fx() builds it on the heap on first use.
@@ -47,7 +49,33 @@ void AllSoundOff() {
   if (core::fx::all_sound_off()) core::log("sendfx: all sound off -> cleared");
 }
 
-bool On() { return core::fx::any_on(); }
+bool On() { return core::fx::any_on() || core::ins::bus3_on(); }
+
+// core 0 only (the OUT fill writes, the IN completion reads): the voices' bus sends and stem stand-ins waiting for their
+// stem frame
+struct Vq { float vs[3], st[8]; };
+static Vq s_Vs[1024];
+static unsigned s_nVsR = 0, s_nVsW = 0;
+static uint32_t s_nVsDrop = 0;
+void FromVoices(const int16_t (*v)[8], unsigned n, const float (*feed)[8]) {
+  if (!On()) return;
+  // (a voice off TRK queues every frame, silent ones too: the queue's depth - the lag - stays the stems')
+  bool sends = core::ins::sends_on(), fd = feed && core::out::any_stereo();
+  if (!sends && !fd) return;
+  float o[16][3];
+  while (n) {
+    unsigned k = n > 16 ? 16 : n;
+    if (sends) core::ins::voice_sends(v, (int)k, o);
+    for (unsigned i = 0; i < k; ++i) {
+      if (s_nVsW - s_nVsR >= kVoiceLag) ++s_nVsR, ++s_nVsDrop;   // a backlog: the oldest goes
+      Vq& d = s_Vs[s_nVsW++ & 1023];
+      for (int b = 0; b < 3; ++b) d.vs[b] = sends ? o[i][b] : 0.0f;
+      for (int s = 0; s < 8; ++s) d.st[s] = fd ? feed[i][s] : 0.0f;
+    }
+    v += k, n -= k;
+    if (feed) feed += k;
+  }
+}
 
 void Read(View* v) {
   for (int k = 0; k < 2; ++k) {
@@ -65,6 +93,13 @@ void FromRytm(const int32_t (*stems)[8], unsigned n) {
   for (unsigned f = 0; f < n; ++f) {
     Stem s;
     for (int v = 0; v < 8; ++v) s.v[v] = (float)stems[f][v] * (1.0f / 2147483648.0f);
+    if (s_nVsR != s_nVsW) {
+      const Vq& d = s_Vs[s_nVsR++ & 1023];
+      s.vs[0] = d.vs[0], s.vs[1] = d.vs[1], s.vs[2] = d.vs[2];
+      for (int v = 0; v < 8; ++v) s.v[core::out::device().stem[v]] += d.st[v];   // a PRE / POST voice in its silent stem's place
+    } else {
+      s.vs[0] = s.vs[1] = s.vs[2] = 0.0f;
+    }
     if (!s_Stems.push(s)) s_nDropIn = s_nDropIn + 1;
   }
 }
@@ -76,13 +111,18 @@ void Render() {
   uint32_t t0 = core::cycles();
   float st[core::fx::SendFx::kMaxFrames][8], o[core::fx::SendFx::kMaxFrames][2], m[core::fx::SendFx::kMaxFrames][2];   // m: the POST pair
   float sl[core::fx::SendFx::kMaxFrames][4];   // each FX's own return (the recorder's FX1/FX2)
+  float vs[core::fx::SendFx::kMaxFrames][3], b3[core::fx::SendFx::kMaxFrames];   // fx-ins: the voices' bus sends
   unsigned k = 0;
   Stem s;
+  bool anyv = false;
   while (k < n && s_Stems.pop(&s)) {
     for (int v = 0; v < 8; ++v) st[k][v] = s.v[v];
+    vs[k][0] = s.vs[0], vs[k][1] = s.vs[1], vs[k][2] = b3[k] = s.vs[2];
+    anyv |= s.vs[0] != 0.0f || s.vs[1] != 0.0f || s.vs[2] != 0.0f;
     ++k;
   }
-  Fx().Process(st, (int)k, o, core::fx::control, m, sl);
+  Fx().Process(st, (int)k, o, core::fx::control, m, sl, anyv ? vs : nullptr);
+  core::ins::bus3(b3, (int)k, o, m);   // bus 3: the dry bus's chain onto its pair (nothing while off)
   float pk = s_Peak;
   for (unsigned i = 0; i < k; ++i) {
     if (!s_Rets.push(Ret{o[i][0], o[i][1], m[i][0], m[i][1], {sl[i][0], sl[i][1], sl[i][2], sl[i][3]}})) s_nDropOut = s_nDropOut + 1;

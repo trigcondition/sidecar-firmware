@@ -1,0 +1,113 @@
+diff --color -ruN a/include/circle/usb/usbtouchscreen.h b/include/circle/usb/usbtouchscreen.h
+--- a/include/circle/usb/usbtouchscreen.h	2026-10-24 19:34:19
++++ b/include/circle/usb/usbtouchscreen.h	2026-10-24 19:35:09
+@@ -23,6 +23,7 @@
+ #include <circle/usb/usbhiddevice.h>
+ #include <circle/usb/hiddigitizer.h>
+ #include <circle/input/touchscreen.h>
++#include <circle/spinlock.h>
+ #include <circle/types.h>
+ 
+ // circle-touch.patch: the report descriptor is parsed by hiddigitizer.h (Sidecar's pi/circle/hid_digitizer.h: Usage
+@@ -60,7 +61,8 @@
+ 	static CUSBTouchScreenDevice *volatile s_pThis;
+ 	volatile unsigned m_nIgnored;
+ 	void ReportHandler (const u8 *pReport, unsigned nReportSize);
+-	void ProbeMultiTouch (const hiddig::Layout &Layout);	// read-only, logged (circle-touch-pointer.patch)
++	void ProbeMultiTouch (const hiddig::Layout &Layout);
++	void Dispatch (const hiddig::Event *pEvents, unsigned nEvents);	// to m_pDevice, in order (circle-touch-multi.patch)	// read-only, logged (circle-touch-pointer.patch)
+ 
+ private:
+ 	hiddig::Tracker m_Tracker;
+@@ -70,6 +72,15 @@
+ 	unsigned m_nRawLength[RawLogCount];
+ 	volatile unsigned m_nRawCaptured;	// by the IRQ
+ 	unsigned m_nRawLogged;
++
++	// circle-touch-multi.patch: all reports of a transfer; a lost release after a gap in a repeating device's reports
++	static const unsigned MaxTransferEvents = 8 * 2 * hiddig::MaxContacts;
++	static const unsigned ReleaseGapMs = 150;
++	CSpinLock m_Lock;			// the tracker and m_Events: the USB IRQ (core 0) and Poll (the display's core)
++	hiddig::Event m_Events[MaxTransferEvents];
++	volatile unsigned m_nLastReportTicks;	// CTimer::GetClockTicks () of the last report of ours
++	volatile unsigned m_nGapReleases;
++	unsigned m_nGapLogged;
+ 
+ 	CTouchScreenDevice *m_pDevice;
+ };
+diff --color -ruN a/lib/usb/usbtouchscreen.cpp b/lib/usb/usbtouchscreen.cpp
+--- a/lib/usb/usbtouchscreen.cpp	2026-10-24 19:34:19
++++ b/lib/usb/usbtouchscreen.cpp	2026-10-24 19:35:09
+@@ -25,6 +25,7 @@
+ #include <circle/macros.h>
+ #include <circle/string.h>
+ #include <circle/util.h>
++#include <circle/timer.h>
+ #include <assert.h>
+ 
+ // circle-touch.patch: the descriptor parser and the contact tracking are hiddigitizer.h's (see usbtouchscreen.h)
+@@ -38,6 +39,9 @@
+ 	m_nIgnored (0),
+ 	m_nRawCaptured (0),
+ 	m_nRawLogged (0),
++	m_nLastReportTicks (0),
++	m_nGapReleases (0),
++	m_nGapLogged (0),
+ 	m_pDevice (0)
+ {
+ }
+@@ -224,6 +228,25 @@
+ {
+ 	CUSBHIDDevice::Poll ();
+ 
++	// circle-touch-multi.patch: a device that repeats its report while held (SendsRepeats) and has sent none for
++	// ReleaseGapMs while a contact is down lost its release: every contact up (a long press keeps its repeats coming)
++	m_Lock.Acquire ();
++	if (   m_Tracker.SendsRepeats () && m_Tracker.AnyDown ()
++	    && CTimer::GetClockTicks () - m_nLastReportTicks > ReleaseGapMs * (CLOCKHZ / 1000))
++	{
++		Dispatch (m_Events, m_Tracker.ReleaseAll (m_Events));
++		m_nGapReleases++;
++	}
++	m_Lock.Release ();
++	if (m_nGapReleases != m_nGapLogged)
++	{
++		m_nGapLogged = m_nGapReleases;
++		if (m_nGapLogged <= 3 || m_nGapLogged % 100 == 0)
++		{
++			LOGNOTE ("no report for %u ms while down: released (%u times)", ReleaseGapMs, m_nGapLogged);
++		}
++	}
++
+ 	unsigned nCaptured = m_nRawCaptured;
+ 	while (m_nRawLogged < nCaptured)
+ 	{
+@@ -254,14 +277,26 @@
+ 		m_nRawCaptured = n + 1;
+ 	}
+ 
+-	hiddig::Event Events[2 * hiddig::MaxContacts];
++	// circle-touch-multi.patch: every report of the transfer (several back to back), under the lock Poll's
++	// release takes too (another core)
++	m_Lock.Acquire ();
+ 	unsigned nIgnored = m_Tracker.GetIgnored ();
+-	unsigned nEvents = m_Tracker.Feed (pReport, nReportSize, Events);
++	unsigned nEvents = m_Tracker.FeedTransfer (pReport, nReportSize, m_Events, MaxTransferEvents);
+ 	if (m_Tracker.GetIgnored () != nIgnored)
+ 	{
+ 		m_nIgnored++;
+ 	}
++	else
++	{
++		m_nLastReportTicks = CTimer::GetClockTicks ();
++	}
++	Dispatch (m_Events, nEvents);
++	m_Lock.Release ();
++}
+ 
++void CUSBTouchScreenDevice::Dispatch (const hiddig::Event *pEvents, unsigned nEvents)
++{
++	const hiddig::Event *Events = pEvents;
+ 	for (unsigned i = 0; i < nEvents; i++)
+ 	{
+ 		const hiddig::Event &E = Events[i];

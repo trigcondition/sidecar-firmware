@@ -14,7 +14,9 @@ there, not just the newest.
 ## Where it comes from
 
 The `VERSION` file at the repo root is the only source (one line, `0.1.0`). `tools/gen_version.sh` turns it into the
-generated, git-ignored `core/version.h` with the version, the short git commit and a dirty flag (tracked files changed):
+generated, git-ignored `core/version.h` with the version, the short git commit and a dirty flag (a tracked file changed,
+an untracked file among the build's inputs - core/, pi/engine, pi/ui, pi/circle's patches, teensy/, web/, sdk/, tools/,
+notes (*.md) aside - or a tree whose state git could not read; tools/tests/test_gen_version.sh):
 
 ```
 SIDECAR_VERSION "0.1.0"   SIDECAR_COMMIT "1332761"   SIDECAR_DIRTY 0|1   SIDECAR_VERSION_FULL "0.1.0 (1332761)"

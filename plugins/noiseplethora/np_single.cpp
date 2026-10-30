@@ -10,7 +10,7 @@
 // size cpu_permille from that peak call, not from the average). As on NP, the
 // output cord is made before init(), and process(X, Y) is called with the knobs
 // (here on every params()). NP plugins drone (no notes): a trig sets the level
-// from the velocity and the Rytm's AMP envelope shapes the sound, as DIGIDRUM's.
+// from the velocity and the Rytm's AMP envelope shapes the sound, as DIGIDRUM's did.
 // NP was written for 44117.647 Hz; at 48 kHz its frequencies are ~8.8 % higher.
 #include <new>
 #include <stdint.h>

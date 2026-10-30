@@ -1,0 +1,2 @@
+# the kit's LFOs
+lfo1 track=1 dest=3 rate=40 depth=64

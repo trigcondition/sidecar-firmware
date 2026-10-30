@@ -41,6 +41,7 @@
 #include "ob_usb.h"
 #include "usbmidi_pack.h"
 #include "sidecar_gadget.h"
+#include "midibridge_pi.h"
 #include <circle/usb/usbhostcontroller.h>
 #include <circle/usb/usbdevice.h>
 #include <circle/usb/usb.h>
@@ -56,6 +57,7 @@
 #include "sendfx_pi.h"
 #include "rec_pi.h"
 #include "bridge.h"
+#include "fx/out_measure.h"		// stereo=measure's read-back (MAIN L/R)
 #include "shared.h"
 
 static const char From[] = "rytmob";
@@ -395,18 +397,33 @@ void CObUsb::FillOut (u8 *pBuf, unsigned nBlocks)
 
 		s32 F[ob::kFramesPerBlock][ob::kChannels];
 		s16 V[ob::kFramesPerBlock][ob::kVoices];
-		if (s_bActive) g_Output.Pull (F, ob::kFramesPerBlock, V);
+		s16 LR[ob::kFramesPerBlock][2 * ob::kVoices];		// the voices' L and R planes (core/fx/out.h: PRE / POST in stereo)
+		float FD[ob::kFramesPerBlock][ob::kVoices];		// the PRE / POST voices' stand-ins for their silent stems
+		float PR[ob::kFramesPerBlock][4];			// the PRE and POST pairs as sent (the recorder's 23 / 24)
+		Output::Taps T;
+		T.lr = LR, T.feed = FD, T.pairs = PR;
+		if (s_bActive) g_Output.Pull (F, ob::kFramesPerBlock, V, &T);
 		else
 		{
 			memset (F, 0, sizeof F);
 			memset (V, 0, sizeof V);
+			memset (LR, 0, sizeof LR);
+			memset (FD, 0, sizeof FD);
+			memset (PR, 0, sizeof PR);
 		}
 		if (CSidecarGadget::Get () != 0)		// the computer's OUT added (UAC2 OUT 1-12), the voices kept
 			CSidecarGadget::Get ()->ToRytm (F, V, ob::kFramesPerBlock, FALSE);
 		float X[ob::kFramesPerBlock][4] = {};		// each FX's own return (the recorder's FX1/FX2)
+		if (s_bActive) sendfx_pi::FromVoices (V, ob::kFramesPerBlock, FD);	// fx-ins: the voices' sends to the FX buses; PRE / POST voices' stems
 		if (s_bActive) sendfx_pi::AddReturn (F, ob::kFramesPerBlock, X);	// the send FX's return on 2/3 or 0/1
 		g_Play.mix (F, ob::kFramesPerBlock);		// a take's playback onto MAIN L / R (rec_play.h; idle: nothing)
-		if (g_Rec.wants_side ()) g_Rec.out_block (V, X, ob::kFramesPerBlock);	// the voices as rendered, the FX
+		{
+			u8 nSt = 0;					// the voices on PRE / POST: their take files stereo
+			for (int v = 0; v < ob::kVoices; v++) nSt |= core::out::control.route[v] != core::out::kTrk ? 1u << v : 0;
+			g_Rec.set_stereo_voices (nSt);
+		}
+		if (g_Rec.wants_side ()) g_Rec.out_block (V, X, ob::kFramesPerBlock, LR, PR);	// the voices as rendered, the FX, the pairs
+		if (bridge::samp_wants_voices ()) bridge::samp_voices (V, ob::kFramesPerBlock, LR, X);	// the sampler's Sidecar voice (X: its FX, CHOP)
 		for (int f = 0; f < ob::kFramesPerBlock; f++)
 		{
 			u8 *fr = pBlock + ob::kHeaderBytes + 4 * ob::kChannels * f;
@@ -524,12 +541,14 @@ void CObUsb::InDone (unsigned i, CUSBRequest *pURB)
 			m_nInBlocks++;
 			good++;
 			if (CSidecarGadget::Get () != 0) CSidecarGadget::Get ()->FromRytmBlock (pBlk);	// UAC2 IN 1-12
-			if (g_Rec.wants_in ())		// the recorder: the selected channels into its ring (rec_pi.h)
+			boolean bRecIn = g_Rec.wants_in (), bSampIn = bridge::samp_wants_in ();
+			if (bRecIn || bSampIn)		// the recorder: the selected channels into its ring (rec_pi.h); the sampler's (core/samp)
 			{
 				s32 I[ob::kFramesPerBlock][ob::kChannels];
 				for (int f = 0; f < ob::kFramesPerBlock; f++)
 					for (int c = 0; c < ob::kChannels; c++) I[f][c] = ob::block_sample (pBlk, ob::kChannels, f, c);
-				g_Rec.in_block (I, ob::kFramesPerBlock);
+				if (bRecIn) g_Rec.in_block (I, ob::kFramesPerBlock);
+				if (bSampIn) bridge::samp_in (&I[0][0], ob::kFramesPerBlock, ob::kChannels);
 			}
 			if (bridge::tap_on ())		// the remote UI's SCOPE / meters (core/ui/extra.h): compares and stores only
 			{
@@ -537,6 +556,30 @@ void CObUsb::InDone (unsigned i, CUSBRequest *pURB)
 				for (int f = 0; f < ob::kFramesPerBlock; f++)
 					for (int c = 0; c < ob::kChannels; c++) T[f][c] = ob::block_sample (pBlk, ob::kChannels, f, c);
 				bridge::tap_in (&T[0][0], ob::kFramesPerBlock, ob::kChannels);
+			}
+			if (bridge::gr_live_on ())	// GRANULAR's live sources (core/granular/granular.h): into its capture ring
+			{
+				s32 G[ob::kFramesPerBlock][ob::kChannels];
+				for (int f = 0; f < ob::kFramesPerBlock; f++)
+					for (int c = 0; c < ob::kChannels; c++) G[f][c] = ob::block_sample (pBlk, ob::kChannels, f, c);
+				bridge::gr_live_in (&G[0][0], ob::kFramesPerBlock, ob::kChannels);
+			}
+			if (bridge::livein_on ())	// LIVE IN's AUDIO IN (core/livein/livein.h): into its ring, as it comes
+			{
+				s32 L[ob::kFramesPerBlock][ob::kChannels];
+				for (int f = 0; f < ob::kFramesPerBlock; f++)
+					for (int c = 0; c < ob::kChannels; c++) L[f][c] = ob::block_sample (pBlk, ob::kChannels, f, c);
+				bridge::livein_in (&L[0][0], ob::kFramesPerBlock, ob::kChannels);
+			}
+			if (core::out::meas::active ())	// stereo=measure: MAIN L/R read back (core/fx/out_measure.h)
+				for (int f = 0; f < ob::kFramesPerBlock; f++)
+					core::out::meas::in_frame (ob::block_sample (pBlk, ob::kChannels, f, 0), ob::block_sample (pBlk, ob::kChannels, f, 1));
+			if (bridge::cal_on ())		// the sequencer's latency click on its way back (core/seq/seq.h cal_audio)
+			{
+				s32 C[ob::kFramesPerBlock][ob::kChannels];
+				for (int f = 0; f < ob::kFramesPerBlock; f++)
+					for (int c = 0; c < ob::kChannels; c++) C[f][c] = ob::block_sample (pBlk, ob::kChannels, f, c);
+				bridge::cal_in (&C[0][0], ob::kFramesPerBlock, ob::kChannels);
 			}
 			if (sendfx_pi::On ())		// the voice stems (IN 2..9) into the send FX
 			{
@@ -751,72 +794,37 @@ void CObUsbTransport::SetMIDI (CUSBMIDIDevice *pMIDI)
 {
 	if (pMIDI == m_pMIDI) return;
 	CLogger::Get ()->Write (From, LogNotice, "to-host: the Rytm's USB MIDI %s%s", pMIDI != 0 ? "up: sending" : "gone",
-				m_bFailed ? " (sending was off after a failed send)" : "");
-	m_bFailed = FALSE;				// a new umidi1 (or none): sending again when there is one
+				m_Merge.failed () ? " (sending was off after a failed send)" : "");
+	m_Merge.rytm_new ();				// a new umidi1 (or none): sending again when there is one
 	m_pMIDI = pMIDI;
 }
 
-// Whole records only (g_ToHost), each one SysEx packed as USB MIDI event packets (usbmidi_pack.h) and sent in
-// transfers of at most ChunkBytes. Circle's bulk Transfer blocks core 0's loop until the Rytm takes it (3 s at most,
-// then it fails): a failure turns the sending off until umidi1 is found again, so a Rytm that stops reading costs
-// one 3 s stall, not one per record (the watchdog is 15 s).
+// usbmidi_merge.h's Io on Circle: the endpoint (Circle's bulk Transfer blocks core 0's loop until the Rytm takes it,
+// 3 s at most, then it fails - the merge then turns the sending off until umidi1 comes again), the keys' queue, the
+// Sidecar gadget and g_ToHost
+namespace {
+struct TCircleIo : UsbMidiMerge::Io
+{
+	CUSBMIDIDevice *pMIDI;
+	CSidecarGadget *pSidecar;
+	bool send (const u8 *p, unsigned n) override		{ return pMIDI != 0 && pMIDI->SendEventPackets (p, n); }
+	bool key (u32 *w) override				{ return g_KeysToRytm.pop (w); }
+	bool has_computer (void) override			{ return pSidecar != 0; }
+	void computer_connected (bool bUp) override		{ pSidecar->RytmMIDIConnected (bUp); }
+	bool computer (u32 *w) override				{ return pSidecar->ForRytm (w); }
+	bool computer_in_sysex (void) override			{ return pSidecar != 0 && pSidecar->ForRytmInSysEx (); }
+	const u8 *engine_next (int *pLen) override		{ return g_ToHost.Next (pLen); }
+	unsigned engine_drain (void) override			{ return g_ToHost.Drain (); }
+	void warn (const char *p) override			{ CLogger::Get ()->Write (From, LogWarning, "%s", p); }
+};
+}
+
+// The keys, the computer's MIDI, the engine's records and the Rytm MIDI bridge's, in that order (usbmidi_merge.h)
 void CObUsbTransport::Poll (void)
 {
-	// the computer's MIDI for the Rytm (the Sidecar gadget, filtered there) first; a SysEx of it that is still open
-	// keeps the engine's replies back, so the two never interleave inside a message
-	CSidecarGadget *pSidecar = CSidecarGadget::Get ();
-	if (pSidecar != 0)
-	{
-		pSidecar->RytmMIDIConnected (m_pMIDI != 0 && !m_bFailed);
-		if (m_pMIDI != 0 && !m_bFailed)
-		{
-			static u8 Mac[ChunkBytes];
-			unsigned n = 0;
-			u32 w;
-			for (unsigned k = 0; k < PollBudget / 4 && pSidecar->ForRytm (&w); k++)
-			{
-				memcpy (Mac + n, &w, 4);
-				n += 4;
-				if (n == ChunkBytes)
-				{
-					if (!m_pMIDI->SendEventPackets (Mac, n)) m_nMacFailed++;
-					n = 0;
-				}
-			}
-			if (n != 0 && !m_pMIDI->SendEventPackets (Mac, n)) m_nMacFailed++;
-			if (pSidecar->ForRytmInSysEx ()) return;
-		}
-	}
-	if (!m_bSend || m_bFailed || m_pMIDI == 0)
-	{
-		m_nDropped += g_ToHost.Drain ();	// whole records
-		return;
-	}
-	static u8 Pkt[4 * ((4096 + 2) / 3)];		// RecordReader's kMax bytes, packed
-	unsigned nBudget = PollBudget;
-	int nLen;
-	const u8 *pRec;
-	while (nBudget > 0 && (pRec = g_ToHost.Next (&nLen)) != 0)
-	{
-		nBudget = nBudget > (unsigned) nLen ? nBudget - nLen : 0;
-		int nPkt = usbmidi_pack (pRec, nLen, Pkt);	// a SysEx, or an LFO's CC (core/lfo.h)
-		if (nPkt == 0 || m_bFailed)
-		{
-			m_nDropped += nLen;
-			continue;
-		}
-		boolean bOK = TRUE;
-		for (int i = 0; bOK && i < nPkt; i += ChunkBytes)
-			bOK = m_pMIDI->SendEventPackets (Pkt + i, (unsigned) nPkt - i < ChunkBytes ? nPkt - i : ChunkBytes);
-		if (!bOK)
-		{
-			m_nDropped += nLen;
-			m_nFailed++;
-			m_bFailed = TRUE;
-			CLogger::Get ()->Write (From, LogWarning, "to-host: a USB MIDI send failed: sending off until umidi1 comes again");
-			continue;
-		}
-		m_nSent += nLen;
-		m_nMsgs++;
-	}
+	TCircleIo Io;
+	Io.pMIDI = m_pMIDI;
+	Io.pSidecar = CSidecarGadget::Get ();
+	m_Merge.poll (Io, m_pMIDI != 0, m_bSend, midibridge_pi::Queue (), midibridge_pi::Pace (), CTimer::GetClockTicks ());
+	midibridge_pi::SetRytmFail (m_Merge.bridge_failed ());
 }

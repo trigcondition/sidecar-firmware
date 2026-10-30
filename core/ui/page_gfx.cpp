@@ -14,9 +14,16 @@
 // JUNO (machine 0x08, P1..P8 PAT CUT RES ENV ATK DEC REL LEN) and 6-OP FM (0x48, PAT TIM MOR DEC LPG TUN LEV LEN).
 #include <string.h>
 
+#include "poly.h"
 #include "pool/pool.h"
+#if CORE_POLY
+#include "seq/seq.h"
+#endif
 #include "ui/extra.h"
 #include "voices.h"
+#if CORE_MSAMP
+#include "msamp/msamp.h"
+#endif
 
 namespace core {
 namespace ui {
@@ -237,6 +244,134 @@ CORE_COLD void draw_patch(Canvas& c, const Rect& r, const Cell& cell, const Sour
   c.fill(Rect{(int16_t)(x - 1), (int16_t)(r.y + 13), 3, 3}, kOn);
 }
 
+// ---- the chord (test-1031): in[0..3] CHD INV SPR VOI. A text line (the root's name with its octave and the chord, INV
+// SPR VOI on the right), a 3-octave keyboard (a note sounding: its white key's lower part filled, its black key solid;
+// unlit black keys dithered; a note past the keyboard: an arrow at its right end) with each octave's C named under it,
+// the voice's notes sounding now beside it ("LIVE" under the count while the pads play it). chrorange: the keyboard's
+// window is the voice's own, kept while the notes fit in it (keys_window: a lone pad note shows in its own octave).
+// Slots kSlotChord.. (7 items).
+constexpr int kSlotChord = kSlotFree + 24;
+UI_ROM const char* const kPc[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+UI_ROM const int8_t kWhiteOf[12] = {0, -1, 1, -1, 2, 3, -1, 4, -1, 5, -1, 6};   // white index in the octave, -1 black
+UI_ROM const int8_t kBlackAfter[12] = {-1, 0, -1, 1, -1, -1, 3, -1, 4, -1, 5, -1};   // a black key: the white before
+
+struct ChordShown {
+  int root;
+  poly::Chord c;
+  bool live;
+  int sounding;
+};
+CORE_COLD ChordShown chord_shown(const Cell& cell, const Source& s) {
+  float p[16] = {};
+  for (int i = 0; i < 4; ++i) p[12 + i] = (float)s.param(cell.in[i]);
+  ChordShown x = {60, poly::chord_of(p), false, 0};
+#if CORE_POLY
+  int vi = s.voice() < 0 ? 0 : s.voice();
+  poly::View vw = poly::view(vi);
+  x.root = vw.root, x.live = vw.live, x.sounding = poly::voice_notes(vi);
+  if (vw.live) x.c = vw.c;
+#endif
+  return x;
+}
+CORE_COLD bool chord_on(const Cell& cell, const Source& s) {
+  ChordShown x = chord_shown(cell, s);
+  return x.c.chd != 0 || x.live;
+}
+
+CORE_COLD void draw_chord(Canvas& c, const Rect& r, const Cell& cell, const Source& s) {
+  ChordShown x = chord_shown(cell, s);
+  uint8_t ns[poly::kMaxNotes];
+  int n = poly::expand(x.root, x.c, ns);
+  char b[24], v3[8];
+  sniprintf(b, sizeof b, CORE_STR("%s%d %s"), kPc[x.root % 12], x.root / 12 - 1, x.c.chd ? poly::kChordNames[x.c.chd] : "NOTE");
+  c.put_text(kSlotChord, kRSmall, r.x + 2, r.y + 1, b);
+  sniprintf(b, sizeof b, CORE_STR("INV%d SPR%d %s%s"), x.c.inv, x.c.spr, x.c.voi ? "VOI" : "",
+            poly::value_text(3, x.c.voi, v3, sizeof v3));
+  c.put_text(kSlotChord + 1, kRSmall, r.x + r.w - 2, r.y + 1, b, kAlignRight);
+  // the keyboard: 21 white keys of 5 px (3 octaves) from the window's C, rows ky..ky+8 (black keys 5), the C names
+  // under it in the cell's label rows (it has no labels)
+  const int kx = r.x + 1, ky = r.y + 7, kh = 9, whites = 21, pitch = 5;
+  // each voice's window (slot 8: no voice) and what it was for (the voice's machine, the pattern loads): a new machine,
+  // pattern or project starts it again at C3
+  static struct { int c0; uint32_t ctx; } win[9] = {};
+  int lo = 127, hi = -1;
+  for (int i = 0; i < n; ++i) lo = ns[i] < lo ? ns[i] : lo, hi = ns[i] > hi ? ns[i] : hi;
+  int vi = s.voice();
+  VoiceSound vs;
+  uint32_t ctx = 1u | (uint32_t)((vi >= 0 && voice_sound(vi & 7, &vs) ? vs.machine : 0) & 0xFF) << 1;
+#if CORE_POLY
+  ctx |= seq::stats().loads << 9;
+#endif
+  auto& wv = win[vi < 0 ? 8 : vi & 7];
+  if (wv.ctx != ctx) wv.ctx = ctx, wv.c0 = -1;
+  int base = wv.c0 = keys_window(wv.c0, lo, hi);
+  for (int o = 0; o < 3; ++o) {
+    sniprintf(v3, sizeof v3, CORE_STR("C%d"), base / 12 - 1 + o);
+    c.put_text(kSlotChord + 4 + o, kRSmall, kx + o * 7 * pitch + 1, ky + kh + 1, v3);
+  }
+  bool lit[36] = {};
+  bool past = false;
+  for (int i = 0; i < n; ++i) {
+    int k = ns[i] - base;
+    if (k >= 0 && k < 36) lit[k] = true;
+    else past = true;
+  }
+  c.hline(kx, kx + whites * pitch, ky, kOn);
+  c.hline(kx, kx + whites * pitch, ky + kh - 1, kOn);
+  for (int w = 0; w <= whites; ++w) c.vline(kx + w * pitch, ky, ky + kh - 1, kOn);
+  for (int k = 0; k < 36; ++k) {
+    int oct = k / 12, pc = k % 12;
+    if (kWhiteOf[pc] >= 0) {
+      if (!lit[k]) continue;
+      int w = oct * 7 + kWhiteOf[pc];
+      c.fill(Rect{(int16_t)(kx + w * pitch + 1), (int16_t)(ky + 5), (int16_t)(pitch - 1), 3}, kOn);
+    } else {
+      int w = oct * 7 + kBlackAfter[pc] + 1;   // the separator it sits on
+      Rect bk = {(int16_t)(kx + w * pitch - 1), (int16_t)ky, 3, 5};
+      c.fill(bk, kOff);
+      c.fill(bk, lit[k] ? kOn : kDither);
+      if (!lit[k]) c.rect(bk, kOn);
+    }
+  }
+  if (past) {   // a note outside the keyboard (3+ octaves of notes): an arrow at its right end
+    int ax = kx + whites * pitch + 2, ay = ky + kh / 2;
+    c.vline(ax, ay - 2, ay + 2, kOn);
+    c.vline(ax + 1, ay - 1, ay + 1, kOn);
+    c.pixel(ax + 2, ay, kOn);
+  }
+  sniprintf(b, sizeof b, "%d", x.sounding);
+  c.put_text(kSlotChord + 2, kRSmall, r.x + r.w - 9, ky, b, kAlignCentre);
+  c.put_text(kSlotChord + 3, kRSmall, r.x + r.w - 9, ky + 7, x.live ? "LIVE" : "ON", kAlignCentre);
+}
+CORE_COLD uint32_t chord_key(const Cell& cell, const Source& s) {
+  ChordShown x = chord_shown(cell, s);
+  return (uint32_t)x.root | (uint32_t)x.c.chd << 8 | (uint32_t)x.c.inv << 13 | (uint32_t)x.c.spr << 16 |
+         (uint32_t)x.c.voi << 19 | (uint32_t)x.live << 23 | (uint32_t)(x.sounding & 63) << 24;
+}
+
+// ---- MULTISAMPLE's INST: the list entry's name (the card's /MULTISAMPLE, msamp.h), the place in the list under it
+CORE_COLD const char* inst_name(int code, int vi) {   // rui1038: the source code (bank * 128 + index), the voice's pick
+#if CORE_MSAMP
+  const char* n = msamp::entry_name(msamp::src_entry(vi < 0 ? 0 : vi & 7, code));
+  return n && *n ? n : "NO INST";
+#else
+  (void)code, (void)vi;
+  return "";
+#endif
+}
+CORE_COLD void draw_inst(Canvas& c, const Rect& r, const Cell& cell, const Source& s, int slot) {
+  int inst = s.param(cell.in[0]);
+  char t[13];
+  const char* name = inst_name(s.code(cell.in[0]), s.voice());
+  int k = 0;
+  for (; name[k] && k < 12; ++k) t[k] = name[k];
+  t[k] = 0;
+  c.put_text(slot, kRSmall, r.x + r.w / 2, r.y + 5, t, kAlignCentre);
+  int x = r.x + 4 + inst * (r.w - 9) / 127;
+  c.hline(r.x + 4, r.x + r.w - 5, r.y + 14, kDither);
+  c.fill(Rect{(int16_t)(x - 1), (int16_t)(r.y + 13), 3, 3}, kOn);
+}
+
 // ---- the pages
 UI_ROM const Cell kJunoCells[] = {
     {kDraw, 0, 0, 1, 1, {0, kNone, kNone, kNone}, kDrawPatch, nullptr},
@@ -264,11 +399,54 @@ UI_ROM const Page kFmPage = {
     {0, 1, 2, 3, 4, 5, 6, 7},
     {"PAT", "TIM", "MOR", "DEC", "LPG", "TUN", "LEV", "LEN"},
 };
+// test-1031: the chord views (the SRC view while a chord plays, chord_view_page): the top row as the page's, the chord
+// below (P5..P8 still under the Rytm's encoders E..H: the bottom bar names a turn)
+UI_ROM const Cell kFmChordCells[] = {
+    {kDraw, 0, 0, 2, 1, {0, kNone, kNone, kNone}, kDrawFm, nullptr},
+    {kKnob, 2, 0, 1, 1, {2, kNone, kNone, kNone}, 0, nullptr},
+    {kEnv, 3, 0, 1, 1, {kNone, 3, kNone, kNone}, kAd, nullptr},
+    {kDraw, 0, 1, 4, 1, {12, 13, 14, 15}, kDrawChord, nullptr},
+};
+UI_ROM const Page kFmChordPage = {
+    "6-OP FM", kFm, sizeof kFmChordCells / sizeof kFmChordCells[0], kFmChordCells,
+    {0, 1, 2, 3, 4, 5, 6, 7},
+    {"PAT", "TIM", "MOR", "DEC", "LPG", "TUN", "LEV", "LEN"},
+};
+// MULTISAMPLE (machines.h kMultiMachine; msamp.h: P1..P8 INST VEL LEV RTRG ATK DEC SUS REL, P13..P16 the chord)
+UI_ROM const char kRtrgNames[] = "OFF\0ON\0";
+UI_ROM const Cell kMsCells[] = {
+    {kDraw, 0, 0, 2, 1, {0, kNone, kNone, kNone}, kDrawInst, nullptr},
+    {kBar, 2, 0, 1, 1, {2, kNone, kNone, kNone}, 0, nullptr},
+    {kList, 3, 0, 1, 1, {3, kNone, kNone, kNone}, 0, kRtrgNames},
+    {kEnv, 0, 1, 4, 1, {4, 5, 6, 7}, kAdsr, nullptr},
+};
+UI_ROM const Page kMsPage = {
+    "MULTISAMPLE", kMultiMachine, sizeof kMsCells / sizeof kMsCells[0], kMsCells,
+    {0, 1, 2, 3, 4, 5, 6, 7},
+    {"INST", "VEL", "LEV", "RTRG", "ATK", "DEC", "SUS", "REL"},
+};
+UI_ROM const Cell kMsChordCells[] = {
+    {kDraw, 0, 0, 2, 1, {0, kNone, kNone, kNone}, kDrawInst, nullptr},
+    {kBar, 2, 0, 1, 1, {2, kNone, kNone, kNone}, 0, nullptr},
+    {kList, 3, 0, 1, 1, {3, kNone, kNone, kNone}, 0, kRtrgNames},
+    {kDraw, 0, 1, 4, 1, {12, 13, 14, 15}, kDrawChord, nullptr},
+};
+UI_ROM const Page kMsChordPage = {
+    "MULTISAMPLE", kMultiMachine, sizeof kMsChordCells / sizeof kMsChordCells[0], kMsChordCells,
+    {0, 1, 2, 3, 4, 5, 6, 7},
+    {"INST", "VEL", "LEV", "RTRG", "ATK", "DEC", "SUS", "REL"},
+};
 
 }  // namespace
 
 CORE_COLD const Page* gfx_page_for_machine(int machine) {
-  return machine == kJuno ? &kJunoPage : machine == kFm ? &kFmPage : nullptr;
+  return machine == kJuno ? &kJunoPage : machine == kFm ? &kFmPage : machine == kMultiMachine ? &kMsPage
+                                                                   : wavegrain_page_for_machine(machine);
+}
+
+CORE_COLD const Page* chord_view_page(const Page* p, const Source& s) {
+  const Page* to = p == &kFmPage ? &kFmChordPage : p == &kMsPage ? &kMsChordPage : nullptr;
+  return to && chord_on(to->cells[to->ncells - 1], s) ? to : p;
 }
 
 CORE_COLD uint32_t gfx_key(const Cell& c, const Source& s) {
@@ -276,6 +454,13 @@ CORE_COLD uint32_t gfx_key(const Cell& c, const Source& s) {
   switch (c.arg) {
     case kDrawEnv: return (uint32_t)sustain_of(vi) + 1;
     case kDrawFm: return (uint32_t)(fm_alg(s.param(c.in[0])) + 2);
+    case kDrawChord: return chord_key(c, s);
+    case kDrawInst: {
+      const char* name = inst_name(s.code(c.in[0]), s.voice());
+      uint32_t h = 2166136261u;
+      for (const char* q = name; q && *q; ++q) h = (h ^ (uint8_t)*q) * 16777619u;
+      return h;
+    }
     case kDrawPatch: {
       const char* name = juno_name(s.param(c.in[0]));
       uint32_t h = 2166136261u;
@@ -292,8 +477,47 @@ CORE_COLD void gfx_draw(Canvas& cv, const Rect& r, const Cell& c, const Source& 
     case kDrawFm: draw_fm(cv, r, c, s); break;
     case kDrawCloud: draw_cloud(cv, r, c, s); break;
     case kDrawPatch: draw_patch(cv, r, c, s, slot); break;
+    case kDrawChord: draw_chord(cv, r, c, s); break;
+    case kDrawInst: draw_inst(cv, r, c, s, slot); break;
     default: break;
   }
+}
+
+CORE_COLD bool fm_info(int pat, FmInfo* o) {
+  uint8_t b[128];
+  memset(o, 0, sizeof *o);
+  o->alg = -1, o->fb_src = o->fb_dst = -1;
+  if (!fm_bytes(pat, b)) return false;
+  o->alg = b[110] & 31;
+  o->fb = b[111] & 7;
+  const Alg& a = kAlgs[o->alg];
+  Layout L;
+  layout(a, L);
+  o->ncols = L.ncols, o->nlev = L.nlev;
+  memcpy(o->col, L.col, 6), memcpy(o->lev, L.lev, 6), memcpy(o->mod, a.mod, 6);
+  o->car = a.car;
+  o->fb_src = (a.fb >> 4) - 1, o->fb_dst = (a.fb & 15) - 1;
+  for (int k = 0; k < 6; ++k) {   // the packed voice: OP6's 17 bytes first .. OP1's last
+    const uint8_t* op = b + (5 - k) * 17;
+    o->out[k] = (uint8_t)clampi(op[14], 0, 99);
+    int coarse = op[15] >> 1 & 31, fine = clampi(op[16], 0, 99);
+    o->fixed[k] = op[15] & 1;
+    if (o->fixed[k]) {   // 10^(coarse & 3) Hz x 10^(fine / 100)
+      static const uint16_t kDec[4] = {1, 10, 100, 1000};
+      float f = kDec[coarse & 3] * __builtin_powf(10.0f, fine / 100.0f);
+      o->freq[k] = (uint16_t)(f > 65535.0f ? 65535.0f : f + 0.5f);
+    } else {             // coarse 0 = 0.5, else coarse; x (1 + fine / 100)
+      int r = coarse ? coarse * 100 : 50;
+      o->freq[k] = (uint16_t)(r + r * fine / 100);
+    }
+  }
+  for (int i = 0; i < 10; ++i) {
+    char c = (char)(b[118 + i] & 0x7F);
+    o->name[i] = c >= 0x20 && c < 0x7F ? c : ' ';
+  }
+  o->name[10] = 0;
+  for (int i = 9; i >= 0 && o->name[i] == ' '; --i) o->name[i] = 0;
+  return true;
 }
 
 #if CORE_UI_TOOLS

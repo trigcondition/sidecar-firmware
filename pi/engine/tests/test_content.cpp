@@ -1,5 +1,5 @@
 // pi/engine/tests/test_content.cpp - Task 6's self-test content on a folder standing in for the Pi's card (the core's
-// Mac port): bridge::selftest_content writes /Samples/pi-test/sine440.wav and /.rytm/pools/_default.txt, touches
+// Mac port): bridge::selftest_content writes /Samples/pi-test/sine440.wav and /.rytm/projects/_default/samples.pool.txt, touches
 // nothing that exists, then the core loads the pool (slot 1 resolved) and DSP SAMPLE on note 48 plays the sample an
 // octave down (220 Hz: pi_run.py's EXPECT). Built against the core (make -C core engines first): Makefile's content.
 #include <algorithm>
@@ -14,6 +14,8 @@
 #include "notes.h"
 #include "check.h"
 #include "voices.h"
+#include "ui/remote.h"
+#include "platform.h"
 
 static std::string slurp(const char* p) {
   FILE* f = fopen(core::host_path(p).c_str(), "rb");
@@ -29,6 +31,14 @@ static uint32_t le32(const std::string& s, size_t o) {
   return (uint8_t)s[o] | (uint8_t)s[o + 1] << 8 | (uint8_t)s[o + 2] << 16 | (uint32_t)(uint8_t)s[o + 3] << 24;
 }
 static void noop(const uint8_t*, int) {}
+// the pools design (bridge.cpp selftest_content): DSP SAMPLE's slot 1 is the SAMPLES pool's A001 of the project _default
+static const char kPool[] = "/.rytm/projects/_default/samples.pool.txt";
+static const char kPoolTmp[] = "/.rytm/projects/_default/samples.pool.txt.tmp";
+static const char kPoolText[] = "#sidecar samplepool 1\nA001 sample - 192044 /Samples/pi-test/sine440.wav\tsine440\n";
+static const char kPoolChanged[] = "#sidecar samplepool 1\nA001 sample - 192044 /Samples/pi-test/sine440.wav\tsine440\n"
+                                   "A002 sample - 10 /Samples/other.wav\tother\n";
+// bridge::tick's one call into the Pi's own files (song_pi.cpp: Circle's, not built here) - the SONG page's view
+namespace song_pi { void Tick() {} }
 
 int main() {
   char tmpl[] = "/tmp/pi-content-XXXXXX";
@@ -49,15 +59,15 @@ int main() {
     if (i && pcm[i - 1] < 0 && pcm[i] >= 0) ++cross;
   }
   CHECK(peak > 11900 && peak <= 12000 && cross >= 879 && cross <= 881);   // 440 Hz for 2 s
-  CHECK(slurp("/.rytm/pools/_default.txt") == "pi-test/sine440.wav\n");
+  CHECK(slurp(kPool) == kPoolText);
 
   // Nothing that exists is touched: a changed pool and WAV stay as they are.
-  FILE* f = fopen(core::host_path("/.rytm/pools/_default.txt").c_str(), "wb");
-  fputs("pi-test/sine440.wav\nother.wav\n", f);
+  FILE* f = fopen(core::host_path(kPool).c_str(), "wb");
+  fputs(kPoolChanged, f);
   fclose(f);
   CHECK(truncate(core::host_path("/Samples/pi-test/sine440.wav").c_str(), 44 + 96000 * 2 - 2) == 0);
   CHECK(bridge::selftest_content());
-  CHECK(slurp("/.rytm/pools/_default.txt") == "pi-test/sine440.wav\nother.wav\n");
+  CHECK(slurp(kPool) == kPoolChanged);
   CHECK(slurp("/Samples/pi-test/sine440.wav").size() == 44 + 96000 * 2 - 2);
   // A project named on the card: its pool is the project's, no _default written.
   char tmpl2[] = "/tmp/pi-content-XXXXXX";
@@ -70,24 +80,25 @@ int main() {
   CHECK(bridge::selftest_content());
   CHECK(slurp("/Samples/pi-test/sine440.wav").size() == 44 + 96000 * 2);
   struct stat st;
-  CHECK(stat(core::host_path("/.rytm/pools/_default.txt").c_str(), &st) != 0);
+  CHECK(stat(core::host_path(kPool).c_str(), &st) != 0);
 
   // A write cut short by a power loss: the leftover .tmp files go at the next boot, the files are written whole.
   char tmpl4[] = "/tmp/pi-content-XXXXXX";
   CHECK(mkdtemp(tmpl4));
   core::host_set_card(tmpl4);
   CHECK(mkdir(core::host_path("/Samples").c_str(), 0755) == 0 && mkdir(core::host_path("/Samples/pi-test").c_str(), 0755) == 0);
-  CHECK(mkdir(core::host_path("/.rytm").c_str(), 0755) == 0 && mkdir(core::host_path("/.rytm/pools").c_str(), 0755) == 0);
+  CHECK(mkdir(core::host_path("/.rytm").c_str(), 0755) == 0 && mkdir(core::host_path("/.rytm/projects").c_str(), 0755) == 0);
+  CHECK(mkdir(core::host_path("/.rytm/projects/_default").c_str(), 0755) == 0);
   f = fopen(core::host_path("/Samples/pi-test/sine440.wav.tmp").c_str(), "wb");
   fputs("RIFF", f);
   fclose(f);
-  f = fopen(core::host_path("/.rytm/pools/_default.txt.tmp").c_str(), "wb");
+  f = fopen(core::host_path(kPoolTmp).c_str(), "wb");
   fputs("pi-te", f);
   fclose(f);
   CHECK(bridge::selftest_content());
-  CHECK(slurp("/Samples/pi-test/sine440.wav") == wav && slurp("/.rytm/pools/_default.txt") == "pi-test/sine440.wav\n");
+  CHECK(slurp("/Samples/pi-test/sine440.wav") == wav && slurp(kPool) == kPoolText);
   CHECK(stat(core::host_path("/Samples/pi-test/sine440.wav.tmp").c_str(), &st) != 0);
-  CHECK(stat(core::host_path("/.rytm/pools/_default.txt.tmp").c_str(), &st) != 0);
+  CHECK(stat(core::host_path(kPoolTmp).c_str(), &st) != 0);
   // A write that fails (the .tmp cannot be opened: a folder in its place): false, no file left behind.
   char tmpl5[] = "/tmp/pi-content-XXXXXX";
   CHECK(mkdtemp(tmpl5));
@@ -104,7 +115,9 @@ int main() {
   core::host_set_card(tmpl3);
   CHECK(bridge::selftest_content());
   CHECK(bridge::begin(noop));
-  CHECK(bridge::pool_slots() == 1 && core::pool[0].folder >= 0 && !strcmp(core::pool[0].path, "pi-test/sine440.wav"));
+  // the project's pool lists are read by the card core's job (idle_stream), not by begin itself
+  for (int i = 0; i < 2000 && bridge::pool_slots() == 0; ++i) bridge::idle_stream();
+  CHECK(bridge::pool_slots() == 1 && core::pool[0].folder >= 0);
   core::NoteAdapter notes(bridge::sysex);
   CHECK(notes.SetMachine(0, "dsps"));
   notes.Channel(0x90, 48, 100);
@@ -177,6 +190,28 @@ int main() {
     }
     printf("test_content: %s on notes: peak %d, 4th note %d\n", m, peak, last);
     CHECK(peak > 1000 && last > 1000);
+  }
+  // The remote UI is the control core's (core 3: bridge::tick). The stats tick on core 0 hands it the status (and with
+  // it the first-dropout popup) and the temperature popup through bridge::rui_status / rui_popup; neither may touch
+  // the remote UI's state there and then - only the next bridge::tick on the control core does (audit 2026-10-26).
+  {
+    const uint8_t hello[10] = {0xF0, 0x7D, 0x52, 0x54, 0x35, 1, 0, 10, 1, 0xF7};   // a Rytm that draws 36 popups
+    bridge::sysex(hello, 10);
+    for (int i = 0; i < 3; ++i) bridge::tick();
+    const uint32_t p0 = bridge::rui_popups();
+    bridge::rui_status(1, 3, 50, 40, 30);                // the session's first underruns: its popup is owed
+    core::ui::remote_tick(core::now_ms());               // the control core drawing, before it took the hand-off
+    CHECK(bridge::rui_popups() == p0);                   // nothing yet: the status did not reach the remote UI
+    bridge::tick();
+    CHECK(bridge::rui_popups() == p0 + 1);               // taken and shown on the control core
+    usleep(1000000);                                     // its 0.8 s are over
+    bridge::tick();
+    bridge::rui_popup("SIDECAR RUNNING HOT", "SEE STATUS (UP+T10)");
+    core::ui::remote_tick(core::now_ms());
+    CHECK(bridge::rui_popups() == p0 + 1);
+    bridge::tick();
+    CHECK(bridge::rui_popups() == p0 + 2);
+    printf("test_content: the status and the popups reach the remote UI on the control core (bridge::tick)\n");
   }
   printf("test_content: PASS\n");
   return 0;

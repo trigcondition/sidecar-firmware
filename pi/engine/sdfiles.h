@@ -1,7 +1,15 @@
 // pi/engine/sdfiles.h - the SD card's boot files over TCP (port 7310; cmdline sdport=0 turns it off), so a build is
 // installed to the card, and config.txt/cmdline.txt are read and edited, without taking the card out
 // (docs/pi-engine.md, "Boot from the SD card"; the Mac's side: pi/circle/sdboot.py). One connection at a time,
-// line commands, every reply one line ("OK ..." or "ERR ..."):
+// line commands, every reply one line ("OK ..." or "ERR ...").
+//
+// THE PAIRING CODE (paircode.h) GATES THIS PORT: a connection answers nothing but PAIR, AUTH and BYE until it is
+// authenticated, because this is the port that replaces the firmware. The serial port's ":sdf" is exempt: whoever has
+// the serial header has the card and the board anyway, and it is the way back in when the network is locked out.
+//   PAIR <code>              the 8 digits on the Rytm's and the Sidecar's screen -> OK <client-id> <secret>: this
+//                            client is remembered on the card and uses AUTH from now on (so the code does not go
+//                            over the network again). Wrong codes are rate-limited: see paircode.h.
+//   AUTH <client-id> <secret>  a client that is already paired -> OK
 //   LS                       OK <n>, then n lines "<size> <name>" (the card's root)
 //   GET <name>               OK <size> <crc32>, then the bytes
 //   PUT <name> <size> <crc32>, then the bytes: written to <name>.new, read back and checked, then put in place.
@@ -56,6 +64,15 @@ private:
 	char m_Line[1500];				// serial: a "D <base64>" line (up to 1024 bytes)
 	u8 m_Dec[1100];
 	unsigned m_nDecPos, m_nDecLen;
+	// last, so the declaration order matches the constructor's init list (-Wreorder): a warning tolerated in the
+	// code that guards the firmware port is where a real one would hide
+	boolean m_bAuth;				// this connection passed PAIR / AUTH (the serial port: always)
+	boolean m_bToldUnpaired;			// one "not paired" log line a connection (a flood cannot fill the log)
+	// 7310 serves one connection at a time: an idle one must not hold it (review M2). Receive timeouts before and after
+	// PAIR / AUTH, and the whole time a connection gets to authenticate.
+	static const unsigned kUnauthTimeoutUs = 10000000, kAuthedTimeoutUs = 60000000, kUnauthMaxUs = 20000000;
+	u32 m_nPeer;
+	unsigned m_nAcceptAt;				// CTimer::GetClockTicks at Accept					// the connection's IPv4 address: the pairing code's rate-limit key
 	static volatile int s_nReboot;
 	static volatile boolean s_bSerial;
 };

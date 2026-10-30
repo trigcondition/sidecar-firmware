@@ -1,0 +1,23 @@
+// SidecarTest: the free test instrument for the Sidecar's MULTISAMPLE machine (docs/MULTISAMPLE.md).
+// Synthesised by tools/make_multisample_test.py. Licence: CC0 (public domain).
+<control>
+default_path=samples/
+<global>
+ampeg_attack=0.002 ampeg_release=0.4 amp_veltrack=100
+<group> lokey=0 hikey=42 pitch_keycenter=36
+<region> sample=C2_soft.wav lovel=1 hivel=79 tune=10.790 loop_mode=loop_sustain
+<region> sample=C2_loud.wav lovel=80 hivel=127 tune=10.790 loop_mode=loop_sustain
+<group> lokey=43 hikey=54 pitch_keycenter=48
+<region> sample=C3_soft.wav lovel=1 hivel=79 tune=-2.476 loop_mode=loop_sustain
+<region> sample=C3_loud.wav lovel=80 hivel=127 tune=-2.476 loop_mode=loop_sustain
+<group> lokey=55 hikey=66 pitch_keycenter=60
+<region> sample=C4_soft.wav lovel=1 hivel=79 tune=-2.476 loop_mode=loop_sustain
+<region> sample=C4_loud.wav lovel=80 hivel=127 tune=-2.476 loop_mode=loop_sustain
+<group> lokey=67 hikey=78 pitch_keycenter=72
+<region> sample=C5_soft.wav lovel=1 hivel=79 tune=0.831 loop_mode=loop_sustain
+<region> sample=C5_loud.wav lovel=80 hivel=127 tune=0.831 loop_mode=loop_sustain
+<group> lokey=79 hikey=127 pitch_keycenter=84
+<region> sample=C6_soft.wav lovel=1 hivel=79 tune=-0.823 loop_mode=loop_sustain
+<region> sample=C6_loud.wav lovel=80 hivel=127 tune=-0.823 loop_mode=loop_sustain
+<group> trigger=release ampeg_release=0.2 volume=-12
+<region> sample=release breath.wav lokey=0 hikey=127

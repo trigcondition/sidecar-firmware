@@ -5,7 +5,7 @@ with no Rytm through the self-test transport (--selftest: the generic timer pace
 
     pi_run.py [--flash] [--port P] [--selftest] engines [--machines M,...]
         each machine on voice 0 (the Rytm: the engine's drone, note 48; --selftest: the synthetic notes): the voice
-        set, its trig lines, the stats, then a 10 s 'w' capture's OUT MAIN L checked for level and (except DIGIDRUM)
+        set, its trig lines, the stats, then a 10 s 'w' capture's OUT MAIN L checked for level and (except MD)
         pitch. DSP SAMPLE plays the card's self-test sample (bridge::selftest_content: pool slot 1, 440 Hz at its
         root, so note 48 sounds 220 Hz).
     pi_run.py [--flash] [--port P] engines --rytm-notes V,... [--note N] [--machines M,...]
@@ -49,7 +49,7 @@ NOTE48 = 130.81
 # and 6-OP FM ROM voice 0 (SOLID BASS) has its carrier at a 0.5 ratio, so both sound an octave below it; DSP
 # SAMPLE plays the pool's 440 Hz sine an octave down (note 48 against its root 60).
 NOTE48_16FT = NOTE48 / 2   # 65.41 Hz
-EXPECT = {"plaits": NOTE48, "juno": NOTE48_16FT, "fm": NOTE48_16FT, "daisy": None, "dsps": 220.0, "dd": None,
+EXPECT = {"plaits": NOTE48, "juno": NOTE48_16FT, "fm": NOTE48_16FT, "daisy": None, "dsps": 220.0, "md": None,
           "grain": None}
 # grain (core/notes.cpp: DSP SAMPLE in GRAIN from the sample RAM, its eight grains always busy): retriggered twice a
 # second by the notes, so every trig stops sounding grains from the control core. It must still sound in the
@@ -58,10 +58,10 @@ GRAIN_TAIL_S = 3
 # DAISYSP MODAL is inharmonic: no fundamental at the note. Note 48's modes on the core (the Mac's test_content and
 # the Pi's capture alike): 78, 210, 392, 626 (the strongest), 906 Hz. Its check: the strongest mode within 3 %.
 MODE = {"daisy": 626.0}
-# core/voices.cpp's trig log line per machine on voice 0 (DIGIDRUM's has no note)
+# core/voices.cpp's trig log line per machine on voice 0 (MD's has no note)
 TRIG = {"plaits": r"trig voice V note N engine \d+", "juno": r"trig voice V JUNO .* note N\b",
         "fm": r"trig voice V 6-OP FM entry \d+ note N\b", "daisy": r"trig voice V note N DAISYSP model \d+",
-        "dsps": r"trig voice V note N DSP SAMPLE model \d+", "dd": r"trig voice V DIGIDRUM \S+",
+        "dsps": r"trig voice V note N DSP SAMPLE model \d+", "md": r"trig voice V MD \S+",
         "grain": r"trig voice V note N DSP SAMPLE model \d+ smp 1 mix 0 sta 60 end 127"}
 
 
@@ -72,15 +72,15 @@ def trig_rx(m, voice=0, note=48):
 def at_note(hz, note):
     """A pitch measured at note 48 moved to note (every machine here tracks the keyboard)."""
     return hz * 2 ** ((note - 48) / 12) if hz else hz
-GAPS_MACHINES = ["plaits", "juno", "fm", "daisy", "dsps", "dd", "plaits", "juno"]
-ENGINE = r"engine: fifo min (\d+) max (\d+) target (\d+) under (\d+) \| blocks (\d+) max \d+ us \| cpu c1 (\S+) c2 (\S+) c3 (\S+) %"
+GAPS_MACHINES = ["plaits", "juno", "fm", "daisy", "dsps", "md", "plaits", "juno"]
+ENGINE = r"engine: fifo min (\d+) max (\d+) target (\d+) under (\d+)(?: \(restart \d+, streams \d+\))? \| blocks (\d+) max \d+ us \| cpu c1 (\S+) c2 (\S+) c3 (\S+) %"
 PASS = r"engine: fifo min (\d+) .*\| pass max (\d+) us"
 SELFTEST = r"selftest: OUT (\d+)/s notes (\d+) slips (\d+)"
 RYTMOB = r"IN (\d+)/s \d+ gap (\d+) lost (\d+) .*\| OUT (\d+)/s"
 BENCH_CORE = re.compile(r"bench c(\d) (\w+): (\d+\.\d+) % of a core per voice, worst block (\d+\.\d+) % -> (\d+) voices a core")
 BENCH = re.compile(r"bench (\w+): (\d+\.\d+) % of a core per voice at (\d+) MHz -> (\d+) voices a core "
                    r"\(worst of cores 0-3, worst block (\d+\.\d+) %, budget (\d+) %\)")
-BENCH_MACHINES = ["plaits", "juno", "fm", "daisy", "dsps", "dd"]
+BENCH_MACHINES = ["plaits", "juno", "fm", "daisy", "dsps", "wt", "gr", "livein", "chop", "md"]
 FAULT = re.compile(r"\b(exception|abort|panic|assertion failed|out of memory)\b", re.I)
 fails = []
 seen = []   # every log line read, for the final fault check

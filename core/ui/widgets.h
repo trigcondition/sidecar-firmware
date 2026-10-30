@@ -28,6 +28,16 @@ inline Rect cell(int col, int row, int cols = 1, int rows = 1) {
 void header(Canvas& c, const char* title, int page, int npages, const char* right = nullptr);
 // The bottom bar: text on the left; v >= 0: a level box on the right (bipolar: from its centre).
 void footer(Canvas& c, const char* text, int v = -1, bool bipolar = false);
+// Text in up to n lines (slots slot..slot + n - 1, rows y, y + dy ..), broken at spaces so each line fits the screen at
+// kRSmall's widest advance from x (flags' alignment as put_text's). A word too long for a line is cut there (the
+// text-fit check reports it). Returns the lines used; the slots after them are emptied.
+int text_lines(Canvas& c, int slot, int n, int x, int y, int dy, const char* s, uint8_t flags = kAlignLeft);
+// A name cut in the middle to room characters ("JUNO_A15..STRINGS"): its start and its end both stay readable.
+void name_fit(char* out, int cap, const char* s, int room);
+// A 3-octave keyboard's window (chrorange): its lowest C (0..84), kept while the notes lo..hi fit in it and else moved
+// by the fewest octaves that bring them in (more than 3 octaves from the lowest note's C: from that C); c0 < 0, none yet:
+// C3 (48). At most 84 (C6..B8: 120..127 not shown).
+int keys_window(int c0, int lo, int hi);
 // The labels under a cell's columns: label i in slot kSlotLabels + enc0 + i, centred in its column.
 void labels(Canvas& c, const Rect& r, const char* const* text, int n, int enc0);
 // A dial in the stock dial's size (a 7 px circle open at the bottom, rows 3..14 of the cell), the pointer, and the

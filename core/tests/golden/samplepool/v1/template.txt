@@ -1,0 +1,13 @@
+#sidecar samplepool 1
+H001 input IN
+H002 input MAIN
+H003 input BD
+H004 input SD
+H005 input RS-CP
+H006 input BT
+H007 input LT
+H008 input MT-HT
+H009 input CH-OH
+H010 input CY-CB
+H011 builtin PAD
+H012 builtin BELLS

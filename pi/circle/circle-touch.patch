@@ -1,0 +1,757 @@
+diff --color -ruN a/include/circle/usb/usbhiddevice.h b/include/circle/usb/usbhiddevice.h
+--- a/include/circle/usb/usbhiddevice.h	2026-10-24 19:05:04
++++ b/include/circle/usb/usbhiddevice.h	2026-10-24 19:05:26
+@@ -33,7 +33,9 @@
+ 	CUSBHIDDevice (CUSBFunction *pFunction, unsigned nMaxReportSize = 0);
+ 	~CUSBHIDDevice (void);
+ 
+-	boolean ConfigureHID (unsigned nMaxReportSize = 0);
++	// circle-touch.patch: bReportProtocol: SET_PROTOCOL report on a boot interface whatever its protocol (a touch
++	// screen behind a boot keyboard interface); a device that refuses it is used anyway
++	boolean ConfigureHID (unsigned nMaxReportSize = 0, boolean bReportProtocol = FALSE);
+ 
+ 	// circle-hid.patch: an error on the report endpoint halts it in the xHC, and the resubmit from the completion
+ 	// routine (IRQ) then goes nowhere. The routine now only marks it; Poll() (main loop, not IRQ: it issues xHCI
+diff --color -ruN a/include/circle/usb/usbtouchscreen.h b/include/circle/usb/usbtouchscreen.h
+--- a/include/circle/usb/usbtouchscreen.h	2026-10-24 19:05:04
++++ b/include/circle/usb/usbtouchscreen.h	2026-10-24 19:05:26
+@@ -21,38 +21,16 @@
+ #define _circle_usb_usbtouchscreen_h
+ 
+ #include <circle/usb/usbhiddevice.h>
++#include <circle/usb/hiddigitizer.h>
+ #include <circle/input/touchscreen.h>
+ #include <circle/types.h>
+ 
++// circle-touch.patch: the report descriptor is parsed by hiddigitizer.h (Sidecar's pi/circle/hid_digitizer.h: Usage
++// lists, report IDs, hybrid Contact Count, Pen, Input Mode), the device is put into report protocol (it may be a boot
++// keyboard/mouse interface, see CUSBDeviceFactory) and its Input Mode feature set to touch screen; the descriptor and
++// the first reports are logged at NOTICE.
+ class CUSBTouchScreenDevice : public CUSBHIDDevice	/// Driver for USB HID-class touchscreens
+ {
+-private:
+-	static const unsigned MaxContactCount = 10;
+-
+-	struct TReportItem
+-	{
+-		unsigned	BitOffset;
+-		unsigned	BitSize;
+-	};
+-
+-	struct TReportFinger
+-	{
+-		TReportItem	TipSwitch;
+-		TReportItem	ContactIdentifier;
+-		TReportItem	TipPressure;
+-		TReportItem	X;
+-		TReportItem	Y;
+-	};
+-
+-	struct TReport
+-	{
+-		unsigned	ByteSize;
+-		u8		ReportID;
+-		unsigned	MaxContactCountActual;
+-		TReportItem	ContactCount;
+-		TReportFinger	Finger[MaxContactCount];
+-	};
+-
+ public:
+ 	CUSBTouchScreenDevice (CUSBFunction *pFunction);
+ 	~CUSBTouchScreenDevice (void);
+@@ -63,22 +41,28 @@
+ 	static CUSBTouchScreenDevice *Get (void)	{ return s_pThis; }
+ 	unsigned GetIgnored (void) const		{ return m_nIgnored; }	// reports dropped for size or report ID
+ 
++	// circle-touch.patch: the raw X/Y range (the descriptor's logical maxima); FALSE: not known
++	boolean GetLogicalMax (unsigned *pMaxX, unsigned *pMaxY) const;
++
++	// CUSBHIDDevice::Poll() (main loop), then the first input reports logged (not from the IRQ)
++	void Poll (void);
++
++	// a hex dump at NOTICE, 16 bytes a line (report descriptors; also used by CUSBDeviceFactory)
++	static void LogHex (const char *pSource, const char *pWhat, const u8 *pData, unsigned nLength);
++
+ private:
+ 	static CUSBTouchScreenDevice *volatile s_pThis;
+ 	volatile unsigned m_nIgnored;
+ 	void ReportHandler (const u8 *pReport, unsigned nReportSize);
+ 
+-	boolean DecodeReportDescriptor (const u8 *pDesc, unsigned nDescSize);
+-
+-	static u32 GetValue (const void *pBuffer, const TReportItem &Item, u32 nDefault = 0);
+-
+ private:
+-	TReport m_Report;
++	hiddig::Tracker m_Tracker;
+ 
+-	boolean m_bFingerIsDown[MaxContactCount];
+-	u8 m_ucContactID[MaxContactCount];
+-	u16 m_usLastX[MaxContactCount];
+-	u16 m_usLastY[MaxContactCount];
++	static const unsigned RawLogCount = 6, RawLogBytes = 32;
++	u8 m_RawLog[RawLogCount][RawLogBytes];
++	unsigned m_nRawLength[RawLogCount];
++	volatile unsigned m_nRawCaptured;	// by the IRQ
++	unsigned m_nRawLogged;
+ 
+ 	CTouchScreenDevice *m_pDevice;
+ };
+diff --color -ruN a/lib/usb/usbdevicefactory.cpp b/lib/usb/usbdevicefactory.cpp
+--- a/lib/usb/usbdevicefactory.cpp	2026-10-24 19:05:04
++++ b/lib/usb/usbdevicefactory.cpp	2026-10-24 19:06:20
+@@ -55,7 +55,57 @@
+ #include <circle/usb/usbserialpl2303.h>
+ #include <circle/usb/usbserialft231x.h>
+ #include <circle/usb/usbtouchscreen.h>
++#include <circle/usb/hiddigitizer.h>
+ 
++#ifndef EXCLUDE_USB_TOUCHSCREEN
++// circle-touch.patch: does this boot keyboard/mouse interface carry a touch screen? Cheap HDMI panels (GeeekPi 7",
++// 0416:c169 "TSTP MTouch") declare their only HID interface a boot keyboard and send multi-touch digitizer reports
++// on it. Yes when its report descriptor has a usable Digitizer Touch Screen / Pen application (hiddigitizer.h), or
++// for the known panels by vendor/product (then CUSBTouchScreenDevice logs the descriptor if it cannot use it).
++// A descriptor that names the Digitizer page but has nothing usable is logged at NOTICE.
++static boolean IsBootTouchScreen (CUSBFunction *pParent)
++{
++	CString *pVendor = pParent->GetDevice ()->GetName (DeviceNameVendor);
++	assert (pVendor != 0);
++	boolean bQuirk = pVendor->Compare ("ven416-c169") == 0;		// GeeekPi 7" 1024x600 (TSTP MTouch)
++	delete pVendor;
++
++	CUSBFunction TempFunction (pParent);	// a copy: the configuration's descriptors are walked again later
++	TUSBHIDDescriptor *pHIDDesc = (TUSBHIDDescriptor *) TempFunction.GetDescriptor (DESCRIPTOR_HID);
++	if (pHIDDesc == 0 || pHIDDesc->wReportDescriptorLength == 0)
++	{
++		return bQuirk;
++	}
++
++	u16 usLength = pHIDDesc->wReportDescriptorLength;
++	DMA_BUFFER (u8, ReportDescriptor, usLength);
++	if (   TempFunction.GetHost ()->GetDescriptor (TempFunction.GetEndpoint0 (),
++			pHIDDesc->bReportDescriptorType, DESCRIPTOR_INDEX_DEFAULT,
++			ReportDescriptor, usLength,
++			REQUEST_IN | REQUEST_TO_INTERFACE, TempFunction.GetInterfaceNumber ())
++	    != usLength)
++	{
++		return bQuirk;
++	}
++
++	hiddig::Layout Layout;
++	if (hiddig::Parse (ReportDescriptor, usLength, &Layout))
++	{
++		pParent->GetDevice ()->LogWrite (LogNotice, "Touch screen on a boot HID interface: using the touch driver");
++
++		return TRUE;
++	}
++
++	if (!bQuirk && hiddig::MentionsDigitizer (ReportDescriptor, usLength))
++	{
++		CUSBTouchScreenDevice::LogHex ("ufactory", "digitizer page, no usable touch collection: report descriptor",
++					       ReportDescriptor, usLength);
++	}
++
++	return bQuirk;
++}
++#endif
++
+ // rytm-pi hook: the application may define this to claim the Analog Rytm MKII (1935:0b48)
+ extern CUSBFunction *RytmObDeviceCreate (CUSBFunction *pParent) __attribute__ ((weak));
+ 
+@@ -102,6 +152,13 @@
+ 		CString *pVendor = pParent->GetDevice ()->GetName (DeviceNameVendor);
+ 		assert (pVendor != 0);
+ 
++#ifndef EXCLUDE_USB_TOUCHSCREEN
++		if (IsBootTouchScreen (pParent))			// circle-touch.patch
++		{
++			pResult = new CUSBTouchScreenDevice (pParent);
++		}
++		else
++#endif
+ 		if (   pVendor->Compare ("ven2dc8-5200") == 0
+ 		    || pVendor->Compare ("ven2dc8-5201") == 0)  // 8bitDo Retro Keyboard
+ 		{
+@@ -121,6 +178,13 @@
+ 		CString *pVendor = pParent->GetDevice ()->GetName (DeviceNameVendor);
+ 		assert (pVendor != 0);
+ 
++#ifndef EXCLUDE_USB_TOUCHSCREEN
++		if (IsBootTouchScreen (pParent))			// circle-touch.patch
++		{
++			pResult = new CUSBTouchScreenDevice (pParent);
++		}
++		else
++#endif
+ 		if (   pVendor->Compare ("ven2dc8-5200") != 0
+ 		    && pVendor->Compare ("ven2dc8-5201") != 0) // 8bitDo Retro Keyboard
+ 		{
+diff --color -ruN a/lib/usb/usbhiddevice.cpp b/lib/usb/usbhiddevice.cpp
+--- a/lib/usb/usbhiddevice.cpp	2026-10-24 19:05:04
++++ b/lib/usb/usbhiddevice.cpp	2026-10-24 19:05:26
+@@ -74,7 +74,7 @@
+ 	m_pReportEndpoint = 0;
+ }
+ 
+-boolean CUSBHIDDevice::ConfigureHID (unsigned nMaxReportSize)
++boolean CUSBHIDDevice::ConfigureHID (unsigned nMaxReportSize, boolean bReportProtocol)
+ {
+ 	if (GetNumEndpoints () < 1)
+ 	{
+@@ -129,17 +129,22 @@
+ 
+ 	if (   GetInterfaceClass ()    == 3	// HID class
+ 	    && GetInterfaceSubClass () == 1	// boot class
+-	    && GetInterfaceProtocol () > 0)
++	    && (GetInterfaceProtocol () > 0 || bReportProtocol))
+ 	{
+ 		if (GetHost ()->ControlMessage (GetEndpoint0 (),
+ 						REQUEST_OUT | REQUEST_CLASS | REQUEST_TO_INTERFACE,
+-						SET_PROTOCOL,   GetInterfaceProtocol () == 2
++						SET_PROTOCOL,   GetInterfaceProtocol () == 2 || bReportProtocol
+ 							      ? REPORT_PROTOCOL : BOOT_PROTOCOL,
+ 						GetInterfaceNumber (), 0, 0) < 0)
+ 		{
+-			CLogger::Get ()->Write (FromUSBHID, LogError, "Cannot set protocol");
++			if (!bReportProtocol)
++			{
++				CLogger::Get ()->Write (FromUSBHID, LogError, "Cannot set protocol");
+ 
+-			return FALSE;
++				return FALSE;
++			}
++			// report protocol is the default after reset (HID 1.11, 7.2.6): go on without it
++			CLogger::Get ()->Write (FromUSBHID, LogWarning, "SET_PROTOCOL (report) refused, going on");
+ 		}
+ 	}
+ 
+diff --color -ruN a/lib/usb/usbtouchscreen.cpp b/lib/usb/usbtouchscreen.cpp
+--- a/lib/usb/usbtouchscreen.cpp	2026-10-24 19:05:04
++++ b/lib/usb/usbtouchscreen.cpp	2026-10-24 19:05:56
+@@ -23,51 +23,23 @@
+ #include <circle/synchronize.h>
+ #include <circle/logger.h>
+ #include <circle/macros.h>
+-#include <circle/debug.h>
++#include <circle/string.h>
+ #include <circle/util.h>
+ #include <assert.h>
+ 
+-#define HID_USAGE_PAGE		0x04
+-#define HID_USAGE		0x08
+-#define HID_REPORT_SIZE		0x74
+-#define HID_INPUT		0x80
+-#define HID_REPORT_ID		0x84
+-#define HID_REPORT_COUNT	0x94
+-#define HID_COLLECTION		0xA0
+-#define HID_END_COLLECTION	0xC0
++// circle-touch.patch: the descriptor parser and the contact tracking are hiddigitizer.h's (see usbtouchscreen.h)
+ 
+-#define HID_USAGE_PAGE_GENERIC_DESKTOP_CTRLS 0x01
+-	#define HID_USAGE_X			0x30
+-	#define HID_USAGE_Y			0x31
+-
+-#define HID_USAGE_PAGE_DIGITIZER	0x0D
+-	#define HID_USAGE_TOUCH_SCREEN		0x04
+-	#define HID_USAGE_FINGER		0x22
+-	#define HID_USAGE_TIP_PRESSURE		0x30
+-	#define HID_USAGE_TIP_SWITCH		0x42
+-	#define HID_USAGE_WIDTH			0x48
+-	#define HID_USAGE_CONTACT_IDENTIFIER 	0x51
+-	#define HID_USAGE_CONTACT_COUNT		0x54
+-	#define HID_USAGE_SCAN_TIME		0x56
+-
+-#define HID_COLLECTION_APPLICATION	0x01
+-#define HID_COLLECTION_LOGICAL		0x02
+-
+ LOGMODULE ("utouch");
+ 
+ CUSBTouchScreenDevice *volatile CUSBTouchScreenDevice::s_pThis = 0;
+ 
+ CUSBTouchScreenDevice::CUSBTouchScreenDevice (CUSBFunction *pFunction)
+ :	CUSBHIDDevice (pFunction),
+-	m_pDevice (0),
+-	m_nIgnored (0)
++	m_nIgnored (0),
++	m_nRawCaptured (0),
++	m_nRawLogged (0),
++	m_pDevice (0)
+ {
+-	memset (&m_Report, 0, sizeof m_Report);
+-
+-	for (unsigned i = 0; i < MaxContactCount; i++)
+-	{
+-		m_bFingerIsDown[i] = FALSE;
+-	}
+ }
+ 
+ CUSBTouchScreenDevice::~CUSBTouchScreenDevice (void)
+@@ -105,22 +77,57 @@
+ 		return FALSE;
+ 	}
+ 
+-	//debug_hexdump (ReportDescriptor, nDescSize, From);
++	const TUSBDeviceDescriptor *pDevDesc = GetDevice ()->GetDeviceDescriptor ();
++	unsigned nVendor = pDevDesc ? pDevDesc->idVendor : 0, nProduct = pDevDesc ? pDevDesc->idProduct : 0;
++	CString What;
++	What.Format ("ven%x-%x int%u-%u-%u report descriptor", nVendor, nProduct, GetInterfaceClass (),
++		     GetInterfaceSubClass (), GetInterfaceProtocol ());
++	LogHex (From, What, ReportDescriptor, nDescSize);
+ 
+-	if (!DecodeReportDescriptor (ReportDescriptor, nDescSize))
++	hiddig::Layout Layout;
++	if (!hiddig::Parse (ReportDescriptor, nDescSize, &Layout))
+ 	{
+-		LOGERR ("Invalid HID report descriptor");
++		LOGERR ("No usable touch screen collection in the HID report descriptor");
+ 
+ 		return FALSE;
+ 	}
++	m_Tracker.SetLayout (Layout);
+ 
+-	if (!CUSBHIDDevice::ConfigureHID (m_Report.ByteSize))
++	const hiddig::Contact &C = Layout.C[0];
++	LOGNOTE ("%s ven%x-%x: report ID %u, %u bytes, %u contact(s) a report, X %d..%d Y %d..%d, contact count %s, "
++		 "contact ID %s, tip %s, input mode %s",
++		 Layout.Pen ? "pen" : "touch screen", nVendor, nProduct, Layout.ReportID, Layout.ByteSize,
++		 Layout.Contacts, C.X.LogicalMin, C.X.LogicalMax, C.Y.LogicalMin, C.Y.LogicalMax,
++		 Layout.ContactCount.BitSize ? "yes" : "no", C.ID.BitSize ? "yes" : "no",
++		 C.Tip.BitSize ? "switch" : C.InRange.BitSize ? "in range" : "none",
++		 Layout.ModeBitSize ? "yes" : "no");
++
++	// room for a whole packet: other reports (keyboard, mouse, vendor) come on the same endpoint, some padded
++	unsigned nMaxReport = Layout.ByteSize < 64 ? 64 : Layout.ByteSize;
++	if (!CUSBHIDDevice::ConfigureHID (nMaxReport, TRUE))
+ 	{
+ 		LOGERR ("Cannot configure HID device");
+ 
+ 		return FALSE;
+ 	}
+ 
++	if (Layout.ModeBitSize && Layout.ModeByteSize <= 64)	// Windows-style digitizers: Input Mode = 2 (touch screen)
++	{
++		DMA_BUFFER (u8, Mode, 64);
++		hiddig::BuildInputMode (Layout, Mode);
++		if (GetHost ()->ControlMessage (GetEndpoint0 (),
++						REQUEST_OUT | REQUEST_CLASS | REQUEST_TO_INTERFACE,
++						SET_REPORT, (REPORT_TYPE_FEATURE << 8) | Layout.ModeReportID,
++						GetInterfaceNumber (), Mode, Layout.ModeByteSize) < 0)
++		{
++			LOGWARN ("Cannot set the input mode (feature report %u), going on", Layout.ModeReportID);
++		}
++		else
++		{
++			LOGNOTE ("input mode set to touch screen (feature report %u)", Layout.ModeReportID);
++		}
++	}
++
+ 	if (!StartRequest ())
+ 	{
+ 		return FALSE;
+@@ -134,346 +141,96 @@
+ 	return TRUE;
+ }
+ 
+-void CUSBTouchScreenDevice::ReportHandler (const u8 *pReport, unsigned nReportSize)
++boolean CUSBTouchScreenDevice::GetLogicalMax (unsigned *pMaxX, unsigned *pMaxY) const
+ {
+-	assert (m_pDevice != 0);
+-
+-	if (   pReport == 0
+-	    || nReportSize != m_Report.ByteSize)
++	const hiddig::Contact &C = m_Tracker.GetLayout ().C[0];
++	if (C.X.LogicalMax <= 0 || C.Y.LogicalMax <= 0)
+ 	{
+-		m_nIgnored++;
+-		return;
++		return FALSE;
+ 	}
+ 
+-	// if Report ID was specified in report descriptor, it must match
+-	if (   m_Report.ReportID != 0
+-	    && pReport[0] != m_Report.ReportID)
+-	{
+-		m_nIgnored++;
+-		return;
+-	}
++	*pMaxX = C.X.LogicalMax;
++	*pMaxY = C.Y.LogicalMax;
+ 
+-	unsigned nContactCount = GetValue (pReport, m_Report.ContactCount, 1);
+-	assert (nContactCount <= MaxContactCount);
+-	u8 ucDownIDs[MaxContactCount];
++	return TRUE;
++}
+ 
+-	for (unsigned i = 0; i < nContactCount; i++)
+-	{
+-		if (   GetValue (pReport, m_Report.Finger[i].TipSwitch, 1)
+-		    && GetValue (pReport, m_Report.Finger[i].TipPressure, 1))
+-		{
+-			u8 ucContactID = GetValue (pReport, m_Report.Finger[i].ContactIdentifier);
+-			ucDownIDs[i] = ucContactID;
++void CUSBTouchScreenDevice::Poll (void)
++{
++	CUSBHIDDevice::Poll ();
+ 
+-			unsigned x = GetValue (pReport, m_Report.Finger[i].X);
+-			unsigned y = GetValue (pReport, m_Report.Finger[i].Y);
+-
+-			// was this Contact ID already known?
+-			unsigned j;
+-			for (j = 0; j < m_Report.MaxContactCountActual; j++)
+-			{
+-				if (   m_bFingerIsDown[j]
+-				    && m_ucContactID[j] == ucContactID)
+-				{
+-					break;
+-				}
+-			}
+-
+-			if (j == m_Report.MaxContactCountActual)
+-			{
+-				// not known: new finger down
+-
+-				// find free slot; take last one, if not available
+-				for (j = 0; j < m_Report.MaxContactCountActual-1; j++)
+-				{
+-					if (!m_bFingerIsDown[j])
+-					{
+-						break;
+-					}
+-				}
+-
+-				m_pDevice->ReportHandler (TouchScreenEventFingerDown, j, x, y);
+-
+-				m_bFingerIsDown[j] = TRUE;
+-				m_ucContactID[j] = ucContactID;
+-			}
+-			else if (   x != m_usLastX[j]
+-				 || y != m_usLastY[j])
+-			{
+-				// known, and position changed
+-
+-				m_pDevice->ReportHandler (TouchScreenEventFingerMove, j, x, y);
+-			}
+-
+-			m_usLastX[j] = x;
+-			m_usLastY[j] = y;
+-		}
+-		else
+-		{
+-			ucDownIDs[i] = 255;
+-		}
+-	}
+-
+-	for (unsigned i = 0; i < m_Report.MaxContactCountActual; i++)
++	unsigned nCaptured = m_nRawCaptured;
++	while (m_nRawLogged < nCaptured)
+ 	{
+-		if (m_bFingerIsDown[i])
+-		{
+-			// is this Contact ID still known?
+-			unsigned j;
+-			for (j = 0; j < nContactCount; j++)
+-			{
+-				if (m_ucContactID[i] == ucDownIDs[j])
+-				{
+-					break;
+-				}
+-			}
+-
+-			if (j == nContactCount)
+-			{
+-				// not known any more
+-
+-				m_pDevice->ReportHandler (TouchScreenEventFingerUp, i, 0, 0);
+-
+-				m_bFingerIsDown[i] = FALSE;
+-			}
+-		}
++		CString What;
++		What.Format ("input report %u (%u bytes)", m_nRawLogged + 1, m_nRawLength[m_nRawLogged]);
++		unsigned nLength = m_nRawLength[m_nRawLogged];
++		LogHex (From, What, m_RawLog[m_nRawLogged], nLength < RawLogBytes ? nLength : RawLogBytes);
++		m_nRawLogged++;
+ 	}
+ }
+ 
+-boolean CUSBTouchScreenDevice::DecodeReportDescriptor (const u8 *pDesc, unsigned nDescSize)
++void CUSBTouchScreenDevice::ReportHandler (const u8 *pReport, unsigned nReportSize)
+ {
+-	enum
++	assert (m_pDevice != 0);
++
++	if (pReport == 0)
+ 	{
+-		StateStart,
+-		StateTouchScreen,
+-		StateFinger,
+-		StateUnknown
++		m_nIgnored++;
++		return;
+ 	}
+-	State = StateStart;
+ 
+-	u32 nUsagePage = 0;
+-	u32 nUsage = 0;
+-	u32 nReportID = 0;
+-	u32 nReportCount = 0;
+-	u32 nReportSize = 0;
+-	u32 nBitOffset = 0;
+-	unsigned nFinger = 0;
++	unsigned n = m_nRawCaptured;
++	if (n < RawLogCount)		// the first ones, for the log (Poll)
++	{
++		m_nRawLength[n] = nReportSize;
++		memcpy (m_RawLog[n], pReport, nReportSize < RawLogBytes ? nReportSize : RawLogBytes);
++		DataMemBarrier ();
++		m_nRawCaptured = n + 1;
++	}
+ 
+-	while (nDescSize)
++	hiddig::Event Events[2 * hiddig::MaxContacts];
++	unsigned nIgnored = m_Tracker.GetIgnored ();
++	unsigned nEvents = m_Tracker.Feed (pReport, nReportSize, Events);
++	if (m_Tracker.GetIgnored () != nIgnored)
+ 	{
+-		u8 ucItem = *pDesc++;
+-		nDescSize--;
++		m_nIgnored++;
++	}
+ 
+-		u32 nArg;
+-
+-		switch (ucItem & 0x03)
++	for (unsigned i = 0; i < nEvents; i++)
++	{
++		const hiddig::Event &E = Events[i];
++		switch (E.Type)
+ 		{
+-		case 0:
+-			nArg = 0;
++		case hiddig::EventDown:
++			m_pDevice->ReportHandler (TouchScreenEventFingerDown, E.Slot, E.X, E.Y);
+ 			break;
+ 
+-		case 1:
+-			nArg = *pDesc++;
+-			nDescSize--;
++		case hiddig::EventMove:
++			m_pDevice->ReportHandler (TouchScreenEventFingerMove, E.Slot, E.X, E.Y);
+ 			break;
+ 
+-		case 2:
+-			nArg  = *pDesc++;
+-			nArg |= *pDesc++ << 8;
+-			nDescSize -= 2;
++		case hiddig::EventUp:
++			m_pDevice->ReportHandler (TouchScreenEventFingerUp, E.Slot, 0, 0);
+ 			break;
+-
+-		case 3:
+-			nArg  = *pDesc++;
+-			nArg |= *pDesc++ << 8;
+-			nArg |= *pDesc++ << 16;
+-			nArg |= *pDesc++ << 24;
+-			nDescSize -= 4;
+-			break;
+ 		}
+-
+-		ucItem &= 0xFC;
+-
+-		switch (ucItem)
+-		{
+-		case HID_USAGE_PAGE:	nUsagePage = nArg;	break;
+-		case HID_USAGE:		nUsage = nArg;		break;
+-		case HID_REPORT_SIZE:	nReportSize = nArg;	break;
+-		case HID_REPORT_ID:	nReportID = nArg;	break;
+-		case HID_REPORT_COUNT:	nReportCount = nArg;	break;
+-		}
+-
+-		switch (State)
+-		{
+-		case StateStart:
+-			if (   ucItem == HID_COLLECTION
+-			    && nArg == HID_COLLECTION_APPLICATION
+-			    && nUsagePage == HID_USAGE_PAGE_DIGITIZER
+-			    && nUsage == HID_USAGE_TOUCH_SCREEN)
+-			{
+-				State = StateTouchScreen;
+-			}
+-			break;
+-
+-		case StateTouchScreen:
+-			switch (ucItem)
+-			{
+-			case HID_INPUT:
+-				if (   (nArg & 0x03) == 0x02
+-				    && nUsagePage == HID_USAGE_PAGE_DIGITIZER
+-				    && nUsage == HID_USAGE_CONTACT_COUNT)
+-				{
+-					if (nReportCount != 1) return FALSE;
+-					m_Report.ContactCount.BitOffset = nBitOffset;
+-					m_Report.ContactCount.BitSize = nReportSize;
+-				}
+-				break;
+-
+-			case HID_COLLECTION:
+-				if (   nArg == HID_COLLECTION_LOGICAL
+-				    && nUsagePage == HID_USAGE_PAGE_DIGITIZER
+-				    && nUsage == HID_USAGE_FINGER)
+-				{
+-					if (m_Report.ReportID == 0)
+-					{
+-						m_Report.ReportID = nReportID;
+-						nBitOffset += 8;
+-					}
+-
+-					State = StateFinger;
+-				}
+-				break;
+-
+-			case HID_END_COLLECTION:
+-				State = StateStart;
+-				break;
+-			}
+-			break;
+-
+-#define DO_INPUT(var)	if (nReportCount != 1) return FALSE;	\
+-			if (nFinger < MaxContactCount)		\
+-			{					\
+-				var.BitOffset = nBitOffset;	\
+-				var.BitSize = nReportSize;	\
+-			}
+-
+-		case StateFinger:
+-			switch (ucItem)
+-			{
+-			case HID_INPUT:
+-				if ((nArg & 0x03) == 0x02)
+-				{
+-					switch (nUsagePage)
+-					{
+-					case HID_USAGE_PAGE_GENERIC_DESKTOP_CTRLS:
+-						switch (nUsage)
+-						{
+-						case HID_USAGE_X:
+-							DO_INPUT (m_Report.Finger[nFinger].X);
+-							break;
+-
+-						case HID_USAGE_Y:
+-							DO_INPUT (m_Report.Finger[nFinger].Y);
+-							break;
+-						}
+-						break;
+-
+-					case HID_USAGE_PAGE_DIGITIZER:
+-						switch (nUsage)
+-						{
+-						case HID_USAGE_TIP_PRESSURE:
+-							DO_INPUT (m_Report.Finger[nFinger].TipPressure);
+-							break;
+-
+-						case HID_USAGE_TIP_SWITCH:
+-							DO_INPUT (m_Report.Finger[nFinger].TipSwitch);
+-							break;
+-
+-						case HID_USAGE_CONTACT_IDENTIFIER:
+-							DO_INPUT (m_Report.Finger[nFinger].ContactIdentifier);
+-							break;
+-						}
+-						break;
+-					}
+-				}
+-				break;
+-
+-			case HID_COLLECTION:
+-				return FALSE;
+-
+-			case HID_END_COLLECTION:
+-				if (nFinger < MaxContactCount)
+-				{
+-					m_Report.MaxContactCountActual++;
+-					nFinger++;
+-				}
+-				State = StateTouchScreen;
+-				break;
+-			}
+-			break;
+-
+-		default:
+-			assert (0);
+-			break;
+-		}
+-
+-		if (   ucItem == HID_INPUT
+-		    && nReportID == m_Report.ReportID)
+-		{
+-			nBitOffset += nReportCount * nReportSize;
+-		}
+ 	}
++}
+ 
+-	m_Report.ByteSize = (nBitOffset + 7) / 8;
++void CUSBTouchScreenDevice::LogHex (const char *pSource, const char *pWhat, const u8 *pData, unsigned nLength)
++{
++	CLogger::Get ()->Write (pSource, LogNotice, "%s (%u bytes):", pWhat, nLength);
+ 
+-	if (m_Report.MaxContactCountActual > 1)		// multi-touch:
++	for (unsigned i = 0; i < nLength; i += 16)
+ 	{
+-		if (!m_Report.ContactCount.BitSize)	// requires Contact Count
++		CString Line;
++		Line.Format ("%04x:", i);
++		for (unsigned j = i; j < i + 16 && j < nLength; j++)
+ 		{
+-			return FALSE;
++			CString Byte;
++			Byte.Format (" %02x", (unsigned) pData[j]);
++			Line.Append (Byte);
+ 		}
+-							// and Contact ID
+-		for (unsigned i = 0; i < m_Report.MaxContactCountActual; i++)
+-		{
+-			if (!m_Report.Finger[i].ContactIdentifier.BitSize)
+-			{
+-				return FALSE;
+-			}
+-		}
++		CLogger::Get ()->Write (pSource, LogNotice, "%s", (const char *) Line);
+ 	}
+-
+-	return State == StateStart && m_Report.MaxContactCountActual > 0;
+-}
+-
+-u32 CUSBTouchScreenDevice::GetValue (const void *pBuffer, const TReportItem &Item, u32 nDefault)
+-{
+-	assert (pBuffer != 0);
+-	const u8 *pBits = (const u8 *) pBuffer;
+-
+-	unsigned nBitSize = Item.BitSize;
+-	assert (nBitSize <= 32);
+-	if (nBitSize == 0)
+-	{
+-		return nDefault;
+-	}
+-
+-	unsigned nBitOffset = Item.BitOffset;
+-	pBits += nBitOffset / 8;
+-	u32 nValue = *(u32 *) pBits;
+-	nBitOffset = nBitOffset % 8;
+-
+-#define MASKOUT(num, off, bits)	(((num) >> (off)) & ((1 << (bits)) - 1))
+-
+-	if (nBitSize <= 24)
+-	{
+-		return MASKOUT (nValue, nBitOffset, nBitSize);
+-	}
+-
+-	u32 nLowBits = MASKOUT (nValue, nBitOffset, 24);
+-
+-	pBits += 3;
+-	nValue = *(u32 *) pBits;
+-	nBitSize -= 24;
+-
+-	return nLowBits | MASKOUT (nValue, nBitOffset, nBitSize) << 24;
+ }

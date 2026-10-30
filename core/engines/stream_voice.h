@@ -11,7 +11,9 @@
 // stream that would run dry within the request. render() never touches the
 // card.
 //
-// PCM 16/24/32-bit, 1..2 channels (more: the first two), any rate. Not here yet:
+// PCM 16/24/32-bit, 1..2 channels (more: the first two), any rate; render()
+// plays mono (a stereo file summed), or with outr its two channels (a voice on
+// OUT PRE / POST, docs/STEREO.md; a mono file on both sides). Not here yet:
 // reverse playback (END before STA) of files longer than the head - played
 // forward instead.
 #pragma once
@@ -125,11 +127,16 @@ class StreamVoice {
   // between them; writes n floats, -1..1. Runs of frames that lie in one
   // piece of RAM (the head, or the ring up to its end) take a loop per sample
   // format; the rest (a frame across the ring's end) goes sample by sample.
-  void render(float semitones, float start, float end, bool loop, float level, float* out, int n) {
+  void render(float semitones, float start, float end, bool loop, float level, float* out, int n,
+              float* outr = nullptr) {
     if (!playing_) {
       for (int i = 0; i < n; ++i) out[i] = 0.0f;
+      if (outr)
+        for (int i = 0; i < n; ++i) outr[i] = 0.0f;
       return;
     }
+    if (outr && rec_.channels < 2) outr_copy_ = outr, outr = nullptr;   // a mono file: R = L (below)
+    else outr_copy_ = nullptr;
     float a = clamp01(start) * (frames_ - 1), b = clamp01(end) * (frames_ - 1);
     float lo = a < b ? a : b, hi = a < b ? b : a;   // reverse: forward for now
     if (first_) {
@@ -145,7 +152,12 @@ class StreamVoice {
       if (ip_ > ihi || (ip_ == ihi && fr_ > hi - ihi)) {
         if (!loop || hi - lo < 1.0f) {
           playing_ = false;
-          for (; i < n; ++i) out[i] = 0.0f;
+          for (; i < n; ++i) {
+            out[i] = 0.0f;
+            if (outr) outr[i] = 0.0f;
+          }
+          if (outr_copy_)
+            for (int j = 0; j < n; ++j) outr_copy_[j] = out[j];
           return;
         }
         ip_ = h0_ / bpf_;   // back to the head (STA); the ring restarts
@@ -160,12 +172,20 @@ class StreamVoice {
       if (span(ip_, &base, &f0, &f1)) {
         if (f1 > ihi + 2) f1 = ihi + 2;
         int done;
-        switch (fmt_) {
-          case 1: done = run<1>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
-          case 2: done = run<2>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
-          case 3: done = run<3>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
-          case 4: done = run<4>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
-          default: done = 0;
+        if (outr) {
+          switch (fmt_) {
+            case 2: done = run2<2>(base, f0, f1, ihi, hi, step, level, out + i, outr + i, n - i); break;
+            case 4: done = run2<4>(base, f0, f1, ihi, hi, step, level, out + i, outr + i, n - i); break;
+            default: done = 0;
+          }
+        } else {
+          switch (fmt_) {
+            case 1: done = run<1>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
+            case 2: done = run<2>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
+            case 3: done = run<3>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
+            case 4: done = run<4>(base, f0, f1, ihi, hi, step, level, out + i, n - i); break;
+            default: done = 0;
+          }
         }
         if (done > 0) {
           i += done;
@@ -173,6 +193,19 @@ class StreamVoice {
         }
       }
       float s0, s1;
+      if (outr) {
+        float r0, r1;
+        if (!sample(ip_, &s0, &r0) || !sample(ip_ + 1, &s1, &r1)) {
+          ++underruns_;
+          outr[i] = 0.0f;
+          out[i++] = 0.0f;
+          continue;
+        }
+        outr[i] = (r0 + (r1 - r0) * fr_) * level;
+        out[i++] = (s0 + (s1 - s0) * fr_) * level;
+        advance(step);
+        continue;
+      }
       if (!sample(ip_, &s0) || !sample(ip_ + 1, &s1)) {
         ++underruns_;
         out[i++] = 0.0f;   // the card is behind: silence rather than garbage
@@ -181,6 +214,8 @@ class StreamVoice {
       out[i++] = (s0 + (s1 - s0) * fr_) * level;
       advance(step);
     }
+    if (outr_copy_)
+      for (int j = 0; j < n; ++j) outr_copy_[j] = out[j];
   }
 
   // Output frames buffered ahead of playback (at the last render's pitch), at
@@ -261,6 +296,35 @@ class StreamVoice {
     fr_ = fr;
     return i;
   }
+  // run's stereo form (FMT 2 / 4): L into out, R into outr
+  template <int FMT>
+  int run2(const uint8_t* base, uint32_t f0, uint32_t f1, uint32_t ihi, float hi, float step, float level, float* out,
+           float* outr, int n) {
+    const uint32_t bpf = FMT == 2 ? 4 : 6, bs = FMT == 2 ? 2 : 3;
+    float hf = hi - ihi;
+    uint32_t ip = ip_;
+    float fr = fr_;
+    int i = 0;
+    for (; i < n; ++i) {
+      if (ip < f0 || ip + 1 >= f1 || ip > ihi || (ip == ihi && fr > hf)) break;
+      const uint8_t* p = base + (ip - f0) * bpf;
+      float l0 = one<FMT>(p), l1 = one<FMT>(p + bpf), r0 = one<FMT>(p + bs), r1 = one<FMT>(p + bpf + bs);
+      out[i] = (l0 + (l1 - l0) * fr) * level;
+      outr[i] = (r0 + (r1 - r0) * fr) * level;
+      fr += step;
+      uint32_t w = (uint32_t)fr;
+      ip += w;
+      fr -= w;
+    }
+    ip_ = ip;
+    fr_ = fr;
+    return i;
+  }
+  template <int FMT>
+  static inline float one(const uint8_t* q) {   // one channel's sample (FMT 2: 16-bit, 4: 24-bit)
+    if (FMT == 2) return (int16_t)(q[0] | q[1] << 8) * (1.0f / 32768.0f);
+    return (int32_t)(q[0] << 8 | q[1] << 16 | (uint32_t)q[2] << 24) * (1.0f / 2147483648.0f);
+  }
   template <int FMT>
   static inline float dec(const uint8_t* q) {
     if (FMT == 1) return (int16_t)(q[0] | q[1] << 8) * (1.0f / 32768.0f);
@@ -272,8 +336,8 @@ class StreamVoice {
            (0.5f / 2147483648.0f);
   }
 
-  // Frame k (mono, -1..1) from the head or the ring; false if not loaded.
-  bool sample(uint32_t k, float* out) {
+  // Frame k (mono, -1..1) from the head or the ring; false if not loaded. r: its two channels instead (L in *out)
+  bool sample(uint32_t k, float* out, float* r = nullptr) {
     uint32_t b = k * bpf_;
     const uint8_t* p;
     if (b >= h0_ && b + bpf_ <= h0_ + hlen_) {
@@ -289,20 +353,26 @@ class StreamVoice {
       }
     } else if (b >= rec_.data_len) {
       *out = 0.0f;
+      if (r) *r = 0.0f;
       return true;
     } else {
       return false;
     }
     int ch = rec_.channels > 2 ? 2 : rec_.channels;
     int bytes = rec_.bits / 8;
-    float s = 0.0f;
+    float s = 0.0f, c2[2] = {0.0f, 0.0f};
     for (int c = 0; c < ch; ++c) {
       const uint8_t* q = p + c * bytes;
       int32_t v;
       if (bytes == 2) v = (int16_t)(q[0] | q[1] << 8) << 16;
       else if (bytes == 3) v = (int32_t)(q[0] << 8 | q[1] << 16 | (uint32_t)q[2] << 24);
       else v = (int32_t)(q[0] | q[1] << 8 | q[2] << 16 | (uint32_t)q[3] << 24);
-      s += v * (1.0f / 2147483648.0f);
+      c2[c] = v * (1.0f / 2147483648.0f);
+      s += c2[c];
+    }
+    if (r) {
+      *out = c2[0], *r = ch > 1 ? c2[1] : c2[0];
+      return true;
     }
     *out = s / ch;
     return true;
@@ -319,6 +389,7 @@ class StreamVoice {
   float fr_ = 0.0f;   // the fraction past 2^24 frames, ~6 min at 48 kHz)
   float step_ = 1.0f;
   uint8_t fmt_ = 0;   // run<>'s format, 0: another (sample by sample)
+  float* outr_copy_ = nullptr;   // render's R for a mono file: L copied at the end
   bool ready_ = false, playing_ = false, first_ = false;
   uint32_t underruns_ = 0;
 };

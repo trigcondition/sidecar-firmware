@@ -35,10 +35,11 @@ from rmp_install import Link  # noqa: E402
 GOLD = os.path.join(HERE, "golden", "teensy")
 BASELINE = os.path.join(HERE, "golden", "baseline.json")
 HDR = [0xF0, 0x7D, 0x52, 0x54]
-PLAITS, JUNO, DAISY, DSPS, DD, FM, U1 = 0x00, 0x08, 0x10, 0x20, 0x40, 0x48, 0x50
+PLAITS, JUNO, DAISY, DSPS, FM, U1 = 0x00, 0x08, 0x10, 0x20, 0x48, 0x50
 TOLERANCE_DB = 60.0          # check-host: each voice's SNR against the Teensy; measured 2026-10-15: worst mixed
                              # 87.9 dB (plaits 103.0, plaits_page2 94.5, juno 106.8, daisy 91.1), exact: fm,
-                             # digidrum, user_empty
+                             # digidrum, user_empty (DIGIDRUM's scenario and its mixed voice went with it, 2026-10-29:
+                             # recapture "mixed")
 USER_SLOT_CMDS = (0x1A, 0x1B, 0x1C, 0x1D)   # both checks leave these out: plugin generations (seeded from the
                                             # Teensy's TRNG at every boot) and the owed 1D's timer-driven timing
 
@@ -99,10 +100,6 @@ def daisy_p(eng):
     return [eng, 64, 64, 64, 0, 64, 64, 100]
 
 
-def dd_p(eng):
-    return [eng, 64, 64, 64, 64, 64, 64, 64]
-
-
 def dsps_p(slot):
     #       ENG STR BRI DMP MIX FB TUN LEV   TUN FIN SMP MOD STA END LOP LEV
     return [0, 64, 64, 64, 64, 64, 64, 100, 64, 64, slot, 0, 0, 120, 0, 100]
@@ -122,9 +119,8 @@ def scenarios(dsps_file=None):
         "fm": [project("CORETEST"), trig(FM | 2, 48, 100, fm_p(0)), n(9600), trig(FM | 2, 52, 100, fm_p(17)), n(9600),
                trig(FM | 2, 55, 100, fm_p(95)), n(4800), note_off(2), n(9600)],
         "daisy": [project("CORETEST")] + [x for e in (0, 64, 127) for x in (trig(DAISY | 3, 57, 100, daisy_p(e)), n(9600))],
-        "digidrum": [project("CORETEST")] + [x for e in range(11) for x in (trig(DD | 4, 60, 100, dd_p(e * 12 + 6)), n(4800))],
         "mixed": [project("CORETEST"), trig(PLAITS | 0, 48, 100, plaits_p(124)), trig(JUNO | 1, 60, 100, juno_p(5)),
-                  trig(FM | 2, 50, 100, fm_p(3)), trig(DAISY | 3, 57, 100, daisy_p(64)), trig(DD | 4, 60, 100, dd_p(30)),
+                  trig(FM | 2, 50, 100, fm_p(3)), trig(DAISY | 3, 57, 100, daisy_p(64)),
                   trig(PLAITS | 5, 62, 100, plaits_p(70)), trig(FM | 6, 45, 100, fm_p(40)),
                   trig(JUNO | 7, 67, 100, juno_p(60)), n(24000)],
         "user_empty": [project("CORETEST"), trig(U1 | 6, 60, 100, plaits_p(64)), n(4800)],

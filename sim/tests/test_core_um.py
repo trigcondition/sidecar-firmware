@@ -11,6 +11,7 @@ One engine per process (the core keeps module state): each test runs its scenari
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -131,6 +132,68 @@ print(json.dumps(out))
         self.assertEqual(slots[0]["state"], "MISSING")
         self.assertEqual(rd(os.path.join(self.card, ".rytm", "slots", "UMTEST.txt")), b"U1 rytm.sine_test 1.0.0\n")
 
+    def test_instances(self):
+        """seqx (E0): a package whose header opts in (RMP_HF_INSTANCES, max_voices 4) plays the sequencer's notes on
+        instances of its own - two sines at once on one voice; the same package without the flag (every older one)
+        stays mono: the second note retriggers the voice's one state."""
+        pk = os.path.join(self.card, "Plugins", "sine_test.rmp")
+        d = bytearray(rd(pk))
+        self.assertEqual(struct.unpack_from("<I", d, 68)[0], 0)   # (the header's flags: an older package's 0)
+        r0 = scenario(self.card, self.INST)
+        struct.pack_into("<I", d, 68, 0x1 | 3 << 4)   # max_voices 4 (the header's flags are outside its CRC)
+        wr(pk, bytes(d))
+        r1 = scenario(self.card, self.INST)
+        self.assertIn("mono 1/1", r0["one"])
+        self.assertIn("mono", r0["two"])
+        self.assertEqual(len(r0["peaks"]), 1)                 # one sine (the second note took the voice)
+        self.assertIn("inst 1/4", r1["one"])
+        self.assertIn("inst 2/4", r1["two"])
+        self.assertEqual(len(r1["peaks"]), 2)                 # two sines at once: 440 and 660 Hz
+        self.assertIn("v1 U1 inst 2/4", r1["status"])
+
+    INST = """
+gen, names = inst()
+tx(P.HDR + bytes([0x10]) + b"UMTEST" + b"\\xf7")
+tx(P.assign(1, P.OP_ASSIGN, names.index("SINE TEST"), gen))
+e.report(P.params_report(0x50, [64 << 7] * 16)); e.idle()   # voice 0 on U1 (a 0x03: no trig)
+out = {}
+out["one"] = e.poly_command("inst=on:1:69:100:4")
+out["two"] = e.poly_command("inst=on:1:76:100:4")   # a fifth up: 659 Hz
+a = e.frames(9600)[:, 0].astype(float)
+f = np.abs(np.fft.rfft(a))
+fr = np.fft.rfftfreq(len(a), 1 / 48000)
+pk = [int(round(fr[i])) for i in range(1, len(f) - 1) if f[i] > f[i - 1] and f[i] >= f[i + 1] and f[i] > 0.2 * f.max()]
+out["peaks"] = pk
+out["status"] = e.poly_command("inst")
+print(json.dumps(out))
+"""
+
+    def test_damaged_map_kept(self):
+        """1042 (data safety): a slot map or notes file this build cannot parse (an unknown line - a newer Sidecar's, a
+        damaged one) is never written over: assigning a slot plays it but the files keep their bytes."""
+        d = os.path.join(self.card, ".rytm", "slots")
+        os.makedirs(d)
+        bad_map = b"U1 rytm.v2_test 1.0.0\nU2 rytm.sine_test 1.0.0 extra-field-from-a-newer-sidecar\n"
+        bad_inf = b"this is not a notes file\n\x00\x01"
+        wr(os.path.join(d, "UMTEST.txt"), bad_map)
+        wr(os.path.join(d, "UMBAD2.txt"), b"U1 rytm.v2_test 1.0.0\n")
+        wr(os.path.join(d, "UMBAD2.inf"), bad_inf)
+        r = scenario(self.card, """
+out = {}
+gen, names = inst()
+k = names.index("SINE TEST")
+for p in ("UMTEST", "UMBAD2"):
+    tx(P.HDR + bytes([0x10]) + p.encode() + b"\\xf7")
+    for _ in range(20): e.idle()
+    m = tx(P.assign(3, P.OP_ASSIGN, k, gen))
+    for _ in range(20): e.idle()
+    out[p] = [P.decode_slots(x[5:-1]) for x in of(m, P.SLOTS)][-1]["answer"]
+print(json.dumps(out))
+""")
+        self.assertEqual(r["UMTEST"], [3, P.RES_READY])   # the slot plays (in memory)
+        self.assertEqual(rd(os.path.join(d, "UMTEST.txt")), bad_map)   # the unparsable map: its bytes kept
+        self.assertEqual(rd(os.path.join(d, "UMBAD2.inf")), bad_inf)   # the unparsable notes: kept
+
     def test_enum_clear_console_json(self):
         r = scenario(self.card, """
 out = {}
@@ -158,6 +221,22 @@ print(json.dumps(out))
         self.assertTrue(all(x["fit"] and x["target"] == "a64" for x in pl))
         mem = {x["k"]: x for x in r["json"] if x["t"] == "mem"}
         self.assertTrue({"code", "data", "state"} <= set(mem))
+
+    def test_enum_names_from_the_scan_not_the_card(self):
+        # the ENUM ASK is answered in the SysEx handler on the control core: from the names the scan cached, never a
+        # card read (3 ms a time on the Pi: an underrun on every ask). With the package gone from the card after the
+        # scan, the names still come.
+        r = scenario(self.card, f"""
+import os
+out = {{}}
+e.um_command("um=assign:2:rytm.v2_test"); e.idle()
+meta(2)
+os.remove({os.path.join(self.card, "Plugins", "v2_test.rmp")!r})
+m = of(tx(P.ask(2, 0, P.ASK_ENUM, 5)), P.LIST)
+out["enum"] = [n for x in m for (_, n) in P.decode_list(x[5:-1])["entries"]]
+print(json.dumps(out))
+""")
+        self.assertEqual(r["enum"], ["SINE", "POOL"])
 
     def test_versions_duplicates_foreign(self):
         # a copy of sine_test claiming 1.1.0 (header rewritten, CRC unchanged: the body is the same), a Teensy
@@ -190,10 +269,47 @@ print(json.dumps(out))
         self.assertFalse(why["junk.rmp"][0])
         self.assertIn("not a machine package", why["junk.rmp"][1])
         self.assertIn("CRC", why["v2_bad.rmp"][1])
-        self.assertIn("duplicate", why["sine_test.rmp"][1])
+        self.assertTrue(why["sine_test.rmp"][0])   # phase 4: the older copy is kept (a project may want exactly it)
         self.assertTrue(why["sine_new.rmp"][0])
         if os.path.exists(ARM):
             self.assertIn("Teensy", why["sine_arm.rmp"][1])
+
+    def test_versions_side_by_side(self):
+        # bundles phase 4 (docs/BUNDLES.md "Exactness"): 1.0.0 and 1.1.0 of one id installed side by side; a slot plays
+        # exactly the version its map names, the newest compatible one when that one is not installed (and only the
+        # newest is in the Rytm's list); a version nothing serves stays MISSING; the older copy is kept, not refused
+        import struct
+        d = bytearray(rd(PKG["sine_test"]))
+        struct.pack_into("<I", d, 40, 0x010100)   # 1.1.0 (compatible from 1.0.0)
+        wr(os.path.join(self.card, "Plugins", "rytm.sine_test-1.1.0.rmp"), d)
+        os.makedirs(os.path.join(self.card, ".rytm", "slots"))
+        wr(os.path.join(self.card, ".rytm", "slots", "_default.txt"),
+           "U1 rytm.sine_test 1.0.0\nU2 rytm.sine_test 1.1.0\nU3 rytm.sine_test 1.0.5\nU4 rytm.sine_test 1.2.0\n")
+        r = scenario(self.card, """
+out = {}
+gen, names = inst()
+out["names"] = names
+out["slots"] = [x for x in e.um_json() if x["t"] == "slot"]
+out["plugins"] = [x for x in e.um_json() if x["t"] == "plugin"]
+out["play1"] = play(0x50)[1]
+print(json.dumps(out))
+""")
+        self.assertEqual(sorted(r["names"]), ["SINE TEST", "V2 TEST"])   # one SINE TEST in the Rytm's list: the newest
+        sl = {x["slot"]: x for x in r["slots"]}
+        self.assertEqual(sl[1]["state"], "READY")
+        self.assertEqual(os.path.basename(sl[1]["file"]), "sine_test.rmp")      # exactly 1.0.0
+        self.assertEqual(sl[1]["play_ver"], "1.0.0")
+        self.assertEqual(os.path.basename(sl[2]["file"]), "rytm.sine_test-1.1.0.rmp")
+        self.assertEqual(sl[2]["play_ver"], "1.1.0")
+        self.assertEqual(sl[3]["state"], "READY")                                # 1.0.5: the newest serves it
+        self.assertEqual(sl[3]["play_ver"], "1.1.0")
+        self.assertEqual(sl[4]["state"], "MISSING")                              # 1.2.0: nothing serves it
+        self.assertIn("1.2.0", sl[4]["why"])
+        pl = {os.path.basename(x["file"]): x for x in r["plugins"]}
+        self.assertTrue(pl["sine_test.rmp"]["fit"])                              # kept beside the newer one
+        self.assertTrue(pl["sine_test.rmp"]["older"])
+        self.assertFalse(pl["rytm.sine_test-1.1.0.rmp"]["older"])
+        self.assertGreater(r["play1"], 400)
 
     def test_resolve_prints_inherit_lazy_import(self):
         # which machine a slot plays when a project loads (rmp_resolve.h): a shared project with no map resolves from

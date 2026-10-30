@@ -51,8 +51,10 @@ test("drone: off, on with a voice, all", () => {
 });
 
 test("mock_web: commands change /status (machines per voice, fifo limit), MOCK_IGNORE leaves one unchanged", async (t) => {
+  // MOCK_PAIR=0 is cmdline.txt paircode=0: the pairing code is out of the way here, because this test is about
+  // something else. The gate itself (every endpoint it covers, refusals, the lockout) is page_pair.test.mjs.
   const port = 19300 + Math.floor(Math.random() * 500);
-  const srv = spawn("python3", [join(HERE, "mock_web.py"), String(port)], { stdio: "ignore", env: { ...process.env, MOCK_IGNORE: "mac" } });
+  const srv = spawn("python3", [join(HERE, "mock_web.py"), String(port)], { stdio: "ignore", env: { ...process.env, MOCK_IGNORE: "mac", MOCK_PAIR: "0" } });
   t.after(() => srv.kill());
   const base = `http://127.0.0.1:${port}`;
   let s;

@@ -68,7 +68,8 @@ class Index {
   // Open file record r of folder f (by dir index, down from /Samples).
   bool open(int f, const FileRec& r, core::File* out);
   // File i of folder f in name order (0..nfiles-1), from files.bin (sorted
-  // when the index is built: no sorting while the voices play).
+  // when the index is built: no sorting while the voices play); CORE_MSAMP (the Pi, the Mac): from its copy in RAM,
+  // read at begin() - no card time, so the control core may call it (loadstall, 0.3.0).
   bool file(int f, int i, FileRec* r);
   uint64_t hash() const { return hash_; }
   core::Fs& sd() { return sd_; }
@@ -85,6 +86,9 @@ class Index {
 
   core::Fs sd_;
   core::File files_;
+  FileRec* ram_ = nullptr;   // CORE_MSAMP: files.bin's first nram_ records (begin; file() reads them, no card)
+  uint32_t nram_ = 0;
+  static constexpr uint32_t kRamFiles = 131072;   // 11 MB at most
   Folder* folders_ = nullptr;
   uint32_t* wavs_below_ = nullptr;
   int nfolders_ = 0;

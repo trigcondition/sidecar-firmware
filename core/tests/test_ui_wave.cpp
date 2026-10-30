@@ -9,6 +9,7 @@
 #include <unistd.h>   // mkdtemp
 
 #include "check.h"
+#include "lib/pools.h"
 #include "engine.h"
 #include "pool/pool.h"
 #include "ui/extra.h"
@@ -63,6 +64,7 @@ int main() {
   setenv("CORE_SAMPLE_RAM_MB", "16", 1);   // the sample RAM (the Pi, a Teensy with PSRAM): MOD picks the mode
   core::hooks.to_rytm = terminal;
   CHECK(core::engine_begin() && core::card_ok && core::psram);
+  for (int i = 0; i < 2000 && !core::pools::ready(); ++i) core::idle_stream();   // the project's pool lists in
   int kit = -1;
   for (int k = 1; k < core::cards.folders(); ++k)
     if (!strcmp(core::cards.folder(k).name, "Kit")) kit = k;
@@ -167,6 +169,23 @@ int main() {
   int8_t col[6], lev[6];
   CHECK(fm_algorithm_layout(31, col, lev) == 6 && lev[0] == 0 && lev[5] == 0);   // 32: six carriers side by side
   CHECK(fm_algorithm_layout(0, col, lev) == 2 && lev[5] == 3 && col[5] == col[2]);  // 1: 6 > 5 > 4 > 3, 2 > 1
+  {   // fm_info (the Pi display's VOICE page): the ROM's first voice (no FM list on the test card)
+    FmInfo f;
+    CHECK(fm_info(0, &f) && f.alg >= 0 && f.alg < 32 && f.name[0] && f.fb >= 0 && f.fb <= 7);
+    int8_t c2[6], l2[6];
+    CHECK(fm_algorithm_layout(f.alg, c2, l2) == f.ncols && !memcmp(c2, f.col, 6) && !memcmp(l2, f.lev, 6));
+    int cars = 0;
+    for (int k = 0; k < 6; ++k) {
+      CHECK(f.out[k] <= 99 && f.freq[k] > 0);
+      if (f.car >> k & 1) {
+        ++cars;
+        CHECK(f.lev[k] == 0);
+      }
+    }
+    CHECK(cars >= 1);
+    printf("fm_info: ROM voice 1 \"%s\" alg %d fb %d, op1 out %d freq %d%s\n", f.name, f.alg + 1, f.fb, f.out[0], f.freq[0],
+           f.fixed[0] ? " Hz" : " /100");
+  }
   Canvas cv;
   fm_algorithm_render(0, cv);
   int on = 0;
@@ -191,15 +210,15 @@ int main() {
   int a0 = (int)core::v[1].p[4];   // the patch's own ATK (JUNO's knob sync)
   from_rytm(0x32, 4, 64 + 50, 0), tick(30);   // ATK +50: a longer attack
   CHECK((int)core::v[1].p[4] == a0 + 50 && env_px() != e0);
-  // the GRAIN machine (1026, placeholder flag): voice 3 plays DSP SAMPLE's GRAIN mode whatever P12 (its SPRY) holds, no
-  // resonator; its page is the GRAIN view with SPRY in MOD's place; a trig sounds from the pool sample in RAM
+  // the GRAIN machine (1026): its placeholder flag 0x18 is CHOP's since rui1051 (no Rytm ever sent it for GRAIN); a
+  // report with it plays CHOP, not DSP SAMPLE's GRAIN mode; GRAIN's own page stays (machines.h kGrainMachine)
   uint8_t g[16] = {0, 64, 64, 64, 100, 64, 64, 100, 64, 64, 1, 0, 60, 80, 90, 100};   // P5 (MIX) 100: ignored
-  report03(2, core::kGrainMachine, g);
-  CHECK(core::v[2].grain && core::v[2].dsps && core::dsp_mode(core::v[2]) == rytm::SampleModes::kGrain);
+  report03(2, core::kChopMachine, g);
+  CHECK(core::v[2].cp && !core::v[2].grain && !core::v[2].dsps);
   const Page* gp = page_for_voice(core::kGrainMachine, 2);
   CHECK(gp && !strcmp(gp->title, "GRAIN") && !strcmp(gp->label[3], "SPRY") && !strcmp(gp->label[4], "POS"));
-  from_rytm(0x31, 0, 0x41, 1), tick(30);   // voice 3's page
-  CHECK(remote_stats().page == 1 && remote_stats().voice == 2 && shown("GRAIN") && shown("SPRY") && shown("DENS"));
+  from_rytm(0x31, 0, 0x41, 1), tick(30);   // voice 3's page: CHOP's
+  CHECK(remote_stats().page == 1 && remote_stats().voice == 2 && shown("CHOP") && shown("SLC") && shown("MRPH"));
   report03(2, core::kDspSample, g);   // the same words on DSP SAMPLE: MOD 0 is ONE, not GRAIN
   CHECK(!core::v[2].grain && core::dsp_mode(core::v[2]) == rytm::SampleModes::kOneShot);
   from_rytm(0x30, 0, 0, 3);

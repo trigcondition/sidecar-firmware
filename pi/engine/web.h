@@ -3,7 +3,9 @@
 // serves one page (www/index.html, built in), /status (JSON), /log?since=N (the console log's tail from a ring
 // buffer), POST /cmd (c=<command>: the serial console's parser, CConsole::Command), /um (the user machines' JSON),
 // /lists (the pool and JUNO / FM lists' JSON, core/user/lists.h), /fs/* (fsweb.h) and /wifi/* (wifi.h: status, scan,
-// and the POSTs join, forget, power, accepted from this page only: wifi_conf.h's same_origin). Everything runs as Circle
+// and the POSTs join, forget, power, accepted from this page only: wifi_conf.h's same_origin) and /pair* (paircode.h:
+// the pairing code). Everything that changes something needs the pairing code as well (paircode.h's Gate; /status and
+// /log never do). Everything runs as Circle
 // tasks on core 0 (Circle's scheduler and network stack are core 0's), between the loop's 1 ms sleeps; the
 // Overbridge stream and the USB-C gadget run in core 0's interrupts, which the tasks never mask.
 // cmdline.txt web=0: no HTTP daemon and no mDNS (the network itself stays up for link=tcp).
@@ -39,16 +41,18 @@ private:
 	CSpinLock m_Lock;
 };
 
-// The page's /status fields the kernel knows (kernel.cpp), as JSON members without the braces
+// The page's /status fields the kernel knows (kernel.cpp), as JSON members without the braces. The same shape serves
+// /health, which is the open one: a different function, not a filter, so nothing can leak into it by being added to
+// /status (pi/engine/paircode.h, docs/pi-engine.md "Pairing code").
 typedef void TWebStatus (CString *pOut, void *pParam);
 
 class CWebServer : public CHTTPDaemon
 {
 public:
-	static const unsigned MaxContent = 128 * 1024;	// the page (73 KB), 64 KB of /fs/get, the log, the /lists JSON (48 KB)
+	static const unsigned MaxContent = 192 * 1024;	// the page (130 KB raw; ?raw sends it whole), 64 KB of /fs/get, the log, the /lists JSON (48 KB)
 	static const unsigned MaxMultipart = 66 * 1024;	// an upload chunk (fsweb::kChunkMax) and its multipart framing
-	CWebServer (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, void *pParam,
-		    CSocket *pSocket = 0);
+	CWebServer (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, TWebStatus *pHealth,
+		    void *pParam, CSocket *pSocket = 0);
 	CHTTPDaemon *CreateWorker (CNetSubSystem *pNet, CSocket *pSocket) override;
 	THTTPStatus GetContent (const char *pPath, const char *pParams, const char *pFormData, u8 *pBuffer,
 				unsigned *pLength, const char **ppContentType) override;
@@ -74,12 +78,14 @@ private:
 	CNetSubSystem *m_pNet;
 	CLogTee *m_pLog;
 	CConsole *m_pConsole;
-	TWebStatus *m_pStatus;
+	TWebStatus *m_pStatus, *m_pHealth;	// /status (gated) and /health (open: paircode.h's open set)
 	void *m_pParam;
 	boolean m_bWorker;
 	unsigned m_nStart;			// the connection's start, CTimer::GetClockTicks
 	boolean m_bServed;			// GetContent ran (FALSE at the end: closed without a request)
+	u32 m_nPeer;				// the client's IPv4 address: the pairing code's rate-limit key (paircode.h)
 	static unsigned s_nRequests, s_nMaxUs, s_nCommands;
+	static unsigned s_nUnpaired;		// requests refused by the pairing code's gate (paircode.h)
 };
 
 // Starts the web page once the network is up (the link may come later than the boot): mDNS (blocks until its
@@ -87,14 +93,15 @@ private:
 class CWebStart : public CTask
 {
 public:
-	CWebStart (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, void *pParam);
+	CWebStart (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, TWebStatus *pHealth,
+		   void *pParam);
 	void Run (void) override;
 	static const char *Hostname (void)	{ return s_Hostname; }	// "" until mDNS runs
 private:
 	CNetSubSystem *m_pNet;
 	CLogTee *m_pLog;
 	CConsole *m_pConsole;
-	TWebStatus *m_pStatus;
+	TWebStatus *m_pStatus, *m_pHealth;
 	void *m_pParam;
 	static char s_Hostname[64];
 };

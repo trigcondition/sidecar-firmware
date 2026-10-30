@@ -53,6 +53,10 @@ class File {
   bool isContiguous() const { return true; }
   bool contiguousRange(uint32_t* first, uint32_t* last) const { *first = *last = 0; return false; }
   bool getModifyDateTime(uint16_t* date, uint16_t* time) const;
+  // A folder's next entry without opening it (the library's walk, core/lib/library.h; core/platform.h): its name, a
+  // folder or not, its size and FAT date / time; false at the end. Shares openNext's place in the folder.
+  bool nextEntry(char* name, size_t n, bool* dir, uint64_t* size, uint16_t* fat_date, uint16_t* fat_time);
+  bool nextFailed() const;   // the last nextEntry's false was f_readdir's error, not the folder's end
 
   static const unsigned kImplBytes = 1536;   // FIL + DIR + flags + the path (platform_pi.cpp's static_assert)
 
@@ -67,6 +71,7 @@ class Fs {
   bool rename(const char* from, const char* to);
   bool remove(const char* path);
   bool exists(const char* path);
+  int lookup(const char* path);   // 1 there, 0 not there (FR_NO_FILE / FR_NO_PATH), -1 an error (core/platform.h)
   uint64_t tree_hash(const char* path, uint32_t* entries, uint32_t* hidden);
   const char* type_name() const { return "FAT32"; }
 };

@@ -1,5 +1,6 @@
 // pi/engine/gadget.cpp - gadget.h
 #include "gadget.h"
+#include "mbtrace.h"
 
 #include <circle/bcmpropertytags.h>
 #include <circle/usb/usb.h>
@@ -70,7 +71,8 @@ void CSidecarMIDIGadget::LogStats (CLogger *pLogger)
 	CBcmPropertyTags Tags;
 	TPropertyTagSimple Throttled;
 	Throttled.nValue = 0;
-	unsigned nPower = Tags.GetTag (PROPTAG_GET_THROTTLED, &Throttled, sizeof Throttled, 4) ? Throttled.nValue : ~0u;
+	unsigned nPower;
+	{ mbtrace::Scope Mb (6); nPower = Tags.GetTag (PROPTAG_GET_THROTTLED, &Throttled, sizeof Throttled, 4) ? Throttled.nValue : ~0u; }
 	pLogger->Write (From, LogNotice, "%s | midi in %u packets, echo fail %u | irq %u/s %u.%02u %% of core 0 (total %u) | throttled 0x%X",
 			m_pBound ? "configured" : "waiting", m_nInPackets, m_nEchoFail, nRate, nPpm / 10000, nPpm / 100 % 100, nIRQs,
 			nPower);

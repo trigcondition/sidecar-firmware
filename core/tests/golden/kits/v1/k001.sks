@@ -1,0 +1,7 @@
+# Sidecar kit record: kit 001's per-kit files
+=lfo
+# the kit's LFOs
+lfo1 track=1 dest=3 rate=40 depth=64
+=ins
+# INSERT FX
+ins 0 type=2 p=10,20,30

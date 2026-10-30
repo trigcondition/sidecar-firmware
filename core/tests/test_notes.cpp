@@ -47,7 +47,7 @@ int main() {
   CHECK(a.SetMachine(0, "grain") && a.Machine(0) == 0x20 && !strcmp(NoteAdapter::Name(0x20), "dsps"));
   a.Channel(0x90, 37, 90);
   CHECK(out[7][5] == 0x20 && out[7][8 + 2 * 10] == 1 && out[7][8 + 2 * 11] == 56);   // GRAIN: MOD (P12) 56
-  CHECK(!strcmp(NoteAdapter::Names(), "plaits juno daisy dsps grain dd fm"));
+  CHECK(!strcmp(NoteAdapter::Names(), "plaits juno daisy dsps grain fm md wt gr livein chop") && !a.SetMachine(0, "dd"));   // (DIGIDRUM: removed)
   {   // CC 123 closes the sounding note; CC 120 on a voice channel silences it (no report), on any channel clears the FX
     size_t n0 = out.size();
     a.Channel(0xB3, 123, 0);                // channel 4, nothing sounding: no note-off
@@ -73,7 +73,7 @@ int main() {
   CHECK(core::engine_begin());
   NoteAdapter e(core::engine_sysex);
   static int16_t ring[core::kBlock * 200][core::kVoices];
-  const char* sounding[] = {"plaits", "juno", "daisy", "dd", "fm"};
+  const char* sounding[] = {"plaits", "juno", "daisy", "md", "fm", "wt", "gr"};
   for (const char* m : sounding) {
     CHECK(e.SetMachine(0, m));
     e.Channel(0x90, 36, 100);

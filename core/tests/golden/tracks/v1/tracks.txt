@@ -1,0 +1,6 @@
+mask=0x005
+lat=12
+quant=1
+pin=0x000
+pinseq=1
+latset=0

@@ -20,7 +20,18 @@ static std::string g_root;
 static FILE* g_f[4];
 static std::vector<std::string> g_log;
 static int g_reads_fail = 0;
-static std::string disk(const char* p) { return g_root + p; }
+// "USB:/Recordings/..." a drive: <root>/USB/Recordings/...
+static std::string disk(const char* p) {
+  const char* c = strchr(p, ':');
+  if (c && p[0] != '/') return g_root + "/" + std::string(p, (size_t)(c - p)) + (c + 1);
+  return g_root + p;
+}
+static bool g_usb = false;   // the drive mounted
+static int BRoots(const char** out, int max) {
+  if (!g_usb || max < 1) return 0;
+  out[0] = "USB:";
+  return 1;
+}
 
 static int BList(const char* d, char (*names)[64], uint64_t* sizes, bool* dirs, uint32_t* stamps, int max) {
   DIR* dp = opendir(disk(d).c_str());
@@ -53,7 +64,7 @@ static bool BSeek(int h, uint64_t off) { return fseek(g_f[h], (long)off, SEEK_SE
 static void BClose(int h) { fclose(g_f[h]); g_f[h] = nullptr; }
 static void BLog(const char* l) { g_log.push_back(l); }
 static uint32_t BNow() { timeval tv; gettimeofday(&tv, nullptr); return (uint32_t)(tv.tv_sec * 1000000 + tv.tv_usec); }
-static const recplay::Backend kB = {BList, BOpen, BRead, BSeek, BClose, BLog};
+static const recplay::Backend kB = {BList, BOpen, BRead, BSeek, BClose, BLog, BRoots};
 
 // sample c of frame i of a file (source id src): distinct per file, frame and side, inside 16 bits
 static int32_t val(int src, uint32_t i, int c) { return (int32_t)(((i * 7 + src * 1000 + c * 333) % 30000) - 15000); }
@@ -192,6 +203,33 @@ int main() {
   P.status(&s);
   CHECK(!P.active() && s.state == recplay::kStopped && L[kLen - 1] == want(0, kLen - 1, 0, 24) && L[kLen] == 0 && !s.error[0]);
 
+  // a pause keeps the frame: play() goes on from it (the same samples), a stop and another take start over
+  CHECK(P.play(err, sizeof err));
+  run(9000, nullptr, nullptr);
+  P.pause();
+  run(2000, nullptr, nullptr);
+  P.status(&s);
+  CHECK(!P.active() && s.state == recplay::kStopped && s.paused && s.pos > 9000 && s.pos < 9000 + 2 * recplay::kFade);
+  uint64_t held = s.pos;
+  CHECK(P.play(err, sizeof err));
+  L.clear();
+  run(3000, &L, nullptr);
+  bool cont = true;
+  for (uint32_t k = recplay::kFade; k < 2900; ++k) cont &= L[k] == want(0, (uint32_t)(held + k), 0, 24);
+  CHECK(cont);
+  P.status(&s);
+  CHECK(s.state == recplay::kPlaying && !s.paused);
+  P.pause();
+  run(2000, nullptr, nullptr);
+  P.stop();
+  P.status(&s);
+  CHECK(!s.paused);
+  CHECK(P.play(err, sizeof err));
+  P.status(&s);
+  CHECK(s.pos == 0);
+  P.stop();
+  run(2000, nullptr, nullptr);
+
   // the card falls behind (no reads): faded out on what is held before it runs dry, reported once
   CHECK(P.play(err, sizeof err));
   L.clear();
@@ -236,6 +274,45 @@ int main() {
   CHECK(P.scan("take_003") == 4);
   P.status(&s);
   CHECK(!strcmp(s.take, "take_003") && s.take_i == 0 && !strcmp(s.channel, "MASTER") && s.len == 4800);
+
+  // a USB drive's takes beside the SD's (ids "USB:<take>"), in one list by name; one plays from the drive
+  {
+    char f[40];
+    recplay::take_folder(f, sizeof f, "USB:take_004");
+    CHECK(!strcmp(f, "USB:/Recordings/take_004"));
+    recplay::take_folder(f, sizeof f, "take_004");
+    CHECK(!strcmp(f, "/Recordings/take_004"));
+  }
+  mkdir(disk("USB:/").c_str(), 0755);
+  mkdir(disk("USB:/Recordings").c_str(), 0755);
+  mkdir(disk("USB:/Recordings/take_004").c_str(), 0755);
+  mkdir(disk("USB:/Recordings/take_002").c_str(), 0755);   // the same name as the SD's: told apart by the volume
+  write_wav("USB:/Recordings/take_004/03_BD.wav", 3, 1, 24, 20000);
+  write_wav("USB:/Recordings/take_002/00_MASTER.wav", 0, 2, 16, 4800);
+  CHECK(P.scan() == 4);   // the drive not mounted: the SD's only
+  g_usb = true;
+  CHECK(P.scan() == 6);
+  CHECK(P.select_take(0));
+  P.status(&s);
+  CHECK(!strcmp(s.take, "USB:take_004") && !strcmp(s.channel, "BD") && s.len == 20000);
+  CHECK(P.step_take(1) && (P.status(&s), !strcmp(s.take, "take_003")));
+  CHECK(P.step_take(1) && (P.status(&s), !strcmp(s.take, "take_002")));
+  CHECK(P.step_take(1) && (P.status(&s), !strcmp(s.take, "USB:take_002")) && s.len == 4800 && s.bits == 16);
+  CHECK(P.select_by_name("USB:take_004", 3) && P.play(err, sizeof err));
+  {
+    std::vector<int32_t> l, r;
+    run(30000, &l, &r);
+    // past the fade-in, a sample where the file has it (the mono BD on both sides)
+    uint32_t i = 1000;
+    CHECK(l.size() > 20000 && !P.active());
+    bool found = false;
+    for (size_t k = 0; k + 1 < l.size() && !found; ++k) found = l[k] == want(3, i, 0, 24) && r[k] == l[k];
+    CHECK(found);
+  }
+  CHECK(P.scan("USB:take_004") == 6 && (P.status(&s), !strcmp(s.take, "USB:take_004")));
+  g_usb = false;
+  CHECK(P.scan() == 4 && (P.status(&s), !strchr(s.take, ':')));   // pulled: its takes gone from the list
+  printf("test_rec_play: a USB drive's takes beside the SD's, one played from the drive: PASS\n");
 
   std::string rm = "rm -rf " + g_root;
   CHECK(system(rm.c_str()) == 0);

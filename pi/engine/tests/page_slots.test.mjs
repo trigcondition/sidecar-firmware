@@ -43,8 +43,10 @@ test("export and parse round trip; a slot map file parses too; junk refused", ()
 });
 
 test("import against the mock: put lines change /um, missing reported by name", async (t) => {
+  // MOCK_PAIR=0 is cmdline.txt paircode=0: the pairing code is out of the way here, because this test is about
+  // something else. The gate itself (every endpoint it covers, refusals, the lockout) is page_pair.test.mjs.
   const port = 18700 + Math.floor(Math.random() * 500);
-  const srv = spawn("python3", [join(HERE, "mock_web.py"), String(port)], { stdio: "ignore" });
+  const srv = spawn("python3", [join(HERE, "mock_web.py"), String(port)], { stdio: "ignore", env: { ...process.env, MOCK_PAIR: "0" } });
   t.after(() => srv.kill());
   const base = `http://127.0.0.1:${port}`;
   let um;

@@ -30,14 +30,34 @@ put in place; the replaced file is kept as <name>.prev, and config.txt/cmdline.t
   sdboot.py usbreset                   a USB reset of the FT232R serial adapter (0403:6001; needs Homebrew's libusb):
                                        after a flasher killed mid-upload the Mac's writes to it can hang (measured
                                        2026-10-16: the Pi then hears nothing, not even the reboot magic)
-The link: TCP to SIDECAR_HOST (default: PI_IP, else sidecar.local) port 7310; if that does not connect within 3 s
+The link: TCP to SIDECAR_HOST (default: PI_IP, else sidecar.local) port 7310 (SIDECAR_PORT moves it); if that does not connect within 3 s
 (or SIDECAR_LINK=serial), the serial port (SIDECAR_SERIAL, default /dev/cu.usbserial-*, 921600; nothing else may have
 it open): the console's ":sdf", then the same commands, data as base64 lines (about 50 KB/s, a 1.5 MB engine in ~35 s).
+
+THE PAIRING CODE (docs/pi-engine.md "Pairing code"). Over TCP the engine serves nothing until this tool is paired,
+because this is the port that replaces the firmware. The first time per Pi:
+
+    SIDECAR_PAIR_CODE=12345678 uv run --with pyserial python pi/circle/sdboot.py install
+
+- the 8 digits are the ones on the Rytm's screen and on the Sidecar's touchscreen (STATUS page, PAIR CODE). They
+  change at every boot. The engine's console command `pair=show` puts them on the Rytm's screen again.
+- without SIDECAR_PAIR_CODE the tool asks for the code on the terminal (and fails with a clear message if there is
+  no terminal, e.g. in a script).
+- after that it is remembered: the Pi hands out a client id and a secret, kept in ~/.config/sidecar/pair.json
+  (0600; SIDECAR_PAIR_FILE moves it), one entry per host, and later runs authenticate with those and never send the
+  code again. `pair=revoke` on the Pi, or deleting /.rytm/pair.txt from the card, makes it ask for the code once more.
+- cmdline.txt paircode=0 on a card turns the gate off entirely (a dev card: the engine says so loudly at boot, on
+  the STATUS page and in /status).
+- the serial link is never gated: whoever has the serial header has the board, and it is the way back in if the
+  network side is locked out.
+- an engine from before 0.3.0 has no gate at all; this tool notices (it asks it to list the card first) and goes
+  ahead unauthenticated with one line saying so, so upgrading a Pi still works.
+
 Run as: uv run --with pyserial python pi/circle/sdboot.py ...
 """
-import base64, binascii, glob, os, socket, struct, sys, time
+import base64, binascii, glob, json, os, socket, stat, struct, sys, time
 
-PORT = 7310
+PORT = int(os.environ.get("SIDECAR_PORT") or 7310)   # 7310; an ssh tunnel or a test may move it
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 ENGINE_ADDR = 0x02000000          # sdboot.patch's SDB_ADDR
@@ -51,16 +71,62 @@ def block(kernel="sdboot.img"):
             f"disable_splash=1\nboot_delay=0\n{END}\n")
 
 
+def pair_file():
+    return os.environ.get("SIDECAR_PAIR_FILE") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "sidecar", "pair.json")
+
+
+def pairs_load():
+    """{host: {"client": ..., "secret": ...}} - this Mac's own secret per Pi, never the pairing code."""
+    try:
+        with open(pair_file(), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def pairs_save(host, client, secret):
+    p = pair_file()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    d = pairs_load()
+    d[host] = {"client": client, "secret": secret}
+    tmp = p + ".new"                  # written, then put in place, as the Pi's own saves are
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1, sort_keys=True)
+    os.replace(tmp, p)
+    os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
+    return p
+
+
+def ask_code():
+    """The 8 digits, for a Sidecar that is asking for them. Only reached when the engine has a gate (see Pi.auth)."""
+    code = os.environ.get("SIDECAR_PAIR_CODE")
+    if code:
+        return code.replace(" ", "").strip()
+    if not sys.stdin.isatty():
+        raise SystemExit("this Sidecar is asking for its pairing code and there is no terminal to ask you on.\n"
+                         "Run it again with SIDECAR_PAIR_CODE=<the 8 digits>. They are on the Rytm's screen and on\n"
+                         "the Sidecar's own screen (STATUS page, PAIR CODE), and they change at every boot; the\n"
+                         "engine's console `pair=show` puts them on the Rytm again. A Sidecar with no display at all\n"
+                         "writes them to /sidecar-paircode.txt at the card's root.\n"
+                         'See docs/pi-engine.md "Pairing code".')
+    return input("the pairing code on the Sidecar's screen (8 digits): ").replace(" ", "").strip()
+
+
 class Pi:
     def __init__(self):
         host = os.environ.get("SIDECAR_HOST") or os.environ.get("PI_IP") or "sidecar.local"
         self.ser = None
+        self.gated = True             # until the probe in auth() says otherwise
         if os.environ.get("SIDECAR_LINK") != "serial":
             try:
                 self.s = socket.create_connection((host, PORT), timeout=3)
                 self.s.settimeout(30)
                 self.f = self.s.makefile("rb")
                 print(f"link: tcp {host}:{PORT}", file=sys.stderr)
+                self.auth(host)
                 return
             except OSError as e:
                 print(f"link: tcp {host}:{PORT} failed ({e}), the serial port", file=sys.stderr)
@@ -86,6 +152,44 @@ class Pi:
             while time.time() - t < 3:
                 if self.ser.readline().startswith(b"SDF BYE"):
                     break
+
+    def auth(self, host):
+        """The pairing code's gate (pi/engine/paircode.h): AUTH with what this Mac was given, else PAIR with the code
+        once. The serial link is not gated. Nothing is sent before this, so an unpaired run cannot touch the card.
+
+        An engine from before the gate existed has to keep working, or every upgrade from a pre-0.3.0 kernel would
+        stop here asking for a code that device does not have. LS is the probe, because both kinds answer it and
+        neither closes the connection: a gated engine answers "ERR unauthenticated ..." to anything before PAIR/AUTH,
+        an older one just lists the card. The decision is made on the gated answer, never on a version string, so the
+        only way to skip authentication is for the engine to demonstrably not ask for it."""
+        probe = self.cmd("LS")
+        if not probe.startswith("ERR unauthenticated"):
+            if probe.startswith("OK"):
+                for _ in range(int(probe.split()[1])):    # its listing, so the next reply is ours
+                    self.line()
+            self.gated = False
+            print(f"link: {host} is running firmware without a pairing code (before 0.3.0): going ahead unauthenticated",
+                  file=sys.stderr)
+            return
+        rec = pairs_load().get(host) or {}
+        if rec.get("client") and rec.get("secret"):
+            r = self.cmd(f"AUTH {rec['client']} {rec['secret']}")
+            if r == "OK":
+                print("link: paired (remembered)", file=sys.stderr)
+                return
+            print(f"link: this Mac is no longer paired with {host} ({r}): asking for the code again", file=sys.stderr)
+            time.sleep(1.2)           # the engine allows one pairing attempt a second
+        code = ask_code()
+        r = self.cmd(f"PAIR {code}")
+        if not r.startswith("OK "):
+            raise SystemExit(f"pairing refused: {r[4:] if r.startswith('ERR ') else r}\n"
+                             "The code is on the Rytm's screen and on the Sidecar's STATUS page; it changes at every "
+                             "boot. After several wrong ones the engine locks pairing for a while (it says how long).")
+        parts = r.split()
+        if len(parts) != 3:
+            raise SystemExit(f"the engine's PAIR answer is not what this version expects: {r!r}")
+        where = pairs_save(host, parts[1], parts[2])
+        print(f"link: paired with {host}; it is remembered in {where} (the code is not stored)", file=sys.stderr)
 
     def send(self, b):
         if self.ser:

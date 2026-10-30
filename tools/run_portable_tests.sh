@@ -1,7 +1,8 @@
 #!/bin/bash
 # tools/run_portable_tests.sh - the tests that need no hardware, no firmware and no cross toolchain; the CI's "test"
 # check runs exactly this (Linux and macOS):
-#   - pi/engine/tests: the Pi engine's portable parts (ASan/UBSan);
+#   - pi/engine/tests: the Pi engine's portable parts (ASan/UBSan; the ones that need the core's Mac library or a
+#     Circle checkout only where those are there);
 #   - teensy/libraries/RytmPlugins/extras: the metadata, pool, presets, protocol and resolve unit tests (the arenas,
 #     loader, loader_a64, manifest and slots tests read built .rmp packages, so need an ARM toolchain: not here);
 #   - teensy/libraries/RytmHost/extras/ob_block_test.cpp: the Overbridge block codec;
@@ -16,7 +17,21 @@ CC=${CC:-cc}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
-make -C "$R/pi/engine/tests" CXX="$CXX"
+# The Pi tests that need more than a compiler run when it is there: test_bundleweb and test_poolweb link the core's
+# Mac library (macOS, after make -C core engines), the FatFs tests copy Circle's addon/fatfs (pi/circle/build.sh's
+# checkout); without it they are named as skipped.
+PT=$R/pi/engine/tests
+skip=()
+{ [ "$(uname)" = Darwin ] && [ -f "$R/core/build/libengines.a" ]; } || skip+=(test_bundleweb test_poolweb)
+[ -f "$R/pi/circle/build/circle/addon/fatfs/ff.c" ] || skip+=(test_stor_fatfs test_stor_fatfs_exfat test_stor_fatfs_lfn3)
+tests=()
+for f in "$PT"/test_*.cpp test_stor_fatfs_exfat test_stor_fatfs_lfn3; do
+  t=$(basename "$f" .cpp)
+  [ "$t" = test_content ] && continue
+  [[ " ${skip[*]} " == *" $t "* ]] || tests+=("build/$t")
+done
+[ ${#skip[@]} -eq 0 ] || echo "pi/engine/tests: skipped here: ${skip[*]}"
+make -C "$PT" CXX="$CXX" TESTS="${tests[*]}"
 
 P=$R/teensy/libraries/RytmPlugins
 run() { local name=$1; shift; (cd "$P/extras" && "$CXX" -std=c++17 -O1 -Wall -I"$P/src" "$@" -o "$T/$name" && "$T/$name"); echo "$name: PASS"; }

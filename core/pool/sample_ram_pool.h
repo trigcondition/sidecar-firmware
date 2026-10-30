@@ -9,6 +9,11 @@
 // the least recently used sample not playing makes room (sample_ram.h).
 //
 // Without memory from the board nothing here runs and DSP SAMPLE streams from the card.
+//
+// On the Pi and the Mac (CORE_MSAMP: the pools design 4.1) the samples live in the pool RAM's shared cache
+// (core/pool/pcache.h): one copy a content, shared with GRANULAR and MULTISAMPLE; this class is DSP SAMPLE's view of it
+// (keys -> the file's path -> its lib::Ref), the same interface; a pool line's file outside /Samples has the key
+// kSlotKey - line (RAM only: no stream).
 #pragma once
 #include <Sampler.h>
 
@@ -19,6 +24,7 @@ namespace rytm {
 
 class SampleRamPool {
  public:
+  static const int kSlotKey = -100;               // (Pi / Mac) folder kSlotKey - line: pool line's file outside /Samples
   static const uint32_t kReserve = 4u << 20;      // PSRAM left for later uses (recording, the looper)
   static const uint32_t kMaxFrames = 4u << 20;    // a sample's frames in RAM at most (8 MB, 87 s
                                                   // at 48 kHz): a longer one, its first kMaxFrames
@@ -34,8 +40,9 @@ class SampleRamPool {
   float* pluck_line(int voice) { return ok_ ? pluck_ + voice * SampleModes::kPluckLen : nullptr; }
 
   // Folder/file's sample, if resident (touched: recently used); else false.
-  // *cut: only its first kMaxFrames are in RAM.
-  bool get(int folder, int file, const int16_t** pcm, uint32_t* frames, float* rate, bool* cut);
+  // *cut: only its first kMaxFrames are in RAM. ch (optional): its channels
+  // (2: interleaved L R, the Pi's pool RAM; always 1 elsewhere).
+  bool get(int folder, int file, const int16_t** pcm, uint32_t* frames, float* rate, bool* cut, int* ch = nullptr);
   // Load folder/file: a voice wants it (first in line, may evict; a
   // prefetch loading meanwhile gives way), or a prefetch (behind the wants,
   // free space only).
@@ -49,8 +56,13 @@ class SampleRamPool {
   void pin(int folder, int file);
   void unpin(int folder, int file);
 
+#if CORE_MSAMP
+  uint32_t arena_bytes() const;   // the pool RAM's (MB-capped to 32 bits)
+  uint32_t used_bytes() const;
+#else
   uint32_t arena_bytes() const { return ram_.size(); }
   uint32_t used_bytes() const { return ram_.used(); }
+#endif
   uint32_t loads() const { return loads_; }
   uint32_t evictions() const { return ram_.evictions(); }
   uint32_t max_step_us() const { return max_step_us_; }
@@ -96,6 +108,13 @@ class SampleRamPool {
   uint32_t bpf_ = 2, src_off_ = 0, out_frames_ = 0, want_frames_ = 0, carry_ = 0, t0_ = 0;
   int16_t* dst_ = nullptr;
   uint32_t loads_ = 0, max_step_us_ = 0;
+  // CORE_MSAMP: the pins held (a key and the cache block it pinned)
+  struct Pin {
+    uint32_t key;
+    int blk;
+    bool on;
+  };
+  Pin pins_[2 * kVoices];
 };
 
 }  // namespace rytm

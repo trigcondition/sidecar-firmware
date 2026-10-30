@@ -1,0 +1,50 @@
+{
+  "name": "nam2c_engines_m7_a76",
+  "version": "2.0.0",
+  "description": "NAM A2 engines for Cortex-M7 and Cortex-A76 (weights loaded at run time from .namb)",
+  "generator": {
+    "nam2c": "7da8ec4",
+    "flags": {
+      "cortex-m7": [
+        "--tiled",
+        "--dynamic-weights"
+      ],
+      "cortex-a76": [
+        "--tiled",
+        "--target",
+        "aarch64",
+        "--tune-cpu",
+        "a76",
+        "--dynamic-weights"
+      ]
+    },
+    "tunings": {
+      "cortex-m7": [
+        48,
+        16
+      ],
+      "cortex-a76": [
+        48
+      ]
+    }
+  },
+  "engines": {
+    "cortex-m7": {
+      "a2lite": [
+        "a2lite",
+        "a2lite-b16"
+      ],
+      "a2full": [
+        "a2full"
+      ]
+    },
+    "cortex-a76": {
+      "a2lite": [
+        "a2lite"
+      ],
+      "a2full": [
+        "a2full"
+      ]
+    }
+  }
+}

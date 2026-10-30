@@ -45,6 +45,10 @@ CORE_COLD void footer(Canvas& c, const char* text, int v, bool bipolar) {
   begin(c, r);
   c.fill(r, kOn);
   c.put_text(kSlotFoot, kRSmall, 2, kFooterY + 2, text, kTextInvert);
+#if CORE_UI_TOOLS
+  if (v >= 0 && text && Canvas::fit_report && (int)strlen(text) * kRSmall.advance - 1 > 88 - 2 - 2)   // into the level box
+    Canvas::fit_report(text, (int)strlen(text) * kRSmall.advance - 1, 84);
+#endif
   if (v >= 0) {   // a level box in the bar's right part, as stock's LEV box: clear outline, clear fill
     v = clamp(v, 0, 127);
     Rect o = {88, (int16_t)(kFooterY + 2), 38, 5};
@@ -59,6 +63,52 @@ CORE_COLD void footer(Canvas& c, const char* text, int v, bool bipolar) {
     }
   }
   c.unclip();
+}
+
+CORE_COLD int text_lines(Canvas& c, int slot, int n, int x, int y, int dy, const char* s, uint8_t flags) {
+  int a = flags & 3;
+  int room = a == kAlignLeft ? (kW - x + 1) / kRSmall.advance : a == kAlignRight ? (x + 2) / kRSmall.advance : kW / kRSmall.advance;
+  if (room > kTextLen) room = kTextLen;
+  int used = 0;
+  while (s && *s == ' ') ++s;
+  for (; used < n && s && *s; ++used) {
+    char b[kTextLen + 1];
+    int len = (int)strlen(s), take = len;
+    if (len > room) {   // the last space that keeps the line in room (none: the word is cut)
+      take = room;
+      for (int k = room; k > 0; --k)
+        if (s[k] == ' ') { take = k; break; }
+    }
+    if (used == n - 1) take = len;   // the last line: the rest (cut and reported by put_text when too long)
+    int m = take < kTextLen ? take : kTextLen;
+    memcpy(b, s, (size_t)m), b[m] = 0;
+    if (take > kTextLen) {   // (put_text sees only kTextLen characters: report the whole rest here)
+#if CORE_UI_TOOLS
+      if (Canvas::fit_report) Canvas::fit_report(s, take, room);
+#endif
+    }
+    c.put_text(slot + used, kRSmall, x, y + used * dy, b, flags);
+    s += take;
+    while (*s == ' ') ++s;
+  }
+  for (int i = used; i < n; ++i) c.put_text(slot + i, kRSmall, 0, 0, nullptr);
+  return used;
+}
+
+CORE_COLD void name_fit(char* out, int cap, const char* s, int room) {
+  if (!s) s = "";
+  if (room > cap - 1) room = cap - 1;
+  int len = (int)strlen(s);
+  if (len <= room || room < 5) {
+    int m = len < room ? len : room;
+    memcpy(out, s, (size_t)m), out[m] = 0;
+    return;
+  }
+  int head = (room - 2 + 1) / 2, tail = room - 2 - head;
+  memcpy(out, s, (size_t)head);
+  out[head] = '.', out[head + 1] = '.';
+  memcpy(out + head + 2, s + len - tail, (size_t)tail);
+  out[room] = 0;
 }
 
 CORE_COLD void labels(Canvas& c, const Rect& r, const char* const* t, int n, int enc0) {
@@ -345,6 +395,15 @@ CORE_COLD void sample(Canvas& c, const Rect& r, const int8_t* peaks, int n, cons
   c.vline(xs, k.y, k.y + k.h - 1, kOn);
   c.vline(xe, k.y, k.y + k.h - 1, kOn);
   c.unclip();
+}
+
+CORE_COLD int keys_window(int c0, int lo, int hi) {
+  if (c0 < 0) c0 = 48;
+  if (lo > hi) return c0;   // no notes: where it was
+  int lc = lo / 12 * 12;   // (review: never above the lowest note's C, "too wide" measured from it)
+  if (hi - lc > 35 || lo < c0) c0 = lc;
+  else if (hi > c0 + 35) c0 = hi / 12 * 12 - 24 > lc ? lc : hi / 12 * 12 - 24;
+  return c0 > 84 ? 84 : c0;
 }
 
 }  // namespace ui

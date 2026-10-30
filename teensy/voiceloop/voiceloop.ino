@@ -15,7 +15,7 @@
 //                                                  text, so a serial monitor can type it in the host build):
 //                                                  notes=1 / notes=0 (the stock Rytm's MIDI notes play voices,
 //                                                  core/notes.h; off at boot unless -DRYTM_NOTES=1), notemach=V:NAME
-//                                                  (voice V's machine: plaits juno daisy dsps grain dd fm), notes
+//                                                  (voice V's machine: plaits juno daisy dsps grain fm), notes
 //                                                  (the state); the host build's out=main / out=tracks (the
 //                                                  voices summed on Overbridge MAIN L/R for a stock Rytm, faded
 //                                                  in, limited at -12 dBFS, core/main_out.h / each voice on its
@@ -32,10 +32,8 @@
 // Voice handling is sim/obhost.py's, so the two sound the same: P1 engine
 // (17 curated models, eng_zone in core/machines.h), P2 harmonics, P3 timbre, P4 morph, P5 decay, P6 LPG
 // colour, P7 tune (semitones from 64), P8 level; output x 0.7. DAISYSP voices:
-// sim/daisysp/daisy_engine.h (ENG STR BRI DMP INP EXC TUN LEV). DIGIDRUM
-// voices (flag 0x40): sim/digidrum/dd_voice.h - P1 ENG in 11 zones, P2..P8 the
-// engine's controls 1..7, control 8 at the engine's default; P9..P16 are the
-// sound's own sample page (the Rytm's sample layer plays under it). JUNO
+// sim/daisysp/daisy_engine.h (ENG STR BRI DMP INP EXC TUN LEV). (0x40, DIGIDRUM's
+// flag until 2026-10-29, is the built-in MD on the Pi and the Mac: not on the Teensy, silent here.) JUNO
 // voices (flag 0x08): sim/juno/juno_voice.h - P1..P8 PAT CUT RES ENV ATK DEC
 // REL LEN, the note the trig's; 0x11 NOTE_OFF releases it (LEN 127 holds until
 // it), the other machines play out and ignore it. CUT..REL are the patch's
@@ -45,8 +43,8 @@
 // PAT TIM MOR DEC LPG TUN LEV LEN, PAT an entry of the effective FM list (the
 // project's, /.rytm/fm, else Plaits' 96 ROM voices; core/presets/dx7_lib.h); 17 sends its
 // names, 18 asks for them. The machine is the voice byte & 0x78, matched
-// exactly (0x00 PLAITS, 0x08 JUNO, 0x10 DAISYSP, 0x20 DSP SAMPLE, 0x40
-// DIGIDRUM, 0x48 6-OP FM).
+// exactly (0x00 PLAITS, 0x08 JUNO, 0x10 DAISYSP, 0x20 DSP SAMPLE, 0x48
+// 6-OP FM; 0x40 MD, silent here).
 // RYTM_PLUGINS 1 (default in both builds; -DRYTM_PLUGINS=0 leaves them out): machine plugins (.rmp, teensy/libraries/RytmPlugins,
 // docs/plugins.md) on the user slots U1..U5, voice flags 0x50 0x58 0x60 0x68
 // 0x70: the project's slot map /.rytm/slots/<PROJECT>.txt names the machine
@@ -87,7 +85,6 @@
 #include <USBHost_t36.h>
 #endif
 #include <DaisySP.h>
-#include <Digidrum.h>
 #include <Juno.h>
 #include <Plaits.h>
 #include <RytmCore.h>   // the engine core (core/, teensy/platform/; teensy/setup_core_lib.sh)
@@ -2986,7 +2983,7 @@ FLASHMEM void hk_user_report(int vi, int slot, int was_slot, int note, int vel, 
 }
 FLASHMEM void hk_user_leave(int vi) {   // left the user slots: voice_leave; Plaits back on the voice's memory if a plugin used it
   plug_leave(vi);
-  if (plug_dirty[vi] && !v[vi].daisy && !v[vi].dd && !v[vi].juno) plug_voice_reinit(vi);
+  if (plug_dirty[vi] && !v[vi].daisy && !v[vi].juno) plug_voice_reinit(vi);
 }
 FLASHMEM void hk_user_note_off(int vi) {
   int s = v[vi].user;
@@ -3358,10 +3355,10 @@ __attribute__((noinline)) FLASHMEM void stats_report(uint32_t now) {
     if (plug_reinit_max) logf(PSTR("plugins: Plaits re-init after a plugin, longest %lu us"), (unsigned long)plug_reinit_max);
     plug_reinit_max = 0;
 #endif
-    logf(PSTR("load fm %d.%d juno %d.%d dsps %d.%d daisy %d.%d dd %d.%d plaits %d.%d %%; max request %lu us, "
+    logf(PSTR("load fm %d.%d juno %d.%d dsps %d.%d daisy %d.%d plaits %d.%d %%; max request %lu us, "
          "max report %lu us, refills %lu (%lu KB, max %lu us), max loop %lu us, max trig wait %lu us"),
          m10[kMFm] / 10, m10[kMFm] % 10, m10[kMJuno] / 10, m10[kMJuno] % 10, m10[kMDsps] / 10, m10[kMDsps] % 10,
-         m10[kMDaisy] / 10, m10[kMDaisy] % 10, m10[kMDd] / 10, m10[kMDd] % 10, m10[kMPlaits] / 10,
+         m10[kMDaisy] / 10, m10[kMDaisy] % 10, m10[kMPlaits] / 10,
          m10[kMPlaits] % 10, (unsigned long)max_request_us, (unsigned long)max_report_us, (unsigned long)refills,
          (unsigned long)refill_kb, (unsigned long)max_refill_us, (unsigned long)max_loop_us,
          (unsigned long)max_trig_wait_us);

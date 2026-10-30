@@ -39,7 +39,7 @@ The Teensy gets the core as a generated Arduino library: `teensy/setup_core_lib.
 into the mod firmware's reports, so a stock Rytm's sequencer plays the voices: channel N (1..8) is voice N-1,
 note-on -> 0x04 TRIG+PARAMS with the voice's P1..P16, the sounding note's off (or velocity 0) -> 0x11 (an older
 note's off is ignored), CC 16..31 -> P1..P16 and a 0x03. `SetMachine(v, name)` picks the voice's machine and its
-sounding defaults (`plaits juno daisy dsps grain dd fm`; `Names()`). The reports go to the board's callback,
+sounding defaults (`plaits juno daisy dsps grain fm md wt gr livein chop`; `Names()`; `md`, the built-in MD, replaced DIGIDRUM's `dd` 2026-10-29). The reports go to the board's callback,
 `core::engine_sysex` or a wrapper: the adapter keeps only its own per-voice P values and last note, no render
 state, so one instance on the control side (never per render core, `RYTM_RENDER_CORES` untouched). Cold
 (`CORE_COLD`): one call per MIDI message.
@@ -87,7 +87,7 @@ wet only, soft-limited at -6 dBFS on the 2/3 return (the Rytm adds it at ~0.16) 
   `fx::take_sendfx`): tracks 0..11 = sound index 0 hi/lo = SEND FX 1/2; track 12 = each FX's TYPE + P1..P5 from FX
   words 29/38/39 (FX 1) and 0/40/41 (FX 2), TYPE in the stock-stored hi half of 29 / 0, so it travels with the kit;
   track 13 = the kit's two user-effect tags. Layout, ids and messages: `sim/protocol.py` ("Sidecar send FX").
-- **TYPE ids:** 0 off, 1 CHORUS, 2 COMB, 16 CRUSH, 17 RINGMOD, 18 HALO (every build), 6 RINGS, 8 CLOUDSEED,
+- **TYPE ids:** 0 off, 1 CHORUS, 2 COMB, 16 CRUSH, 17 RINGMOD, 18 HALO (every build), 5 SPACE, 6 RINGS, 8 CLOUDSEED,
   15 STUTTER (only with `RYTM_SENDFX_LARGE`, the default on the Pi and the Mac, not on the Teensy), the other ids of 3..63 reserved built-ins (named, silent,
   reported MISSING), 64..67
   UFX1..UFX4, user-effect slots per project like the user machines (`/.rytm/fxslots/<project>.txt`, loaded on 0x10;
@@ -98,12 +98,15 @@ wet only, soft-limited at -6 dBFS on the 2/3 return (the Rytm adds it at ~0.16) 
   four P2..P5 labels (<= 4 chars) and the zones of zoned knobs (<= 12: knob, lo, base, show, step, 5-char name), from the
   table next to each effect (`fx/knob_labels.h`; `kChorusLabels`, `kCombLabels` in `send_fx.h`, `kRingsLabels`,
   `kCloudSeedLabels`, `kStutterLabels` in their headers; `sim/protocol.py SENDFX_LABEL_SETS` mirrors them, the tests
-  compare). A Teensy build (no RINGS / CLOUDSEED / STUTTER) sends CHORUS, COMB, CRUSH, RINGMOD and HALO only. rytm-mods 0029 shows them
+  compare). A Teensy build (no RINGS / CLOUDSEED / STUTTER) sends CHORUS, COMB, CRUSH, RINGMOD and HALO only. The Rytm keeps 8 TYPEs' labels (rytm-mods 0029 `sfu.c` NLT; a 24 past them is dropped there) and the Pi plays 9
+  with labels since SPACE (2026-10-23): the host sends the TYPEs on FX 1 and FX 2 first, then the others by id up to 8,
+  and when a slot moves to a TYPE left out it sends the list and the labels again with that one first
+  (`host_link.cpp` kRytmLabelTables). Raising NLT in a later rytm-mods build lifts it (then set kRytmLabelTables). rytm-mods 0029 shows them
   (RINGS P3 `MODAL 12`, STUTTER P3 `1/16`); P1 (ROUTE) it shows as PRE / POST by itself. **step** (2026-10-18, the zone
   byte's bit 3): a pure zone selector (STUTTER ENG, LEN) is stepped by the Rytm one zone per detent like its own enum
   knobs, storing each zone's lo (rytm-mods 0029 sfx-enum-knobs); knobs with a number inside their zones stay continuous;
   an older Rytm ignores the bit.
-- **DSP** (`fx::SendFx`, header-only, no allocation; 49.9 KB, or 2.69 MB with RINGS and CLOUDSEED: every type's
+- **DSP** (`fx::SendFx`, header-only, no allocation; 49.9 KB, or 5.88 MB with SPACE, RINGS, CLOUDSEED and STUTTER (2026-10-23): every type's
   state in each slot, so both slots can run any type, two CLOUDSEEDs included): every knob's 0 is a usable default;
   10 ms smoothing on every parameter and send (RINGS and CLOUDSEED: per block); a TYPE change fades out 10 ms and the
   new effect fades in from a clean state; the left effect is zeroed afterwards in pieces of at most 2 KB a frame
@@ -124,7 +127,31 @@ wet only, soft-limited at -6 dBFS on the 2/3 return (the Rytm adds it at ~0.16) 
   | 2 COMB | tune 55 Hz x 2^(v/24) | decay: T60 0.2 s x 40^((v&63)/63), 0.2..8 s; 64..127 negative (octave down, odd harmonics) | damping 0..0.95 | spread (R up to 3 % lower) |
   | 6 RINGS | pitch C2 + v/2 semitones | model x structure: zone 0 MODAL (2 voices), 32 MODAL MONO (odd L / even R), 64 STRINGS (2 x 4 sympathetic), 96 CHORD; within it structure 0.25..1 (CHORD: the chord) | brightness 0.35..1 | decay (Rings' damping 0.4..0.9) |
   | 8 CLOUDSEED | character x size: zone 0 ROOM, 32 HALL, 64 DARK PLATE, 96 AMBIENCE; within it size x1..x2.5 | decay: the preset's T60 x10^(v/127) | damping: in-loop low-pass / 16^(v/127) darker | modulation depth x1..x5, rate x1..x3 |
+  | 5 SPACE | TIME: 0..63 free, the shortest head 40..400 ms (exp); 64..127 SYNC, the shortest head 1/16, 1/8T, 1/8, 1/8D of the MIDI clock | RPT: REPEAT in percent, 100 the edge, up to 127 the runaway (bounded) | MODE (stepped): H1, H2, H3, H1+2, H2+3, H123, H23+S, H123S (+S: spring) | AGE: 0 new .. 127 worn: loop low-pass 10 -> 2 kHz, wow up to +-0.6 % (~AGE^2), flutter up to +-0.2 % |
   | 18 HALO | DCY: T60 0.3 s x 100^(v/126), 0.3..30 s; 127 FRZ (FREEZE) | MOD: 0 still .. 127 deep (+-1 ms at ~1.1 Hz) | TONE: loop low-pass 1.2..10 kHz, input high-pass 30..250 Hz | SHIM: octave-up shimmer 0 off .. 127 |
+
+  **SPACE** (`fx/tape_fx.h`, written for the Sidecar; Airwindows TapeDelay2 and Dub Station (MIT) and ChowDSP's tape
+  model (GPL-3) read for ideas only, no code): an RE-201-style tape echo, `RYTM_SENDFX_LARGE` only (the Teensy reports
+  it MISSING).
+  - **The tape:** one mono loop of 2^17 floats (512 KB a slot, 2.73 s at 48 kHz; 545 KB with the spring), three
+    playback heads at 1 : 2 : 3 of the shortest, 4-point cubic reads with the delay ramped per sample. TIME is tape
+    speed: all heads scale together and a change glides (~100 ms), so the echoes on tape bend in pitch, never jump.
+    SYNC takes the tempo from `Control::clock` (24 ppqn, the last up to 24 ticks; 120 BPM before a clock, the last
+    tempo after it stops); a delay the tape cannot hold is clamped (H3 <= 2.72 s).
+  - **The record path:** input + REPEAT x (the selected heads' sum / their count, so 100 % is the edge in every MODE)
+    -> 45 Hz high-pass -> AGE's low-pass (the loss per pass) -> saturation (`soft_limit` toward 0.7). Above 100 % a
+    faint hiss (-80 dB x (REPEAT - 100 %)) seeds the runaway; at or below it silence in is silence out. A multi-head
+    runaway fades while TIME is swept (each head is pitched by its own delay's change) and builds again when TIME
+    rests; H1 howls through a sweep (the dub siren).
+  - **Wow and flutter:** 0.55 Hz sine + a slow random drift, and 6.4 Hz; the depth set from the pitch deviation (the
+    same at every TIME), the later heads a little more wow; once a block, ramped per sample.
+  - **The spring** (H23+S, H123S): per side a 36 / 41 ms loop through 12 first-order allpasses (the chirp), a 4.5 kHz
+    damping, feedback 0.8 (~1.2 s), fed by the input and the echoes (120 Hz .. 5 kHz); it runs only in a spring mode
+    and is cleared when the mode leaves it.
+  - **The return:** H1 centre, H2 left of it, H3 right, the spring L / R. Tests: `tests/test_tape.cpp`; demo:
+    `make -C core demo-tape` (`space_demo.wav`). CPU (Mac, the x13.2 Pi 4 estimate) a 12-frame block: H1 0.14 us
+    (1.9 us, 0.7 % of a core), H123 + spring 0.31 us (4.1 us, 1.6 %), two of them 0.57 us (7.5 us, 3.0 %), with
+    CLOUDSEED AMBIENCE on FX 2 1.44 us (19 us, 7.6 %).
 
   **HALO** (`fx/halo_fx.h`, written for the Sidecar; the idea is the published figure-8 plate tank ("Effect Design
   Part 1", JAES 1997), with its own sizes, filters, modulation, shimmer and layout): a small lush modulated plate the

@@ -1,0 +1,189 @@
+diff --color -ruN a/include/circle/usb/usbtouchscreen.h b/include/circle/usb/usbtouchscreen.h
+--- a/include/circle/usb/usbtouchscreen.h	2026-10-24 19:25:16
++++ b/include/circle/usb/usbtouchscreen.h	2026-10-24 19:27:14
+@@ -44,6 +44,12 @@
+ 	// circle-touch.patch: the raw X/Y range (the descriptor's logical maxima); FALSE: not known
+ 	boolean GetLogicalMax (unsigned *pMaxX, unsigned *pMaxY) const;
+ 
++	// circle-touch-pointer.patch: contacts a report (1: single touch, e.g. an absolute-pointer panel: no pinch)
++	unsigned GetMaxContacts (void) const;
++	// its touchN device (Get() is the USB touch screen with the most contacts: a panel with an absolute-pointer
++	// interface and a digitizer one is bound by the digitizer)
++	CTouchScreenDevice *GetTouchDevice (void) const	{ return m_pDevice; }
++
+ 	// CUSBHIDDevice::Poll() (main loop), then the first input reports logged (not from the IRQ)
+ 	void Poll (void);
+ 
+@@ -54,6 +60,7 @@
+ 	static CUSBTouchScreenDevice *volatile s_pThis;
+ 	volatile unsigned m_nIgnored;
+ 	void ReportHandler (const u8 *pReport, unsigned nReportSize);
++	void ProbeMultiTouch (const hiddig::Layout &Layout);	// read-only, logged (circle-touch-pointer.patch)
+ 
+ private:
+ 	hiddig::Tracker m_Tracker;
+diff --color -ruN a/lib/usb/usbdevicefactory.cpp b/lib/usb/usbdevicefactory.cpp
+--- a/lib/usb/usbdevicefactory.cpp	2026-10-24 19:24:21
++++ b/lib/usb/usbdevicefactory.cpp	2026-10-24 19:25:03
+@@ -63,6 +63,10 @@
+ // on it. Yes when its report descriptor has a usable Digitizer Touch Screen / Pen application (hiddigitizer.h), or
+ // for the known panels by vendor/product (then CUSBTouchScreenDevice logs the descriptor if it cannot use it).
+ // A descriptor that names the Digitizer page but has nothing usable is logged at NOTICE.
++// circle-touch-pointer.patch: also an absolute mouse/pointer (GeeekPi 0416:c169 measured: a Mouse application with
++// absolute 0..32767 X/Y, button 1 = touch). The decision is the parse only: a known panel whose descriptor cannot be
++// used keeps the keyboard/mouse driver (its descriptor logged), as a failed Configure() would make the hub drop the
++// device and find it again on every scan.
+ static boolean IsBootTouchScreen (CUSBFunction *pParent)
+ {
+ 	CString *pVendor = pParent->GetDevice ()->GetName (DeviceNameVendor);
+@@ -74,7 +78,7 @@
+ 	TUSBHIDDescriptor *pHIDDesc = (TUSBHIDDescriptor *) TempFunction.GetDescriptor (DESCRIPTOR_HID);
+ 	if (pHIDDesc == 0 || pHIDDesc->wReportDescriptorLength == 0)
+ 	{
+-		return bQuirk;
++		return FALSE;
+ 	}
+ 
+ 	u16 usLength = pHIDDesc->wReportDescriptorLength;
+@@ -85,24 +89,25 @@
+ 			REQUEST_IN | REQUEST_TO_INTERFACE, TempFunction.GetInterfaceNumber ())
+ 	    != usLength)
+ 	{
+-		return bQuirk;
++		return FALSE;
+ 	}
+ 
+ 	hiddig::Layout Layout;
+ 	if (hiddig::Parse (ReportDescriptor, usLength, &Layout))
+ 	{
+-		pParent->GetDevice ()->LogWrite (LogNotice, "Touch screen on a boot HID interface: using the touch driver");
++		pParent->GetDevice ()->LogWrite (LogNotice, "%s on a boot HID interface: using the touch driver",
++						 Layout.AbsPointer ? "Absolute pointer (single touch)" : "Touch screen");
+ 
+ 		return TRUE;
+ 	}
+ 
+-	if (!bQuirk && hiddig::MentionsDigitizer (ReportDescriptor, usLength))
++	if (bQuirk || hiddig::MentionsDigitizer (ReportDescriptor, usLength))
+ 	{
+-		CUSBTouchScreenDevice::LogHex ("ufactory", "digitizer page, no usable touch collection: report descriptor",
++		CUSBTouchScreenDevice::LogHex ("ufactory", "no usable touch collection: report descriptor",
+ 					       ReportDescriptor, usLength);
+ 	}
+ 
+-	return bQuirk;
++	return FALSE;
+ }
+ #endif
+ 
+@@ -372,6 +377,15 @@
+ 		TempFunction.GetDevice ()->LogWrite (LogError, "Cannot get HID report descriptor");
+ 
+ 		return 0;
++	}
++
++	// circle-touch-pointer.patch: a usable touch screen, pen or absolute pointer (hiddigitizer.h) first
++	{
++		hiddig::Layout Layout;
++		if (hiddig::Parse (ReportDescriptor, usReportDescriptorLength, &Layout))
++		{
++			return new CUSBTouchScreenDevice (pParent);
++		}
+ 	}
+ 
+ 	// If we find a Usage Page (Digitizer) item, use the touch screen driver.
+diff --color -ruN a/lib/usb/usbtouchscreen.cpp b/lib/usb/usbtouchscreen.cpp
+--- a/lib/usb/usbtouchscreen.cpp	2026-10-24 19:24:21
++++ b/lib/usb/usbtouchscreen.cpp	2026-10-24 19:27:14
+@@ -96,7 +96,7 @@
+ 	const hiddig::Contact &C = Layout.C[0];
+ 	LOGNOTE ("%s ven%x-%x: report ID %u, %u bytes, %u contact(s) a report, X %d..%d Y %d..%d, contact count %s, "
+ 		 "contact ID %s, tip %s, input mode %s",
+-		 Layout.Pen ? "pen" : "touch screen", nVendor, nProduct, Layout.ReportID, Layout.ByteSize,
++		 Layout.Pen ? "pen" : Layout.AbsPointer ? "absolute pointer (single touch)" : "touch screen", nVendor, nProduct, Layout.ReportID, Layout.ByteSize,
+ 		 Layout.Contacts, C.X.LogicalMin, C.X.LogicalMax, C.Y.LogicalMin, C.Y.LogicalMax,
+ 		 Layout.ContactCount.BitSize ? "yes" : "no", C.ID.BitSize ? "yes" : "no",
+ 		 C.Tip.BitSize ? "switch" : C.InRange.BitSize ? "in range" : "none",
+@@ -128,6 +128,11 @@
+ 		}
+ 	}
+ 
++	if (Layout.AbsPointer || Layout.Contacts == 1)
++	{
++		ProbeMultiTouch (Layout);
++	}
++
+ 	if (!StartRequest ())
+ 	{
+ 		return FALSE;
+@@ -136,9 +141,69 @@
+ 	assert (m_pDevice == 0);
+ 	m_pDevice = new CTouchScreenDevice (0, 0, this);
+ 	assert (m_pDevice != 0);
+-	s_pThis = this;
++	if (s_pThis == 0 || s_pThis->GetMaxContacts () <= Layout.Contacts)	// circle-touch-pointer.patch
++	{
++		s_pThis = this;
++	}
+ 
+ 	return TRUE;
++}
++
++// circle-touch-pointer.patch: a single-touch device, read only, logged at NOTICE: is there a multi-touch mode? Its
++// configurations (all interfaces and alternate settings, hex) and its feature reports 1..5 (GET_REPORT: reads, a
++// stall answers an ID it does not have). Nothing is written.
++void CUSBTouchScreenDevice::ProbeMultiTouch (const hiddig::Layout &Layout)
++{
++	const TUSBDeviceDescriptor *pDevDesc = GetDevice ()->GetDeviceDescriptor ();
++	unsigned nConfigs = pDevDesc ? pDevDesc->bNumConfigurations : 0;
++	LOGNOTE ("probe: single touch (%u contact(s) a report); %u configuration(s)", Layout.Contacts, nConfigs);
++
++	DMA_BUFFER (u8, Buffer, 512);
++	for (unsigned i = 0; i < nConfigs && i < 4; i++)
++	{
++		if (GetHost ()->GetDescriptor (GetEndpoint0 (), DESCRIPTOR_CONFIGURATION, i, Buffer, 9) != 9)
++		{
++			LOGNOTE ("probe: configuration %u: no descriptor", i);
++			continue;
++		}
++		unsigned nTotal = Buffer[2] | Buffer[3] << 8;
++		if (nTotal > sizeof Buffer) nTotal = sizeof Buffer;
++		int nGot = GetHost ()->GetDescriptor (GetEndpoint0 (), DESCRIPTOR_CONFIGURATION, i, Buffer, nTotal);
++		if (nGot <= 0) continue;
++
++		CString What;
++		What.Format ("probe: configuration %u (%u interface(s))", i, Buffer[4]);
++		LogHex (From, What, Buffer, nGot);
++		for (int j = 0; j + 1 < nGot && Buffer[j] >= 2; j += Buffer[j])	// the interfaces, alternate settings
++		{
++			if (Buffer[j + 1] == DESCRIPTOR_INTERFACE && j + 8 < nGot)
++			{
++				LOGNOTE ("probe: interface %u alt %u: class %u-%u-%u, %u endpoint(s)", Buffer[j + 2],
++					 Buffer[j + 3], Buffer[j + 5], Buffer[j + 6], Buffer[j + 7], Buffer[j + 4]);
++			}
++		}
++	}
++
++	for (unsigned nID = 1; nID <= 5; nID++)
++	{
++		int nGot = GetHost ()->ControlMessage (GetEndpoint0 (),
++						       REQUEST_IN | REQUEST_CLASS | REQUEST_TO_INTERFACE,
++						       GET_REPORT, (REPORT_TYPE_FEATURE << 8) | nID,
++						       GetInterfaceNumber (), Buffer, 64);
++		if (nGot < 0)
++		{
++			LOGNOTE ("probe: feature report %u: none (stall or error)", nID);
++			continue;
++		}
++		CString What;
++		What.Format ("probe: feature report %u", nID);
++		LogHex (From, What, Buffer, (unsigned) nGot);
++	}
++}
++
++unsigned CUSBTouchScreenDevice::GetMaxContacts (void) const
++{
++	return m_Tracker.GetLayout ().Contacts;
+ }
+ 
+ boolean CUSBTouchScreenDevice::GetLogicalMax (unsigned *pMaxX, unsigned *pMaxY) const

@@ -98,6 +98,105 @@ int main(void) {
         self.assertEqual(got[23:31], [rmp_pack.FORMAT, 0x31504D52, rmp_pack.ENUM_NAME_BYTES, rmp_pack.ENUM_MAX,
                                       rmp_pack.TEXT["preset"], rmp_pack.TEXT["pool"], rmp_pack.ROLE["offset"], rmp_pack.LOOK["list"]])
 
+SINE = {"id": "rytm.sine_test", "version": "1.0.0", "name": "SINE TEST", "short": "SINE", "licence": "MIT",
+        "knobs": [{"p": 1, "long": "Tune", "short": "TUN", "look": "centred", "text": "bipolar"},
+                  {"p": 2, "long": "Level", "short": "LEV", "look": "fader"},
+                  {"p": 3, "long": "Decay", "short": "DEC"}]}
+
+
+def fake(m):
+    """A package of no image around manifest m (the header's fields the parsers read; no ELF, no toolchain)."""
+    man, ver, compat = rmp_pack._manifest(m)
+    f = [0x31504D52, rmp_pack.package_format(m), 2, m["id"].encode(), ver, compat, 0, 0, 0, 0, len(man), 0,
+         zlib.crc32(man) & 0xFFFFFFFF, b"\0" * 20]
+    return struct.pack(rmp_pack.HEADER_FMT, *f) + man
+
+
+class Labels(unittest.TestCase):
+    def test_type_labels(self):
+        """2026-10-26 (plugins/mdkit): labels per value of a list knob, a block at the manifest's end (footer "RLB1");
+        the manifest before it is unchanged, so an older host reads the same knobs and names."""
+        m = json.loads(json.dumps(SINE))
+        m["knobs"].append(dict(p=9, long="Type", short="TYPE", look="list", text="enum", names=["BD", "SD"]))
+        plain = fake(m)
+        m["type_labels"] = dict(knob=9, params=[1, 3], sets=[[["Pitch", "PTCH"], ["Decay", "DEC"]],
+                                                             [["Snappy", "SNAP"], None]])
+        rmp = fake(m)
+        self.assertEqual(rmp_pack.parse_manifest(rmp), rmp_pack.parse_manifest(plain))   # the old reading
+        self.assertIsNone(rmp_pack.parse_labels(plain))
+        self.assertEqual(rmp_pack.parse_labels(rmp), m["type_labels"])
+        h, h0 = rmp_pack.parse_header(rmp), rmp_pack.parse_header(plain)
+        self.assertEqual((h["format"], h["manifest_size"] - h0["manifest_size"]), (3, 4 + 2 + 2 * 2 * 16 + 6))
+        end = 96 + h["image_size"] + 8 * h["reloc_count"] + h["manifest_size"]
+        self.assertEqual(rmp[end - 4:end], b"RLB1")
+        for bad, text in ((dict(knob=1, params=[3], sets=[[None]]), "not a list knob"),
+                          (dict(knob=9, params=[9], sets=[[None], [None]]), "other knobs"),
+                          (dict(knob=9, params=[4], sets=[[None], [None]]), "other knobs"),
+                          (dict(knob=9, params=[1, 1], sets=[[None, None], [None, None]]), "other knobs"),
+                          (dict(knob=9, params=[1], sets=[[None]]), "must hold 2 sets"),
+                          (dict(knob=9, params=[1], sets=[[None], [None, None]]), "must hold 1 entries"),
+                          (dict(knob=9, params=[1], sets=[[["Way too long label", "X"]], [None]]), "limit is 12"),
+                          (dict(knob=9, params=[1], sets=[[["A", "TOOLONG"]], [None]]), "limit is 4"),
+                          (dict(knob=9, params=list(range(1, 10)), sets=[[None] * 9] * 2), "1..8"),
+                          (dict(knob=9, params=[1]), "exactly")):
+            mm = json.loads(json.dumps(m))
+            mm["type_labels"] = bad
+            with self.assertRaises(rmp_pack.PackError) as cm:
+                rmp_pack._manifest(mm)
+            self.assertIn(text, str(cm.exception))
+
+    def test_type_lists(self):
+        """2026-10-27 (plugins/mdkit's MD): a list knob whose names follow another ("follows", "lists"; footer
+        "RLB2"): one label set per name of all the lists; the manifest before it is unchanged (an older host shows
+        P10's own names, lists[0])."""
+        m = json.loads(json.dumps(SINE))
+        m["knobs"].append(dict(p=9, long="Engine", short="ENG", look="list", text="enum", names=["FM", "PI"]))
+        m["knobs"].append(dict(p=10, long="Type", short="TYPE", look="list", text="enum", names=["BD", "SD"]))
+        plain = fake(m)
+        tl = dict(knob=10, follows=9, lists=[["BD", "SD"], ["BD", "MT", "HH"]], params=[1, 3],
+                  sets=[[["Pitch", "PTCH"], None], [["Snap", "SNAP"], None], [None, ["Decay", "DEC"]],
+                        [["Tune", "TUNE"], None], [["Closed", "CLOS"], ["Ring", "RING"]]])
+        m["type_labels"] = tl
+        rmp = fake(m)
+        self.assertEqual(rmp_pack.parse_manifest(rmp), rmp_pack.parse_manifest(plain))   # the old reading
+        self.assertEqual(rmp_pack.parse_labels(rmp), tl)
+        h, h0 = rmp_pack.parse_header(rmp), rmp_pack.parse_header(plain)
+        self.assertEqual(h["manifest_size"] - h0["manifest_size"], 5 + 2 + 2 + 5 * 8 + 5 * 2 * 16 + 6)
+        # review finding 3: a package with an RLB2 block is format 4, so a host from before it (RMP_FORMAT 3) refuses
+        # it ("format not supported") instead of showing the first list's names for every value of "follows"; a
+        # package without one (RLB1 or none) stays format 3, byte for byte
+        self.assertEqual((rmp_pack.package_format(m), rmp_pack.package_format(json.loads(json.dumps(SINE)))), (4, 3))
+        m1 = json.loads(json.dumps(m)); m1["type_labels"] = dict(knob=10, params=[1], sets=[[None], [None]])
+        self.assertEqual(rmp_pack.package_format(m1), 3)
+        self.assertEqual(rmp_pack.FORMAT, 4)
+        end = 96 + h["image_size"] + 8 * h["reloc_count"] + h["manifest_size"]
+        self.assertEqual(rmp[end - 4:end], b"RLB2")
+        five = [[None, None]] * 5
+        for bad, text in ((dict(tl, follows=10), "another list knob"),
+                          (dict(tl, follows=1), "another list knob"),
+                          (dict(tl, lists=[["BD", "SD"]]), "must hold 2 lists"),
+                          (dict(tl, lists=[["BD", "SD"], []]), "1..16 names"),
+                          (dict(tl, lists=[["BD", "SD"], ["TOOLONGNAME"]], sets=five[:3]), "limit is 7"),
+                          (dict(tl, lists=[["SD", "BD"], ["BD", "MT", "HH"]]), "must equal P10's names"),
+                          (dict(tl, lists=[["BD", "SD"], ["X"] * 17], sets=[[None, None]] * 19), "1..16 names"),
+                          (dict(tl, params=[9]), "other knobs"),
+                          (dict(tl, sets=five[:4]), "must hold 5 sets"),
+                          ({k: v for k, v in tl.items() if k != "lists"}, "neither")):
+            mm = json.loads(json.dumps(m))
+            mm["type_labels"] = bad
+            with self.assertRaises(rmp_pack.PackError) as cm:
+                rmp_pack._manifest(mm)
+            self.assertIn(text, str(cm.exception))
+        # more than 32 names in all
+        mm = json.loads(json.dumps(m))
+        mm["knobs"][3]["names"] = ["A", "B", "C"]
+        mm["knobs"][4]["names"] = ["X"] * 16
+        mm["type_labels"] = dict(knob=10, follows=9, lists=[["X"] * 16] * 3, params=[1], sets=[[None]] * 48)
+        with self.assertRaises(rmp_pack.PackError) as cm:
+            rmp_pack._manifest(mm)
+        self.assertIn("limit is 32", str(cm.exception))
+
+
 def _armbin():
     """The newest installed Teensyduino compiler (versions compared numerically), else the one this was written with."""
     import glob
@@ -380,6 +479,20 @@ class Negative(unittest.TestCase):
         self.assertEqual(k[4]["names"], ["SIN", "TRI"])
         h = rmp_pack.parse_header(rmp)
         self.assertEqual((h["format"], h["manifest_size"]), (3, 84 + 26 * 5 + 8 * 2))
+
+    def test_voices_and_pitch_flags(self):   # seqx (E0): manifest max_voices / pitch -> the header's flags
+        self.assertEqual(rmp_pack.parse_header(self.pack_bytes(self.good))["flags"], 0)   # an old manifest: 0 (mono)
+        m = json.loads(json.dumps(self.manifest))
+        m.update(max_voices=6, pitch="none")
+        f = rmp_pack.parse_header(self.pack_bytes(self.good, m))["flags"]
+        self.assertEqual(f, 0x1 | 5 << 4 | 2 << 8)
+        m.update(max_voices=1, pitch="note")
+        self.assertEqual(rmp_pack.parse_header(self.pack_bytes(self.good, m))["flags"], 0)
+        for bad in (dict(max_voices=0), dict(max_voices=9), dict(max_voices="4"), dict(pitch="tune")):
+            mm = json.loads(json.dumps(self.manifest))
+            mm.update(bad)
+            with self.assertRaises(rmp_pack.PackError):
+                rmp_pack._manifest(mm)
 
     def test_api_from_entry_table(self):
         """The header's api is the entry table's own (an API-1 plugin stays an API-1 package)."""

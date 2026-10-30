@@ -4,6 +4,7 @@
 #include <circle/multicore.h>
 
 #include "bridge.h"
+#include "crumb.h"
 #include "ob_usb.h"
 
 CGuard g_Guard;
@@ -52,6 +53,9 @@ void CGuard::Enter (unsigned nCore, unsigned nVoice)
 void CGuard::LogNews (CLogger *pLogger)
 {
 	unsigned nPerUs = (unsigned) TicksPerUs ();
+	u32 f = TakeFreed ();	// first: a voice freed and muted again in the same second ends on its mute
+	for (unsigned v = 0; v < Voices; v++)
+		if ((f >> v) & 1) pLogger->Write ("guard", LogNotice, "voice %u unmuted: its machine changed (now %s)", v, bridge::machine_name (v));
 	u32 n = TakeNews ();
 	for (unsigned v = 0; v < Voices; v++)
 	{
@@ -96,6 +100,8 @@ void CEngineExceptionHandler::Throw (unsigned nException, TAbortFrame *pFrame)
 			      :: "r" ((u64) &ResumeWorker), "r" (nSPSR), "r" (nStack) : "memory");
 		__builtin_unreachable ();
 	}
+	// the breadcrumb (crumb.h): which core, why, where - kept over the reboot
+	crumb::Fault (nCore, (u32) pFrame->esr_el1, pFrame->elr_el1, pFrame->far_el1, "an exception outside a voice's render");
 	g_Guard.Fatal ("an exception outside a voice's render");
 	if (nCore != 0)
 	{

@@ -23,7 +23,7 @@ sys.path.insert(0, HERE)
 import protocol as P  # noqa: E402
 from rui_e2e import oled  # noqa: E402
 
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "rytm-emu"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
 TAG = os.environ.get("RUI_TAG", "rui1021")
 
 

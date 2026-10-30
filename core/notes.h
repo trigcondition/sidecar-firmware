@@ -2,7 +2,7 @@
 // voice 0..7 on the machine chosen for it; note-on -> 0x04 TRIG+PARAMS with the voice's P1..P16, a note-off (or
 // velocity 0) of the voice's last note -> 0x11 (an older note's off is ignored, the newer one keeps playing), CC 16..31 -> P1..P16 and a 0x03 PARAMS (sim/obhost.py's CC numbers). Each machine starts
 // from defaults that sound (core_golden.py's scenarios): PLAITS VA, JUNO factory patch 0 held, 6-OP FM ROM voice
-// 0 held, DAISYSP MODAL, DIGIDRUM EFM-BD, DSP SAMPLE pool slot 1 dry. Shared by the boards (docs/core.md, "MIDI
+// 0 held, DAISYSP MODAL, DSP SAMPLE pool slot 1 dry. Shared by the boards (docs/core.md, "MIDI
 // notes"): the Pi engine (notes=1, on by default) and the Teensy's voiceloop (:notes=1, off by default). The
 // reports go to the board's callback (core::engine_sysex there, after its own counting): the adapter keeps no
 // render state, so it runs on the control side only (one instance per board, never per render core).
@@ -16,7 +16,7 @@ class NoteAdapter {
  public:
   typedef void (*SysExFn)(const uint8_t* d, int len);
   explicit NoteAdapter(SysExFn out);
-  bool SetMachine(int voice, const char* name);   // plaits juno daisy dsps grain dd fm; false: unknown name or voice
+  bool SetMachine(int voice, const char* name);   // plaits juno daisy dsps grain fm md; false: unknown name or voice
   int Machine(int voice) const { return mach_[voice & 7]; }
   static const char* Name(int flag);
   static const char* Names();   // the names SetMachine knows, space-separated

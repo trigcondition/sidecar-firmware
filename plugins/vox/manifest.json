@@ -1,0 +1,29 @@
+{
+  "id": "vox.trombone",
+  "version": "1.0.0",
+  "compatible_from": "1.0.0",
+  "name": "VOX",
+  "short": "VOX",
+  "licence": "MIT (Pink Trombone DSP: Neil Thapen)",
+  "page2": "params",
+  "page2_title": "VOX MORE",
+  "max_voices": 8,
+  "pitch": "note",
+  "knobs": [
+    {"p": 1, "long": "Vowel", "short": "VOWL", "look": "dial", "text": "number", "default": 4},
+    {"p": 2, "long": "Tongue", "short": "TONG", "look": "dial", "text": "number", "default": 33},
+    {"p": 3, "long": "Constr Pos", "short": "CONS", "look": "dial", "text": "number", "default": 96},
+    {"p": 4, "long": "Constr Dia", "short": "CDIA", "look": "dial", "text": "number", "default": 127},
+    {"p": 5, "long": "Tenseness", "short": "TENS", "look": "dial", "text": "number", "default": 94},
+    {"p": 6, "long": "Breath", "short": "BRTH", "look": "dial", "text": "number", "default": 64},
+    {"p": 7, "long": "Vibrato", "short": "VIBR", "look": "dial", "text": "number", "default": 21},
+    {"p": 8, "long": "Nasal", "short": "NASL", "look": "dial", "text": "number", "default": 0},
+    {"p": 9, "long": "Attack", "short": "ATK", "look": "dial", "text": "number", "default": 68},
+    {"p": 10, "long": "Release", "short": "REL", "look": "dial", "text": "number", "default": 74},
+    {"p": 11, "long": "Glide", "short": "GLID", "look": "dial", "text": "number", "default": 16},
+    {"p": 12, "long": "Wobble", "short": "WOBL", "look": "dial", "text": "number", "default": 32},
+    {"p": 13, "long": "Vib Rate", "short": "VRAT", "look": "dial", "text": "number", "default": 64},
+    {"p": 14, "long": "Velocity", "short": "VEL", "look": "dial", "text": "number", "default": 64},
+    {"p": 15, "long": "Level", "short": "LEV", "look": "fader", "text": "number", "default": 100}
+  ]
+}

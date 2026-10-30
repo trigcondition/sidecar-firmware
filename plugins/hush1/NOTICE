@@ -1,0 +1,16 @@
+plugins/hush1 - notices for the HUSH1 package (hush1.sh101, hush1.a64.rmp)
+
+HUSH1's DSP is HUSH ONE's (src/dsp/sh101_osc.c, sh101_filter.c, sh101_env.c, sh101_control.c and the voice path of
+sh101_plugin.c's render_block), ported to C for one voice a state and adapted for the Sidecar (hush1.c's header lists
+the changes: PolyBLEP oscillators, a prewarped filter without upstream's bypass / synthetic self-oscillation, one ADSR
+as on the SH-101, block-rate cutoff and glide, a click-free retrigger, no LFO / presets / note stack).
+  Taken from:  https://github.com/charlesvestal/schwung-hush1  commit 598ab90505f7f924d09ed83f47e46430218cd43b
+               (2026-08-31, Schwung / Move Everything module "HUSH ONE")
+  Licence:     MIT, Copyright (c) 2025-2026 Charles Vestal (LICENSE.hush1, the upstream LICENSE unchanged)
+               The repository vendors nothing else: every source file is the author's, MIT (src/host/plugin_api_v1.h,
+               not used here, is MIT for external modules as its header says). Its TAL-BassLine-101 preset import,
+               reference recordings and comparison tools are not ported.
+No upstream file is in this repository or the package: hush1.c is a rewrite of the voice DSP.
+
+The adaptation and the glue (hush1.c, manifest.json, the Makefile, tests/): MIT, Copyright 2026 trigcondition and
+contributors (LICENSE). The package links sdk/rmp/shim (MIT).

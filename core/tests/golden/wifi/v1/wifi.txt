@@ -1,0 +1,4 @@
+# Sidecar Wi-Fi
+on=1
+ssid=studio
+band=2g

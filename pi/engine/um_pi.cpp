@@ -9,6 +9,7 @@
 #include <circle/util.h>
 #include <fatfs/ff.h>
 
+#include "fmt/fmt.h"
 #include "user/um.h"
 
 static const char From[] = "um";
@@ -86,28 +87,15 @@ static boolean QueueWrite (const char *pPath, const void *pData, u32 n)
 	return TRUE;
 }
 
+// 0.3.0 power-cut safety: the one atomic write (core/fmt/fmt.h write_atomic), not the tmp-unlink-rename this did
+// before. It writes <path>.tmp, reads it back and compares it, keeps the old file as <path>.prev until .tmp is in
+// place, and makes the folders - so a cut anywhere leaves the file old or new, never missing. It did unlink the old
+// file and then rename over it: a cut in between left no file at all, which for /.rytm/slots/<K>.txt is the U-slot
+// map and for /.rytm/display.txt the screen settings. A cut between the renames leaves a .prev that the reader's
+// fmt::recover puts back. (Called by core 0's loop for display.txt and by the umwrite task for the slot maps.)
 boolean SdWriteWhole (const char *pPath, const char *pData, unsigned n)
 {
-	char sd[80], tmp[84], dir[80];
-	strcpy (sd, "SD:");
-	strcat (sd, pPath);
-	strcpy (tmp, sd);
-	strcat (tmp, ".tmp");
-	strcpy (dir, sd);
-	for (char *c = dir + 4; *c; c++)		// its folders (/.rytm, /.rytm/slots)
-		if (*c == '/') { *c = 0; f_mkdir (dir); *c = '/'; }
-	FIL f;
-	if (f_open (&f, tmp, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return FALSE;
-	UINT w = 0;
-	boolean bOK = f_write (&f, pData, n, &w) == FR_OK && w == n;
-	bOK = f_close (&f) == FR_OK && bOK;
-	if (bOK)
-	{
-		f_unlink (sd);
-		bOK = f_rename (tmp, sd + 3) == FR_OK;	// the new name without its drive (FatFs)
-	}
-	if (!bOK) f_unlink (tmp);
-	return bOK;
+	return core::fmt::write_atomic (pPath, pData, n) ? TRUE : FALSE;
 }
 
 void CUserMachinesWriter::Run (void)

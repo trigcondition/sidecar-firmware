@@ -134,12 +134,12 @@ step_task4_boot() {
 # drives the console - :selftest=on, each machine on voice 0 with synthetic MIDI notes through midi_in -> notes ->
 # the core, a 10 s 'w' capture each (capture.py), :selftest=off. Pass (pi_run.py, exit 0): per machine the voice
 # set, its trigs, engine blocks 3900..4100/s, self-test OUT 6700..7000 blocks/s, 1..3 notes/s, no underflow in
-# steady state, the capture's OUT MAIN L peak in (-45, -11.9] dBFS and (except dd and daisy) the pitch within 3 % of
-# the machine's own (pi_run.py EXPECT: plaits 130.81 Hz, juno and fm 65.41 Hz) (daisy, inharmonic MODAL: its strongest mode within 3 % of the core's 626 Hz); no fault in the lines read. plaits juno fm daisy dd here (dsps needs Task 6's pool
+# steady state, the capture's OUT MAIN L peak in (-45, -11.9] dBFS and (except md and daisy) the pitch within 3 % of
+# the machine's own (pi_run.py EXPECT: plaits 130.81 Hz, juno and fm 65.41 Hz) (daisy, inharmonic MODAL: its strongest mode within 3 % of the core's 626 Hz); no fault in the lines read. plaits juno fm daisy md here (dsps needs Task 6's pool
 # sample: step task6-engines). About 5 x 45 s. Then the flash log has no fault.
 step_task4_selftest() {
   flash 20 || return
-  if pirun --selftest engines --machines plaits,juno,fm,daisy,dd; then
+  if pirun --selftest engines --machines plaits,juno,fm,daisy,md; then
     pass "pi_run.py --selftest engines: every machine played, captured, level and pitch ok"
   else
     fail "pi_run.py --selftest engines (its FAIL lines above; captures in pi/circle/out/engine-*.wav)"
@@ -165,11 +165,11 @@ step_task4_selftest() {
 # port; the self-test transport (':selftest=on') paces the blocks in place of the Rytm's IN stream.
 guard() { (cd "$REPO" && uv run --with pyserial python pi/engine/tests/guard.py "$@"); }
 
-# After every flash the boot logs the guard's budget: 25 % of a 12-frame block at 54 MHz = 3375 ticks = 62 us.
-budget() { expect 'guard: voice budget 62 us \(25 % of a 12-frame block\)' "voice budget (voicebudget= default)"; }
+# After every flash the boot logs the guard's budget: 50 % of a 12-frame block at 54 MHz = 6750 ticks = 125 us.
+budget() { expect 'guard: voice budget 125 us \(50 % of a 12-frame block\)' "voice budget (voicebudget= default)"; }
 
 # Budget mute, fault mute and recovery, :unmute (guard.py mute; its PASS/FAIL lines name each check): ':drone=all';
-# ':overtest=6' -> "voice 6 !PLAITS muted: over budget (longest render 3xx us, budget 62 us)", "engine: muted
+# ':overtest=6' -> "voice 6 !PLAITS muted: over budget on an overloaded core (longest render 3xx us, budget 125 us)", "engine: muted
 # !PLAITS(6)"; ':faulttest=7' -> "core 2 faulted at PC 0x... (fault 1 on this core), resumed at task level
 # (EL1t)", "voice 7 !PLAITS muted: crashed", "engine: muted !PLAITS(6) !PLAITS(7)"; throughout a stats line a second,
 # "under" flat, cpu c2 > 0 after the fault (voices 4-5), peak > 0; ':unmute', then ':faulttest=5' and ':faulttest=7':
@@ -257,7 +257,7 @@ step_task6_content() {
 
 # Every engine on notes without a Rytm (the plan's Step 3, on the self-test transport): pi_run.py --selftest engines
 # with all six machines, DSP SAMPLE on the pool's sine440.wav (note 48 = 220 Hz; Mac: make -C tests content measured
-# 220.0 Hz on the core). Pass: ALL PASS, 6 x (voice set, trigs, 4 stats checks, level) + 4 pitches (not dd, daisy: its strongest mode) and the
+# 220.0 Hz on the core). Pass: ALL PASS, 6 x (voice set, trigs, 4 stats checks, level) + 4 pitches (not md, daisy: its strongest mode) and the
 # self-test on/off and fault checks. About 6 x 45 s.
 step_task6_engines() {
   flash 20 || return
@@ -276,7 +276,7 @@ step_task6_gaps() {
 }
 
 # DEFERRED (Rytm) - Task 6, Step 3: the Rytm in OVERBRIDGE mode on a Pi USB port: `pi_run.py --flash engines`.
-#   Pass: twelve checks plus voice/trig/stats per machine (a level and a pitch each, DIGIDRUM level only), the
+#   Pass: twelve checks plus voice/trig/stats per machine (a level and a pitch each, MD - DIGIDRUM's place since 2026-10-29 - level only), the
 #   stats' rytmob OUT 6700..7000/s, ALL PASS. A pitch fail: play the WAV in pi/circle/out/ against the same machine
 #   on the Teensy (sim/core_golden.py's defaults); a wrong octave beyond +-1, or noise, is a bug.
 #   Run 2026-10-15 on the Rytm's own notes instead of the drone: `pi_run.py engines --rytm-notes 0` (its track on
@@ -293,7 +293,7 @@ step_task6_gaps() {
 # Copy the table pi_run.py prints into docs/pi-engine.md's Measurements (the "pending" cells).
 step_task7_bench() {
   flash 25 || return
-  expect 'bench c3 dd: [0-9]+\.[0-9]+ % of a core per voice' "the bench ran on every core (core 3 last)"
+  expect 'bench c3 md: [0-9]+\.[0-9]+ % of a core per voice' "the bench ran on every core (core 3 last)"
   expect 'core 1 up: renders voices 0-3' "the render loops started after the bench"
   if pirun bench "$LOG"; then pass "pi_run.py bench: every machine fits four voices a core"; else fail "pi_run.py bench (FAIL lines above)"; fi
   nofault

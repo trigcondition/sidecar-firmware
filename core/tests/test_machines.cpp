@@ -8,7 +8,7 @@ int main() {
   using namespace core;
   CHECK(kVoices == 8 && kBlock == 12);
   CHECK(machine_of(0x00 | 3) == kPlaits && machine_of(0x08 | 7) == kJuno && machine_of(0x10) == kDaisy);
-  CHECK(machine_of(0x20 | 5) == kDspSample && machine_of(0x40 | 1) == kDigidrum && machine_of(0x48 | 2) == kFm);
+  CHECK(machine_of(0x20 | 5) == kDspSample && machine_of(0x40 | 1) == kMd && machine_of(0x48 | 2) == kFm);
   CHECK(user_slot_of(0x50) == 0 && user_slot_of(0x58) == 1 && user_slot_of(0x70) == 4);
   CHECK(user_slot_of(0x48) == -1 && user_slot_of(0x78) == -1 && user_slot_of(0x00) == -1);
   // zone = min((v * n) >> 7, n - 1) on the integer part, clamped to 0..127 (protocol.eng_zone)

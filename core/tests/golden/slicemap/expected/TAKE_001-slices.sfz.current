@@ -1,0 +1,8 @@
+// sidecar slicemap 2
+// CHOP's slices of one sample (docs/CHOP.md): a region a slice; sc_* opcodes are CHOP's, other players skip them
+<control> default_path=
+<global> sc_sha=- sc_size=0 sc_frames=0 sc_rate=0 sc_ch=1 sample=TAKE_001.wav
+<region> key=36 offset=0 end=11999 loop_mode=one_shot
+<region> key=37 offset=12000 end=24499 loop_mode=one_shot
+<region> key=38 offset=24500 end=35999 loop_mode=one_shot
+<region> key=39 offset=36000 end=47999 loop_mode=one_shot

@@ -69,9 +69,9 @@ def main():
     lib.core_c_rui_bench.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
     lib.core_c_sendfx_command.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
     lib.core_c_begin(tempfile.mkdtemp(prefix="rui_card_").encode())
-    # a scene: voices 1-3 and 6 PLAITS, 4 JUNO, 5 DIGIDRUM, 7 FM, 8 DAISYSP; FX1 CHORUS PRE, FX2 COMB POST
+    # a scene: voices 1-3, 5 and 6 PLAITS, 4 JUNO, 7 FM, 8 DAISYSP; FX1 CHORUS PRE, FX2 COMB POST
     import protocol as P
-    for vi, m in enumerate((0x00, 0x00, 0x00, 0x08, 0x40, 0x00, 0x48, 0x10)):
+    for vi, m in enumerate((0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x48, 0x10)):
         knobs = [100, 90, 40, 70, 60, 30, 71, 110, 64, 64, 0, 0, 0, 120, 0, 100] if vi == 2 else [45] + [64] * 15
         msg = bytes([0xF0, 0x7D, 0x52, 0x54, 0x03, m | vi] + [b for k in knobs for b in (k, 0)] + [0xF7])
         lib.core_c_sysex(msg, len(msg))

@@ -10,13 +10,13 @@
 //   fx::Control  the values: per-track sends and each FX's TYPE + params (host link 0x20 SENDFX, or the console's
 //                overrides), the route (console, /.rytm/sendfx.txt). Small, in every build; written by the control
 //                side, read by the audio side (byte fields: a torn read cannot happen).
-//   fx::SendFx   the DSP: header-only, allocation-free (~4.8 MB with RINGS, CLOUDSEED and STUTTER's 2 MiB ring; the board
+//   fx::SendFx   the DSP: header-only, allocation-free (~5.9 MB with SPACE's 0.5 MB tape a slot, RINGS, CLOUDSEED and STUTTER's 2 MiB ring; the board
 //                places it; the Teensy's small set: 16.6 KB, 16-bit lines, the small types sharing one block a slot). One instance, used by one core (the Pi:
 //                render core 2; the Teensy: the USB host interrupt); never per render core, so RYTM_RENDER_CORES is
 //                not involved.
 //
 // TYPE ids (stable; sim/protocol.py SENDFX_TYPES): 0 off; 1..63 built in (1 CHORUS, 2 COMB, 16 CRUSH, 17 RINGMOD,
-// 18 HALO (halo_fx.h) in every build, the Teensy's small set; with RYTM_SENDFX_LARGE (the Pi and the Mac) also 6 RINGS, 8 CLOUDSEED, 15 STUTTER (a
+// 18 HALO (halo_fx.h) in every build, the Teensy's small set; with RYTM_SENDFX_LARGE (the Pi and the Mac) also 5 SPACE (tape_fx.h), 6 RINGS, 8 CLOUDSEED, 15 STUTTER (a
 // master insert, not a send: stutter_fx.h; one slot at a time, FX 1 first, a second is MISSING); the rest reserved
 // for planned effects: an older Sidecar plays an id it lacks as silence and reports it MISSING by name; no tag);
 // 64..67 the user-FX slots UFX1..UFX4, as the user machines' U1..U5: each project's slot map on the Sidecar card
@@ -66,13 +66,13 @@ namespace fx {
 
 constexpr int kTracks = 12, kStems = 8, kSlots = 2, kKnobs = 6;   // knob 0 TYPE, 1 P1 (ROUTE), 2..5 the effect's P2..P5
 enum Type : uint8_t {
-  kOff = 0, kChorus = 1, kComb = 2, kRings = 6, kCloudSeed = 8, kStutter = 15, kCrush = 16, kRingMod = 17, kHalo = 18,
+  kOff = 0, kChorus = 1, kComb = 2, kTape = 5, kRings = 6, kCloudSeed = 8, kStutter = 15, kCrush = 16, kRingMod = 17, kHalo = 18,
   kFirstUser = 64
 };
 // the ids this build's SendFx plays
 constexpr bool plays(int t) {
   return t == kChorus || t == kComb || t == kCrush || t == kRingMod || t == kHalo ||
-         (RYTM_SENDFX_LARGE && (t == kRings || t == kCloudSeed || t == kStutter));
+         (RYTM_SENDFX_LARGE && (t == kTape || t == kRings || t == kCloudSeed || t == kStutter));
 }
 // P1 = ROUTE per FX slot: 0..63 PRE, returned on 2/3 (through the Rytm's analog distortion + compressor; 0 is the
 // default, so existing kits sound as before); 64..127 POST, returned on 0/1 (clean, after them). It shares TYPE's
@@ -131,6 +131,9 @@ void clock_in(uint8_t status, uint16_t spp = 0);
 // an LFO's modulation on top), each clock_in byte goes on to clock_listener.
 extern uint8_t (*knob_filter)(int slot, int knob, uint8_t v);
 extern void (*clock_listener)(uint8_t status, uint16_t spp);
+// The FX buses' insert chains (core/fx/insert.h, CORE_POLY builds; null without): FX slot s's return y[n] (stereo, before
+// its TYPE fade and the limits) through bus s's chain, in place. The send FX's core.
+extern void (*bus_insert)(int slot, float (*y)[2], int n);
 // The slot that is the STUTTER, or -1: FX 1 if both are (FX 2 is then MISSING: one ring, one insert).
 inline int stutter_slot(const Control& c) {
   return !plays(kStutter) ? -1 : c.knob[0][0] == kStutter ? 0 : c.knob[1][0] == kStutter ? 1 : -1;
@@ -483,6 +486,9 @@ struct RingMod {
 }  // namespace fx
 }  // namespace core
 #include "fx/halo_fx.h"   // HALO: uses Smooth, knob01, fast_sin, flush above
+#if RYTM_SENDFX_LARGE
+#include "fx/tape_fx.h"   // SPACE: uses Smooth, knob01, fast_sin, flush, soft_limit above and ClockWord
+#endif
 namespace core {
 namespace fx {
 
@@ -515,6 +521,7 @@ class SendFx {
 #if RYTM_SENDFX_LARGE
       st_[s].rings.Clear();
       st_[s].cloud.Clear();
+      st_[s].tape.Clear();
 #endif
       cur_[s] = kOff, zone_[s] = -1, fade_[s] = 0, dirty_[s] = 0;
     }
@@ -531,8 +538,9 @@ class SendFx {
   // after the limit onto its slot's pair. main null: both pairs are summed into out (the single-pair callers).
   // slots (optional, overwritten): each slot's own return before the limit, FX 1 L/R then FX 2 L/R, STUTTER's on its
   // slot (the Pi's recorder: its FX1/FX2 tracks).
+  // vsend (optional): the Sidecar voices' own sends into each FX's input, per frame (insert.h voice_sends; 0 none)
   FX_DSP void Process(const float (*stems)[kStems], int n, float (*out)[2], const Control& c, float (*main)[2] = nullptr,
-               float (*slots)[4] = nullptr) {
+               float (*slots)[4] = nullptr, const float (*vsend)[3] = nullptr) {
     if (n > kMaxFrames) n = kMaxFrames;
     float tg[kSlots][kStems];
     for (int s = 0; s < kSlots; ++s)
@@ -582,6 +590,9 @@ class SendFx {
         if ((plays(cur_[s]) && cur_[s] != kStutter) || (plays(c.knob[s][0]) && c.knob[s][0] != kStutter)) ss[ns++] = s;
       if (ns) Mix(stems, n, tg, ss, ns, xs);
       for (int k2 = 0; k2 < ns; ++k2) have[ss[k2]] = true;
+      if (vsend)
+        for (int k2 = 0; k2 < ns; ++k2)
+          for (int i = 0; i < n; ++i) xs[ss[k2]][i] += vsend[i][ss[k2]];
     }
     for (int s = 0; s < kSlots; ++s) {
       uint8_t want = c.knob[s][0];
@@ -612,7 +623,11 @@ class SendFx {
         continue;
       }
 #endif
-      if (!have[s]) Mix(stems, n, tg, &s, 1, xs);   // not foreseen above (a TYPE that just came)
+      if (!have[s]) {   // not foreseen above (a TYPE that just came)
+        Mix(stems, n, tg, &s, 1, xs);
+        if (vsend)
+          for (int i = 0; i < n; ++i) xs[s][i] += vsend[i][s];
+      }
       const float* x = xs[s];
       float y[kMaxFrames][2];
       float xf[kMaxFrames];
@@ -649,9 +664,11 @@ class SendFx {
 #if RYTM_SENDFX_LARGE
         case kRings: st_[s].rings.Process(x, n, y, k + 2, sr_, a_); break;
         case kCloudSeed: st_[s].cloud.Process(x, n, y, k + 2, sr_, a_); break;
+        case kTape: st_[s].tape.Process(x, n, y, k + 2, sr_, a_, c.clock); break;
 #endif
         default: break;
       }
+      if (bus_insert) bus_insert(s, y, n);   // the bus's insert chain (core/fx/insert.h)
       upre |= pb[s][0] < 1.0f || pb[s][n - 1] < 1.0f;
       upost |= pb[s][0] > 0.0f || pb[s][n - 1] > 0.0f;
       const float q0 = pb[s][0], q1 = pb[s][n - 1];
@@ -798,6 +815,7 @@ class SendFx {
 #if RYTM_SENDFX_LARGE
       case kRings: done = st_[s].rings.ClearStep(bytes); break;
       case kCloudSeed: done = st_[s].cloud.ClearStep(bytes); break;
+      case kTape: done = st_[s].tape.ClearStep(bytes); break;
 #endif
       default: break;
     }
@@ -821,6 +839,7 @@ class SendFx {
 #if RYTM_SENDFX_LARGE
     RingsFx rings;
     CloudSeedFx cloud;
+    TapeFx tape;
 #endif
   };
   State st_[kSlots];

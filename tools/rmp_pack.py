@@ -249,8 +249,8 @@ def _build64(elf, man, manifest, ver, compat):
     relocs.sort()
     body = bytes(image) + b"".join(struct.pack("<II", off | typ << 28, 0) for off, typ in relocs) + manifest
     body += b"\0" * (-len(body) % 4)
-    head = struct.pack(HEADER_FMT, MAGIC_A64, FORMAT, api, man["id"].encode(), ver, compat,
-                       len(image), bss, entry, len(relocs), len(manifest), 0, zlib.crc32(body) & 0xFFFFFFFF,
+    head = struct.pack(HEADER_FMT, MAGIC_A64, package_format(man), api, man["id"].encode(), ver, compat,
+                       len(image), bss, entry, len(relocs), len(manifest), header_flags(man), zlib.crc32(body) & 0xFFFFFFFF,
                        struct.pack("<I", data_start) + b"\0" * 16)   # reserved[0..3]: the writable part's offset
     return head + body
 
@@ -339,8 +339,11 @@ def _build(elf, man, manifest, ver, compat):
     relocs += pair_movs(movs, image, syms)
     body = bytes(image) + b"".join(struct.pack("<II", off | typ << 28, val) for off, typ, val in relocs) + manifest
     body += b"\0" * (-len(body) % 4)
-    head = struct.pack(HEADER_FMT, 0x31504D52, FORMAT, api, man["id"].encode(), ver, compat,
-                       len(image), bss, entry, len(relocs), len(manifest), 0, zlib.crc32(body) & 0xFFFFFFFF, b"\0" * 20)
+    if package_format(man) > 3:
+        raise PackError("manifest type_labels.follows: an RMPA (Pi) package only (format 4; the Teensy shows no "
+                        "labels that follow a knob)")
+    head = struct.pack(HEADER_FMT, 0x31504D52, package_format(man), api, man["id"].encode(), ver, compat,
+                       len(image), bss, entry, len(relocs), len(manifest), header_flags(man), zlib.crc32(body) & 0xFFFFFFFF, b"\0" * 20)
     return head + body
 
 def _ver(s):
@@ -350,12 +353,33 @@ def _ver(s):
     a, b, c = (int(x) for x in m.groups())
     return a << 16 | b << 8 | c
 
-TOP_KEYS = {"id", "version", "compatible_from", "name", "short", "licence", "page2", "knobs", "page2_title", "preset_ext"}
+TOP_KEYS = {"id", "version", "compatible_from", "name", "short", "licence", "page2", "knobs", "page2_title", "preset_ext",
+            "max_voices", "pitch", "type_labels"}
+# seqx (E0): the header's flags (rmp_format.h RMP_HF_*): "max_voices" 2..8 opts the machine into instancing (the host
+# runs that many states of it on one voice: a poly track, a unison stack - its state must hold everything render()
+# writes); "pitch" "note" (default: note_on's note is the pitch) or "none" (a fixed-pitch drum: the host sends 60).
+# Absent: 0, as every older package (mono, the note as the pitch); an older host ignores the flags.
+RMP_HF_INSTANCES, RMP_HF_VOICES_SHIFT, RMP_HF_PITCH_SHIFT, RMP_PITCH_NONE = 0x1, 4, 8, 2
+
+def header_flags(m):
+    f = 0
+    mv = m.get("max_voices", 1)
+    if mv > 1:
+        f |= RMP_HF_INSTANCES | (mv - 1) << RMP_HF_VOICES_SHIFT
+    if m.get("pitch", "note") == "none":
+        f |= RMP_PITCH_NONE << RMP_HF_PITCH_SHIFT
+    return f
 KNOB_KEYS = {"p", "long", "short", "look", "text", "names", "role", "min", "max", "default"}
 ENUM_NAME_BYTES, ENUM_MAX = 8, 16   # = RMP_ENUM_NAME_BYTES, RMP_ENUM_MAX in rmp_format.h
 KNOB1_BYTES, KNOB2_BYTES, KNOB_BYTES = 20, 22, 26   # a knob in formats 1, 2, 3 (rmp_knob, rmp_knob3)
 HEAD2_BYTES, HEAD_BYTES = 64, 84                    # the manifest head in formats 1/2, 3 (rmp_manifest_head3)
-FORMAT = 3                          # = RMP_FORMAT; parse_manifest reads formats 1..3
+FORMAT = 4                          # = RMP_FORMAT, the newest; parse_manifest reads formats 1..4
+# Format 4 (2026-10-27, review of plugins/mdkit's MD) is format 3's manifest with an RLB2 block ("type_labels" with
+# "follows"): a host that does not read RLB2 would show the first list's names for every value of "follows", so the
+# package says it needs one (an older host refuses format 4). Every other package stays format 3, byte for byte.
+def package_format(m):
+    tl = m.get("type_labels")
+    return 4 if isinstance(tl, dict) and "follows" in tl else 3
 
 def _str(v, what, limit, required=True):
     if not isinstance(v, str):
@@ -408,6 +432,11 @@ def _manifest(m):
     ver = _ver(m["version"]); compat = _ver(m.get("compatible_from", m["version"]))
     if compat > ver:
         raise PackError("manifest: compatible_from is newer than version")
+    mv = m.get("max_voices", 1)
+    if isinstance(mv, bool) or not isinstance(mv, int) or not 1 <= mv <= 8:
+        raise PackError(f"manifest max_voices: {mv!r} is not an integer 1..8")
+    if m.get("pitch", "note") not in ("note", "none"):
+        raise PackError(f"manifest pitch: {m.get('pitch')!r} is not 'note' or 'none'")
     page2 = m.get("page2", "sample")
     if page2 not in ("sample", "params"):
         raise PackError(f"manifest page2: {page2!r} is not 'sample' or 'params'")
@@ -464,7 +493,126 @@ def _manifest(m):
         raise PackError("manifest: at most one knob with text 'preset'")
     if total > 255:
         raise PackError(f"manifest: {total} enum names in all, the limit is 255")
-    return _manifest_bytes(m), ver, compat
+    return _manifest_bytes(m) + _labels_bytes(m), ver, compat
+
+# Labels that follow a list knob (rmp_format.h RMP_LABELS_*; 2026-10-26, plugins/mdkit): "type_labels":
+# {"knob": P of a list knob, "params": [P, ...] (1..8 of the manifest's other knobs), "sets": one per name of the list
+# knob, each a list of len(params) entries [long, short] or null (unlabelled for that value)}. Appended to the manifest
+# after the name table, footer last; an older host never reads it (the knobs' own labels are the fallback).
+# A list whose names follow another list knob (RMP_LABELS_MAGIC2 "RLB2"; 2026-10-27, plugins/mdkit's MD): "type_labels"
+# adds "follows": the P of the list knob that picks the names of "knob" (ENGINE picks the TYPE list), and "lists": one
+# list of names per name of "follows" (1..16 each); "sets" then holds one set per name of all the lists together, in
+# order (the first list's first). "knob"'s own static names must be lists[0]: what an older host shows.
+LABELS_MAGIC, LABELS_MAGIC2, LABELS_PARAMS, LABELS_SETS1, LABELS_SETS, LABELS_DEPS, LABEL_BYTES = \
+    0x31424C52, 0x32424C52, 8, 16, 32, 16, 16
+
+def _labels(m):
+    """Validate m["type_labels"]; returns (knob, params, sets, follows, lists) or None (follows, lists None: RLB1)."""
+    tl = m.get("type_labels")
+    if tl is None:
+        return None
+    if not isinstance(tl, dict) or not ({"knob", "params", "sets"} <= set(tl) <= {"knob", "params", "sets", "follows", "lists"}) \
+            or ("follows" in tl) != ("lists" in tl):
+        raise PackError("manifest type_labels: must be an object with exactly 'knob', 'params' and 'sets' "
+                        "(and 'follows' with 'lists', or neither)")
+    knobs = {k["p"]: k for k in m.get("knobs", [])}
+    kp = tl["knob"]
+    if kp not in knobs or knobs[kp].get("look", "dial") != "list" or not knobs[kp].get("names"):
+        raise PackError(f"manifest type_labels.knob: {kp!r} is not a list knob with names")
+    dp, lists = tl.get("follows"), tl.get("lists")
+    if dp is not None:
+        if dp == kp or dp not in knobs or knobs[dp].get("look", "dial") != "list" or not knobs[dp].get("names"):
+            raise PackError(f"manifest type_labels.follows: {dp!r} is not another list knob with names")
+        nd = len(knobs[dp]["names"])
+        if not isinstance(lists, list) or len(lists) != nd:
+            raise PackError(f"manifest type_labels.lists: must hold {nd} lists (one per name of P{dp})")
+        for i, ln in enumerate(lists):
+            if not isinstance(ln, list) or not 1 <= len(ln) <= ENUM_MAX:
+                raise PackError(f"manifest type_labels.lists[{i}]: must be a list of 1..{ENUM_MAX} names")
+            for j, n in enumerate(ln):
+                _str(n, f"type_labels.lists[{i}][{j}]", ENUM_NAME_BYTES - 1)
+        if lists[0] != knobs[kp]["names"]:
+            raise PackError(f"manifest type_labels.lists[0]: must equal P{kp}'s names (what an older host shows)")
+        n = sum(len(x) for x in lists)
+        if n > LABELS_SETS:
+            raise PackError(f"manifest type_labels.lists: {n} names in all, the limit is {LABELS_SETS}")
+    ps = tl["params"]
+    if not isinstance(ps, list) or not 1 <= len(ps) <= LABELS_PARAMS:
+        raise PackError(f"manifest type_labels.params: must be a list of 1..{LABELS_PARAMS} knobs")
+    for q in ps:
+        if q not in knobs or q == kp or q == dp or ps.count(q) > 1:
+            raise PackError(f"manifest type_labels.params: {q!r} must be one of the other knobs' p, once")
+    sets = tl["sets"]
+    if dp is None:
+        n = len(knobs[kp]["names"])
+        if not isinstance(sets, list) or len(sets) != n:
+            raise PackError(f"manifest type_labels.sets: must hold {n} sets (one per name of P{kp})")
+    elif not isinstance(sets, list) or len(sets) != n:
+        raise PackError(f"manifest type_labels.sets: must hold {n} sets (one per name of the lists)")
+    for i, row in enumerate(sets):
+        if not isinstance(row, list) or len(row) != len(ps):
+            raise PackError(f"manifest type_labels.sets[{i}]: must hold {len(ps)} entries (one per params)")
+        for j, e in enumerate(row):
+            if e is None:
+                continue
+            if not isinstance(e, list) or len(e) != 2:
+                raise PackError(f"manifest type_labels.sets[{i}][{j}]: [long, short] or null")
+            _str(e[0], f"type_labels.sets[{i}][{j}] long", 12); _str(e[1], f"type_labels.sets[{i}][{j}] short", 4)
+    return kp, ps, sets, dp, lists
+
+def _labels_bytes(m):
+    tl = _labels(m)
+    if tl is None:
+        return b""
+    kp, ps, sets, dp, lists = tl
+    if dp is None:
+        b = struct.pack("<BBBB", kp, len(sets), len(ps), 0) + bytes(ps)
+    else:
+        b = struct.pack("<BBBBB", kp, len(sets), len(ps), dp, len(lists)) + bytes(len(x) for x in lists) + bytes(ps)
+        b += b"".join(_fixed(n, ENUM_NAME_BYTES) for x in lists for n in x)
+    for row in sets:
+        for e in row:
+            b += b"\0" * LABEL_BYTES if e is None else _fixed(e[0], 12) + _fixed(e[1], 4)
+    return b + struct.pack("<HI", len(b), LABELS_MAGIC if dp is None else LABELS_MAGIC2)
+
+def parse_labels(rmp):
+    """The type_labels block of a package ({"knob", "params", "sets"} as in the manifest, None for an entry that is
+    all NUL; an RLB2 block adds "follows" and "lists"), or None."""
+    h = parse_header(rmp)
+    end = 96 + h["image_size"] + 8 * h["reloc_count"] + h["manifest_size"]
+    if h["format"] < 3 or h["manifest_size"] < HEAD_BYTES + 10:
+        return None
+    n, magic = struct.unpack_from("<HI", rmp, end - 6)
+    if magic not in (LABELS_MAGIC, LABELS_MAGIC2):
+        return None
+    at = end - 6 - n
+    clean = lambda b: b.rstrip(b"\0").decode()
+    if magic == LABELS_MAGIC:
+        kp, ns, npar, _ = struct.unpack_from("<BBBB", rmp, at)
+        q = at + 4
+        out = dict(knob=kp)
+    else:
+        kp, ns, npar, dp, nd = struct.unpack_from("<BBBBB", rmp, at)
+        counts = list(rmp[at + 5:at + 5 + nd])
+        q = at + 5 + nd
+        out = dict(knob=kp, follows=dp)
+    ps = list(rmp[q:q + npar])
+    q += npar
+    if magic == LABELS_MAGIC2:
+        names = [clean(rmp[q + 8 * i:q + 8 * i + 8]) for i in range(ns)]
+        q += 8 * ns
+        out["lists"], i = [], 0
+        for c in counts:
+            out["lists"].append(names[i:i + c]); i += c
+    sets = []
+    for _ in range(ns):
+        row = []
+        for _ in range(npar):
+            e = rmp[q:q + LABEL_BYTES]; q += LABEL_BYTES
+            row.append(None if not any(e) else [clean(e[:12]), clean(e[12:])])
+        sets.append(row)
+    out.update(params=ps, sets=sets)
+    return out
 
 def _fixed(s, n):
     return s.encode("ascii").ljust(n, b"\0")
@@ -498,7 +646,7 @@ def parse_relocs(rmp):
     return out
 
 def parse_manifest(rmp):
-    """The manifest of a package in formats 1..3 (1 and 2 with format 3's defaults)."""
+    """The manifest of a package in formats 1..4 (1 and 2 with format 3's defaults; 4 reads as 3)."""
     h = parse_header(rmp); p = 96 + h["image_size"] + 8 * h["reloc_count"]
     fmt = h["format"]
     name, short, lic, page2, n = struct.unpack_from("<10s4s48sBB", rmp, p); p += HEAD2_BYTES

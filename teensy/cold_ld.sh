@@ -72,7 +72,7 @@ OUT="$DIR/$(basename "$SRC" .ld)_cold.ld"
 #   boot): about 4.3 KB, run once per device connected or at boot (from the USB host interrupt for enumeration:
 #   flash code runs from it already, as above). The note-in path (MIDIDeviceBase::read, rx_data, rx_callback,
 #   USBHost::isr, queue_*Transfer, followup_*) and the transfer callbacks stay in ITCM.
-#   Also: Digidrum's EFM default tweaks (1.5 KB, copied once at a voice's init), and libm's large-argument
+#   Also: libm's large-argument
 #   reduction for sinf/cosf (__kernel_rem_pio2f, 1.7 KB of ITCM, and its two_over_pi table, 0.8 KB of DTCM: only
 #   for |x| above about 200: slower there, the same results).
 COLD='*/libraries/LittleFS/littlefs/*.o(.text*)
@@ -129,7 +129,6 @@ COLD='*/libraries/LittleFS/littlefs/*.o(.text*)
 *(.text._ZN14MIDIDeviceBase5claimEP13Device_structiPKhm)
 *(.text._ZN13IntervalTimer11beginCyclesEN6teensy16inplace_functionIFvvELj16ELj8EEEm)
 *(.text._ZN13IntervalTimer3endEv)
-*(.rodata.dd_efm_default_tweaks)
 *(.rodata.two_over_pi)
 *libm.a:libm_a-kf_rem_pio2.o(.text* .rodata* .ARM.exidx*)'
 awk -v cold="$(printf '%s' "$COLD" | tr '\n' '|')" '{ print }

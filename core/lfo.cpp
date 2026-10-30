@@ -5,10 +5,20 @@
 #include <math.h>
 #include <string.h>
 
+#include "fmt/fmt.h"
 #include "hooks.h"
 #include "platform.h"
 #include "pool/pool.h"
+#if CORE_MSAMP
+#include "bundle/rename.h"
+#include "store/store.h"
+#endif
+#include "voice_name.h"
 #include "voices.h"
+#if CORE_POLY
+#include "fx/insert.h"
+#include "fx/out.h"
+#endif
 
 namespace core {
 namespace ui {
@@ -25,7 +35,12 @@ namespace lfo {
 namespace {
 
 // ---- tables
-UI_ROM_LFO const char kTargetNames[kTargets][4] = {"OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2"};
+UI_ROM_LFO const char kTargetNames[kTargets][4] = {"OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2"
+#if CORE_POLY
+                                                  , "I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "B1", "B2", "B3",
+                                                  "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8"
+#endif
+};
 UI_ROM_LFO const char kWaveNames[kWaves][7] = {"SINE", "TRI", "SAW+", "SAW-", "SQR", "S&H", "RND", "DESIGN"};
 UI_ROM_LFO const char kRetrigNames[kRetrigs][5] = {"FREE", "TRIG", "PLAY"};
 UI_ROM_LFO const char kShapeNames[kShapes][5] = {"HOLD", "RAMP", "SMTH"};
@@ -98,6 +113,13 @@ CORE_COLD float rnd(uint32_t& s) { return (float)(xorshift(s) >> 8) * (2.0f / 16
 
 CORE_COLD bool is_voice(int t) { return t >= kTVoice && t < kTVoice + kVoices; }
 CORE_COLD bool is_fx(int t) { return t == kTFx || t == kTFx + 1; }
+#if CORE_POLY
+CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTOut; }   // fx-ins: never true without CORE_POLY
+CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTargets; }   // the OUT route's LEV PAN WID (core/fx/out.h)
+#else
+CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTargets; }
+CORE_COLD bool is_out(int) { return false; }
+#endif
 
 CORE_COLD void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
 
@@ -109,6 +131,7 @@ CORE_COLD Tgt* find(int target, int param) {
 
 CORE_COLD float current(int target, int param) {   // a new target's base: what plays now
   if (is_voice(target)) return v[target - kTVoice].p[param & 15];
+  if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (lfo_offset), its base the knob
   return fx::control.knob[target - kTFx][2 + (param & 3)];
 }
 
@@ -198,33 +221,14 @@ CORE_COLD bool design_from_hex(Settings& s, const char* h) {
 char g_proj[24] = "";
 int g_kit = -1;        // the kit the settings are of (0..127), -1 unknown
 int g_rytm_kit = -1;   // the Rytm's active kit as it last said (kit_changed)
-CORE_COLD void file_name(char* fn, int cap, int kit) {
-  char n[24];
-  int k = 0;
-  for (const char* c = g_proj; *c && k < 23; ++c) {
-    char x = *c;
-    bool ok = (x >= 'A' && x <= 'Z') || (x >= 'a' && x <= 'z') || (x >= '0' && x <= '9') || x == '-' || x == '_' ||
-              x == ' ' || x == '.';
-    n[k++] = ok ? x : '_';
-  }
-  while (k && (n[k - 1] == ' ' || n[k - 1] == '.')) --k;
-  n[k] = 0;
+CORE_COLD void name_of(const char* proj, char* fn, int cap, int kit) {
+  char n[kKeyMax];
+  project_key(proj, n, sizeof n);
   if (kit < 0) sniprintf(fn, cap, CORE_STR("/.rytm/lfo/%s.txt"), n);
   else if (kit < 128) sniprintf(fn, cap, CORE_STR("/.rytm/lfo/%s/k%03d.txt"), n, kit + 1);
   else sniprintf(fn, cap, CORE_STR("/.rytm/lfo/%s"), n);   // kit 128: the project's folder
 }
-
-CORE_COLD bool line(File& f, char* out, int max) {
-  int n = 0, c;
-  bool any = false;
-  while ((c = f.read()) >= 0) {
-    any = true;
-    if (c == '\n') break;
-    if (c != '\r' && n < max - 1) out[n++] = (char)c;
-  }
-  out[n] = 0;
-  return any;
-}
+CORE_COLD void file_name(char* fn, int cap, int kit) { name_of(g_proj, fn, cap, kit); }
 
 // one LFO as the file's line: N TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN
 CORE_COLD int to_line(int i, char* b, int cap) {
@@ -276,6 +280,11 @@ CORE_COLD void restore(Tgt& e) {
   } else if (is_fx(e.target)) {
     fx::control.knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)e.base;
   }
+#if CORE_POLY
+  else if (is_ins(e.target) && e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, 0);
+  else if (is_ins(e.target)) ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, 0);
+  else if (is_out(e.target)) out::lfo_offset(e.target - kTOut, e.param % 3, 0);
+#endif
   e.state = 0;
 }
 
@@ -332,6 +341,7 @@ CORE_COLD const char* wave_name(int w) { return w >= 0 && w < kWaves ? kWaveName
 CORE_COLD const char* retrig_name(int r) { return r >= 0 && r < kRetrigs ? kRetrigNames[r] : "?"; }
 CORE_COLD const char* shape_name(int s) { return s >= 0 && s < kShapes ? kShapeNames[s] : "?"; }
 CORE_COLD const char* target_name(int t) { return t >= 0 && t < kTargets ? kTargetNames[t] : "?"; }
+CORE_COLD const char* target_label(int t) { return t >= kTVoice && t < kTVoice + 8 ? voice_name(t - kTVoice) : target_name(t); }
 CORE_COLD int target_from_name(const char* s) {
   for (int t = 0; t < kTargets; ++t) {
     const char* n = kTargetNames[t];
@@ -347,6 +357,8 @@ CORE_COLD int target_from_name(const char* s) {
 CORE_COLD int params_of(int t) {
   if (is_voice(t)) return 16;
   if (is_fx(t)) return 4;
+  if (is_ins(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
+  if (is_out(t)) return 3;
   return 0;
 }
 CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
@@ -359,6 +371,18 @@ CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
     const fx::KnobLabels* l = fx::labels(fx::control.knob[t - kTFx][0]);
     if (l && l->label[p & 3] && *l->label[p & 3]) sniprintf(b, cap, "%s", l->label[p & 3]);
     else sniprintf(b, cap, CORE_STR("P%d"), (p & 3) + 2);
+#if CORE_POLY
+  } else if (is_ins(t) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
+    sniprintf(b, cap, CORE_STR("Q%.3s"), ins::eq_labels().label[(p - 8) & 3]);
+  } else if (is_ins(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
+    int ty = ins::control.type[t - kTIns][(p >> 2) & 1];
+    const char* l = ins::labels(ty).label[p & 3];
+    if (ty && l[0]) sniprintf(b, cap, CORE_STR("%c%.4s"), 'A' + ((p >> 2) & 1), l);
+    else sniprintf(b, cap, CORE_STR("%cP%d"), 'A' + ((p >> 2) & 1), (p & 3) + 1);
+  } else if (is_out(t)) {   // LEV PAN WID
+    static const char* const kO[3] = {"LEV", "PAN", "WID"};
+    sniprintf(b, cap, "%s", kO[p % 3]);
+#endif
   } else {
     sniprintf(b, cap, "-");
   }
@@ -411,6 +435,12 @@ CORE_COLD bool active(int i) { return i >= 0 && i < kLfos && g_set[i].target && 
 CORE_COLD const Stats& stats() { return g_stats; }
 
 // ---------------------------------------------------------------------------------------------------- the engine
+
+bool clock_now(float* ticks, float* tick_us) {
+  *ticks = g_clk.tp;
+  *tick_us = g_clk.tick_us;
+  return g_stats.ticks != 0;
+}
 
 CORE_COLD void clock(uint8_t status, uint16_t spp) {
   Clock& c = g_clk;
@@ -544,6 +574,23 @@ CORE_COLD void tick(uint32_t us) {
           g_vdirty |= (uint8_t)(1u << vi);
           ++g_stats.voice_sets;
         }
+#if CORE_POLY
+      } else if (is_ins(e.target)) {   // fx-ins: the offset itself (the knob / a step lock is the base, insert.cpp)
+        int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
+        if ((float)iv != e.applied) {
+          if (e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, iv);   // ins1112: the POST EQ
+          else ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, iv);
+          e.applied = (float)iv;
+          ++g_stats.fx_sets;
+        }
+      } else if (is_out(e.target)) {   // the OUT route's LEV PAN WID: the offset on the knob (out.cpp)
+        int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
+        if ((float)iv != e.applied) {
+          out::lfo_offset(e.target - kTOut, e.param % 3, iv);
+          e.applied = (float)iv;
+          ++g_stats.fx_sets;
+        }
+#endif
       } else {
         int iv = rnd0(clampf(e.base + e.off, 0.0f, 127.0f));
         if ((float)iv != e.applied) {
@@ -570,7 +617,19 @@ CORE_COLD void tick(uint32_t us) {
 
 // ---------------------------------------------------------------------------------------------------- the card
 
+// 1042 (data safety): the file save() writes (the kit's) had a line this build does not read, or is there but could not be
+// opened: never written over (before: the next edit rewrote it with defaults in place of those LFOs)
+bool g_locked = false;
+#if CORE_MSAMP
+CORE_COLD void rekey(const char* name) { sniprintf(g_proj, sizeof g_proj, "%s", name ? name : ""); }
+CORE_COLD void want_files() {
+  char fn[80];
+  for (int k = -1; k < 128; ++k) name_of(project, fn, sizeof fn, k), store::want(fn);
+}
+#endif
+
 CORE_COLD void load() {
+  g_locked = false;
   for (Settings& s : g_set) defaults(&s);
   for (Run& r : g_run) r = Run();
   for (int i = 0; i < kLfos; ++i) g_run[i].rng = 0x9E3779B9u * (uint32_t)(i + 1);
@@ -578,44 +637,120 @@ CORE_COLD void load() {
   strcpy(g_proj, project);   // the settings are this project's and the Rytm's kit's from now on
   g_kit = g_rytm_kit;
   char fn[80], b[96];
-  File f;
+  int n = 0, bad = 0;
+  auto take = [&](int k) {
+    if (k == 0 || b[0] == '#') return;   // a blank line or a comment (0.3.0: a NUL-led line is neither)
+    if (from_line(b)) ++n;
+    else ++bad;
+  };
+  auto done = [&](bool own) {
+    if (bad && own) g_locked = true;
+    log(CORE_STR("lfo: %d from %s%s"), n, fn, bad ? (own ? " (lines it does not read: the file is kept, not written)" : " (lines it does not read)") : "");
+  };
   file_name(fn, sizeof fn, g_kit);
-  if (!f.open(fn, kRead)) {   // a kit without its own file: the project's (from before 1026) is its default
+#if CORE_MSAMP
+  {   // 2026-10-26: the RAM store (a project load fills it before this runs): no card call on this core
+    const uint8_t* d;
+    uint32_t len, at = 0;
+    bool own = true;   // the file read is the one save() writes
+    store::State st = store::get(fn, &d, &len);
+    if (st == store::kAbsent && g_kit >= 0) {   // a kit without its own file: the project's (from before 1026)
+      file_name(fn, sizeof fn, -1), own = false;
+      st = store::get(fn, &d, &len);
+    }
+    if (st == store::kAbsent) return;   // none: the defaults
+    if (st != store::kPresent) {   // there but unreadable (kLocked), or never filled (kUnknown): never taken for absent
+      // (as the card path: only the kit's own file is never written over; the project's one, the default, is not the
+      // file save() writes, so a kit without its own starts from the defaults and may save them)
+      if (own) g_locked = true;
+      log(CORE_STR("lfo: %s %s: the defaults%s"), fn, st == store::kLocked ? "cannot be read" : "not in the store",
+          own ? ", nothing written" : "");
+      return;
+    }
+    for (int k; (k = fmt::next_line(d, len, &at, b, sizeof b)) >= 0;) take(k);
+    done(own);
+  }
+#else
+  File f;
+  fmt::post_wait(fn);   // 0.3.0: a posted (or queued) save of this very file lands first (another kit's is not in the way)
+  fmt::recover(fn);     // a power cut between write_atomic's renames: the previous file back, a stray .tmp removed
+  bool own = true;   // the file read is the one save() writes
+  bool opened = f.open(fn, kRead);
+  if (!opened) {   // a kit without its own file: the project's (from before 1026) is its default
+    if (cards.sd().exists(fn)) g_locked = true;
     if (g_kit < 0) return;
     file_name(fn, sizeof fn, -1);
+    fmt::post_wait(fn), fmt::recover(fn);
+    own = false;
     if (!f.open(fn, kRead)) return;
   }
-  int n = 0;
-  while (line(f, b, sizeof b))
-    if (b[0] != '#' && from_line(b)) ++n;
+  fmt::LineReader rd(f);   // 2026-10-26: buffered, not a card read a byte (40 ms on core 3 at a kit change)
+  for (int k; (k = rd.line(b, sizeof b)) >= 0;) take(k);
   f.close();
-  log(CORE_STR("lfo: %d from %s"), n, fn);
+  done(own);
+#endif
 }
 
-CORE_COLD bool save() {
+CORE_COLD void save_due() { if (g_dirty) g_dirty_ms = now_ms() - 1000; }
+CORE_COLD bool dirty() { return g_dirty; }
+
+// 0.3.0 power-cut safety: posted to the card core as one atomic write (fmt.h post_begin / post_end), so a cut leaves
+// the file whole - old or new - and core 3 does no card I/O for it (the mkdirs went too: write_atomic makes the
+// folders where it runs).
+//
+// 2026-10-26, the RAM store: the text is also put into the store (write-through), so a kit change back reads the edit
+// from RAM before the card has it. queue (a kit change's save): no wait for the post slot - fmt::post_queue holds a copy
+// behind the write in flight.
+#if CORE_MSAMP
+static char g_text[fmt::kPostMax];   // the text built (the post slot may be busy: post_queue copies it)
+#endif
+static CORE_COLD bool save_text(bool queue) {
   if (!g_dirty || now_ms() - g_dirty_ms < 1000) return false;
-  g_dirty = false;
-  char fn[80], b[96];
-  cards.sd().mkdir("/.rytm/lfo");
-  if (g_kit >= 0) {
-    file_name(fn, sizeof fn, 128);
-    cards.sd().mkdir(fn);
-  }
-  file_name(fn, sizeof fn, g_kit);
-  File f;
-  if (!f.open(fn, kWrite)) {
-    log(CORE_STR("lfo: cannot write %s"), fn);
+  if (g_locked) {   // 1042
+    g_dirty = false;
+    log(CORE_STR("lfo: not saved: its file has lines this build does not read (kept as it is)"));
     return true;
   }
+#if CORE_MSAMP
+  char* t = g_text;
+#else
+  char* t = fmt::post_begin();
+  if (!t) return false;   // another settings write is in flight: at a later pass (still dirty)
+#endif
+  char fn[80], b[96];
+  file_name(fn, sizeof fn, g_kit);
   static UI_ROM_LFO const char kHead[] = "# Sidecar LFOs: N TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN\n";
-  f.write(kHead, sizeof kHead - 1);
+  uint32_t n = sizeof kHead - 1;
+  memcpy(t, kHead, n);
   for (int i = 0; i < kLfos; ++i) {
-    int n = to_line(i, b, sizeof b);
-    f.write(b, (size_t)n);
+    int k = to_line(i, b, sizeof b);
+    if (k <= 0 || n + (uint32_t)k > fmt::kPostMax) {   // (cannot happen at kLfos lines: never a half file)
+      log(CORE_STR("lfo: %s not written: its text does not fit (kept as it is)"), fn);
+      g_dirty = false;
+      return true;
+    }
+    memcpy(t + n, b, (size_t)k), n += (uint32_t)k;
   }
-  f.close();
+#if CORE_MSAMP
+  // the store is the project's now named (filled, or filling: the fill keeps this newer text); an old project's file
+  // saved while the next one's store fills is not put in it
+  if (!strcmp(g_proj, project)) store::put(fn, (const uint8_t*)t, n);
+  // (a held slot, phase 3: queued too, so the edit is on its way rather than dirty for the whole hold)
+  if (queue || fmt::post_stalled()) {
+    if (!fmt::post_queue(fn, t, n)) log(CORE_STR("lfo: %s not written to the card (refused or out of memory: in RAM only)"), fn);
+  } else {
+    char* p = fmt::post_begin();
+    if (!p) return false;   // another settings write is in flight: at a later pass (still dirty)
+    memcpy(p, t, n);
+    if (!fmt::post_end(fn, n)) return false;   // not posted: still dirty, again at a later pass
+  }
+#else
+  if (!fmt::post_end(fn, n)) return false;   // not posted: still dirty, again at a later pass
+#endif
+  g_dirty = false;
   return true;
 }
+CORE_COLD bool save() { return save_text(false); }
 
 CORE_COLD void project_changed() {
   // the old project's (or kit's) targets: voices and FX back to their bases
@@ -624,13 +759,26 @@ CORE_COLD void project_changed() {
   for (int vi = 0; vi < kVoices; ++vi)
     if (g_vdirty >> vi & 1) voice_params_changed(vi);
   g_vdirty = 0;
-  if (g_dirty) g_dirty_ms = now_ms() - 1000, save();   // the old one's unsaved edits first, into its own file
+  // the old one's unsaved edits first, into its own file - never deferred past the load that clears g_dirty
+#if CORE_MSAMP
+  // 2026-10-26: its write posted or queued (no wait on the card), its text into the store when the store is its
+  if (g_dirty) g_dirty_ms = now_ms() - 1000, save_text(true);
+#else
+  if (g_dirty) fmt::post_wait(), g_dirty_ms = now_ms() - 1000, save();   // post_wait frees the slot for this save
+#endif
   load();
 }
 
 CORE_COLD void kit_changed(int kit) {
   if (kit < 0 || kit > 127) return;
   g_rytm_kit = kit;
+#if CORE_MSAMP
+  // a project load's store still filling: its load (project_fill_step) takes this kit. Likewise while a rename moves
+  // the old key's files (final review): a save now would queue a write under the old name that lands after the
+  // move (idle_save holds the writes meanwhile) - a stray file, the edit missing from the renamed project; the
+  // switch that follows the move loads this kit, its project_changed saving the old kit's edits under the new name
+  if (!store::ready() || rename::moving()) return;
+#endif
   if (kit != g_kit) project_changed();   // the same switch: the old kit's edits saved, the new kit's LFOs loaded
 }
 CORE_COLD int kit() { return g_kit; }

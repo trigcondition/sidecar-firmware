@@ -52,8 +52,8 @@ class TestCoreSendFx(unittest.TestCase):
         self.assertEqual(m[4], P.SENDFX_NAMES)
         rep, tot, entries = P.decode_sendfx_names(m[5:-1])
         self.assertEqual((rep, tot), (True, total))
-        self.assertEqual(entries[:7], [(0, "OFF"), (1, "CHORUS"), (2, "COMB"), (6, "RINGS"), (8, "CLOUDSEED"),
-                                       (15, "STUTTER"), (16, "CRUSH")])
+        self.assertEqual(entries[:7], [(0, "OFF"), (1, "CHORUS"), (2, "COMB"), (5, "SPACE"), (6, "RINGS"),
+                                       (8, "CLOUDSEED"), (15, "STUTTER")])
         self.assertEqual(m, P.sendfx_names(entries + [(0, "")] * (total - len(entries)))[0])   # the first message
         reply = ctypes.create_string_buffer(400)
         for cmd, i, state, name in ((b"sendfx=2:rings", 6, P.ST_READY, "RINGS"),
@@ -102,7 +102,9 @@ class TestCoreSendFx(unittest.TestCase):
                 self.assertIn(len({z[5] for z in zs}), (0, 1), f"id {i} knob {knob}: all zones or none")
                 if any(z[5] for z in zs):
                     self.assertFalse(any(z[3] for z in zs), f"id {i} knob {knob}: a stepped knob shows no number")
-        self.assertEqual(stepped, {15: {0, 1}})
+        self.assertEqual(stepped, {15: {0, 1}, 5: {2}})   # STUTTER ENG, LEN; SPACE MODE
+        self.assertEqual(P.sendfx_steps(5, 2), [0, 16, 32, 48, 64, 80, 96, 112])
+        self.assertIsNone(P.sendfx_steps(5, 0))   # SPACE TIME: continuous (the number, then the note values)
         self.assertEqual(P.sendfx_steps(15, 0), [0, 64])
         self.assertEqual(P.sendfx_steps(15, 1), [0, 19, 37, 55, 74, 92, 110])
         for k, (i, knob) in enumerate(((15, 2), (15, 3), (6, 1), (8, 0), (2, 1), (1, 0), (7, 0))):
@@ -138,6 +140,12 @@ class TestCoreSendFx(unittest.TestCase):
         self.assertEqual([t(15, 2, v) for v in (0, 1, 63, 64, 127)], ["NONE", "DCY 1", "DCY 63", "PTCH 1", "PTCH 64"])
         self.assertEqual([t(2, 1, v) for v in (0, 63, 64, 127)], ["POS 0", "POS 63", "NEG 0", "NEG 63"])
         self.assertEqual(t(1, 0, 77), "77")     # no zones: the number
+        # SPACE (5): TIME the number up to 63, then the shortest head's note value; MODE the heads (+S: the spring)
+        self.assertEqual([t(5, 0, v) for v in (0, 63, 64, 79, 80, 96, 112, 127)],
+                         ["0", "63", "1/16", "1/16", "1/8T", "1/8", "1/8D", "1/8D"])
+        self.assertEqual([t(5, 2, v) for v in range(0, 128, 16)],
+                         ["H1", "H2", "H3", "H1+2", "H2+3", "H123", "H23+S", "H123S"])
+        self.assertEqual(t(5, 1, 100), "100")   # REPEAT: percent
         self.assertEqual(t(15, 3, 5), "5")
         self.assertIsNone(t(7, 0, 5))           # no labels for the type: the Rytm keeps P2..P5 generic
         self.assertEqual([P.sendfx_route_text(v) for v in (0, 63, 64, 127)], ["PRE", "PRE", "POST", "POST"])

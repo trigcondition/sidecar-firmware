@@ -33,4 +33,5 @@ void host_sysex(const uint8_t* d, int len);
 // why: for the log. Rate-limited with all_sound_off (100 ms): an attach's several edges clear once.
 void link_reset(const char* why);
 void sendfx_project();   // the send FX's user-FX slot map for `project` (boot, 0x10)
+void host_project_changed();   // 2026-10-27: a project switch the slot reports made (core/bundle/prjslot.h): as a 10's
 }  // namespace core

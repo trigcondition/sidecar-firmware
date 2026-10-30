@@ -6,6 +6,9 @@
 
 #include "platform.h"
 #include "pool/pool.h"
+#if CORE_MSAMP
+#include "lib/pools.h"
+#endif
 #include "sysex.h"
 #include "voices.h"
 
@@ -47,7 +50,7 @@ struct Js {
 
 const char* machine(const core::V& x, char* b) {
   if (x.user >= 0) { sniprintf(b, 4, "U%d", x.user + 1); return b; }
-  return x.fm ? "FM" : x.juno ? "JUNO" : x.dsps ? "DSPS" : x.daisy ? "DAISY" : x.dd ? "DD" : "PLAITS";
+  return x.fm ? "FM" : x.juno ? "JUNO" : x.dsps ? "DSPS" : x.daisy ? "DAISY" : x.md ? "MD" : "PLAITS";
 }
 
 uint32_t fnv(uint32_t h, const void* p, size_t n) {
@@ -59,7 +62,7 @@ uint32_t fnv(uint32_t h, const void* p, size_t n) {
 uint32_t state_hash() {
   uint32_t h = fnv(2166136261u, core::project, strlen(core::project));
   h = fnv(h, &core::npool, sizeof core::npool);
-  for (int i = 0; i < core::npool; ++i) {
+  for (int i = 0; i < core::npool && i < core::kPool; ++i) {   // (rui1045: bank A, the slots this JSON has always meant)
     h = fnv(h, core::pool[i].path, strlen(core::pool[i].path));
     h = fnv(h, &core::pool[i].folder, sizeof core::pool[i].folder);
   }
@@ -70,7 +73,7 @@ uint32_t state_hash() {
   for (int i = 0; i < nf; ++i) h = fnv(h, &core::dxlib.slot(i), sizeof(dx7::Slot));
   for (int vi = 0; vi < core::kVoices; ++vi) {
     const core::V& x = core::v[vi];
-    int m[5] = {x.user, x.fm, x.juno, x.dsps * 2 + x.daisy, x.dd};
+    int m[5] = {x.user, x.fm, x.juno, x.dsps * 2 + x.daisy, x.md};
     h = fnv(h, m, sizeof m);
     h = fnv(h, &core::juno_pat[vi], sizeof(int));
     h = fnv(h, &core::fm_pat[vi], sizeof(int));
@@ -97,7 +100,7 @@ void publish() {
   j.put(t);
   j.put(",\"pool\":[");
   bool first = true;
-  for (int i = 0; i < core::npool; ++i) {
+  for (int i = 0; i < core::npool && i < core::kPool; ++i) {   // rui1045: bank A only (the page's slots 1..127; kJson's size)
     const core::PoolEntry& e = core::pool[i];
     if (!e.path[0]) continue;
     j.put(first ? "{" : ",{");
@@ -108,7 +111,7 @@ void publish() {
     j.put(",\"ok\":"); j.put(e.folder >= 0 ? "true" : "false");
     j.put("}");
   }
-  j.put("],"); j.num("npool", core::npool);
+  j.put("],"); j.num("npool", core::npool < core::kPool ? core::npool : core::kPool);
   int nj = core::junolib.listed();
   j.put(",\"juno\":{"); j.num("total", nj); j.put(",\"list\":[");
   for (int i = 0; i < nj; ++i) {
@@ -149,6 +152,29 @@ int num(const char* p, const char** end) {
   return v;
 }
 
+#if CORE_MSAMP
+// the pools design 3.6: slot N (1..127) is the SAMPLES pool's A00N (the old pool=<slot>:<path> kept for the page; rui1045:
+// DSP SAMPLE's SMP reaches every bank, slot = bank * 127 + row, this line bank A)
+bool cmd_pool(const char* a, char* out, int cap) {
+  const char* e;
+  int slot = num(a, &e);
+  if (slot < 1 || slot > core::kPool || *e != ':') { sniprintf(out, cap, "usage: pool=<1..127>:<path under /Samples> | pool=<slot>:"); return true; }
+  const char* path = e + 1;
+  int r;
+  if (!path[0] || !strcmp(path, "-")) {
+    r = core::pools::unload(core::pools::kSamples, core::pools::code(0, slot), core::pools::kForced);
+    sniprintf(out, cap, "pool slot %d (A%03d) empty: %s", slot, slot, core::pools::result_text(r));
+  } else {
+    char full[200];
+    sniprintf(full, sizeof full, "/Samples/%s", path);
+    int o = -1;
+    r = core::pools::set_file(core::pools::kSamples, core::pools::code(0, slot), full, &o, core::pools::kForced);
+    sniprintf(out, cap, "pool slot %d (A%03d) = %s: %s", slot, slot, path, core::pools::result_text(r));
+  }
+  core::pool_sync(true);
+  return true;
+}
+#else
 bool pool_clear(int slot) {
   int line = slot - 1;
   if (line < 0 || line >= core::kPool) return false;
@@ -183,6 +209,8 @@ bool cmd_pool(const char* a, char* out, int cap) {
   sniprintf(out, cap, "pool slot %d = %s: ok", slot, path);
   return true;
 }
+
+#endif
 
 // juno=... / fm=...: the list's edit, then the names to the Rytm and the voices on their PAT again.
 bool cmd_list(bool juno, const char* a, char* out, int cap) {
@@ -251,6 +279,9 @@ bool cmd_list(bool juno, const char* a, char* out, int cap) {
 bool command(const char* c, char* out, int cap) {
   out[0] = 0;
   bool r;
+#if CORE_MSAMP
+  if (!strncmp(c, "pool=", 5) && !(c[5] >= '0' && c[5] <= '9')) return core::pools::command(c, out, cap);   // smp|wt|inst
+#endif
   if (!strncmp(c, "pool=", 5)) r = cmd_pool(c + 5, out, cap);
   else if (!strncmp(c, "juno=", 5)) r = cmd_list(true, c + 5, out, cap);
   else if (!strncmp(c, "fm=", 3)) r = cmd_list(false, c + 3, out, cap);

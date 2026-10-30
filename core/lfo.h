@@ -5,6 +5,7 @@
 //             base the Rytm's last report. A built-in machine reads it at its next block (Plaits interpolates within
 //             the block); a user machine gets it as a parameter call, at most every kUserMs.
 //   FX1, FX2  the send FX's P2..P5 (core/fx/send_fx.h): fx::control.knob, the base the Rytm's last 0x20.
+//   I1..I8, B1..B3  (fx-ins) a voice's / a bus's INSERT slot params (core/fx/insert.h): an offset on top of the knob.
 // (1026: the Rytm's own sound parameters as MIDI CC targets are gone: a CC sets the Rytm's stored value, so an LFO on
 // one changed the instrument's state. A Rytm-side SysEx modulation path may come later.)
 // Waves SINE TRI SAW+ SAW- SQR S&H RND (random, smooth) and DESIGN (16 steps drawn by the user: a value and a shape
@@ -34,8 +35,15 @@ constexpr uint32_t kUserMs = 5;  // a user machine's parameter call at most this
 enum Wave : uint8_t { kSine, kTri, kSawUp, kSawDown, kSquare, kSampleHold, kRandom, kDesign, kWaves };
 enum Retrig : uint8_t { kFree, kOnTrig, kOnPlay, kRetrigs };
 enum StepShape : uint8_t { kHold, kRamp, kSmooth, kShapes };
-// Targets: 0 OFF, 1..8 V1..V8, 9 / 10 FX1 / FX2.
-constexpr int kTVoice = 1, kTFx = 9, kTargets = 11;
+// Targets: 0 OFF, 1..8 V1..V8, 9 / 10 FX1 / FX2; fx-ins (CORE_POLY builds): 11..18 I1..I8 the voices' INSERT chains,
+// 19..21 B1..B3 the buses' (core/fx/insert.h; params 0..7: slot A P1..P4, slot B P1..P4; ins1112: 8..11 the chain's
+// POST EQ HPF / LPF / LOW / HIGH; an offset on the knob / lock); 22..29 O1..O8 the voices' OUT route (core/fx/out.h;
+// params 0..2: LEV PAN WID, an offset on the knob).
+#if CORE_POLY
+constexpr int kTVoice = 1, kTFx = 9, kTIns = 11, kTOut = 22, kTargets = 30;
+#else
+constexpr int kTVoice = 1, kTFx = 9, kTIns = 11, kTargets = 11;
+#endif
 constexpr int kDivs = 19;        // synced rates: 1/32 .. 8 bars
 constexpr int kFreeRates = 128;  // free rates: 0..127
 
@@ -71,13 +79,25 @@ void project_changed();                                 // the Rytm's project ch
 void kit_changed(int kit);                              // the Rytm's active kit (0..127): its LFOs (card), when another
 int kit();                                              // the kit the settings are of (0..127), -1 unknown
 void load();                                            // boot / project or kit change: the kit's file (above)
+#if CORE_MSAMP
+// 2026-10-26, the RAM store (core/store/store.h): the paths a project's fill reads for the LFOs - the project's file and
+// every kit's (128) - of the project now named (core::project). A project load fills the store before load() runs
+// (core/pool/pool.h project_fill_step), and load() reads it only, never the card (a kit change cost core 3 40 ms of
+// FatFs path operations); a kit change while it fills is only noted. save() puts its text there too while the store is
+// its project's.
+void want_files();
+// the settings in memory are now name's: its files are where save() writes (and, while the store is its, puts) - a
+// rename moved the old name's files to name before its switch, the boot names its project before the first fill ends
+void rekey(const char* name);
+#endif
 bool save();                                            // idle_save: the file, a second after the last change; true if it wrote
 
 // ---- names and views (the page, the web)
 const char* wave_name(int w);        // "SINE" .. "DESIGN"
 const char* retrig_name(int r);      // "FREE" "TRIG" "PLAY"
 const char* shape_name(int s);       // "HOLD" "RAMP" "SMTH"
-const char* target_name(int t);      // "OFF" "V1".."V8" "FX1" "FX2"
+const char* target_name(int t);      // "OFF" "V1".."V8" "FX1" "FX2" (the console, the wire)
+const char* target_label(int t);     // the same for the screens: a voice by its tracks ("BD", "CH/OH"), not "V1"
 int target_from_name(const char* s); // -1 none
 int params_of(int target);           // how many parameters it has
 // The parameter's name (<= 5 chars) into b: the voice machine's label (its page's), the FX type's P2..P5 label.
@@ -88,6 +108,10 @@ int div_ticks(int div);              // a synced rate's cycle in 24 ppqn ticks
 float wave_at(const Settings& s, float ph, uint32_t seed);   // -1..1 at phase ph (S&H / RND: a fixed pattern by seed)
 float design_at(const Settings& s, float ph);
 float phase(int i);                  // the LFO's phase now, 0..1
+// The Sidecar's clock as the LFOs run on it (any core may read it: GRANULAR's ANIM): the position in 24 ppqn ticks
+// (mod 2304, locked to the Rytm's song position while it plays, else on at the last tempo) and a tick's length in us.
+// False until tick() first ran (tests without the control loop).
+bool clock_now(float* ticks, float* tick_us);
 float out(int i);                    // its wave now, -1..1
 bool active(int i);                  // on a target with a nonzero depth
 
@@ -100,5 +124,8 @@ struct Stats { uint32_t ticks, voice_sets, user_calls, fx_sets, restores; };
 const Stats& stats();
 void reset();                        // tests: defaults, no targets, the clock forgotten
 
+// core/bundle/rename (UX review B1): the unsaved edits due now (the next save() writes them), and whether any wait
+void save_due();
+bool dirty();
 }  // namespace lfo
 }  // namespace core

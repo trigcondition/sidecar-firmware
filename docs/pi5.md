@@ -205,9 +205,11 @@ the line that matters.
 
 So the engine scales on the Pi 5 (`pi/ui/sidecar_display.cpp`, `RASPPI >= 5` only; the Pi 4 draws as before):
 
-- LVGL draws at the **UI size**: `width=`/`height=` from `cmdline.txt` if both are given, else **800x480** when the
-  frame buffer is bigger than 1024x600, else the frame buffer's size (then nothing is scaled). Never bigger than the
-  frame buffer.
+- LVGL draws at the **UI size**: `width=`/`height=` (or `res=800x480|1024x600`) from `cmdline.txt` if given, else when
+  the frame buffer is bigger than 1024x600 **1024x600** if the HDMI display's EDID prefers 1024x600 (a 1024x600 panel;
+  *inferred*, docs/pi-display.md "Screen sizes"), else **800x480**; else the frame buffer's size (then nothing is
+  scaled). Never bigger than the frame buffer. The pages have an 800x480 and a 1024x600 layout; a bigger UI size draws
+  the 1024x600 one centred in it.
 - Each flushed area is scaled nearest-neighbour to the whole frame buffer, per axis (800x480 on 1920x1080: x 2.40,
   y 2.25; the panel stretches the 16:9 signal back to its 5:3). Only LVGL's dirty areas are scaled; each UI row is
   scaled once, its repeated rows copied, 64 frame-buffer rows per DMA copy. The boot screen is drawn at the UI size
@@ -223,8 +225,9 @@ config.txt lines for the Pi 5 (for the dual card: in `[pi5]`, or under `[all]` a
     [pi5]
     hdmi_force_hotplug=1
 
-cmdline.txt: nothing needed (800x480 is the default UI size). A shared card's Pi 4 `width=800 height=480` gives the
-same. `width=1920 height=1080` draws the UI unscaled.
+cmdline.txt: nothing needed (800x480 is the default UI size, 1024x600 on a panel whose EDID prefers it). A shared card's
+Pi 4 `width=800 height=480` gives the same; `res=1024x600` the 1024x600 layout scaled. `width=1920 height=1080` draws the
+1024x600 layout unscaled, centred.
 
 Connect the LCD to **micro-HDMI 0** (next to the USB-C power) before power-on. Circle's own note (`doc/issues.txt`):
 "The WLAN connection is delicate on the Raspberry Pi 5, when a HDMI display is used at the same time": check Wi-Fi

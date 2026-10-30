@@ -1,7 +1,7 @@
 # LFOs on the Sidecar (`core/lfo.*`)
 
 Extra LFOs that run on the Sidecar: 8 on the Pi (and the Mac), 4 on the Sidecar Mini. Each one modulates one target,
-set on the Rytm's remote LFO page (TRK + YES, then LEFT from SIDECAR), on the Pi's web page (LFO tab) or on the Mini's
+set on the Rytm's remote LFO page (UP + LFO, or the SIDECAR MENU's LFO row; TRK + LFO still works), on the Pi's web page (LFO tab) or on the Mini's
 console page (LFO tab). Settings are saved per kit, as the Rytm's own LFOs are (1026).
 
 ## Targets
@@ -39,8 +39,10 @@ sums (two LFOs on one parameter add), the values written where they changed (a v
 
 ## The remote LFO page (`core/ui/page_lfo.cpp`)
 
-First of the pages drawn by code: SIDECAR, SYSTEM, the voice pages, **LFO**, REC, SCOPE (LEFT from SIDECAR: SCOPE, then
-REC where shown, then LFO). Catches only its knobs (all eight) and the stock page keys every page takes.
+First of the pages drawn by code. ux1027: off the LEFT / RIGHT ring - UP + LFO (or the SIDECAR MENU's row) opens it,
+it replaces the Rytm's screen with no page dots; LEFT / RIGHT step the LFO (the design view: the step), as A; NO (from
+the design view: the main view first) or UP + LFO again leaves, back where it came from; leaving drops the design view.
+Catches only its knobs (all eight) and the stock page keys every page takes.
 
 - **Main view:** the wave over one cycle with a dot at the phase (moved at most every 50 ms: a few tiles a frame), then
   A **LFO** (1..N), B **TGT** (OFF, V1..V8, FX1, FX2), C **PAR** (by name), D **DEP**, E **WAVE**, F **RATE** (FUNC:

@@ -15,15 +15,16 @@ public:
 	{
 		u64 nTicks;			// generic-timer ticks since the last TakeStats
 		u64 nBusy[4];			// ticks working, per core
-		u64 nMach[7];			// render ticks per machine (bridge::stat_name order)
+		u64 nMach[7];			// render ticks per machine (bridge::stat_name order, bridge::kMachines)
+		u64 nVoice[8];			// touch2: render ticks per voice (the display's STATUS page)
 		unsigned nBlocks, nMaxBlockUs, nMaxPassUs, nFifoMin, nFifoMax, nMidiBytes, nSysEx, nNotes, nNoteChans;
 	};
 
 	// The boot bench (bridge::bench, docs/pi-engine.md "Measurements"): each machine on one voice, on every core
 	// in turn - core 0 in the kernel's Initialize (BenchCore (0)), then cores 1, 2 and 3 as each starts, before
 	// its loop (one core at a time: the engine core is not re-entrant).
-	static const unsigned BenchMachines = 6;
-	static const char *const BenchMachine[BenchMachines];	// plaits juno fm daisy dsps dd
+	static const unsigned BenchMachines = 10;
+	static const char *const BenchMachine[BenchMachines];	// plaits juno fm daisy dsps wt gr livein chop md
 	struct TBench
 	{
 		u64 nTicks;		// render ticks for 1 s of audio (4000 blocks)
@@ -42,6 +43,23 @@ public:
 	void Run (unsigned nCore) override;
 	static void TakeStats (TStats *pStats);		// core 0
 	static unsigned FifoTarget (void);
+	// The control loop's longest gap between two pass starts since the last Output::Reset (a new stream), with where that
+	// pass's time went: the sections midi keys cmds tick render idle (us each). at_frames: frames pulled since the Reset
+	// when the gap ended; gaps_over_2ms: how many gaps were that long. Racy reads from core 0 (a diagnostic).
+	struct TStall { unsigned gap_us, at_frames, gaps_over_2ms, sec_us[6]; };
+	static TStall Stall (void);
+	// The last kGaps gaps over 2 ms since the Reset, oldest first: {gap us, frames pulled at its end, us of that pass spent
+	// in its wfe (gap minus it: the pass itself), cntkctl_el1 then (the event stream's bits), DAIF (interrupt masks),
+	// the pass's longest section (0 midi, 1 keys, 2 cmds, 3 tick, 4 render, 5 idle) and its us}.
+	static const unsigned kGaps = 8;
+	struct TGap { unsigned gap_us, at_frames, wfe_us, kctl, daif, sec, sec_us; };
+	static unsigned Gaps (TGap *p);			// returns how many (0..kGaps)
+	// The SysEx messages from the Rytm that took core 3 over 1 ms, oldest first: {command (byte 4), the next byte (a
+	// voice, a track..), length, us}.
+	static const unsigned kSlowSx = 8;
+	struct TSlowSx { unsigned cmd, arg, len, us; };
+	static unsigned SlowSysex (TSlowSx *p);		// returns how many (0..kSlowSx)
+	static boolean WaitPolled (void);		// :ctlwait=poll - the control loop spins instead of wfe (an A/B for the gaps)
 	static boolean NotesOn (void);			// notes=, for the web page (read only)
 	static int DroneVoice (void);			// -1 off, 0..7 one voice, 8 all
 	// The transport's default FIFO target (kernel.cpp UseLink: usb FifoUsb, tcp FifoTcp), unless a fifo= (the

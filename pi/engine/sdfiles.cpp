@@ -1,11 +1,15 @@
 // pi/engine/sdfiles.cpp - the SD card's boot files over TCP (sdfiles.h; docs/pi-engine.md, "Boot from the SD card").
 #include "sdfiles.h"
+#include "bridge.h"
+#include "paircode_pi.h"
+#include "lib/library.h"
 
 #include <circle/bcmpropertytags.h>
 #include <circle/logger.h>
 #include <circle/net/in.h>
 #include <circle/sched/scheduler.h>
 #include <circle/string.h>
+#include <circle/timer.h>
 #include <circle/util.h>
 #include <fatfs/ff.h>
 #include <stdarg.h>
@@ -89,7 +93,7 @@ static boolean FileCrc (const char *pPath, u8 *pBuf, unsigned *pSize, u32 *pCrc)
 
 CSdFiles::CSdFiles (CNetSubSystem *pNet, CSerialDevice *pSerial)
 :	m_pNet (pNet), m_pSerial (pSerial), m_pConn (0), m_pBuf (new u8[BufSize]), m_nRxPos (0), m_nRxLen (0),
-	m_nDecPos (0), m_nDecLen (0)
+	m_nDecPos (0), m_nDecLen (0), m_bAuth (FALSE), m_bToldUnpaired (FALSE), m_nPeer (0), m_nAcceptAt (0)
 {
 	SetName (pSerial ? "sdfiles-serial" : "sdfiles");
 	CrcInit ();
@@ -175,6 +179,7 @@ void CSdFiles::Run (void)
 		{
 			while (!s_bSerial) S->MsSleep (50);
 			m_nRxPos = m_nRxLen = m_nDecPos = m_nDecLen = 0;
+			m_bAuth = TRUE;		// the serial port: physical access, and the way back in when the network is locked
 			Reply ("READY (the SD file commands; BYE or 10 s idle returns to the console)");
 			Serve ();
 			Reply ("BYE");
@@ -188,7 +193,9 @@ void CSdFiles::Run (void)
 		CLogger::Get ()->Write (From, LogError, "cannot listen on port %u", Port);
 		return;
 	}
-	CLogger::Get ()->Write (From, LogNotice, "the SD card's boot files on TCP port %u (pi/circle/sdboot.py)", Port);
+	CLogger::Get ()->Write (From, LogNotice, "the SD card's boot files on TCP port %u (pi/circle/sdboot.py)%s", Port,
+				paircode_pi::Gate ().gated () ? ": a connection must PAIR with the code on the screen first"
+							      : ": NOT GATED (cmdline paircode=0) - anyone on this network can replace the firmware");
 	for (;;)
 	{
 		CIPAddress IP;
@@ -196,6 +203,13 @@ void CSdFiles::Run (void)
 		m_pConn = Listen.Accept (&IP, &nPort);
 		if (m_pConn == 0) { S->MsSleep (100); continue; }
 		m_nRxPos = m_nRxLen = 0;
+		m_bAuth = !paircode_pi::Gate ().gated ();	// the pairing code: nothing is served until PAIR / AUTH
+		m_nPeer = (u32) IP;				// its rate-limit key (paircode.h: per peer)
+		// One connection at a time, so an idle one held the port - and every install - for good (review M2:
+		// `nc sidecar.local 7310` and walk away). 10 s of silence before PAIR / AUTH ends it, 60 s after.
+		m_pConn->SetOptionReceiveTimeout (m_bAuth ? kAuthedTimeoutUs : kUnauthTimeoutUs);
+		m_nAcceptAt = CTimer::GetClockTicks ();	// and 20 s in all to authenticate (a byte every 9 s is no way round it)
+		m_bToldUnpaired = FALSE;
 		Serve ();
 		delete m_pConn;
 		m_pConn = 0;
@@ -209,6 +223,7 @@ boolean CSdFiles::Fill (void)
 	m_nRxLen = 0;
 	if (!m_pSerial)
 	{
+		if (!m_bAuth && CTimer::GetClockTicks () - m_nAcceptAt > kUnauthMaxUs) return FALSE;
 		int n = m_pConn->Receive (m_Rx, sizeof m_Rx, 0);
 		if (n <= 0) return FALSE;
 		m_nRxLen = n;
@@ -309,6 +324,41 @@ void CSdFiles::Serve (void)
 	char Line[160];
 	while (ReadLine (Line, sizeof Line))
 	{
+		// the Rytm's SIDECAR MENU > WEB UI off: the network side refuses every line (as unauthenticated, so
+		// sdboot.py's probe takes the gated path and says why); the serial :sdf is physical access and stays
+		if (m_pSerial == 0 && !paircode_pi::WebOn ())
+		{
+			if (strcmp (Line, "BYE") == 0) return;
+			memset (Line, 0, sizeof Line);
+			Reply ("ERR unauthenticated: %s", paircode_pi::kWebOff);
+			continue;
+		}
+		if (!m_bAuth)		// the pairing code (paircode.h): PAIR, AUTH or BYE, nothing else
+		{
+			if (strcmp (Line, "BYE") == 0) return;
+			if (Line[0] == 0) continue;
+			char R[400];
+			boolean bPair = strncmp (Line, "PAIR ", 5) == 0;
+			m_bAuth = paircode_pi::Gate ().tcp_auth (Line, R, sizeof R, m_nPeer) ? TRUE : FALSE;
+			memset (Line, 0, sizeof Line);		// a PAIR line carries the code: not left on the stack
+			Reply ("%s", R);
+			if (m_bAuth)
+			{
+				m_pConn->SetOptionReceiveTimeout (kAuthedTimeoutUs);	// (Serve is TCP only before auth)
+				paircode_pi::Save ();		// a PAIR remembers this client on the card
+				if (bPair) paircode_pi::Hide ();	// paired with the code: off the Rytm's screen
+				CLogger::Get ()->Write (From, LogNotice, "a client on port %u is paired: the SD file commands "
+							"are open to it for this connection", Port);
+			}
+			// one line a connection, so a client hammering the port cannot push the log's tail out
+			else if (!m_bToldUnpaired)
+			{
+				m_bToldUnpaired = TRUE;
+				CLogger::Get ()->Write (From, LogWarning, "a client on port %u is not paired: %s", Port, R);
+			}
+			memset (R, 0, sizeof R);		// a PAIR answer carries the new client's secret
+			continue;
+		}
 		char *pArg = strchr (Line, ' ');
 		if (pArg) *pArg++ = 0;
 		if (strcmp (Line, "LS") == 0) List ();
@@ -413,6 +463,8 @@ void CSdFiles::Put (const char *pName, unsigned nSize, u32 nCRC)
 		unsigned k = nLeft < BufSize ? nLeft : BufSize;
 		if (!RecvExact (m_pBuf, k)) { bOK = FALSE; break; }
 		crc = Crc (crc, m_pBuf, k);
+		for (unsigned t0 = CTimer::GetClockTicks (); bridge::card_busy () && CTimer::GetClockTicks () - t0 < 200000; )
+			CScheduler::Get ()->MsSleep (1);	// uploads last: the streams first (core/msamp/cardq.h)
 		UINT w = 0;
 		if (f_write (&f, m_pBuf, k, &w) != FR_OK || w != k) bOK = FALSE;
 		nLeft -= k;
@@ -446,6 +498,7 @@ void CSdFiles::Put (const char *pName, unsigned nSize, u32 nCRC)
 	}
 	r = f_rename (PNew, P + 3);
 	if (r != FR_OK) { Reply ("ERR rename %d (the new file is %s.new)", r, pName); return; }
+	core::lib::touched (P + 3, 0, 0);	// the sample library (a library type only: the boot files are not)
 	L->Write (From, LogNotice, "%s: %u bytes, crc %08x, written and checked%s%s%s", pName, nSize, nCRC,
 		  *pKept ? " (the old one: " : "", *pKept ? pName : "", *pKept ? (pKept[1] == 'b' ? ".bak)" : ".prev)") : "");
 	Reply ("OK %u %08x%s%s", nSize, nCRC, *pKept ? " kept " : "", pKept);

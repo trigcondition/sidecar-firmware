@@ -30,8 +30,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import rui_link  # noqa: E402
 
-EMU = os.environ.get("RYTM_EMU", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "rytm-emu"))
-MODS = os.environ.get("RYTM_MODS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "sidecar-mods"))
+EMU = os.environ.get("RYTM_EMU", "../rytm-emu")
+MODS = os.environ.get("RYTM_MODS", "../rytm-mods-fxin")
 TAG = os.environ.get("FXIN_TAG", "rui1024")
 FS = 48000
 HDR = "F07D5254"

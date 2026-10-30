@@ -1,0 +1,101 @@
+diff -ruN a/include/circle/usb/usbhiddevice.h b/include/circle/usb/usbhiddevice.h
+--- a/include/circle/usb/usbhiddevice.h	2026-10-26 22:04:34
++++ b/include/circle/usb/usbhiddevice.h	2026-10-26 22:04:34
+@@ -120,6 +120,7 @@
+ 	// by Poll () only, never by the completion routine (IRQ), and Poll () runs on one core.
+ 	hidreenum::Hold m_Hold;			// the clocks, per device object: a re-enumeration starts them again
+ 	static hidreenum::Budget s_Budget;	// the budget, keyed on the place in the USB tree, which outlives us
++	static unsigned s_nRemoved;		// circle-hid-reenum3.patch: GetReEnumCount (), moved before each removal
+ };
+ 
+ #endif
+diff -ruN a/include/circle/usb/usbtouchscreen.h b/include/circle/usb/usbtouchscreen.h
+--- a/include/circle/usb/usbtouchscreen.h	2026-10-26 22:04:34
++++ b/include/circle/usb/usbtouchscreen.h	2026-10-26 22:04:34
+@@ -51,7 +51,9 @@
+ 	// interface and a digitizer one is bound by the digitizer)
+ 	CTouchScreenDevice *GetTouchDevice (void) const	{ return m_pDevice; }
+ 
+-	// CUSBHIDDevice::Poll() (main loop), then the first input reports logged (not from the IRQ)
++	// CUSBHIDDevice::Poll() (main loop), then the first input reports logged (not from the IRQ).
++	// circle-hid-reenum3.patch: it may delete this object (a forced re-enumeration): the caller compares
++	// CUSBHIDDevice::GetReEnumCount () before and after, and when it moved uses no pointer into the device again.
+ 	void Poll (void);
+ 
+ 	// a hex dump at NOTICE, 16 bytes a line (report descriptors; also used by CUSBDeviceFactory)
+diff -ruN a/lib/usb/usbhiddevice.cpp b/lib/usb/usbhiddevice.cpp
+--- a/lib/usb/usbhiddevice.cpp	2026-10-26 22:04:34
++++ b/lib/usb/usbhiddevice.cpp	2026-10-26 22:04:34
+@@ -491,10 +491,24 @@
+ 				bPowerCycle ? " with a port power cycle" : "",
+ 				s_Budget.Tries, (unsigned) hidreenum::MaxTries);
+ 
++	// circle-hid-reenum3.patch: how long the main loop is held. The removal, the port reset (100 ms), the power
++	// cycle's 300 ms off and the hub's 510 ms power-good delay are all CTimer::MsDelay () busy waits inside
++	// Circle's synchronous hub code (the same path a hot-plug takes in UpdatePlugAndPlay ()), so it cannot be
++	// split over passes without rewriting that; IRQs keep running meanwhile. It is bounded instead: at most
++	// MaxTries per device until it is forgiven, each try ApartMs and a HoldMs given-up run after the last. The
++	// log line after the re-scan says what it cost on the device.
++	const unsigned nStartTicks = CTimer::GetClockTicks ();
++	s_nRemoved++;						// before: a caller's GetReEnumCount () must move
++								// whenever *this* may be gone, never only after
++
+ 	// The removal goes first even for the power cycle: cutting VBUS first would make its CLEAR_FEATURE
+ 	// PORT_ENABLE fail, and RemoveDeviceAt () then refuses to delete the device, which would leave a stale
+ 	// object on a dead port.
+-	pDevice->RemoveDevice ();				// deletes pDevice and *this*
++	if (!pDevice->RemoveDevice ())				// deletes pDevice and *this*
++	{
++		// (the port could not be disabled: nothing was deleted, the re-scan below leaves the device as it is)
++		CLogger::Get ()->Write (FromUSBHID, LogWarning, "Re-enumeration: the device could not be removed");
++	}
+ 
+ 	if (   bPowerCycle
+ 	    && !pHub->PortPowerCycle (nPortIndex, ReEnumPowerOffMs))
+@@ -513,6 +527,9 @@
+ 		pRootPort->ReScanDevices ();
+ 	}
+ 
++	CLogger::Get ()->Write (FromUSBHID, LogNotice, "Re-enumeration done: the main loop was held %u ms",
++				(CTimer::GetClockTicks () - nStartTicks) / 1000);	// circle-hid-reenum3.patch
++
+ 	return TRUE;
+ #else
+ 	(void) Step;
+@@ -520,9 +537,13 @@
+ #endif
+ }
+ 
++// circle-hid-reenum3.patch: the removals actually started (not the budget's Total, which also counts a try that
++// found nothing to remove), so a caller that sees no change knows the object it polled is still there.
++unsigned CUSBHIDDevice::s_nRemoved = 0;
++
+ unsigned CUSBHIDDevice::GetReEnumCount (void)
+ {
+-	return s_Budget.Total;
++	return s_nRemoved;
+ }
+ 
+ void CUSBHIDDevice::GetHIDStats (THIDStats *pStats)
+diff -ruN a/lib/usb/usbtouchscreen.cpp b/lib/usb/usbtouchscreen.cpp
+--- a/lib/usb/usbtouchscreen.cpp	2026-10-26 22:04:34
++++ b/lib/usb/usbtouchscreen.cpp	2026-10-26 22:04:34
+@@ -226,7 +226,18 @@
+ 
+ void CUSBTouchScreenDevice::Poll (void)
+ {
++	// circle-hid-reenum3.patch: CUSBHIDDevice::Poll () may re-enumerate the device (circle-hid-reenum.patch), and
++	// RemoveDevice () deletes the device with its functions - *this* among them - before Poll () returns, and the
++	// re-scan that follows may build the new panel's object at the same address. Everything below reads and writes
++	// members (the spin lock first: a lock word in freed memory can spin core 0 for ever, and core 0 also runs the
++	// network and the card), so it must not run on a re-enumeration's pass. GetReEnumCount () moves on every forced
++	// re-enumeration and is read before and after, as CSidecarDisplay::Update does with the touchN device.
++	const unsigned nReEnums = GetReEnumCount ();
+ 	CUSBHIDDevice::Poll ();
++	if (GetReEnumCount () != nReEnums)
++	{
++		return;					// *this* may have been deleted: touch nothing
++	}
+ 
+ 	// circle-touch-multi.patch: a device that repeats its report while held (SendsRepeats) and has sent none for
+ 	// ReleaseGapMs while a contact is down lost its release: every contact up (a long press keeps its repeats coming)

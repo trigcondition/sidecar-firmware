@@ -5,10 +5,14 @@
 // (core/engines/stream_voice.h) cannot give: slices, grains, a stretch,
 // a wavetable scan.
 //
-// The sample: int16 mono at its file's rate, frames + 1 readable values (the
-// last frame repeated: interpolation reads k + 1 without a check). int16 mono
+// The sample: int16 at its file's rate, frames + 1 readable frames (the
+// last frame repeated: interpolation reads k + 1 without a check). int16
 // because PSRAM is read through a 32-byte cache line per miss: float would
-// halve the frames a line holds, stereo too (docs/psram.md, bandwidth).
+// halve the frames a line holds (docs/psram.md, bandwidth). Mono, or (the Pi's
+// pool RAM, docs/STEREO.md) stereo interleaved L R: Render reads a stereo
+// sample as mono ((L + R) / 2 truncated: the summed load's value), Render with
+// a right channel plays it in stereo (ONE LOOP SLICE GRAIN STRCH; PLUCK and
+// WAVE play mono on both sides).
 //
 // The knobs are DSP SAMPLE's SD SAMPLE page, P9..P16 as the report sends
 // them (0..127.99), by sample word: 17 TUN 18 FIN 19 SMP 20 MOD (was FLD,
@@ -127,17 +131,20 @@ class SampleModes {
   // PLUCK is silent.
   void AttachPluck(float* line) { line_ = line; }
 
-  // The sample (see above); null or < 2 frames: silent.
-  void Set(const int16_t* pcm, uint32_t frames, float rate) {
-    if (pcm == pcm_ && frames == frames_ && rate == rate_) return;
+  // The sample (see above); null or < 2 frames: silent. ch 2: interleaved L R.
+  void Set(const int16_t* pcm, uint32_t frames, float rate, int ch = 1) {
+    ch = ch == 2 ? 2 : 1;
+    if (pcm == pcm_ && frames == frames_ && rate == rate_ && ch == ch_) return;
     pcm_ = pcm;
     frames_ = frames;
+    ch_ = ch;
     rate_ = rate > 0 ? rate : 48000.0f;
     playing_ = false;
     StopGrains();
   }
   ~SampleModes() { StopGrains(); }
   const int16_t* pcm() const { return pcm_; }
+  int channels() const { return ch_; }
 
   // A trig: note (60 = as recorded), sp the SD SAMPLE page (8 values).
   void Trigger(float note, const float* sp) {
@@ -197,13 +204,18 @@ class SampleModes {
     if (mode_ == kLoop || mode_ == kGrain || mode_ == kStretch || mode_ == kWave) release_ = true;
   }
 
-  // n samples, -1..1 (before LEV's level: included).
-  void Render(const float* sp, float* out, int n) {
+  // n samples, -1..1 (before LEV's level: included). outr (optional): the right
+  // channel - a stereo sample's own R in the modes that read it, else a copy
+  // of out; null: mono (a stereo sample summed).
+  void Render(const float* sp, float* out, int n, float* outr = nullptr) {
     if (!playing_) {
       for (int i = 0; i < n; ++i) out[i] = 0.0f;
+      if (outr)
+        for (int i = 0; i < n; ++i) outr[i] = 0.0f;
       return;
     }
     float level = sp[7] / 100.0f;
+    r_ = outr && ch_ == 2 && mode_ != kPluck && mode_ != kWave ? outr : nullptr;
     switch (mode_) {
       case kOneShot: RenderPlay(sp, sp[6] >= 1.0f, false, out, n); break;
       case kLoop: RenderPlay(sp, true, sp[6] >= 64.0f, out, n); break;
@@ -213,7 +225,7 @@ class SampleModes {
       case kPluck: RenderPluck(sp, out, n); break;
       case kWave: RenderWave(sp, out, n); break;
       default:
-        for (int i = 0; i < n; ++i) out[i] = 0.0f;
+        Zero(out, 0, n);
         playing_ = false;
     }
     for (int i = 0; i < n; ++i) {
@@ -225,7 +237,11 @@ class SampleModes {
         }
       }
       out[i] *= gain_ * level;
+      if (r_) r_[i] *= gain_ * level;
     }
+    if (outr && !r_)
+      for (int i = 0; i < n; ++i) outr[i] = out[i];
+    r_ = nullptr;
     if (!playing_) StopGrains();
   }
 
@@ -318,11 +334,16 @@ class SampleModes {
     return powf(2.0f, semis / 12.0f);
   }
 
-  // Frame k as stored (the simulator's build: counted, through the cache model).
+  // Frame k as stored, mono (a stereo frame: (L + R) / 2 truncated) (the
+  // simulator's build: counted, through the cache model).
   inline float Fetch(uint32_t k) {
-    RYTM_OPS(++ops.reads; SampleOpsTouch(pcm_ + k));
+    RYTM_OPS(++ops.reads; SampleOpsTouch(pcm_ + k * ch_));
+    if (ch_ == 2) return (float)(((int32_t)pcm_[2 * k] + (int32_t)pcm_[2 * k + 1]) / 2);
     return pcm_[k];
   }
+  // Frame k's R (a stereo sample; Fetch's L counterpart: FetchL)
+  inline float FetchL(uint32_t k) { return pcm_[2 * k]; }
+  inline float FetchR(uint32_t k) { return pcm_[2 * k + 1]; }
   // The sample at source frame p (>= 0), linearly interpolated.
   inline float Read(double p) {
     uint32_t k = (uint32_t)p;
@@ -331,6 +352,16 @@ class SampleModes {
     f = f < 1.0f ? f : 1.0f;
     float s0 = Fetch(k), s1 = Fetch(k + 1);   // pcm_[frames_] is the guard
     return (s0 + (s1 - s0) * f) * (1.0f / 32768.0f);
+  }
+  // A stereo sample's L into *l and R into *r at p (r_ set: the stereo render)
+  inline void Read2(double p, float* l, float* r) {
+    uint32_t k = (uint32_t)p;
+    if (k >= frames_) k = frames_ - 1;
+    float f = (float)(p - k);
+    f = f < 1.0f ? f : 1.0f;
+    float a0 = FetchL(k), a1 = FetchL(k + 1), b0 = FetchR(k), b1 = FetchR(k + 1);
+    *l = (a0 + (a1 - a0) * f) * (1.0f / 32768.0f);
+    *r = (b0 + (b1 - b0) * f) * (1.0f / 32768.0f);
   }
 
   // ONE and LOOP: STA..END forward or reversed, looping (wrapping, or
@@ -346,7 +377,7 @@ class SampleModes {
       if (pos_ < lo || pos_ > hi) {
         if (!loop || hi - lo < 1.0f) {
           playing_ = false;
-          for (; i < n; ++i) out[i] = 0.0f;
+          Zero(out, i, n);
           return;
         }
         if (pingpong) {
@@ -359,9 +390,16 @@ class SampleModes {
           if (pos_ < lo) pos_ += len;
         }
       }
-      out[i] = Read(pos_);
+      if (r_) Read2(pos_, &out[i], &r_[i]);
+      else out[i] = Read(pos_);
       pos_ += dir_ * step;
     }
+  }
+  // out (and the right channel when stereo) silent from i on
+  void Zero(float* out, int i, int n) {
+    for (int j = i; j < n; ++j) out[j] = 0.0f;
+    if (r_)
+      for (int j = i; j < n; ++j) r_[j] = 0.0f;
   }
 
   // SLICE: the trig's slice once, a 2 ms fade at either end against clicks.
@@ -371,7 +409,7 @@ class SampleModes {
     for (int i = 0; i < n; ++i) {
       if (pos_ < s_lo_ || pos_ > s_hi_) {
         playing_ = false;
-        for (; i < n; ++i) out[i] = 0.0f;
+        Zero(out, i, n);
         return;
       }
       double left = dir_ > 0 ? s_hi_ - pos_ : pos_ - s_lo_;   // source frames to the end
@@ -379,7 +417,12 @@ class SampleModes {
       float gi = (float)t_ / kFade;
       g = g < 1.0f ? g : 1.0f;
       g = gi < g ? gi : g;
-      out[i] = Read(pos_) * g;
+      if (r_) {
+        Read2(pos_, &out[i], &r_[i]);
+        out[i] *= g, r_[i] *= g;
+      } else {
+        out[i] = Read(pos_) * g;
+      }
       pos_ += dir_ * step;
       ++t_;
     }
@@ -411,15 +454,23 @@ class SampleModes {
       return;
     }
   }
-  // The grains' sum for one output sample.
-  inline float GrainSum() {
-    float s = 0.0f;
+  // The grains' sum for one output sample (r: the right channel's, a stereo
+  // render; the return value is then L)
+  inline float GrainSum(float* r = nullptr) {
+    float s = 0.0f, sr = 0.0f;
     for (int g = 0; g < kGrains; ++g) {
       Grain& x = grains_[g];
       if (!x.on) continue;
       uint32_t k = x.ip < frames_ ? x.ip : frames_ - 1;
-      float s0 = Fetch(k), s1 = Fetch(k + 1);
-      s += (s0 + (s1 - s0) * x.fr) * win_[x.wph >> (32 - kWinBits)];
+      float wv = win_[x.wph >> (32 - kWinBits)];
+      if (r) {
+        float a0 = FetchL(k), a1 = FetchL(k + 1), b0 = FetchR(k), b1 = FetchR(k + 1);
+        s += (a0 + (a1 - a0) * x.fr) * wv;
+        sr += (b0 + (b1 - b0) * x.fr) * wv;
+      } else {
+        float s0 = Fetch(k), s1 = Fetch(k + 1);
+        s += (s0 + (s1 - s0) * x.fr) * wv;
+      }
       x.fr += x.step;
       uint32_t w = (uint32_t)x.fr;
       x.ip += w;
@@ -427,6 +478,7 @@ class SampleModes {
       x.wph += x.wdelta;
       if (--x.left == 0) EndGrain(x);
     }
+    if (r) *r = sr * (1.0f / 32768.0f);
     return s * (1.0f / 32768.0f);
   }
 
@@ -447,7 +499,12 @@ class SampleModes {
         next_ = (int32_t)(48000.0f / dens * (0.75f + 0.5f * Random01()));
         if (next_ < 1) next_ = 1;
       }
-      out[i] = GrainSum() * norm;
+      if (r_) {
+        out[i] = GrainSum(&r_[i]) * norm;
+        r_[i] *= norm;
+      } else {
+        out[i] = GrainSum() * norm;
+      }
     }
   }
 
@@ -466,8 +523,7 @@ class SampleModes {
         last_ = Newest();
         next_ = (int32_t)hop;
       }
-      float s = GrainSum();
-      out[i] = s;
+      out[i] = GrainSum(r_ ? &r_[i] : nullptr);
       if (!done) {
         pos_ += dir_ * speed;
       } else {
@@ -475,7 +531,7 @@ class SampleModes {
         for (int g = 0; g < kGrains; ++g) any |= grains_[g].on;
         if (!any) {
           playing_ = false;
-          for (++i; i < n; ++i) out[i] = 0.0f;
+          Zero(out, i + 1, n);
           return;
         }
       }
@@ -598,6 +654,8 @@ class SampleModes {
 
   const int16_t* pcm_ = nullptr;
   uint32_t frames_ = 0;
+  int ch_ = 1;               // 2: pcm_ interleaved L R
+  float* r_ = nullptr;       // Render's right channel while it renders a stereo sample in stereo
   float rate_ = 48000.0f;
   int mode_ = kOneShot;
   float note_ = 60.0f;

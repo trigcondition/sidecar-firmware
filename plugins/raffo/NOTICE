@@ -1,0 +1,17 @@
+plugins/raffo - notices for the RAFFO package (raffo.mono4, raffo.a64.rmp)
+
+RAFFO's DSP is RaffoSynth's as the Schwung module "RaffoSynth" ports it (src/dsp/moog_engine.c: 4 oscillators, a
+Moog-style 4-pole ladder with its contour, two ADSRs, legato glide), rewritten in C for one voice a state and adapted
+for the Sidecar (raffo.c's header lists the changes: PolyBLEP edges, the ladder's stage memories and a feedback to
+self-oscillation, linear / exponential envelopes, block-rate coefficients, no LFO / noise / wheel / bend).
+  Taken from:  https://github.com/charlesvestal/schwung-moog  commit 4f1f658c35a13a5786f13d31a77aba67312ca0dd
+               (2026-08-31), based on
+               https://github.com/nicoroulet/RaffoSynth  commit e2731c9b25970b19393fc417dcd234b55e1859f1
+               (the original LV2 plugin; its LICENSE.md is the same MIT licence, the same copyright lines)
+  Licence:     MIT, Copyright (c) 2014 Nicolas Roulet, Copyright (c) 2014 Julian Palladino
+               (LICENSE.raffo, schwung-moog's LICENSE unchanged)
+No upstream file is in this repository or the package: raffo.c is a rewrite of the engine's DSP.
+"RAFFO" names the machine after RaffoSynth; it is not affiliated with any synthesizer maker.
+
+The adaptation and the glue (raffo.c, manifest.json, the Makefile, tests/): MIT, Copyright 2026 trigcondition and
+contributors (LICENSE). The package links sdk/rmp/shim (MIT).

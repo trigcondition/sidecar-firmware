@@ -164,6 +164,49 @@ header and compares the layout.
   clamped into the range), text kinds `preset` (the knob that picks the preset; at most one, role `free`) and
   `pool` (a pool slot, 0 OFF); per package `page2_title` (at most 13; "" shows the machine's name) and
   `preset_ext` (the native presets' file extension: letters and digits, not `txt`).
+  seqx (E0, 2026-10-22): **`max_voices`** (1..8, default 1) and **`pitch`** (`note` default, `none` a fixed-pitch drum:
+  the host sends note 60). They go into the header's `flags` (`rmp_format.h` RMP_HF_*: bit 0 RMP_HF_INSTANCES when
+  `max_voices` > 1, bits 4..6 `max_voices` - 1, bits 8..9 the pitch), outside the CRC; an older host ignores them and
+  plays the machine mono. `max_voices` > 1 is the opt-in to **instancing**: on a Sidecar poly track the host runs up to
+  that many states of the plugin on one voice (the track's notes, a unison stack; docs/SEQUENCER.md "Built: seqx"), so
+  the plugin must keep everything render() writes in its state (constants and the host table in globals are fine).
+  Packages without the keys (every older one) stay mono.
+- **`type_labels`** (2026-10-26, `plugins/mdkit`: one machine whose TYPE knob picks a voice with its own controls):
+  labels that follow a list knob. `{"knob": 9, "params": [1, ..., 8], "sets": [[["Pitch", "PTCH"], ..., null], ...]}`:
+  `knob` a list knob with names, `params` 1..8 of the other knobs, `sets` one per name of `knob`, each holding one
+  `[long, short]` (12 / 4 characters) or `null` (unlabelled, inert for that value) per entry of `params`. The packer
+  appends it to the manifest as a block after the name table (`rmp_format.h` RMP_LABELS_*: knob, nsets, nparams, 0,
+  the Ps, nsets x nparams 16-byte entries, then a 6-byte footer: the block's length and the magic `RLB1`). The package
+  **stays format 3**: an older host (the Teensy, a Pi engine before this) never reads past the name table, takes the
+  knobs' own static labels (give them a sensible family-wide set) and plays the package as before. A card host
+  (`core/user/um.cpp`, the Pi and the Mac core lib) reads the block at the scan (`rmp_manifest_labels`) and names a slot's
+  knobs after the value its list knob has, zone `(value * nsets) >> 7` (`rmp_labels_set`, the way a plugin reads a list
+  knob): the value of the voice the Rytm has selected when it plays the slot, else of the voice whose knobs the user
+  moved last on the slot (a Rytm report without a trig; never the Sidecar's LFOs or step locks, which call the plugin
+  with `core::user_report_internal` set), else of the first voice on it. The set shown moves at most every 150 ms (a
+  1D each time). A change is a new description, so the slot's
+  generation moves, a 1D goes out and the Rytm asks 1A again: its user-machine page and the touchscreen (which draws
+  the Rytm's labels) follow the value, within ~100 ms (meta_poll). The slot JSON adds `lset` (the set shown, -1 the
+  static labels). One slot has one set of labels: two tracks on the same slot with different TYPEs show the selected
+  (or last edited) track's. Tests: `tools/tests/test_rmp_pack.py` Labels, `extras/manifest_test.cpp`,
+  `sim/tests/test_core_labels.py`.
+- **`type_labels` with `follows` and `lists`** (2026-10-27, `plugins/mdkit`'s MD: ENGINE picks the TYPE list): a list
+  knob whose names follow another list knob. `{"knob": 10, "follows": 9, "lists": [["BD", ...], ...], "params": [...],
+  "sets": [...]}`: `follows` another list knob with names, `lists` one list of names (1..16, 7 characters each) per name
+  of `follows`, `lists[0]` equal to `knob`'s own static names (what an older host shows), `sets` one per name of all the
+  lists together in order (32 at most). The packer writes an RLB2 block instead of RLB1 (`rmp_format.h`
+  RMP_LABELS_MAGIC2: knob, nsets, nparams, dep, ndep, the lists' counts, the Ps, the names, the label entries, the same
+  footer with `RLB2`). The card host reads it at the scan, picks the set from both values (`rmp_labels_pick`: `follows`'
+  zone v among its names, then `base[v]` + `knob`'s zone among `count[v]`), gives `knob` the enum count `count[v]` in the
+  slot's 1A (`rmp_labels_apply`: the zones the Rytm shows) and answers its 1B with `lists[v]` (`rmp_labels_enum`; with no
+  voice on the slot, the static names). Such a package is **format 4** (RMPA only; review 2026-10-27): format 3's
+  manifest with the RLB2 block, so a host from before it (format 3 at most: the Pi engine before b6cfec3, the Teensy)
+  refuses it ("format not supported") instead of showing the first list's names for every value of `follows`. Every
+  other package stays format 3, byte for byte; an RLB1 package reads as before. The set shown is part of the slot's
+  print (two lists of one count with the same labels still move the generation), and it is dropped when a rescan
+  gives the slot another package. A plugin reads
+  `knob` in `follows`' zones too: `(value * count[v]) >> 7`. Tests: `test_rmp_pack.py` Labels.test_type_lists,
+  `manifest_test.cpp`, `test_core_labels.py` test_list_follows_another.
 - The packer refuses: static constructors, host (undefined) symbols, other relocation types, other loadable sections,
   PC-relative targets outside `.image`, a malformed or truncated ELF, an image over 1 MB, an unsafe id.
 - Example: `plugins/sine_test/manifest.json` (three knobs).
@@ -679,6 +722,29 @@ was muted (`plug_mute_why`); the reason is part of the slot's meta fingerprint, 
 page (`slot` objects) and `info` carry it in words as `why`: "no room: needs 23288 B, 584 B free", "muted: timed out",
 "bad: init() refused", "missing: not installed..." (`rmp_loaded.need` is what the package asked the arena for). The Pi's
 display shows the same `!ROOM NPPR`.
+
+### 10.2 The mdkit machines (2026-10-26)
+
+`plugins/mdkit` builds three Pi machines (RMPA) from mdkit (https://github.com/soejrd/mdkit, CC0 1.0, fetched at a
+pinned commit by `fetch.sh`): MD-PI (`mdkit.pi`), MD-EFM (`mdkit.efm`), MD-TRX (`mdkit.trx`), one per family. P9 TYPE
+(a list knob) picks the voice, P1..P8 are its controls 1:1, P10 LEV; the labels follow TYPE (`type_labels`, section
+3). mdkit's 44.1 kHz is kept, a per-voice resampler makes 48 kHz. `make packages` writes `out/mdk_<fam>.rmp`; `make
+check` runs them on the Mac against mdkit's own render (bit-exact before the resampler). `plugins/mdkit/README.md` has
+the TYPE lists, the controls and what to expect (three TRX voices latch their controls at a trigger, as mdkit does).
+
+**MD** (`mdkit.md`, `out/mdk.rmp`, 2026-10-27) is the three in one machine: P9 ENGINE (FM, PI, TRX) and P10 TYPE on the
+SMPL page, P10's list following ENGINE (`type_labels` with `follows`), P1..P8 the voice's controls named after ENGINE +
+TYPE, P11 LEV. One 568 KB image (the RMPA limit is 1 MB), format 4 (an older engine refuses it); only the voice set
+up renders. A TYPE or ENGINE change that comes with its trig fades the old voice out under the new hit (2 ms).
+
+**MD is also built in** (2026-10-29, in place of DIGIDRUM, soejrd/digidrum's TRX / EFM): voice byte 0x40, 0021's
+machine 42, on every Pi and the Mac core with no plugin to install and no user slot taken (`core/md/md.h`; the Rytm
+interface: docs/MD-BUILTIN.md). The same voices and the same code: `mdk.c` is compiled into the core
+(core/engines/setup_engines.sh's `MDKit/mdk_builtin.c`), its labels come from `md.json` through `md_tables.h`
+(`gen_tables.py`). mdkit itself is vendored in `third_party/mdkit` (no network). A kit with DIGIDRUM on a track plays it
+as MD: DIGIDRUM's ENG picks the closest ENGINE / TYPE (EFM-BD..CY -> FM BD..CY, TRX-RS / CB / CL -> TRX RS / CB / CL),
+its controls carried over where they are the same. The MD user machine and MD-PI / MD-EFM / MD-TRX stay installable
+as before. Not on the Teensy (a PI voice's state is over its RAM): 0x40 is silent there.
 
 ## 11. User slots on the Rytm (sub-project 2)
 

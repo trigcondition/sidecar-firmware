@@ -2,9 +2,11 @@
 // gallery). Cold.
 #include <string.h>
 
+#include "lib/srclib.h"
 #include "machines.h"
 #include "ui/extra.h"
 #include "ui/page.h"
+#include "voices.h"
 
 namespace core {
 namespace ui {
@@ -12,6 +14,11 @@ namespace ui {
 CORE_COLD int Source::peaks(int, const int8_t**, const uint8_t**, int*) const { return 0; }
 CORE_COLD const char* Source::text(int) const { return ""; }
 CORE_COLD int Source::voice() const { return -1; }
+CORE_COLD int Source::code(int k) const {
+  int vi = voice();
+  if (vi < 0) return param(k);
+  return srclib::code_of(v[vi & 7].p[k & 15]);
+}
 
 static inline uint32_t mix(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }
 static CORE_COLD uint32_t mix_str(uint32_t h, const char* s) {
@@ -89,7 +96,11 @@ static CORE_COLD void draw_cell(Canvas& cv, const Page& p, int ci, const Source&
         cv.put_text(kSlotFree + c.arg + i, kRSmall, r.x + 2, r.y + 1 + 6 * i, s.text(c.arg + i));
       return;   // no labels
     }
-    case kDraw: draw_custom(cv, r, c, s, kSlotCells + ci); break;
+    case kDraw:
+      draw_custom(cv, r, c, s, kSlotCells + ci);
+      if (c.arg == kDrawChord) return;   // the chord's keyboard takes the labels' rows (a turn: the bottom bar names it)
+      if (c.arg == kDrawGrList || c.arg == kDrawWtList || c.arg == kDrawMsList || c.arg == kDrawBankList) return;   // the list's rows: no labels
+      break;
     default: return;
   }
   const char* l[4];
@@ -159,6 +170,25 @@ static UI_ROM const Page kPlaitsPage = {
     {"ENG", "HRM", "TIM", "MOR", "DEC", "LPG", "TUN", "LEV"},
 };
 
+// LIVE IN (machines.h kLiveMachine, core/livein/livein.h: P1..P9 INPT GAIN GATE HOLD MON ATK DEC SUS REL): the input
+// as a list, GAIN bipolar around 0 dB, GATE's threshold as a level (fully down OFF), the gate's HOLD; MON, then MON
+// TRIG's envelope (ATK DEC SUS on E..H, REL from P9 drawn in it).
+static UI_ROM const char kLiveInNames[] = "L\0R\0L+R\0STR\0";
+static UI_ROM const char kLiveMonNames[] = "ALW\0TRIG\0";
+static UI_ROM const Cell kLiveCells[] = {
+    {kList, 0, 0, 1, 1, {0, kNone, kNone, kNone}, 0, kLiveInNames},
+    {kKnobBi, 1, 0, 1, 1, {1, kNone, kNone, kNone}, 0, nullptr},
+    {kBar, 2, 0, 1, 1, {2, kNone, kNone, kNone}, 0, nullptr},
+    {kKnob, 3, 0, 1, 1, {3, kNone, kNone, kNone}, 0, nullptr},
+    {kList, 0, 1, 1, 1, {4, kNone, kNone, kNone}, 0, kLiveMonNames},
+    {kEnv, 1, 1, 3, 1, {5, 6, 7, 8}, kAdsr, nullptr},
+};
+static UI_ROM const Page kLivePage = {
+    "LIVE IN", kLiveMachine, sizeof kLiveCells / sizeof kLiveCells[0], kLiveCells,
+    {0, 1, 2, 3, 4, 5, 6, 7},
+    {"INPT", "GAIN", "GATE", "HOLD", "MON", "ATK", "DEC", "SUS"},
+};
+
 // SIDECAR: text lines from the remote host's status source (remote.cpp): 0..1 the 8 voices' machines, 4..7 FX1 / FX2
 // TYPE and ROUTE, 8..11 Overbridge, underruns, CPU.
 static UI_ROM const Cell kSidecarCells[] = {
@@ -206,6 +236,10 @@ struct MachinePage {
 };
 static UI_ROM const MachinePage kTable[] = {
     {kPlaits, &kPlaitsPage},
+    {kLiveMachine, &kLivePage},
+#if CORE_POLY && CORE_MSAMP
+    {kChopMachine, &kChopSrcPage},   // CHOP (page_chop.cpp)
+#endif
 };
 
 CORE_COLD const Page* page_for_machine(int machine) {

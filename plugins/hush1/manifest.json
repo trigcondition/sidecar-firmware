@@ -1,0 +1,30 @@
+{
+  "id": "hush1.sh101",
+  "version": "1.0.0",
+  "compatible_from": "1.0.0",
+  "name": "HUSH1",
+  "short": "HSH1",
+  "licence": "MIT (HUSH ONE DSP: Charles Vestal)",
+  "page2": "params",
+  "page2_title": "HUSH1 MORE",
+  "max_voices": 8,
+  "pitch": "note",
+  "knobs": [
+    {"p": 1, "long": "Saw", "short": "SAW", "look": "fader", "text": "number", "default": 100},
+    {"p": 2, "long": "Pulse", "short": "PULS", "look": "fader", "text": "number", "default": 0},
+    {"p": 3, "long": "Pulse Width", "short": "PW", "look": "dial", "text": "number", "default": 40},
+    {"p": 4, "long": "Sub Osc", "short": "SUB", "look": "fader", "text": "number", "default": 72},
+    {"p": 5, "long": "Noise", "short": "NOIS", "look": "fader", "text": "number", "default": 0},
+    {"p": 6, "long": "Cutoff", "short": "CUT", "look": "dial", "text": "number", "default": 34},
+    {"p": 7, "long": "Resonance", "short": "RES", "look": "dial", "text": "number", "default": 44},
+    {"p": 8, "long": "Filter Env", "short": "ENV", "look": "dial", "text": "number", "default": 84},
+    {"p": 9, "long": "Attack", "short": "ATK", "look": "dial", "text": "number", "default": 0},
+    {"p": 10, "long": "Decay", "short": "DEC", "look": "dial", "text": "number", "default": 46},
+    {"p": 11, "long": "Sustain", "short": "SUS", "look": "dial", "text": "number", "default": 24},
+    {"p": 12, "long": "Release", "short": "REL", "look": "dial", "text": "number", "default": 22},
+    {"p": 13, "long": "Glide", "short": "GLID", "look": "dial", "text": "number", "default": 0},
+    {"p": 14, "long": "Key Track", "short": "TRK", "look": "dial", "text": "number", "default": 64},
+    {"p": 15, "long": "Level", "short": "LEV", "look": "fader", "text": "number", "default": 100},
+    {"p": 16, "long": "VCA Mode", "short": "VCA", "look": "list", "text": "enum", "names": ["ENV", "GATE"], "default": 0}
+  ]
+}

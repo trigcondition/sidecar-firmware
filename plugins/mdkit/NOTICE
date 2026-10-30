@@ -1,0 +1,20 @@
+plugins/mdkit - notices for the packages built here (mdkit.pi, mdkit.efm, mdkit.trx: MD-PI, MD-EFM, MD-TRX)
+
+The drum voices are mdkit's (https://github.com/soejrd/mdkit, commit 96157fe4fbda17bf4cae3168f52437d8232e6570),
+fetched by fetch.sh into vendor/ and compiled unchanged into the packages, except that PI-CC, PI-HH and PI-RC get
+their delay memory windowed (patch_pi.py: 4096 of its 65536 words kept, the 1024 the voices use among them; the
+output is checked bit for bit against the unwindowed voices). Their source is not in this repository.
+
+  mdkit
+  Copyright (c) 2026 Soejrd
+  mdkit is made available under CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/).
+  CC0 covers the rights the contributors can dedicate; it does not grant rights to third-party names or materials.
+  The developer agreed to this use (2026-10-26, asked by the user).
+
+mdkit is an independent project, unaffiliated with or endorsed by Elektron; its voices are modelled on the
+Machinedrum's EFM, TRX and PI families. Machinedrum and Elektron names identify that instrument and its maker: the
+machines here are named MD-EFM, MD-TRX and MD-PI after mdkit's families, and no third-party name is in a package's
+manifest beyond that.
+
+The glue (mdk.c, families.h, mdk_tap.h, mdk_fir.h, gen.py, patch_pi.py, the Makefile and tests/): MIT, Copyright 2026
+trigcondition and contributors. The packages link sdk/rmp/shim (MIT).

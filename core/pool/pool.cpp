@@ -4,10 +4,24 @@
 #include <string.h>
 #include <strings.h>
 
+#include "../fmt/fmt.h"
 #include "../hooks.h"
 #include "../sysex.h"
 #include "../voices.h"
 #include "../lfo.h"
+#include "../seq/seq.h"
+#include "../song/song.h"
+#include "../fx/insert.h"
+#if CORE_MSAMP
+#include "../bundle/kits.h"
+#include "../bundle/prjslot.h"
+#include "../bundle/projects.h"
+#include "../bundle/rename.h"
+#include "../granular/granular.h"
+#include "../lib/pools.h"
+#include "../lib/srclib.h"
+#include "../store/store.h"
+#endif
 
 namespace core {
 
@@ -15,16 +29,27 @@ card::Index cards;
 bool card_ok = false;
 jlib::Lib junolib;
 dx7::Lib dxlib;
-CORE_RAM2 PoolEntry pool[kPool];
+CORE_RAM2 PoolEntry pool[kPoolLines];
 #ifdef CORE_HEAP_BUFFERS
 File* pool_files = nullptr;   // heap_buffers_place (core/heap_buffers.h)
 #else
-CORE_RAM2 File pool_files[kPool];
+CORE_RAM2 File pool_files[kPoolLines];
 #endif
-CORE_RAM2 card::FileRec pool_recs[kPool];
-bool pool_open[kPool];
+CORE_RAM2 card::FileRec pool_recs[kPoolLines];
+bool pool_open[kPoolLines];
 int npool = 0;
 char project[24] = "";
+char project_name[24] = "";   // 2026-10-27: the Rytm's name for it (slot mode: project is the slot key)
+static char g_next_name[24] = "";   // project_switch_named's name for the coming switch_to
+
+CORE_COLD int pool_slot(float p11) {
+#if CORE_MSAMP
+  int c = srclib::code_of(p11), row = srclib::index_of(c);
+  return row ? srclib::bank_of(c) * kPool + row : 0;
+#else
+  return (int)p11;
+#endif
+}
 
 CORE_COLD void pool_forget(int line) {
   if (pool_open[line]) pool_files[line].close();
@@ -33,17 +58,9 @@ CORE_COLD void pool_forget(int line) {
 
 // The project's pool file, its name made safe for the card.
 CORE_COLD void pool_file(char* out, int max) {
-  char n[24];
-  int k = 0;
-  for (const char* c = project; *c && k < 23; ++c) {
-    char x = *c;
-    bool ok = (x >= 'A' && x <= 'Z') || (x >= 'a' && x <= 'z') || (x >= '0' && x <= '9') ||
-              x == '-' || x == '_' || x == ' ' || x == '.';
-    n[k++] = ok ? x : '_';
-  }
-  while (k && (n[k - 1] == ' ' || n[k - 1] == '.')) --k;
-  n[k] = 0;
-  sniprintf(out, max, "/.rytm/pools/%s.txt", k ? n : "_default");
+  char n[kKeyMax];
+  project_key(project, n, sizeof n);
+  sniprintf(out, max, "/.rytm/pools/%s.txt", n);
 }
 
 // Folder f's path under /Samples ("" for /Samples itself).
@@ -87,9 +104,77 @@ CORE_COLD bool find_path(const char* path, int* folder, int* file) {
   return false;
 }
 
+#if CORE_MSAMP
+// The pools design 3.6, rui1045: DSP SAMPLE's slots are the SAMPLES pool's eight banks (SMP's 14 bits: row N of bank B is
+// slot B * 127 + N; bank A's rows are slots 1..127 as before). pool[] mirrors them - a
+// sample row its resolved file (folder / file in the card index when it is under /Samples; else folder -1: the 14
+// table sends the name only and the slot streams nothing), an input / built-in / empty / missing row an empty slot.
+// pool_sync() rebuilds it when the pool list changes (nm::step); the old /.rytm/pools/<PROJECT>.txt is not read.
+uint32_t pool_sig_seen = 0;
+CORE_COLD void pool_save() {}
+CORE_COLD const char* pools_key() {   // the project's key as the pool lists name it
+  static char k[kKeyMax];
+  project_key(project, k, sizeof k);
+  return k;
+}
+CORE_COLD void pool_sync(bool force, bool send) {
+  uint32_t sg = pools::sig(pools::kSamples);
+  if (!force && sg == pool_sig_seen) return;
+  pool_sig_seen = sg;
+  bool rd = pools::ready() && !strcmp(pools::project(), pools_key());   // (the lists of this project: else empty)
+  int n = 0, used = 0, outside = 0;
+  bool changed = false;
+  for (int i = 0; i < kPoolLines; ++i) {
+    const pools::Entry& e = pools::at(pools::kSamples, pools::code(i / kPool, i % kPool + 1));
+    char rel[kPath] = "";
+    const char* path = rd && e.type == pools::kSample && pools::playable(e) ? e.path : "";
+    if (path[0]) {
+      if (!strncasecmp(path, "/Samples/", 9)) sniprintf(rel, sizeof rel, "%s", path + 9);
+      else sniprintf(rel, sizeof rel, "%s", path), ++outside;
+    }
+    PoolEntry& pe = pool[i];
+    if (strcmp(pe.path, rel)) {
+      changed = true;
+      pool_forget(i);
+      sniprintf(pe.path, sizeof pe.path, "%s", rel);
+      pe.folder = -1, pe.file = 0;
+      int fo, fi;
+      if (rel[0] && rel[0] != '/' && card_ok && cards.folders() > 0 && find_path(rel, &fo, &fi)) pe.folder = (int16_t)fo, pe.file = (uint16_t)fi;
+      const char* base = strrchr(path, '/');
+      strncpy(pe.name, base ? base + 1 : path, card::kName);
+    }
+    if (rel[0]) n = i + 1, ++used;
+    else pe.folder = -1;
+  }
+  if (!force && !changed && npool == n) return;
+  npool = n;
+  if (rd) log(CORE_STR("pool %s: DSP SAMPLE: %d samples (%d outside /Samples: RAM only)"), project[0] ? project : "_default", used, outside);
+  for (int i = 0; i < 8; ++i) prepared[i][0] = -2;   // voices: prepare again
+  if (hooks.pool_changed) hooks.pool_changed(-1);   // plugin voices too
+  if (psram) {
+    psram->clear_prefetch();
+    for (int i = 0; i < npool; ++i)
+      if (pool[i].folder >= 0) psram->want(pool[i].folder, pool[i].file, true);
+  }
+  if (send) send_pool();
+}
+CORE_COLD void pool_load() {   // a project change: empty until its SAMPLES pool is read (set_project sends the 14)
+  for (int i = 0; i < kPoolLines; ++i) pool_forget(i), pool[i].path[0] = 0, pool[i].folder = -1;
+  npool = 0;
+  pool_sync(true, false);
+}
+#else
+// 1042 (data safety): the project's pool file is there but could not be opened, or has a line longer than a path this
+// build keeps: never written over (before: a failed open loaded an empty pool and the next LOAD TO PROJ saved one slot
+// over the whole pool; a long line was written back cut short). The slots still change in memory.
+bool pool_locked = false;
 CORE_COLD void pool_save() {
   char fn[48];
   pool_file(fn, sizeof fn);
+  if (pool_locked) {
+    log(CORE_STR("pool: %s not written: it could not be read whole (kept as it is)"), fn);
+    return;
+  }
   cards.sd().mkdir("/.rytm/pools");
   File f;
   if (!f.open(fn, kWrite)) {
@@ -108,10 +193,11 @@ CORE_COLD void pool_load() {
   pool_file(fn, sizeof fn);
   for (int i = 0; i < kPool; ++i) pool_forget(i);
   npool = 0;
+  pool_locked = false;
   File f;
   if (f.open(fn, kRead)) {
     char line[kPath];
-    int n = 0, missing = 0, used = 0;
+    int n = 0, missing = 0, used = 0, cut = 0;
     for (;;) {
       int c = f.read();
       if (c < 0 && n == 0) break;
@@ -137,11 +223,18 @@ CORE_COLD void pool_load() {
         if (c < 0) break;
       } else if (n < kPath - 1) {
         line[n++] = c;
+      } else {
+        ++cut;
       }
     }
     f.close();
+    if (cut) pool_locked = true;
     while (npool && !pool[npool - 1].path[0]) --npool;   // trailing empty slots
+    if (pool_locked) log(CORE_STR("pool %s: a line longer than %d characters: the file kept as it is (not written)"), fn, kPath - 1);
     log(CORE_STR("pool %s: %d slots, %d samples, %d not on the card"), fn, npool, used, missing);
+  } else if (cards.sd().exists(fn)) {
+    pool_locked = true;
+    log(CORE_STR("pool %s: cannot be read: empty for now, the file kept as it is"), fn);
   } else {
     log(CORE_STR("pool %s: empty"), fn);
   }
@@ -155,16 +248,19 @@ CORE_COLD void pool_load() {
   }
 }
 
+#endif
+
 bool project_dirty = false;
 
-// The project's name to /.rytm/project, so the Teensy starts with its pool.
+// The project's name to /.rytm/project, so the Teensy starts with its pool. 0.3.0 power-cut safety: posted to the
+// card core as one atomic write (fmt.h), so a cut never leaves half a name here - the Sidecar would boot into a
+// project that does not exist.
 CORE_COLD void project_save() {
-  project_dirty = false;
-  File f;
-  if (f.open("/.rytm/project", kWrite)) {
-    f.write(project, strlen(project));
-    f.close();
-  }
+  uint32_t n = (uint32_t)strlen(project);
+  char* t = fmt::post_begin();
+  if (!t || n > fmt::kPostMax) return;   // another settings write is in flight: at a later pass (still dirty)
+  memcpy(t, project, n);
+  if (fmt::post_end("/.rytm/project", n)) project_dirty = false;
 }
 
 // 10 <name>: the Rytm's project; its pool from now on. The table goes to the
@@ -172,46 +268,212 @@ CORE_COLD void project_save() {
 // repeats the Rytm sends every few seconds.
 bool project_seen = false;
 
-CORE_COLD void set_project(const uint8_t* d, int len) {
-  char n[24];
-  int k = 0;
-  for (int i = 0; i < len && k < 23 && d[i] != 0xf7 && d[i]; ++i) n[k++] = d[i] & 0x7f;
-  n[k] = 0;
-  bool first = !project_seen;
-  project_seen = true;
-  if (strcmp(n, project) != 0) {
-    strcpy(project, n);
-    log(CORE_STR("project: %s"), project);
-    pool_load();
-    junolib.load_list(project);
-    juno_relist();
-    dxlib.load_list(project);
-    fm_relist();
-    if (hooks.project_changed) hooks.project_changed();   // the project's machines (the Teensy's plugins)
-    lfo::project_changed();   // the project's LFOs (/.rytm/lfo/<project>.txt)
-    project_dirty = true;   // /.rytm/project written from loop() (a 2 ms card write)
-  } else if (!first) {
-    return;
-  }
+// The switch itself: the old project's unsaved edits into its own files, then the new name's files loaded
+CORE_COLD static void switch_to(const char* n) {
+#if CORE_POLY
+  seq::project_leaving();   // 1042: the old project's unsaved sequence edits, in its own folder (before the name moves)
+#endif
+  sniprintf(project, sizeof project, "%s", n);
+  sniprintf(project_name, sizeof project_name, "%s", g_next_name[0] ? g_next_name : n);
+  g_next_name[0] = 0;
+  if (strcmp(project, project_name)) log(CORE_STR("project: %s (%s)"), project, project_name);
+  else log(CORE_STR("project: %s"), project);
+  pool_load();
+  junolib.load_list(project);
+  juno_relist();
+  dxlib.load_list(project);
+  fm_relist();
+  if (hooks.project_changed) hooks.project_changed();   // the project's machines (the Teensy's plugins)
+#if CORE_MSAMP
+  // 2026-10-26, the RAM store: the project's LFO, INSERT and sequencer files read into RAM by the card core first; the
+  // LFOs, inserts and sequences switch once it is full (project_fill_step, from the idle pass) - until then they are
+  // the old project's, its edits saved into its own files
+  project_fill_begin();
+#else
+  lfo::project_changed();   // the project's LFOs (/.rytm/lfo/<project>.txt)
+#if CORE_POLY
+  seq::project_changed();   // the project's sequences (/.rytm/seq/<project>/)
+  ins::project_changed();   // the project's inserts (/.rytm/ins/<project>/, core/fx/insert.h)
+#endif
+#endif
+  project_dirty = true;   // /.rytm/project written from loop() (a 2 ms card write)
+}
+CORE_COLD static void announce() {   // the Rytm's tables for the project (its first 10, a change)
+#if CORE_MSAMP
+  projects::note(project, project_name);   // the project index (/.rytm/projects.txt, core/bundle/projects.h): written by idle_save
+#endif
   send_pool();
   send_juno_names();
   send_fm_names();
 }
 
+CORE_COLD void set_project(const uint8_t* d, int len) {
+  char n[24];
+  int k = 0;
+  for (int i = 0; i < len && k < 23 && d[i] != 0xf7 && d[i]; ++i) n[k++] = d[i] & 0x7f;
+  n[k] = 0;
+  if (is_slot_key(n)) n[0] = '_';   // 2026-10-27: a Rytm name never names a slot key (today's key for it)
+#if CORE_MSAMP
+  if (prjslot::take_10(n)) return;   // slot mode (core/bundle/prjslot.h): the 4B reports switch, not the 10
+  char rk[kKeyMax];
+  if (prjslot::resolve(n, rk, sizeof rk)) {   // name mode on a card keyed by slot (older mods): the slot of that name
+    bool first = !project_seen;
+    project_seen = true;
+    if (strcmp(rk, project) != 0) {
+      rename::back();
+      sniprintf(g_next_name, sizeof g_next_name, "%s", n);
+      switch_to(rk);
+    } else if (strcmp(project_name, n)) {
+      sniprintf(project_name, sizeof project_name, "%s", n);
+    } else if (!first) {
+      return;
+    }
+    announce();
+    return;
+  }
+#endif
+  bool first = !project_seen;
+  project_seen = true;
+  if (strcmp(n, project) != 0) {
+#if CORE_MSAMP
+    if (rename::intercept(project, n)) {   // UX review B1: no files under the new name, some under the old: asked first
+      if (first && rename::busy()) announce();   // (the old project's tables meanwhile)
+      return;
+    }
+#endif
+    switch_to(n);
+  } else {
+#if CORE_MSAMP
+    rename::back();   // (a question about another name is moot: the Rytm is back on this one)
+#endif
+    if (!first) return;
+  }
+  announce();
+}
+
+// core/bundle/rename.cpp's answer: the switch the Rytm's 10 asked for, after the files moved (or not)
+CORE_COLD void project_switch(const char* n) {
+  if (strcmp(n, project) != 0) switch_to(n);
+  announce();
+}
+
+// 2026-10-27 (core/bundle/prjslot.h): the switch to a slot key with the Rytm's name for it; reload: the same key again
+// (its files changed under it: a cleared slot reloaded, a restore). A new name for the same key only renames it.
+CORE_COLD void project_switch_named(const char* key, const char* name, bool reload) {
+  project_seen = true;
+  if (reload || strcmp(key, project) != 0) {
+    sniprintf(g_next_name, sizeof g_next_name, "%s", name ? name : key);
+    switch_to(key);
+  } else {
+    sniprintf(project_name, sizeof project_name, "%s", name ? name : key);
+  }
+  announce();
+}
+
+#if CORE_MSAMP
+static bool g_loading = false;   // a fill begun whose project the LFOs and inserts are not switched to yet
+
+// (a fill still running is abandoned by fill_begin: a switch while one runs reads only the new project's files)
+CORE_COLD void project_fill_begin() {
+  store::clear();
+  lfo::want_files();
+  kits::want_files();   // (every kit's saved and kept-aside record: core/bundle/kits.h)
+#if CORE_POLY
+  ins::want_files();
+  seq::want_files();   // (phase 2: tracks.txt, the patterns, their saved states)
+  song::want_files();  // (UNDO REPLAY's backup slots: .backups.txt)
+  seq::loading_begin();   // (its edits refused until project_changed: they would be lost to the load)
+#endif
+  store::fill_begin();
+  g_loading = true;
+}
+
+CORE_COLD bool project_fill_step() {
+  if (!g_loading || !store::fill_step()) return false;
+  g_loading = false;
+  // the old project's unsaved edits into its own files (each project_changed saves before it loads), then the
+  // project's, from the store; a kit the Rytm named while it filled (kit_changed: noted only) is the one loaded
+  lfo::project_changed();
+#if CORE_POLY
+  ins::project_changed();
+  seq::project_changed();   // (the boot's too: seq::init leaves its tracks and A01 to this)
+#endif
+  log(CORE_STR("store: %s loaded: %d files of %d paths, %u bytes"), project, store::present(), store::entries(),
+      (unsigned)store::bytes());
+  return true;
+}
+
+bool project_loading() { return g_loading; }
+#endif
+
 CORE_COLD void project_load() {
   File f;
   project[0] = 0;
+  fmt::recover("/.rytm/project");   // 0.3.0: a cut between write_atomic's renames - the previous name back (fmt.h)
   if (f.open("/.rytm/project", kRead)) {
     int n = f.read(project, sizeof project - 1);
     project[n > 0 ? n : 0] = 0;
     f.close();
   }
   log(CORE_STR("project: %s"), project[0] ? project : "(none yet)");
+  sniprintf(project_name, sizeof project_name, "%s", project);
+#if CORE_MSAMP
+  projects::load();
+  prjslot::load();   // /.rytm/prjslot.txt (slot mode, the trash's counter)
+  if (const projects::Info* e = projects::find(project))
+    if (e->rytm[0]) sniprintf(project_name, sizeof project_name, "%s", e->rytm);   // (a slot key: the Rytm's name)
+#endif
   pool_load();
   junolib.load_list(project);
   dxlib.load_list(project);
 }
 
+#if CORE_MSAMP
+// 0F / 12 into the SAMPLES pool's bank A (the pool list decides: one entry per hash, a file there already keeps its row)
+CORE_COLD void pool_add(int folder, int file) {
+  if (card_ok && folder >= dx_base()) {
+    if (dxlib.add(folder - dx_base(), file) >= 0) {
+      send_fm_names();
+      fm_relist();
+    }
+    return;
+  }
+  if (card_ok && folder >= cards.folders()) {
+    if (junolib.add(folder - cards.folders(), file) >= 0) {
+      send_juno_names();
+      juno_relist();
+    }
+    return;
+  }
+  card::FileRec r;
+  char path[kPath + 16];
+  if (card_ok && cards.file(folder, file, &r)) {
+    char rel[kPath];
+    folder_path(folder, rel, sizeof rel);
+    sniprintf(path, sizeof path, "/Samples/%s%s%s", rel, rel[0] ? "/" : "", r.name);
+    int out = -1;
+    int res = pools::add_file(pools::kSamples, 0, path, &out);
+    log(CORE_STR("pool: LOAD TO PROJ %s: %s"), path, pools::result_text(res));
+  }
+  pool_sync(true);
+}
+CORE_COLD void pool_assign(int slot, int folder, int file) {
+  card::FileRec r;
+  if (card_ok && folder >= cards.folders()) {
+    log(CORE_STR("pool: assign slot %d <- JUNO/DX7 entry %d/%d: not a sample, ignored"), slot, folder, file);
+  } else if (slot < 1 || slot > kPool || !card_ok || !cards.file(folder, file, &r)) {
+    log(CORE_STR("pool: assign slot %d <- folder %d file %d: ignored"), slot, folder, file);
+  } else {
+    char rel[kPath], path[kPath + 16];
+    folder_path(folder, rel, sizeof rel);
+    sniprintf(path, sizeof path, "/Samples/%s%s%s", rel, rel[0] ? "/" : "", r.name);
+    int out = -1;   // the Rytm's own ASSIGN: an explicit choice on its screen (no prompt there): forced
+    int res = pools::set_file(pools::kSamples, pools::code(0, slot), path, &out, pools::kForced);
+    log(CORE_STR("pool: ASSIGN A%03d %s: %s"), slot, path, pools::result_text(res));
+  }
+  pool_sync(true);
+}
+#else
 // Pool line `line` (slot line + 1) = folder's file r.
 CORE_COLD void pool_set(int line, int folder, int file, const card::FileRec& r) {
   for (; npool <= line; ++npool) {   // the pool grows: empty slots up to it
@@ -229,6 +491,9 @@ CORE_COLD void pool_set(int line, int folder, int file, const card::FileRec& r) 
   pool_save();
   for (int i = 0; i < 8; ++i) prepared[i][0] = -2;   // voices: prepare again
   if (hooks.pool_changed) hooks.pool_changed(line);   // plugin voices reading this slot (or refused it) too
+#if CORE_MSAMP
+  gr::rescan();   // GRANULAR lists the pool's files (POOL)
+#endif
   log(CORE_STR("pool %s: slot %d = %s"), project[0] ? project : "_default", line + 1, e.path);
 }
 
@@ -274,16 +539,18 @@ CORE_COLD void pool_assign(int slot, int folder, int file) {
   send_pool();
 }
 
+#endif
+
 // 14 <replace> <count> { <slot> <folder hi lo> <file hi lo> <13 name bytes> }:
 // the project's pool table, non-empty slots in order, 6 a message; the first
 // replaces the Rytm's table. Name: the file's without extension, printable
 // ASCII (else '_'), NUL padded; folder/file 0x3fff when it is not on the card.
-CORE_COLD void send_pool() {
-  int line = 0, first = 1;
+CORE_COLD void send_pool() {   // rui1045: bank A only (the Rytm builds before rui1045 show it on DSP SAMPLE's SMP)
+  int line = 0, first = 1, end = npool < kPool ? npool : kPool;
   do {
     PoolRow rows[6];
     int count = 0;
-    for (; line < npool && count < 6; ++line) {
+    for (; line < end && count < 6; ++line) {
       const PoolEntry& e = pool[line];
       if (!e.path[0]) continue;
       int len = strnlen(e.name, card::kName);   // a long name may fill it, no NUL
@@ -292,11 +559,11 @@ CORE_COLD void send_pool() {
       rows[count++] = {(uint8_t)(line + 1), (uint16_t)(e.folder < 0 ? 0x3fff : e.folder),
                        (uint16_t)(e.folder < 0 ? 0x3fff : e.file), e.name, len};
     }
-    while (line < npool && !pool[line].path[0]) ++line;   // so the last message is not empty
+    while (line < end && !pool[line].path[0]) ++line;   // so the last message is not empty
     uint8_t m[8 + 6 * 18];
     to_rytm(m, sysex_pool(m, first, rows, count));
     first = 0;
-  } while (line < npool);
+  } while (line < end);
 }
 
 // 16 <replace> <total> { <slot> <13 name bytes> }: the project's JUNO list's

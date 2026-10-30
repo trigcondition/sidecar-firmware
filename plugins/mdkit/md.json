@@ -1,0 +1,1074 @@
+{
+ "id": "mdkit.md",
+ "version": "1.0.0",
+ "name": "MD",
+ "short": "MD",
+ "licence": "CC0-1.0 mdkit voices (soejrd); glue MIT",
+ "page2": "params",
+ "page2_title": "MD ENGINE",
+ "max_voices": 1,
+ "pitch": "none",
+ "knobs": [
+  {
+   "p": 1,
+   "long": "Pitch",
+   "short": "PTCH",
+   "default": 0
+  },
+  {
+   "p": 2,
+   "long": "Decay",
+   "short": "DEC",
+   "default": 64
+  },
+  {
+   "p": 3,
+   "long": "Ramp",
+   "short": "RAMP",
+   "default": 32
+  },
+  {
+   "p": 4,
+   "long": "Highpass",
+   "short": "HPF",
+   "default": 127
+  },
+  {
+   "p": 5,
+   "long": "Mod",
+   "short": "MOD",
+   "default": 35
+  },
+  {
+   "p": 6,
+   "long": "Mod Freq",
+   "short": "MFRQ",
+   "default": 14
+  },
+  {
+   "p": 7,
+   "long": "Mod Decay",
+   "short": "MDEC",
+   "default": 64
+  },
+  {
+   "p": 8,
+   "long": "Click",
+   "short": "CLIC",
+   "default": 24
+  },
+  {
+   "p": 9,
+   "long": "Engine",
+   "short": "ENG",
+   "look": "list",
+   "text": "enum",
+   "default": 0,
+   "names": [
+    "FM",
+    "PI",
+    "TRX"
+   ]
+  },
+  {
+   "p": 10,
+   "long": "Type",
+   "short": "TYPE",
+   "look": "list",
+   "text": "enum",
+   "default": 0,
+   "names": [
+    "BD",
+    "SD",
+    "XT",
+    "CP",
+    "RS",
+    "CB",
+    "HH",
+    "CY"
+   ]
+  },
+  {
+   "p": 11,
+   "long": "Level",
+   "short": "LEV",
+   "look": "fader",
+   "default": 100
+  }
+ ],
+ "type_labels": {
+  "knob": 10,
+  "follows": 9,
+  "lists": [
+   [
+    "BD",
+    "SD",
+    "XT",
+    "CP",
+    "RS",
+    "CB",
+    "HH",
+    "CY"
+   ],
+   [
+    "BD",
+    "SD",
+    "MT",
+    "ML",
+    "MA",
+    "RS",
+    "RC",
+    "CC",
+    "HH"
+   ],
+   [
+    "BD",
+    "SD",
+    "XT",
+    "CP",
+    "RS",
+    "CB",
+    "CH",
+    "OH",
+    "CY",
+    "MA",
+    "CL",
+    "XC",
+    "B2"
+   ]
+  ],
+  "params": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8
+  ],
+  "sets": [
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Mod Feedback",
+     "MFB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Noise",
+     "NOIS"
+    ],
+    [
+     "Noise Decay",
+     "NDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Click",
+     "CLIC"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Claps",
+     "CLPS"
+    ],
+    [
+     "Clap Decay",
+     "CDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Snare",
+     "SNAR"
+    ],
+    [
+     "Snare Pitch",
+     "SPTC"
+    ],
+    [
+     "Snare Decay",
+     "SDEC"
+    ],
+    [
+     "Snare Mod",
+     "SMOD"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Snap",
+     "SNAP"
+    ],
+    [
+     "Feedback",
+     "FB"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Tremolo",
+     "TREM"
+    ],
+    [
+     "Trem Freq",
+     "TFRQ"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Feedback",
+     "FB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Feedback",
+     "FB"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Hammer",
+     "HAMR"
+    ],
+    [
+     "Tension",
+     "TENS"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "Tension",
+     "TENS"
+    ],
+    [
+     "Ring Level",
+     "RVOL"
+    ],
+    [
+     "Ring Decay",
+     "RDEC"
+    ],
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Hammer",
+     "HAMR"
+    ],
+    [
+     "Tune",
+     "TUNE"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Size",
+     "SIZE"
+    ],
+    [
+     "Position",
+     "POS"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Tension",
+     "TENS"
+    ],
+    null,
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Grains",
+     "GRNS"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Grain Length",
+     "GLEN"
+    ],
+    [
+     "Size",
+     "SIZE"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "Ring Level",
+     "RVOL"
+    ],
+    [
+     "Ring Decay",
+     "RDEC"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "AG",
+     "AG"
+    ],
+    [
+     "AU",
+     "AU"
+    ],
+    [
+     "Brightness",
+     "BR"
+    ],
+    [
+     "Grab",
+     "GRAB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "AG",
+     "AG"
+    ],
+    [
+     "AU",
+     "AU"
+    ],
+    [
+     "Brightness",
+     "BR"
+    ],
+    [
+     "Grab",
+     "GRAB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "CLSN",
+     "CLSN"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "AG",
+     "AG"
+    ],
+    [
+     "AU",
+     "AU"
+    ],
+    [
+     "Brightness",
+     "BR"
+    ],
+    [
+     "Closed",
+     "CLOS"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Start",
+     "STRT"
+    ],
+    [
+     "Noise",
+     "NOIS"
+    ],
+    [
+     "Harmonics",
+     "HARM"
+    ],
+    [
+     "Clip",
+     "CLIP"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Bump",
+     "BUMP"
+    ],
+    [
+     "Bump Env",
+     "BENV"
+    ],
+    [
+     "Snap",
+     "SNAP"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Tune",
+     "TUNE"
+    ],
+    [
+     "Clip",
+     "CLIP"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ],
+    [
+     "Dist Type",
+     "DTYP"
+    ],
+    null
+   ],
+   [
+    [
+     "Claps",
+     "CLPY"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Richness",
+     "RICH"
+    ],
+    [
+     "Rate",
+     "RATE"
+    ],
+    [
+     "Room",
+     "ROOM"
+    ],
+    [
+     "Room Size",
+     "RSIZ"
+    ],
+    [
+     "Room Tune",
+     "RTUN"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ],
+    null,
+    null,
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Enhance",
+     "ENH"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Bump",
+     "BUMP"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Gap",
+     "GAP"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Lowpass",
+     "LPF"
+    ],
+    [
+     "Metal",
+     "MTAL"
+    ],
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Gap",
+     "GAP"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Lowpass",
+     "LPF"
+    ],
+    [
+     "Metal",
+     "MTAL"
+    ],
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Richness",
+     "RICH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Top",
+     "TOP"
+    ],
+    [
+     "Top Tune",
+     "TTUN"
+    ],
+    [
+     "Size",
+     "SIZE"
+    ],
+    [
+     "Peak",
+     "PEAK"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Attack",
+     "ATT"
+    ],
+    [
+     "Sustain",
+     "SUS"
+    ],
+    [
+     "Reverse",
+     "REV"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Rattle",
+     "RATL"
+    ],
+    [
+     "Rattle Type",
+     "RTYP"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Dual",
+     "DUAL"
+    ],
+    [
+     "Enhance",
+     "ENH"
+    ],
+    [
+     "Tune",
+     "TUNE"
+    ],
+    [
+     "Click",
+     "CLIC"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ],
+    [
+     "Dist Type",
+     "DTYP"
+    ],
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Hold",
+     "HOLD"
+    ],
+    [
+     "Tick",
+     "TICK"
+    ],
+    [
+     "Noise",
+     "NOIS"
+    ],
+    [
+     "Dirt",
+     "DIRT"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ]
+   ]
+  ]
+ }
+}
