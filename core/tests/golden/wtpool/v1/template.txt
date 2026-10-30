@@ -1,0 +1,7 @@
+#sidecar wtpool 1
+A001 builtin BASIC
+A002 builtin PWM
+A003 builtin VOCAL
+A004 builtin ORGAN
+A005 builtin FM
+A006 builtin SYNC

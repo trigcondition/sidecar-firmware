@@ -8,8 +8,14 @@
 //                write(const void*, size_t), write(uint8_t), seekSet(uint64_t), curPosition(), available(),
 //                rewind(), isContiguous(), contiguousRange(uint32_t* first, uint32_t* last),
 //                getModifyDateTime(uint16_t* fat_date, uint16_t* fat_time); copying a File gives a second handle
-//                with its own position
+//                with its own position; with CORE_MSAMP (Pi, Mac) also nextEntry(char* name, size_t n, bool* dir,
+//                uint64_t* size, uint16_t* fat_date, uint16_t* fat_time): a folder's next entry without opening it
+//                (one f_readdir on the Pi: the library's walk), sharing openNext's place, and nextFailed(): the
+//                last nextEntry's false was a card error, not the folder's end (2026-10-26: the RAM store's
+//                listing never takes a cut-short list for a whole one)
 //              class core::Fs - the card: begin(), mkdir(path), rename(from, to), remove(path), exists(path),
+//                with CORE_MSAMP also lookup(path): 1 there, 0 not there (FatFs FR_NO_FILE / FR_NO_PATH), -1 the
+//                card could not tell (any other error: exists() says false for it too),
 //                tree_hash(path, uint32_t* entries, uint32_t* hidden): a fingerprint of everything below path
 //                ('.' entries left out; 0 when path is missing; *entries and *hidden count the entries hashed and
 //                the '.' entries left out where the walk sees names - the Teensy's raw FAT32 walk leaves both 0),
@@ -45,5 +51,17 @@ uint32_t random_seed();
 uint32_t sample_ram_total();
 void* sample_ram_alloc(uint32_t bytes);   // nullptr if the board cannot give it
 void sample_ram_free(void* p);
+#if CORE_MSAMP
+// The board's big memory (the Pi's high heap; the Mac's malloc): msamp_ram_alloc gives the pool RAM's arena, WAVETABLE's
+// tables and GRANULAR's live rings, once at boot. msamp_ram_total (msampram=MB; Mac CORE_MSAMP_RAM_MB) is no longer used
+// for MULTISAMPLE's own arena (the pools build: its samples are in the pool RAM).
+uint64_t msamp_ram_total();
+void* msamp_ram_alloc(uint64_t bytes);
+uint64_t card_free_bytes();   // the card's free space (the SD card test, msamp/sdtest.h); 0 unknown
+// The pool RAM's budget (core/pool/pcache.h, the pools design 4.1), taken from msamp_ram_alloc's memory once at boot.
+// Pi: poolram=MB in cmdline.txt, default 1024 on 2 / 4 GB boards and 3072 on 8 GB, at most what the heap has then less
+// 64 MB; Mac: CORE_POOL_RAM_MB (default 64).
+uint64_t pool_ram_budget();
+#endif
 
 }  // namespace core

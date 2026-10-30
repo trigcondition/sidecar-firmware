@@ -2,6 +2,7 @@
 *.snap
 *.img
 *.wav
+!content/MULTISAMPLE/**/*.wav
 build/
 .venv/
 .venv
@@ -19,6 +20,7 @@ sim/daisysp/vendor/
 sim/samples/
 sim/pool.json
 sim/pools/
+# DIGIDRUM's old build and clone (removed 2026-10-29): left in older checkouts
 sim/digidrum/build/
 sim/digidrum/vendor/
 sim/juno/build/
@@ -28,11 +30,17 @@ sim/golden/
 teensy/cores-uac2/
 core/version.h
 
+# project bundles (docs/BUNDLES.md): never committed
+*.sidecar.zip
+*.sidecar.zip.part
+!core/tests/golden/bundle/**/*.sidecar.zip
+
 # Never commit firmware or anything derived from it, build outputs or local notes
 *.syx
 *.snap
 *.img
 *.bin
+!core/tests/golden/**/*.bin
 *.elf
 *.hex
 *.dump

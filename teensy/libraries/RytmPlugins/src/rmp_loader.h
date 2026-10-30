@@ -24,6 +24,7 @@ struct rmp_info {
   uint8_t target;         // RMP_TARGET_ARM32 (RMP1) or RMP_TARGET_A64 (RMPA), from the magic
   uint32_t data_start;    // RMPA: the writable part's offset (page-aligned); RMP1: image_size
   uint32_t version, compatible_from, image_size, bss_size, entry_offset, reloc_count, manifest_size, crc32;   // crc32: the header's, of the body after the 96-byte header
+  uint32_t flags;         // the header's flags (rmp_format.h RMP_HF_*: seqx's max_voices / pitch; 0 in older packages)
   const uint8_t *image, *relocs, *manifest;   // inside the package
 };
 // Everything except the CRC, from the 96-byte header alone (hdr must hold at least

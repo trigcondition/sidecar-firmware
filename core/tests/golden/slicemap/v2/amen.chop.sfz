@@ -1,0 +1,8 @@
+// sidecar slicemap 2
+// CHOP's slices of one sample (docs/CHOP.md): a region a slice; sc_* opcodes are CHOP's, other players skip them
+<control> default_path=
+<global> sc_sha=9f2c00000000000000000000000000000000000000000000000000000000e1a0 sc_size=768044 sc_frames=192000 sc_rate=48000 sc_ch=2 sc_name=AMEN BREAK sample=/Samples/LIVE/amen.wav
+<region> key=36 offset=0 end=23999 loop_mode=one_shot
+<region> key=37 offset=24000 end=47999 transpose=3 tune=-12 volume=-2 direction=reverse ampeg_attack=0.005 ampeg_decay=0.300 ampeg_sustain=0 loop_mode=loop_continuous loop_type=alternate loop_start=24000 loop_end=47999 group=2 off_by=2 sc_nudge=-120 sc_stut=4 sc_stutlen=25 sc_stutdec=20 sc_tape=stop sc_tapems=400 sc_nbr=30
+<region> key=38 offset=0 sc_from=48000 sc_to=96000 loop_mode=one_shot sample=/Samples/LIVE/AMEN_BREAK-S3.wav
+<region> key=39 offset=96000 end=191999 sc_tape=spin sc_tapems=200 loop_mode=one_shot

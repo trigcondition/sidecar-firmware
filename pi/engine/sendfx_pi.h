@@ -20,6 +20,15 @@ unsigned long Bytes();
 void Init(void* mem);
 bool On();                                                // a playable TYPE on FX 1 or 2
 void FromRytm(const int32_t (*stems)[8], unsigned n);    // core 0, IN completion: IN 2..9 (int32 full scale)
+// fx-ins (core/fx/insert.h): core 0, the OUT fill: the Sidecar voices as rendered (after their INSERT chains) -> their
+// sends to the 3 buses, queued on core 0 for FromRytm, which pairs them frame by frame with the stems (none queued:
+// zeros; a backlog past kVoiceLag frames is dropped, so the two never drift apart). Bus 1 / 2 take them into send FX 1
+// / 2's input, bus 3 (a dry bus with its own chain) on render core 2 after the send FX (Render).
+// feed (optional; the output stage's Taps::feed): each voice's stand-in for its Rytm stem while it is routed OUT PRE /
+// POST (core/fx/out.h: the stem is silent then), full scale 1.0, added into that stem in FromRytm, paired the same way:
+// the track's FX1 / FX2 send levels apply to it as to the stem, with the same lag.
+const unsigned kVoiceLag = 256;
+void FromVoices(const int16_t (*v)[8], unsigned n, const float (*feed)[8] = nullptr);
 void Render();                                            // core 2, after its block: the queued stems
 void AddReturn(int32_t (*out)[12], unsigned n,            // core 0, OUT fill: onto 2/3 and 0/1 (saturating);
                float (*slots)[4] = nullptr);              // slots: each FX's own return as added (left as is when none)

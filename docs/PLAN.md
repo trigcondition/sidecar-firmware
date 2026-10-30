@@ -127,7 +127,8 @@ Rytm->host channels (for a looper); the real USB controller.
 2. Calibration: output level against a real voice; latency and jitter end to end.
 3. EXT polish: knob widgets, a second page (SMPL), names per Plaits parameter.
 3a. Machines: DIGIDRUM (soejrd/digidrum's TRX and EFM machines, 2026-10-09;
-   8 voices 13 % of the Teensy against Plaits' 50 %). Later: split PLAITS into
+   8 voices 13 % of the Teensy against Plaits' 50 %; replaced 2026-10-29 by
+   the built-in MD on the same flag 0x40: core/md/md.h, docs/MD-BUILTIN.md). Later: split PLAITS into
    a 6-OP FM machine with its own parameter set (the three DX7 banks) and
    PLAITS with the rest of the models.
 3a'. JUNO (2026-10-09): a Juno-106 voice of our own in float (sim/juno), on

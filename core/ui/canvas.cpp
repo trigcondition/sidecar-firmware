@@ -164,6 +164,9 @@ CORE_COLD void text_in(Canvas& cv, const Font& f, const Rect& r, const char* s, 
 }
 
 // ---- the Rytm-drawn text slots
+#if CORE_UI_TOOLS
+void (*Canvas::fit_report)(const char*, int, int) = nullptr;
+#endif
 CORE_COLD void Canvas::put_text(int slot, const RFont& f, int x, int y, const char* str, uint8_t flags) {
   if (slot < 0 || slot >= kTextSlots) return;
   TextItem& t = txt[slot];
@@ -175,6 +178,13 @@ CORE_COLD void Canvas::put_text(int slot, const RFont& f, int x, int y, const ch
   if ((flags & 3) == kAlignRight) room = (x + 2) / f.advance;
   if (room > kTextLen) room = kTextLen;
   int n = 0;
+#if CORE_UI_TOOLS
+  if (fit_report && str) {
+    int len = (int)strlen(str);
+    if (len > room) fit_report(str, len, room);
+    else if (len && y + f.h + f.desc > kH) fit_report(str, y + f.h + f.desc, kH - y);
+  }
+#endif
   for (; str && str[n] && n < room; ++n) {
     char ch = str[n];
     if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);   // the stock screens are upper case
@@ -182,6 +192,30 @@ CORE_COLD void Canvas::put_text(int slot, const RFont& f, int x, int y, const ch
   }
   t.s[n] = 0;
 }
+
+#if CORE_UI_TOOLS
+CORE_COLD void Canvas::check_overlap() const {
+  if (!fit_report) return;
+  auto box = [](const TextItem& t, int* x0, int* x1) {
+    int w = (int)strlen(t.s) * 4 - 1;   // kRSmall's narrowest advance: only overlaps that are there whatever the glyphs
+    *x0 = text_left(t, w), *x1 = *x0 + w - 1;
+  };
+  for (int i = 0; i < kTextSlots; ++i) {
+    if (!txt[i].s[0]) continue;
+    int a0, a1;
+    box(txt[i], &a0, &a1);
+    for (int j = i + 1; j < kTextSlots; ++j) {
+      if (!txt[j].s[0]) continue;
+      int b0, b1;
+      box(txt[j], &b0, &b1);
+      if (a1 < b0 || b1 < a0 || txt[i].y + 4 < txt[j].y || txt[j].y + 4 < txt[i].y) continue;
+      char m[2 * kTextLen + 4];
+      sniprintf(m, sizeof m, "%s / %s", txt[i].s, txt[j].s);
+      fit_report(m, 0, 0);
+    }
+  }
+}
+#endif
 
 CORE_COLD void Canvas::clear_text(int from, int n) {
   for (int i = from; i < from + n && i < kTextSlots; ++i)
@@ -204,6 +238,9 @@ CORE_COLD int text_left(const TextItem& t, int w) {
 }
 
 CORE_COLD void preview(const Canvas& c, uint8_t out[kBytes]) {
+#if CORE_UI_TOOLS
+  c.check_overlap();
+#endif
   static Canvas v;
   memcpy(v.fb, c.fb, kBytes);
   v.unclip();

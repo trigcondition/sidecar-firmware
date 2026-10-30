@@ -1,0 +1,491 @@
+{
+ "id": "mdkit.trx",
+ "version": "1.0.0",
+ "name": "MD-TRX",
+ "short": "MDTX",
+ "licence": "CC0-1.0 mdkit voices (soejrd); glue MIT",
+ "page2": "params",
+ "page2_title": "MD-TRX TYPE",
+ "max_voices": 1,
+ "pitch": "none",
+ "knobs": [
+  {
+   "p": 1,
+   "long": "Pitch",
+   "short": "PTCH",
+   "default": 64
+  },
+  {
+   "p": 2,
+   "long": "Decay",
+   "short": "DEC",
+   "default": 64
+  },
+  {
+   "p": 3,
+   "long": "Ramp",
+   "short": "RAMP",
+   "default": 0
+  },
+  {
+   "p": 4,
+   "long": "Ramp Decay",
+   "short": "RDEC",
+   "default": 0
+  },
+  {
+   "p": 5,
+   "long": "Damp",
+   "short": "DAMP",
+   "default": 0
+  },
+  {
+   "p": 6,
+   "long": "Distortion",
+   "short": "DIST",
+   "default": 0
+  },
+  {
+   "p": 7,
+   "long": "Dist Type",
+   "short": "DTYP",
+   "default": 0
+  },
+  {
+   "p": 8,
+   "long": "Clip",
+   "short": "CLIP",
+   "default": 0
+  },
+  {
+   "p": 9,
+   "long": "Type",
+   "short": "TYPE",
+   "look": "list",
+   "text": "enum",
+   "default": 0,
+   "names": [
+    "BD",
+    "SD",
+    "XT",
+    "CP",
+    "RS",
+    "CB",
+    "CH",
+    "OH",
+    "CY",
+    "MA",
+    "CL",
+    "XC",
+    "B2"
+   ]
+  },
+  {
+   "p": 10,
+   "long": "Level",
+   "short": "LEV",
+   "look": "fader",
+   "default": 100
+  }
+ ],
+ "type_labels": {
+  "knob": 9,
+  "params": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8
+  ],
+  "sets": [
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Start",
+     "STRT"
+    ],
+    [
+     "Noise",
+     "NOIS"
+    ],
+    [
+     "Harmonics",
+     "HARM"
+    ],
+    [
+     "Clip",
+     "CLIP"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Bump",
+     "BUMP"
+    ],
+    [
+     "Bump Env",
+     "BENV"
+    ],
+    [
+     "Snap",
+     "SNAP"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Tune",
+     "TUNE"
+    ],
+    [
+     "Clip",
+     "CLIP"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ],
+    [
+     "Dist Type",
+     "DTYP"
+    ],
+    null
+   ],
+   [
+    [
+     "Claps",
+     "CLPY"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Richness",
+     "RICH"
+    ],
+    [
+     "Rate",
+     "RATE"
+    ],
+    [
+     "Room",
+     "ROOM"
+    ],
+    [
+     "Room Size",
+     "RSIZ"
+    ],
+    [
+     "Room Tune",
+     "RTUN"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ],
+    null,
+    null,
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Enhance",
+     "ENH"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Bump",
+     "BUMP"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Gap",
+     "GAP"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Lowpass",
+     "LPF"
+    ],
+    [
+     "Metal",
+     "MTAL"
+    ],
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Gap",
+     "GAP"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Lowpass",
+     "LPF"
+    ],
+    [
+     "Metal",
+     "MTAL"
+    ],
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Richness",
+     "RICH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Top",
+     "TOP"
+    ],
+    [
+     "Top Tune",
+     "TTUN"
+    ],
+    [
+     "Size",
+     "SIZE"
+    ],
+    [
+     "Peak",
+     "PEAK"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Attack",
+     "ATT"
+    ],
+    [
+     "Sustain",
+     "SUS"
+    ],
+    [
+     "Reverse",
+     "REV"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Rattle",
+     "RATL"
+    ],
+    [
+     "Rattle Type",
+     "RTYP"
+    ],
+    [
+     "Tone",
+     "TONE"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Dual",
+     "DUAL"
+    ],
+    [
+     "Enhance",
+     "ENH"
+    ],
+    [
+     "Tune",
+     "TUNE"
+    ],
+    [
+     "Click",
+     "CLIC"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ],
+    [
+     "Dist Type",
+     "DTYP"
+    ],
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Hold",
+     "HOLD"
+    ],
+    [
+     "Tick",
+     "TICK"
+    ],
+    [
+     "Noise",
+     "NOIS"
+    ],
+    [
+     "Dirt",
+     "DIRT"
+    ],
+    [
+     "Distortion",
+     "DIST"
+    ]
+   ]
+  ]
+ }
+}

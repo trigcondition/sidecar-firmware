@@ -1,0 +1,372 @@
+{
+ "id": "mdkit.pi",
+ "version": "1.0.0",
+ "name": "MD-PI",
+ "short": "MDPI",
+ "licence": "CC0-1.0 mdkit voices (soejrd); glue MIT",
+ "page2": "params",
+ "page2_title": "MD-PI TYPE",
+ "max_voices": 1,
+ "pitch": "none",
+ "knobs": [
+  {
+   "p": 1,
+   "long": "Pitch",
+   "short": "PTCH",
+   "default": 64
+  },
+  {
+   "p": 2,
+   "long": "Decay",
+   "short": "DEC",
+   "default": 35
+  },
+  {
+   "p": 3,
+   "long": "Hardness",
+   "short": "HARD",
+   "default": 100
+  },
+  {
+   "p": 4,
+   "long": "Ring",
+   "short": "RING",
+   "default": 0
+  },
+  {
+   "p": 5,
+   "long": "AG",
+   "short": "AG",
+   "default": 127
+  },
+  {
+   "p": 6,
+   "long": "AU",
+   "short": "AU",
+   "default": 100
+  },
+  {
+   "p": 7,
+   "long": "Brightness",
+   "short": "BR",
+   "default": 64
+  },
+  {
+   "p": 8,
+   "long": "Grab",
+   "short": "GRAB",
+   "default": 64
+  },
+  {
+   "p": 9,
+   "long": "Type",
+   "short": "TYPE",
+   "look": "list",
+   "text": "enum",
+   "default": 0,
+   "names": [
+    "BD",
+    "SD",
+    "MT",
+    "ML",
+    "MA",
+    "RS",
+    "RC",
+    "CC",
+    "HH"
+   ]
+  },
+  {
+   "p": 10,
+   "long": "Level",
+   "short": "LEV",
+   "look": "fader",
+   "default": 100
+  }
+ ],
+ "type_labels": {
+  "knob": 9,
+  "params": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8
+  ],
+  "sets": [
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Hammer",
+     "HAMR"
+    ],
+    [
+     "Tension",
+     "TENS"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "Tension",
+     "TENS"
+    ],
+    [
+     "Ring Level",
+     "RVOL"
+    ],
+    [
+     "Ring Decay",
+     "RDEC"
+    ],
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Hammer",
+     "HAMR"
+    ],
+    [
+     "Tune",
+     "TUNE"
+    ],
+    [
+     "Damp",
+     "DAMP"
+    ],
+    [
+     "Size",
+     "SIZE"
+    ],
+    [
+     "Position",
+     "POS"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Tension",
+     "TENS"
+    ],
+    null,
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Grains",
+     "GRNS"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Grain Length",
+     "GLEN"
+    ],
+    [
+     "Size",
+     "SIZE"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    null,
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "Ring Level",
+     "RVOL"
+    ],
+    [
+     "Ring Decay",
+     "RDEC"
+    ],
+    null,
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "AG",
+     "AG"
+    ],
+    [
+     "AU",
+     "AU"
+    ],
+    [
+     "Brightness",
+     "BR"
+    ],
+    [
+     "Grab",
+     "GRAB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Hardness",
+     "HARD"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "AG",
+     "AG"
+    ],
+    [
+     "AU",
+     "AU"
+    ],
+    [
+     "Brightness",
+     "BR"
+    ],
+    [
+     "Grab",
+     "GRAB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "CLSN",
+     "CLSN"
+    ],
+    [
+     "Ring",
+     "RING"
+    ],
+    [
+     "AG",
+     "AG"
+    ],
+    [
+     "AU",
+     "AU"
+    ],
+    [
+     "Brightness",
+     "BR"
+    ],
+    [
+     "Closed",
+     "CLOS"
+    ]
+   ]
+  ]
+ }
+}

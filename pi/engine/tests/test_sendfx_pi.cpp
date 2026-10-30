@@ -9,6 +9,8 @@
 #include <string>
 
 #include "check.h"
+#include "fx/insert.h"
+#include "fx/out.h"
 #include "fx/send_fx.h"
 #include "sendfx_pi.h"
 
@@ -28,6 +30,15 @@ void log(const char* fmt, ...) {
   g_log += "\n";
 }
 }  // namespace core
+// the Pi's integer printf (core_port.h), the Mac's here (core/fx/insert.cpp's value names)
+extern "C" int core_vsnprintf(char* out, size_t n, const char* fmt, va_list ap) { return vsnprintf(out, n, fmt, ap); }
+extern "C" int core_snprintf(char* out, size_t n, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int r = vsnprintf(out, n, fmt, ap);
+  va_end(ap);
+  return r;
+}
 
 using namespace core::fx;
 
@@ -124,6 +135,93 @@ int main() {
   }
   g_log.clear();
   CHECK(sendfx_pi::Command("sendfx") && g_log.find("fx2 STUTTER (15)") != std::string::npos);
+  // the OUT route (core/fx/out.h): a voice on PRE / POST stands in for its silent stem (Taps::feed): with STUTTER's
+  // insert disengaged (the stems' sum), the same values on stem 0 (the IN) and as voice 3's feed come out as twice the
+  // value on every frame: the feed lands in its stem's place, frame-aligned with the stems
+  {
+    std::set<int64_t> two;
+    core::out::control.route[2] = core::out::kPost;
+    for (int k = 0; k < 400; ++k) {
+      int32_t st[7][8] = {};
+      float fd[7][8] = {};
+      int16_t V[7][8] = {};
+      for (int f = 0; f < 7; ++f) {
+        st[f][0] = (int32_t)(0.1 * 2147483647.0 * std::sin(6.2831853 * 220 * (7 * k + f) / 48000));
+        fd[f][2] = (float)st[f][0] * (1.0f / 2147483648.0f);   // voice 3 (SD: stem 1) on POST
+        two.insert(2 * (int64_t)(float)st[f][0]);
+      }
+      sendfx_pi::FromVoices(V, 7, fd);
+      sendfx_pi::FromRytm(st, 7);
+      sendfx_pi::Render();
+      out_block(o);
+    }
+    for (int f = 0; f < 7; ++f) {
+      int64_t d0 = (int64_t)o[f][0] - 1000;
+      CHECK(two.count(d0) && d0 != 0);
+    }
+    printf("the OUT route's stem stand-in: aligned with the stems (every frame twice the value)\n");
+    core::out::control.route[2] = core::out::kTrk;
+  }
+  // the stand-in lands in its voice's stem (core::out::Device stem): COMB on FX1, only track BT (4) sends: voice 2 (BT)
+  // on POST is heard, voice 3 (SD) is not
+  {
+    control.knob[1][0] = kOff, control.knob[0][0] = kComb, control.knob[0][1] = 0;
+    for (int t = 0; t < 12; ++t) control.send[t][0] = 0;
+    control.send[4][0] = 127;
+    core::out::reset();
+    for (int which : {1, 2}) {
+      core::out::control.route[which] = core::out::kPost;
+      for (int k = 0; k < 4000; ++k) {   // settle silent first (the comb's tail)
+        int32_t st[7][8] = {};
+        sendfx_pi::FromRytm(st, 7), sendfx_pi::Render(), out_block(o);
+      }
+      double e = 0;
+      for (int k = 0; k < 600; ++k) {
+        int32_t st[7][8] = {};
+        float fd[7][8] = {};
+        int16_t V[7][8] = {};
+        for (int f = 0; f < 7; ++f) fd[f][which] = 0.2f * (float)std::sin(6.2831853 * 220 * (7 * k + f) / 48000);
+        sendfx_pi::FromVoices(V, 7, fd);
+        sendfx_pi::FromRytm(st, 7), sendfx_pi::Render(), out_block(o);
+        if (k > 300) e += std::fabs((double)o[3][2] - 3000);
+      }
+      printf("stand-in of voice %d (send only on BT): FX1 return %.0f\n", which + 1, e);
+      CHECK(which == 1 ? e > 1e6 : e < 1e3);
+      core::out::control.route[which] = core::out::kTrk;
+    }
+  }
+  // fx-ins: the Sidecar voices' sends (the OUT fill's FromVoices) into bus 3 (a dry bus with its own chain), every FX
+  // off: On() for bus 3 alone, its return on 2/3 (PRE), then 0/1 (route3 POST); off again: no work
+  {
+    control.knob[0][0] = control.knob[1][0] = kOff;
+    for (int k = 0; k < 200; ++k) in_block(k), sendfx_pi::Render(), out_block(o);
+    CHECK(!sendfx_pi::On());
+    core::ins::set_type(core::ins::kBus0 + 2, 0, core::ins::kTrem);
+    core::ins::set_send(2, 2, 127);
+    CHECK(sendfx_pi::On());
+    float pk_pre = 0, pk_post = 0;
+    for (int k = 0; k < 600; ++k) {
+      int16_t V[7][8] = {};
+      for (int f = 0; f < 7; ++f) V[f][2] = (int16_t)(8000 * std::sin(6.2831853 * 330 * (7 * k + f) / 48000));
+      if (k == 300) core::ins::set_route3(1);
+      sendfx_pi::FromVoices(V, 7);
+      in_block(k), sendfx_pi::Render(), out_block(o);
+      float a = std::fabs((float)(o[3][2] - 3000)), b = std::fabs((float)(o[3][0] - 1000));
+      if (k > 100 && k < 290) {
+        pk_pre = std::max(pk_pre, a);
+        CHECK(o[3][0] == 1000);
+      }
+      if (k > 400) {
+        pk_post = std::max(pk_post, b);
+        CHECK(o[3][2] == 3000);
+      }
+    }
+    printf("bus 3 (TREMOLO) from voice 3's send: PRE peak %.0f, POST peak %.0f\n", pk_pre, pk_post);
+    CHECK(pk_pre > 1e6f && pk_post > 1e6f);
+    core::ins::reset();
+    for (int k = 0; k < 50; ++k) in_block(k), sendfx_pi::Render(), out_block(o);
+    CHECK(!sendfx_pi::On());
+  }
   printf("test_sendfx_pi: PASS\n");
   return 0;
 }

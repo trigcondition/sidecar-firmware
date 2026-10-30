@@ -1,5 +1,6 @@
 // core/fx/send_fx_card.cpp - send_fx.h's card files: /.rytm/sendfx.txt (global: the route) and
 // /.rytm/fxslots/<project>.txt (the project's user-FX slot map). Cold: boot, a project change, the idle step.
+#include "fmt/fmt.h"
 #include "fx/send_fx.h"
 #include "pool/pool.h"
 
@@ -21,28 +22,36 @@ static CORE_COLD bool line(File& f, char* out, int max) {
   return any;
 }
 
+static fmt::KvKeep g_keep;   // the lines a newer build wrote that this one does not read (fmt.h, class S: kept)
 CORE_COLD void card_load() {
   File f;
   control.route = kRouteSlot;
+  g_keep.n = 0;
+  fmt::post_wait(kGlobal);   // 0.3.0: a posted save of it lands before we read it back (fmt.h)
+  fmt::recover(kGlobal);   // a power cut between write_atomic's renames: the previous file back, a stray .tmp gone
   if (!f.open(kGlobal, kRead)) return;
-  char b[64];
-  while (line(f, b, sizeof b))
+  char b[256];
+  static const char* const kKnown[] = {"out", nullptr};
+  while (line(f, b, sizeof b)) {
     if (strcmp(b, "out=main") == 0) control.route = kRouteMain;
     else if (strcmp(b, "out=fx") == 0) control.route = kRouteFx;
+    else if (strncmp(b, "out=", 4)) {   // (one line at a time into the kept lines)
+      fmt::KvKeep one;
+      if (fmt::kv_keep(b, (uint32_t)strlen(b), kKnown, &one) && g_keep.n + one.n < sizeof g_keep.text)
+        memcpy(g_keep.text + g_keep.n, one.text, one.n + 1), g_keep.n += one.n;
+    }
+  }
   f.close();
   log(CORE_STR("sendfx: out %s"), control.route == kRouteMain ? "forced main" : control.route == kRouteFx ? "forced fx" : "per slot (P1)");
 }
 
+// 0.3.0 power-cut safety: posted to the card core as one atomic write (fmt.h), a newer build's keys kept (class S)
 CORE_COLD void card_save() {
-  card_dirty = false;
-  File f;
-  if (!f.open(kGlobal, kWrite)) {
-    log(CORE_STR("sendfx: cannot write %s"), kGlobal);
-    return;
-  }
-  const char* s = control.route == kRouteMain ? "out=main\n" : control.route == kRouteFx ? "out=fx\n" : "out=slot\n";
-  f.write(s, strlen(s));
-  f.close();
+  char* s = fmt::post_begin();
+  if (!s) return;   // another settings write is in flight: at a later pass (card_dirty still set)
+  uint32_t n = (uint32_t)sniprintf(s, 16, "%s", control.route == kRouteMain ? "out=main\n" : control.route == kRouteFx ? "out=fx\n" : "out=slot\n");
+  n = fmt::kv_append(g_keep, s, n, fmt::kPostMax);
+  if (fmt::post_end(kGlobal, n)) card_dirty = false;
 }
 
 static CORE_COLD int hexv(char c) {

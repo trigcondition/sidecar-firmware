@@ -49,13 +49,22 @@ inline uint32_t ours(const uint8_t* h) {
   return ch * bits / 8;
 }
 
+// one of ours still holding the placeholder: never closed (its sizes come from the file)
+inline bool open_ended(const uint8_t* h) {
+  uint32_t align = ours(h);
+  return align && get32(h + kHeader - 4) == placeholder(align);
+}
+
 // The sizes a file of `size` bytes should carry (the data cut to whole frames). True: h changed (write it back).
+// A closed header (real sizes) is only ever shrunk to a shorter file, never grown: a file longer than its data holds
+// space reserved after it (pi/engine/recorder.h), not audio.
 inline bool fix(uint8_t* h, uint64_t size) {
   uint32_t align = ours(h);
   if (!align) return false;
   uint64_t d = size > kHeader ? size - kHeader : 0;
   if (d > placeholder(align)) d = placeholder(align);
   uint32_t data = (uint32_t)(d / align * align);
+  if (!open_ended(h) && data > get32(h + kHeader - 4)) return false;
   if (get32(h + kHeader - 4) == data && get32(h + 4) == (kHeader - 8) + data + (data & 1)) return false;
   put32(h + 4, (kHeader - 8) + data + (data & 1));
   put32(h + kHeader - 4, data);

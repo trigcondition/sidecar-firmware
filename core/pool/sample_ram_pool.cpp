@@ -4,7 +4,106 @@
 
 #include <new>
 
+#if CORE_MSAMP
+#include "../lib/library.h"
+#include "pcache.h"
+#include "pool.h"
+#endif
+
 namespace rytm {
+
+#if CORE_MSAMP
+// ---- the Pi / Mac: DSP SAMPLE's view of the pool RAM (core/pool/pcache.h)
+namespace {
+CORE_COLD bool path_of(card::Index* cards, int folder, int file, char* out, int cap) {
+  if (folder <= SampleRamPool::kSlotKey) {
+    int line = SampleRamPool::kSlotKey - folder;
+    if (line < 0 || line >= core::kPool || core::pool[line].path[0] != '/') return false;
+    return sniprintf(out, cap, "%s", core::pool[line].path) < cap;
+  }
+  card::FileRec r;
+  if (folder < 0 || !cards || !cards->file(folder, file, &r)) return false;
+  const char* parts[16];   // the folder's names up to /Samples (folder 0)
+  int np = 0;
+  for (int f = folder; f > 0 && np < 16; f = cards->folder(f).parent) parts[np++] = cards->folder(f).name;
+  int n = sniprintf(out, cap, "/Samples");
+  for (int i = np - 1; i >= 0 && n < cap; --i) n += sniprintf(out + n, cap - n, "/%s", parts[i]);
+  return n < cap && sniprintf(out + n, cap - n, "/%s", r.name) < cap - n;
+}
+CORE_COLD bool ref_of(card::Index* cards, int folder, int file, core::lib::Ref* r, char* path, int cap) {
+  if (!path_of(cards, folder, file, path, cap)) return false;
+  core::lib::ref_for_path(path, r);   // (unknown to the library yet: by its path)
+  return true;
+}
+}  // namespace
+
+CORE_COLD SampleRamPool* SampleRamPool::create(card::Index* cards, card::log_fn log) {
+  if (!core::sample_ram_total()) {   // sampleram=0: DSP SAMPLE streams only, as before
+    log(CORE_STR("sample RAM: off (DSP SAMPLE streams from the card, MOD ignored)"));
+    return nullptr;
+  }
+  core::pcache::begin(core::pool_ram_budget());   // (the first to start takes the pool RAM)
+  SampleRamPool* p = new SampleRamPool();
+  p->cards_ = cards, p->log_ = log, p->ok_ = true;
+  p->pluck_ = new float[kVoices * SampleModes::kPluckLen];
+  memset(p->pluck_, 0, sizeof(float) * kVoices * SampleModes::kPluckLen);
+  for (int i = 0; i < 2 * kVoices; ++i) p->pins_[i].on = false;
+  log(CORE_STR("sample RAM: DSP SAMPLE reads the pool RAM (the shared sample cache)"));
+  return p;
+}
+bool SampleRamPool::get(int folder, int file, const int16_t** pcm, uint32_t* frames, float* rate, bool* cut, int* ch) {
+  char path[core::kPath + 16];
+  core::lib::Ref r;
+  if (!core::pcache::ok() || !ref_of(cards_, folder, file, &r, path, sizeof path)) return false;
+  int e = core::pcache::find(r, core::pcache::kWhole);
+  core::pcache::Info in;
+  if (e < 0 || !core::pcache::get(e, &in)) return false;
+  core::pcache::touch(e);
+  *pcm = in.pcm, *frames = in.frames, *rate = in.rate, *cut = in.cut;
+  if (ch) *ch = in.ch;
+  return true;
+}
+CORE_COLD void SampleRamPool::want(int folder, int file, bool prefetch) {
+  char path[core::kPath + 16];
+  core::lib::Ref r;
+  if (!core::pcache::ok() || !ref_of(cards_, folder, file, &r, path, sizeof path)) return;
+  if (core::pcache::want(r, path, prefetch) >= 0 && !prefetch) ++loads_;
+}
+CORE_COLD void SampleRamPool::clear_prefetch() {}
+CORE_COLD void SampleRamPool::pin(int folder, int file) {
+  char path[core::kPath + 16];
+  core::lib::Ref r;
+  if (!ref_of(cards_, folder, file, &r, path, sizeof path)) return;
+  int e = core::pcache::find(r, core::pcache::kWhole);
+  core::pcache::Info in;
+  if (e < 0 || !core::pcache::get(e, &in)) return;
+  for (Pin& p : pins_)
+    if (!p.on) {
+      p.on = true, p.key = key(folder, file), p.blk = in.blk;
+      core::pcache::pin(in.blk);
+      return;
+    }
+}
+CORE_COLD void SampleRamPool::unpin(int folder, int file) {
+  uint32_t k = key(folder, file);
+  for (Pin& p : pins_)
+    if (p.on && p.key == k) {
+      p.on = false;
+      core::pcache::unpin(p.blk);
+      return;
+    }
+}
+CORE_COLD bool SampleRamPool::step() { return core::pcache::step(); }
+uint32_t SampleRamPool::arena_bytes() const {
+  uint64_t b = core::pcache::stats().budget;
+  return b > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)b;
+}
+uint32_t SampleRamPool::used_bytes() const {
+  uint64_t b = core::pcache::stats().used;
+  return b > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)b;
+}
+
+#else
 
 CORE_COLD SampleRamPool* SampleRamPool::create(card::Index* cards, card::log_fn log) {
   uint32_t total = core::sample_ram_total();
@@ -107,8 +206,9 @@ CORE_COLD void SampleRamPool::forget(uint32_t k) {
 }
 
 // In the render path's reach (a trig): RAM1 code, no card.
-bool SampleRamPool::get(int folder, int file, const int16_t** pcm, uint32_t* frames, float* rate, bool* cut) {
+bool SampleRamPool::get(int folder, int file, const int16_t** pcm, uint32_t* frames, float* rate, bool* cut, int* ch) {
   if (!ok_) return false;
+  if (ch) *ch = 1;
   Meta* m = meta(key(folder, file));
   if (!m || !m->ready) return false;
   ram_.Touch(m->id, core::now_ms());
@@ -297,4 +397,5 @@ CORE_COLD bool SampleRamPool::step() {
   return true;
 }
 
+#endif
 }  // namespace rytm

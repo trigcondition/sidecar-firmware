@@ -47,7 +47,9 @@ RMP_COLD rmp_status rmp_verify_header_any(const uint8_t *hdr, uint32_t len, rmp_
   if (h.magic != RMP_FILE_MAGIC && h.magic != RMP_FILE_MAGIC_A64) return RMP_ERR_MAGIC;
   uint8_t target = h.magic == RMP_FILE_MAGIC_A64 ? RMP_TARGET_A64 : RMP_TARGET_ARM32;
   uint32_t table = target == RMP_TARGET_A64 ? RMP_PLUGIN_BYTES_A64 : RMP_PLUGIN_BYTES;
-  if (h.format < RMP_FORMAT_MIN || h.format > RMP_FORMAT) return RMP_ERR_FORMAT;   // 1..3: same image, relocations
+  // 1..3: same image, relocations; 4 (format 3 with an RLB2 block) an RMPA package only: the Teensy shows no
+  // labels that follow a knob, so an RMP1 package stops at 3
+  if (h.format < RMP_FORMAT_MIN || h.format > (target == RMP_TARGET_A64 ? RMP_FORMAT : RMP_FORMAT_RMP1)) return RMP_ERR_FORMAT;
   if (h.api < RMP_API_MIN || h.api > RMP_API) return RMP_ERR_API;                  // API 1 plugins still load
   if (h.id[0] == 0 || !memchr(h.id, 0, sizeof h.id)) return RMP_ERR_FORMAT;   // non-empty, NUL inside the 32 bytes
   uint64_t need = (uint64_t)RMP_HEADER_BYTES + h.image_size + 8ull * h.reloc_count + h.manifest_size;
@@ -66,6 +68,7 @@ RMP_COLD rmp_status rmp_verify_header_any(const uint8_t *hdr, uint32_t len, rmp_
   info->version = h.version; info->compatible_from = h.compatible_from;
   info->image_size = h.image_size; info->bss_size = h.bss_size; info->entry_offset = h.entry_offset;
   info->reloc_count = h.reloc_count; info->manifest_size = h.manifest_size; info->crc32 = h.crc32;
+  info->flags = h.flags;
   info->image = info->relocs = info->manifest = nullptr;
   return RMP_OK;
 }

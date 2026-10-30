@@ -1,0 +1,5 @@
+#sidecar poolused 1
+smp A001 12
+smp H001 3
+wt B009 1
+inst B003 40

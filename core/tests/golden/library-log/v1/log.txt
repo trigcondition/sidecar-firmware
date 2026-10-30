@@ -1,0 +1,3 @@
+#sidecar library-log 1
+- /Samples/old.wav
+> /Samples/a.wav /Samples/b.wav

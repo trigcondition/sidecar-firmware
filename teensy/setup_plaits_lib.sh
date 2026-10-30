@@ -34,13 +34,16 @@ cp "$RNG" "$L/src/stmlib/utils/random.h"
 # A 6-OP FM voice load unpacks only the voice it plays: Plaits' six-op engine
 # unpacks all 32 patches of a bank on a reload (~18 % of a 12-sample block,
 # eight voices loading on one step 170 %); handed fm_user_bank() it unpacks
-# patch 0, the only one the machine plays (harmonics 0), from a 128-byte stage.
+# the one voice into patch 0 or 1 (fm_user_slot(), see below) from a 128-byte stage.
 # The simulator's build (rytm-emu's vendor checkout) keeps 32 copies.
 sed -i '' 's|^#endif$|#define RYTM_FM_SINGLE_PATCH 1\n#endif|' "$L/src/plaits/user_data.h"
 S="$L/src/plaits/dsp/engine2/six_op_engine.cc"
 sed -i '' 's|^#include "plaits/resources.h"$|#include "plaits/resources.h"\n#include "plaits/user_data.h"|' "$S"
-sed -i '' 's|^  for (int i = 0; i < kNumPatchesPerBank; ++i) {$|  for (int i = 0; i < (user_data \&\& user_data == fm_user_bank() ? 1 : kNumPatchesPerBank); ++i) {|' "$S"
-grep -q 'fm_user_bank() ? 1' "$S" || { echo "six_op_engine.cc: patch failed"; exit 1; }
+# Handed fm_user_bank(), the one voice goes into patch fm_user_slot() & 1 (0 or 1, alternated by fm_machine.h) and
+# only the engine's voices on that patch unload (all of them with fm_user_slot() & 2: a first load): the other voice, ringing out the previous note on the other patch, keeps
+# it. Stock Plaits unloads both, which cut that note's tail to silence in one block - the click on a PAT p-lock.
+perl -0pi -e 's|(void SixOpEngine::LoadUserData\(const uint8_t\* user_data\) \{\n)|$1  if (user_data \&\& user_data == fm_user_bank()) {   // rytm: one voice, into patch fm_user_slot()\n    fm::Patch* target = \&patches_[fm_user_slot() \& 1];\n    target->Unpack(user_data);\n    for (int i = 0; i < kNumSixOpVoices; ++i) {\n      if ((fm_user_slot() \& 2) ? true : voice_[i].patch() == target) voice_[i].UnloadPatch();\n    }\n    return;\n  }\n|' "$S"
+grep -q 'rytm: one voice, into patch fm_user_slot()' "$S" || { echo "six_op_engine.cc: patch failed"; exit 1; }
 cp "$D/../sim/plaits/fm_machine.h" "$L/src/fm_machine.h"
 # Voice::Init runs at startup and when a voice returns from a plugin (voiceloop): cold, so it
 # lives in program flash, not in ITCM (RAM1 is tight; see run_sketch.sh's ITCM check).
@@ -49,7 +52,7 @@ sed -i '' 's|^void Voice::Init(BufferAllocator\* allocator) {$|__attribute__((se
 grep -q 'section(".flashmem"))) void Voice::Init' "$V2" || { echo "voice.cc: Voice::Init patch failed"; exit 1; }
 # The PLAITS machine's curated models (rytm-mods 0021, 2026-10-09; the voice
 # loop's kPlaitsModels): NOISE (17) and the drums (21 BASS DRUM, 22 SNARE, 23
-# HI-HAT; DIGIDRUM plays drums) are left out of the build - a silent engine
+# HI-HAT; the MD user machine plays drums) are left out of the build - a silent engine
 # holds their places, so the other engines keep their numbers. The 6-OP FM
 # engines (2..4) stay: the 6-OP FM machine plays engine 2.
 P="$L/src/plaits/dsp"

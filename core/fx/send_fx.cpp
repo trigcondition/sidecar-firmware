@@ -13,14 +13,14 @@ volatile bool card_dirty = false;
 UserFx user[kUserSlots];
 volatile uint16_t kit_tag[kSlots];
 
-// The stable TYPE ids 1..63 (sim/protocol.py SENDFX_TYPES): implemented 1, 2, 16, 17, 18 (and 6, 8, 15 with
+// The stable TYPE ids 1..63 (sim/protocol.py SENDFX_TYPES): implemented 1, 2, 16, 17, 18 (and 5, 6, 8, 15 with
 // RYTM_SENDFX_LARGE); the rest reserved for planned effects.
 struct Builtin {
   uint8_t id;
   const char* name;
 };
 static const Builtin kBuiltins[] = {
-    {1, "CHORUS"},   {2, "COMB"},     {3, "DELAY"},    {4, "PINGPONG"}, {5, "TAPE DLY"}, {6, "RINGS"},
+    {1, "CHORUS"},   {2, "COMB"},     {3, "DELAY"},    {4, "PINGPONG"}, {5, "SPACE"}, {6, "RINGS"},
     {7, "S4 RESO"},  {8, "CLOUDSEED"}, {9, "PLASMA"},  {10, "PLATE"},   {11, "HALL"},    {12, "SHIMMER"},
     {13, "FLANGER"}, {14, "PHASER"},  {15, "STUTTER"},  {16, "CRUSH"},    {17, "RINGMOD"}, {18, "HALO"},
 };
@@ -91,6 +91,7 @@ bool all_sound_off() {
 
 uint8_t (*knob_filter)(int slot, int knob, uint8_t v) = nullptr;
 void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
+void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 
 CORE_COLD void clock_in(uint8_t status, uint16_t spp) {   // per MIDI realtime byte, control side: cold
@@ -164,7 +165,7 @@ static CORE_COLD int name_n(uint8_t* out, const char* nm, int w) {
 // In id order, so stepping TYPE from an id the list lacks lands on the next id up or down.
 static const uint8_t kPlayable[] = {kOff, kChorus, kComb,
 #if RYTM_SENDFX_LARGE
-                                    kRings, kCloudSeed, kStutter,
+                                    kTape, kRings, kCloudSeed, kStutter,
 #endif
                                     kCrush, kRingMod, kHalo};
 static const int kNumPlayable = sizeof kPlayable / sizeof kPlayable[0];
@@ -205,6 +206,7 @@ CORE_COLD const KnobLabels* labels(int id) {
     case kRingMod: return &kRingModLabels;
     case kHalo: return &kHaloLabels;
 #if RYTM_SENDFX_LARGE
+    case kTape: return &kTapeLabels;
     case kRings: return &kRingsLabels;
     case kCloudSeed: return &kCloudSeedLabels;
     case kStutter: return &kStutterLabels;

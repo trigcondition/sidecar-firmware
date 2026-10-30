@@ -1,0 +1,51 @@
+diff -ru a/include/circle/net/httpdaemon.h b/include/circle/net/httpdaemon.h
+--- a/include/circle/net/httpdaemon.h	2026-10-25 08:27:14
++++ b/include/circle/net/httpdaemon.h	2026-10-25 08:27:14
+@@ -71,6 +71,11 @@
+ 	const char *GetRequestOrigin (void) const	{ return m_RequestOrigin; }
+ 	const char *GetRequestReferer (void) const	{ return m_RequestReferer; }
+ 
++	// circle-http-auth.patch: the request's X-Sidecar-Auth header ("" if absent or too long), for the pairing
++	// code's gate in GetContent() (pi/engine/paircode.h). A header, not a URL or a body: a page on another site
++	// cannot set it, and it is not kept in a browser's history.
++	const char *GetRequestAuth (void) const		{ return m_RequestAuth; }
++
+ private:
+ 	void Listener (void);			// accepts incoming connections and creates worker task
+ 	void Worker (void);			// processes a connection
+@@ -112,6 +117,7 @@
+ 	char m_RequestHost[128+1];			// circle-http-origin.patch
+ 	char m_RequestOrigin[256+1];
+ 	char m_RequestReferer[256+1];
++	char m_RequestAuth[64+1];			// circle-http-auth.patch
+ 
+ 	static unsigned s_nInstanceCount;
+ };
+diff -ru a/lib/net/httpdaemon.cpp b/lib/net/httpdaemon.cpp
+--- a/lib/net/httpdaemon.cpp	2026-10-25 08:27:14
++++ b/lib/net/httpdaemon.cpp	2026-10-25 08:27:14
+@@ -56,6 +56,7 @@
+ 	m_RequestHost[0] = '\0';
+ 	m_RequestOrigin[0] = '\0';
+ 	m_RequestReferer[0] = '\0';
++	m_RequestAuth[0] = '\0';
+ 
+ 	if (m_nMaxContentSize > 0)
+ 	{
+@@ -310,6 +311,7 @@
+ 	m_RequestHost[0] = '\0';
+ 	m_RequestOrigin[0] = '\0';
+ 	m_RequestReferer[0] = '\0';
++	m_RequestAuth[0] = '\0';
+ 
+ 	char Buffer[FRAME_BUFFER_SIZE];
+ 	char Line[HTTP_MAX_REQUEST_LINE+1];
+@@ -559,6 +561,8 @@
+ 	if (strcasecmp (pToken, "Host") == 0)		{ pHeader = m_RequestHost; nHeaderSize = sizeof m_RequestHost; }
+ 	else if (strcasecmp (pToken, "Origin") == 0)	{ pHeader = m_RequestOrigin; nHeaderSize = sizeof m_RequestOrigin; }
+ 	else if (strcasecmp (pToken, "Referer") == 0)	{ pHeader = m_RequestReferer; nHeaderSize = sizeof m_RequestReferer; }
++	// circle-http-auth.patch: the pairing code's session token (pi/engine/paircode.h)
++	else if (strcasecmp (pToken, "X-Sidecar-Auth") == 0) { pHeader = m_RequestAuth; nHeaderSize = sizeof m_RequestAuth; }
+ 	if (pHeader != 0)
+ 	{
+ 		const char *pValue = pSavePtr != 0 ? pSavePtr : "";

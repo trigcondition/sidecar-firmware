@@ -117,10 +117,25 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-digidrum (soejrd, commit 2f893f9)
+digidrum (soejrd, commit 2f893f9), in the Sidecar Mini 0.1.0 binary only (removed from the source in 0.3.0: MD replaces it)
 Licence: MIT (SPDX-License-Identifier: MIT in each source file; no separate licence file or copyright line is given upstream).
 ------------------------------------------------------------------------------
 SPDX-License-Identifier: MIT
+
+------------------------------------------------------------------------------
+mdkit (Soejrd, commit 96157fe), vendored in third_party/mdkit
+Licence: CC0 1.0 Universal (third_party/mdkit/LICENSE). Pi: the built-in MD machine (core/md) and the MD user machine (plugins/mdkit); used with the developer's agreement.
+------------------------------------------------------------------------------
+mdkit
+Copyright (c) 2026 Soejrd
+
+mdkit is made available under CC0 1.0 Universal. The full legal text is in
+LICENSE. Source files identify the dedication with
+SPDX-License-Identifier: CC0-1.0. CC0 covers the rights the contributors can
+dedicate; it does not grant rights to third-party names or materials.
+
+The web player uses browser APIs and the included C voices. It does not bundle
+external JavaScript libraries, fonts, or an additional synthesis runtime.
 
 ------------------------------------------------------------------------------
 AMY Juno-106 model (shorepine/amy, amy/juno.py)
@@ -747,6 +762,37 @@ only for attribution purposes and any distribution of this software
 after February 11, 2012 is no longer under the GPL v2 option.
 
 ------------------------------------------------------------------------------
+NAM A2-Lite engine and .namb reader (TONE3000: tone-3000/embedded v2.0.0, commit b84b60c; tone-3000/nam-binary-loader, commit 92c9e85), vendored in third_party/nam
+Licence: MIT. The AMP insert effect (core/fx/amp.cpp), Pi build. NAM (Neural Amp Modeler) by Steven Atkinson; the test captures in third_party/nam/embedded (NeuralAmpModelerCore's, MIT, Copyright (c) 2023 Steven Atkinson: third_party/nam/embedded/NOTICE) are used by the tests only, not in a binary.
+------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2026 TONE3000
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+Archivo Black font (the "Sidecar" wordmark: pi/ui/sidecar_wordmark.c bitmaps and the web page's subset)
+Licence: SIL Open Font License 1.1, Copyright 2017 The Archivo Black Project Authors (http://scripts.sil.org/OFL).
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
 Montserrat font (built into LVGL)
 Licence: SIL Open Font License 1.1, Copyright 2011 The Montserrat Project Authors (https://github.com/JulietaUla/Montserrat).
 ------------------------------------------------------------------------------
@@ -806,6 +852,119 @@ armstub8-rpi4.bin (Circle boot/armstub)
 Licence: BSD-3-Clause, Raspberry Pi (Trading) Ltd.
 ------------------------------------------------------------------------------
 Modified version for the Raspberry Pi 4 which allows using FIQ with Circle
+
+
+##############################################################################
+# USER MACHINE PACKAGES (Pi: sidecar-pi-plugins zip; the zip's LICENSE.txt has the same texts)
+##############################################################################
+
+------------------------------------------------------------------------------
+NUSAW (plugins/nusaw): NuSaw by Charles Vestal (charlesvestal/schwung-nusaw d4d824d, via saustin2010/mpc-vst-nusaw f4f7d15)
+Licence: MIT. nusaw.c is a rewrite in C of the engine's per-voice DSP (plugins/nusaw/NOTICE).
+------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2025-2026 Charles Vestal
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+VOX (plugins/vox): Pink Trombone by Neil Thapen (https://dood.al/pinktrombone/, v1.1, 2017)
+Licence: MIT. vox.c is a rewrite in C of the DSP (plugins/vox/NOTICE).
+------------------------------------------------------------------------------
+Copyright 2017 Neil Thapen
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+------------------------------------------------------------------------------
+HUSH1 (plugins/hush1): HUSH ONE by Charles Vestal (charlesvestal/schwung-hush1 598ab90)
+Licence: MIT. hush1.c is a rewrite in C of the voice DSP (plugins/hush1/NOTICE).
+------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2025-2026 Charles Vestal
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+RAFFO (plugins/raffo): RaffoSynth by Nicolas Roulet and Julian Palladino (nicoroulet/RaffoSynth e2731c9, via charlesvestal/schwung-moog 4f1f658)
+Licence: MIT. raffo.c is a rewrite in C of the engine's DSP (plugins/raffo/NOTICE).
+------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2014 Nicolas Roulet
+Copyright (c) 2014 Julian Palladino
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+MD (plugins/mdkit): mdkit by Soejrd (commit 96157fe)
+Licence: CC0 1.0 Universal: see "mdkit" above (plugins/mdkit/NOTICE).
+------------------------------------------------------------------------------
 
 
 ##############################################################################

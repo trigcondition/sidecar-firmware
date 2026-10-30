@@ -15,6 +15,10 @@ your option) any later version (GPL-2.0-or-later): LICENSE.
 Exceptions in this tree, as their headers state:
   plugins/sc_*/, plugins/sc_render.py   the starter user machines: MIT
                                         (SPDX headers in each file)
+  plugins/nusaw/, plugins/vox/,         user machines ported from MIT-licensed
+  plugins/hush1/, plugins/raffo/        instruments: MIT (each folder's LICENSE,
+                                        LICENSE.* and NOTICE)
+  plugins/mdkit/                        the MD user machine's glue: MIT (its NOTICE)
   plugins/sc_grain/texture_data.h       the GRAIN texture sample: CC0 1.0
                                         (plugins/sc_grain/LICENSE-texture.txt)
   core/ui/fonts/                        own glyphs (core/ui/fonts/LICENSE)
@@ -38,11 +42,14 @@ In tree (ported or adapted; notices next to the code):
                                 Audio Library (MIT): sdk/rmp/shim/audio/NOTICE
   sim/juno/juno_patches.h       Juno-106 patch data from shorepine/amy juno.py (MIT)
   pi/circle/*.patch             patches to Circle (GPL-3.0-or-later)
+  third_party/mdkit/            mdkit, Soejrd's drum voices (CC0 1.0), vendored
+                                unchanged at 96157fe (third_party/mdkit/VENDORED.md)
+  third_party/nam/              TONE3000's NAM A2-Lite engine and .namb reader (MIT),
+                                vendored trimmed (third_party/nam/README.md)
 
 Fetched at build time:
   Mutable Instruments eurorack  Plaits, stmlib (MIT)        sim/plaits/build.sh
   DaisySP (Electrosmith)        (MIT)                       sim/daisysp/build.sh
-  digidrum (soejrd)             (MIT)                       sim/digidrum/build.sh
   AMY (shorepine)               (MIT)                       sim/amy/fetch.sh
   Befaco Noise Plethora         (GPL-3.0-or-later; one
                                  algorithm CC BY-SA 4.0)    plugins/noiseplethora/fetch.sh

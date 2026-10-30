@@ -5,9 +5,9 @@ The self-test transport (':selftest=on') paces the blocks the guard watches, in 
 
     uv run --with pyserial python pi/engine/tests/guard.py [--port P] mute|fatal|watchdog|reboot
 
-mute      ':drone=all'; ':overtest=6' -> voice 6 muted "over budget" (its longest render >= 300 us); ':faulttest=7'
+mute      ':drone=all'; ':overtest=6' -> voice 6 muted "over budget on an overloaded core" (its longest render >= 300 us); ':faulttest=7'
           -> "core 2 faulted at PC 0x... (fault 1 on this core), resumed at task level (EL1t)", voice 7 muted
-          "crashed", "engine: muted !X(6) !X(7)"; meanwhile the stats keep coming (no reboot), "under" stays flat, cpu c2 > 0 (voices 4-5 still render on core 2), peak > 0;
+          "crashed", "engine: muted !X(6) !X(7)"; meanwhile the stats keep coming (no reboot), "under" stays flat through the fault, cpu c2 > 0 (voices 4-5 still render on core 2), peak > 0;
           ':unmute', ':faulttest=5', ':faulttest=7' -> faults 2 and 3 on core 2 recover at task level too, voices 4
           and 6 play; ':unmute' -> "guard: every voice unmuted" and no "engine: muted" line from the second stats
           line on.
@@ -83,8 +83,8 @@ def mute(pi):
     pi.cmd("overtest=6")
     pi.pump(4)
     over = pi.since(start)
-    check("overtest armed", bool(grep(over, r"guard: voice 6 runs 300 us long for 5 blocks")))
-    m = grep(over, r"voice 6 !(\w+) muted: over budget \(longest render (\d+) us, budget (\d+) us\)")
+    check("overtest armed", bool(grep(over, r"guard: voice 6 runs 300 us long for \d+ blocks")))
+    m = grep(over, r"voice 6 !(\w+) muted: over budget on an overloaded core \(longest render (\d+) us, budget (\d+) us\)")
     check("voice 6 muted over budget", bool(m) and int(m[0].group(2)) >= 300,
           m[0].group(0) if m else "no mute line")
     check("engine: muted !X(6)", bool(grep(over, r"engine: muted !\w+\(6\)")))
@@ -99,8 +99,10 @@ def mute(pi):
     check("engine: muted !X(6) !X(7)", bool(grep(fault, r"engine: muted !\w+\(6\) !\w+\(7\)")))
     eng = grep(pi.since(start), ENGINE)
     check("stats every second throughout (no reboot)", len(eng) >= 7, f"{len(eng)} engine lines in 8 s")
-    unders = [int(e.group(1)) for e in eng]
-    check("under flat", len(set(unders)) <= 1, f"under {unders}")
+    # the overtest overloads core 2 for 220 blocks (that is what it takes to mute now) - the FIFO underruns by design;
+    # the fault does not: "under" stays flat from the fault test on
+    unders = [int(e.group(1)) for e in grep(fault, ENGINE)]
+    check("under flat through the fault", len(set(unders)) <= 1, f"under {unders}")
     c2 = [float(e.group(3)) for e in grep(fault, ENGINE)][1:]   # after the fault's own second
     check("core 2 still renders after the fault", bool(c2) and min(c2) > 0, f"cpu c2 {c2}")
     peaks = [int(e.group(4)) for e in eng]

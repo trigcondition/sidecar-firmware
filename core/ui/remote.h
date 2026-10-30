@@ -24,7 +24,7 @@
 //                 the splash (3 s: the product, CONNECTED, voices and FX, the address) when the Rytm was up >= 3 s
 // Pages: SIDECAR (tracks, send FX), SYSTEM (U1..U5, recorder, Overbridge, cores, network), then one per voice whose
 // machine has a page (page.h's machine table; not once the Rytm has sent a 29 / 2A / 2B, rui1027+: its SRC page shows
-// them, the SRC view), then the pages drawn by code (extra.h: SCOPE, ...). Keys: LEFT / UP the previous page, RIGHT / DOWN / PAGE the next, NO back
+// them, the SRC view), then the pages drawn by code (extra.h: SCOPE, ...). Keys: LEFT the previous page, RIGHT / DOWN / PAGE the next (UP is the Sidecar modifier, fix1049: no page arrow), NO back
 // to SIDECAR, NO on SIDECAR leaves (3A 0 0, as TRK + YES; a page's own NO, the LFO design view's, comes first). Encoders A..H change the page's parameters through
 // the voices' own report path (a 0x03 PARAMS into voice_report, as core/notes.cpp's CCs do); an edit holds over the
 // Rytm's later reports of the same value and gives way when the Rytm's value moves (its knob, a p-lock, a new sound).
@@ -56,6 +56,11 @@ void remote_sysex(const uint8_t* d, int len);   // a whole 0x30..0x3F message fr
 void remote_tick(uint32_t ms);                  // every pass of the platform's control loop (any ms clock)
 void remote_request(bool on);                   // the host opens / closes the page (3A 0 on)
 bool remote_open();
+int remote_caps();   // fix1049: the Rytm's last hello's caps (bit 0: 36; bit 1, rui1049: 16 send FX label tables), 0 none yet
+// The page drawn by code titled `title` (extra.h: "SEQ", "LFO" ..) shown: at once when the page is open, else the page
+// opened (3A 0 1) and that page shown when the Rytm says it is open (30).
+void remote_show_page(const char* title);
+const char* remote_page_title();   // the page shown now when it is one drawn by code (open), else null
 
 // The platform's numbers for the SYSTEM page (any time; plain words, a stale value at worst). The fields after cpu
 // read 0 as "unknown", so an older initialiser ({ob, underruns, {c1, c2, c3}}) stays valid.
@@ -70,6 +75,47 @@ struct RemoteStatus {
   char user[5][9];      // U1..U5 as the Rytm shows them ("---" empty), "" unknown
 };
 void remote_status(const RemoteStatus& s);
+// The pairing code (pi/engine/paircode.h) on the SIDECAR status page, "PAIR 1234 5678" (grouped: "1234 5678"; "" or
+// null: no line - the gate off, or no code). A headless Sidecar's only screen is the Rytm's, so the code has to be
+// readable there on demand (UP + T10), not only in the popup at a connect. Whoever stands at the Rytm may read it
+// (physical access is outside the threat model, docs/pi-engine.md "Pairing code"); it is never sent anywhere else.
+void remote_pair_code(const char* grouped);
+const char* remote_pair_code_now();   // what it was given ("" none)
+// The WEB UI page (the SIDECAR MENU's WEB UI, page_menu.cpp): the platform's web page and network installs on or off,
+// the pairing code (remote_pair_code), a new code, forget every paired device. The Pi's (pi/engine/cores.cpp ->
+// paircode_pi); with none set (the default: the Teensy, the Mac) the row says it is not here. Called on the control
+// side; each hook only asks (the platform applies it where its state lives) and reads plain values.
+struct RemoteWebUi {
+  bool (*on)();               // the web UI serves (the page and port 7310 from the network)
+  void (*set_on)(bool on);    // kept on the card by the platform
+  int (*gate)();              // the pairing gate: 0 off (cmdline.txt paircode=0), 1 on, 2 a fixed code, 3 the RNG failed
+  int (*devices)();           // paired devices remembered
+  bool (*new_code)();         // a fresh code asked for (the devices stay paired); false: not on this gate (fixed, off)
+  void (*forget)();           // every paired device and session forgotten
+};
+void remote_webui(const RemoteWebUi* h);
+const RemoteWebUi* remote_webui();
+// UX review F1 / F4: a short popup on the Rytm's own screen (the page closed: through the connect splash's 36, so every
+// key and knob stays the Rytm's; ~0.8 s; the same text again within 2 s: not shown twice). Sent only to a Rytm whose
+// hello said it understands 36. Also on the first underrun of the session (remote_status: SIDECAR AUDIO DROPOUT).
+// hold_ms: how long it stays, 0 the usual 0.8 s, at most kPopupMaxMs (30 s: past the 127 ticks one 36 carries the host
+// sends it again, with a 3C every 0.5 s, since the Rytm ends a splash after 1 s without a host message). The pairing
+// code (pi/engine/bridge.cpp) asks for all 30 s; a key ends it early (the Rytm's own splash rule with the page closed,
+// remote.cpp's with a page open: the key is eaten).
+// over: a modal, in a small box in the middle of the panel, drawn OVER whatever is showing - a Sidecar page, the
+// connect splash, the SRC view - and taken off again with the page underneath intact (it is redrawn from the model,
+// as a page change does). That is for the pairing code (pi/engine/paircode.h), which the user needs before the
+// device can be used at all; a status popup leaves `over` false and defers to a page that is open - and to the
+// pairing code's own popup while that is owed or up (refused: FALSE, offered again by its caller).
+// FALSE: the Rytm cannot draw one at all (no 36 in its hello, or a legacy build) and nothing was shown - that is a
+// capability, not policy, so the caller has to say so elsewhere (pi/engine/paircode_pi.h does).
+inline constexpr uint32_t kPopupMaxMs = 30000;
+bool remote_popup(const char* line1, const char* line2 = nullptr, uint32_t hold_ms = 0, bool over = false);
+void remote_popup_end();   // take it off now (the job is done: a device paired)
+uint32_t remote_popups();   // how many were shown (tests)
+// of them, the status popups (`over` false): a status popup's caller watches this one, so that the pairing code's
+// popup being shown never reads as its own having been (pi/engine/thermal.h popup_due)
+uint32_t remote_status_popups();
 void remote_legacy(bool on);   // tests: the 1020 behaviour (50 ms frames, no input path, no echo, one commit)
 void remote_src_log(bool on);  // 1027: log each 29 / 2A from the Rytm and each SRC view commit (core::log)
 
@@ -95,10 +141,48 @@ void preview_sent(uint8_t out[kBytes]);   // that frame with its text slots in t
 int sent_texts(uint8_t* out, int max);    // its text items, 36 B each (x, y, font, flags, 32 chars); how many
 void remote_reset();             // tests: closed, statistics and held edits cleared
 int remote_track_machine(int t);  // 1025: track t's voice byte from the Rytm's 33 (0x7F not a Sidecar machine), -1 none
+                                  // (no 33 has named track t yet: a single-track 33 leaves the others unreported)
+int remote_track_voice(int t);    // the voice track t plays on (kTrackVoice; core/poly.h: a chord write-back's track)
+int remote_src_track();           // 1027: the track whose stock SRC page shows (29 t 1: the selected track, on a Sidecar machine), -1 none
+// seq-ux (1036): track t's P(k+1) as the Rytm shows it (the SRC view's 2A, else the voice's own), 0..127; the machine
+// page the SRC view draws for t (null: none) - the SEQ page's lock pages read both
+int remote_track_param(int t, int k);
+// rui1036: P(k + 1) = value on every Rytm track that plays voice vi on machine (the voice byte's machine): 48 to the
+// Rytm, which writes it as a knob turn (kit and live sound): a touchscreen pick becomes the Rytm's own value. Returns
+// the tracks it was sent for (an older Rytm build ignores it).
+// rui1038: lo, the 7-bit fraction (a source's bank << 4: srclib::lo_of), sent as 48's fourth byte when not 0.
+int remote_param_write(int vi, int machine, int k, int value, int lo = 0);
+// rui1038: P(k + 1) of track t alone (the bank list's commit: flags 1 - the Rytm locks the steps held at its YES
+// instead of writing the kit); false: not a Sidecar track. remote_track_src14: P1's last 14-bit value (index << 7 |
+// bank << 4) as the SRC view's 2A or our own 48 said it, -1 unknown (the song recorder's SRC / TBL / INST: never the
+// 7-bit CC).
+// rui1045: on DSP SAMPLE the banked knob is SMP, P11 (remote_track_src_param 10; 0 P1 elsewhere): src14 is its value.
+bool remote_track_write(int t, int k, int value, int lo, int flags);
+int remote_track_src14(int t);
+int remote_track_src_param(int t);
+// rui1036b (49): the page asked for on the Rytm (49 1 <code>; the Rytm: UP + T<code>). What each code is comes from the
+// device's table (ui/page_keys.h: a row with no `rytm` title is the touchscreen's alone, the rest remote.cpp opens on
+// the Rytm's own screen unless the touchscreen has the page, remote_display_owns); the request count, *page the last);
+// the Rytm's selected track (-1 unknown; *gen counts its changes); its machine (0..52), name, P1..P8 and their labels
+// (returns a count that moves with each report). Plain reads: the display's core polls them.
+uint32_t remote_display_request(int* page);
+// The platform's touchscreen has its own page for these codes (bit p; the Pi with a display: REC SCOPE STATUS SONG
+// PROJECT POOL): the request still counts (remote_display_request), but the Rytm's screen stays as it is. 0 (the
+// default): all on the Rytm. remote_display_owned(p): bit p.
+void remote_display_owns(uint16_t pages);
+bool remote_display_owned(int page);
+// rui1052: a touchscreen is up (remote_display_owns was given pages: the Pi whose panel initialised, pi/engine/kernel.cpp
+// -> voice_pi::OwnPages). The one signal for it in the engine; UP's map reads it (page_menu.cpp) to leave the pages only
+// the touchscreen has off the map and light only the keys that show something.
+bool remote_display_present();
+int remote_selected_track(uint32_t* gen);
+uint32_t remote_track_info(int* track, int* machine, char name[13], uint8_t val[8], char label[8][5]);
+struct Page;
+const Page* remote_track_page(int t);
 void remote_forget_voices();     // no voice reported by the Rytm yet (after the platform's own boot bench): no voice pages
 // The renderer and the tests (core/host/core_c.cpp): page `which` (0 SIDECAR, 4 SYSTEM from the live status, 1 voice
 // `voice`'s machine page from its P1..P16, 2 / 3 the widget gallery from vals[16] with a synthetic sample, 5 the connect
-// splash at vals[0] x 25 ms, 6 + k the page drawn by code k: LFO, REC, SCOPE) drawn whole into c;
+// splash at vals[0] x 25 ms, 6 + k the page drawn by code k: LFO, REC, SCOPE, SEQ (CORE_POLY builds)) drawn whole into c;
 // false when there is no such page. remote_bench: the mean us of a whole page drawn and diffed (full) and of one
 // parameter change redrawn and diffed (one), over n rounds.
 #if CORE_UI_TOOLS   // the Mac build (core/Makefile)

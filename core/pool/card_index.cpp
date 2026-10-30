@@ -1,8 +1,10 @@
 // card_index.h's implementation (see there). None of it is real time: it
 // runs from flash (CORE_COLD), leaving ITCM to the render path.
+#include <stdlib.h>
 #include "card_index.h"
 #include "../heap_buffers.h"
 
+#include <new>
 #include <string.h>
 #include <strings.h>
 
@@ -239,6 +241,20 @@ CORE_COLD bool Index::begin(log_fn log, void* scratch, uint32_t scratch_bytes) {
     }
   }
   if (log_) log_(CORE_STR("index: files.bin %s"), files_.isContiguous() ? "contiguous" : "fragmented");
+#if CORE_MSAMP
+  // loadstall (0.3.0): the records in RAM, read once here (the boot, the card's core) - file() is a copy then, never a
+  // card read on the control core (the TEENSY listing 0D, LOAD TO PROJ 0F, DSP SAMPLE's reports and trigs, pool_sync's
+  // lookups: one 84-byte seek + read each, 1-7 ms a message measured on the Pi). Up to kRamFiles (a card with more:
+  // the rest from the card as before)
+  free(ram_);
+  ram_ = nullptr, nram_ = 0;
+  uint32_t n = nfiles_ < kRamFiles ? nfiles_ : kRamFiles;
+  if (n && (ram_ = (FileRec*)malloc(n * sizeof(FileRec)))) {   // (malloc: the Pi's runtime has no nothrow new[]; FileRec is POD)
+    if (files_.seekSet(0) && files_.read(ram_, n * sizeof(FileRec)) == (int)(n * sizeof(FileRec))) nram_ = n;
+    else free(ram_), ram_ = nullptr;
+  }
+  if (log_) log_(CORE_STR("index: %lu of %lu file records in RAM"), (unsigned long)nram_, (unsigned long)nfiles_);
+#endif
   // .wav files at or below each folder, leaves first (breadth first: a
   // folder's subfolders come after it)
   for (int i = 0; i < nfolders_; ++i) wavs_below_[i] = folders_[i].nfiles;
@@ -265,6 +281,10 @@ CORE_COLD int Index::subfolders(int f, uint16_t* out, int max) const {
 CORE_COLD bool Index::file(int f, int i, FileRec* r) {
   if (f < 0 || f >= nfolders_ || i < 0 || i >= folders_[f].nfiles) return false;
   uint32_t k = folders_[f].first_file + i;
+  if (k < nram_) {   // (CORE_MSAMP: the RAM copy, no card)
+    *r = ram_[k];
+    return true;
+  }
   if (k >= nfiles_ || !files_.seekSet(k * sizeof(FileRec))) return false;
   return files_.read(r, sizeof *r) == (int)sizeof *r;
 }

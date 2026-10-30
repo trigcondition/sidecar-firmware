@@ -60,7 +60,7 @@ def main():
         ("silence", 0 * t, note48, ["x: level", "x: pitch"]),
         ("over the limiter (-6 dBFS)", 0.5 * np.sin(2 * np.pi * note48 * t), note48, ["x: level"]),
         ("sine 130.81 on a DC offset", 0.1 + 0.1 * np.sin(2 * np.pi * note48 * t), note48, []),
-        ("noise, level only (DIGIDRUM)", np.clip(0.05 * np.random.default_rng(1).standard_normal(len(t)), -0.2, 0.2), None, []),
+        ("noise, level only (MD)", np.clip(0.05 * np.random.default_rng(1).standard_normal(len(t)), -0.2, 0.2), None, []),
     ]
     for name, x, want, fails in cases:
         got = audio(x, want)
@@ -125,7 +125,7 @@ def main():
                        f"-> {8000 // w} voices a core (worst of cores 0-3, worst block {block_permille // 10}."
                        f"{block_permille % 10} %, budget 25 %)")
         return out
-    good = {"plaits": 95, "juno": 310, "fm": 420, "daisy": 150, "dsps": 40, "dd": 60}
+    good = {"plaits": 95, "juno": 310, "fm": 420, "daisy": 150, "dsps": 40, "wt": 120, "gr": 90, "livein": 5, "chop": 70, "md": 60}
     lines = bench_lines(good, 52)
     cores, summary = pi_run.parse_bench(lines)
     assert cores["plaits"][2] == (0.97, 5.2, 8000 // 97), cores["plaits"]
@@ -137,17 +137,17 @@ def main():
         "bench juno: four voices fit a core"]
     assert run_checks(lambda: pi_run.check_bench(bench_lines(good, 1003))) == [
         f"bench {m}: worst block within one block" for m in pi_run.BENCH_MACHINES]
-    assert run_checks(lambda: pi_run.check_bench(bench_lines(good, 52, skip={("dd", 3)}))) == [
-        "bench dd: cores 0-3 and a summary"]
-    assert run_checks(lambda: pi_run.check_bench(lines[:-1])) == ["bench dd: cores 0-3 and a summary"]
+    assert run_checks(lambda: pi_run.check_bench(bench_lines(good, 52, skip={("md", 3)}))) == [
+        "bench md: cores 0-3 and a summary"]
+    assert run_checks(lambda: pi_run.check_bench(lines[:-1])) == ["bench md: cores 0-3 and a summary"]
     with tempfile.TemporaryDirectory() as d:
         log = os.path.join(d, "engine-x.log")
         open(log, "w").write("\n".join(["==== rytm-pi engine ==== CPU 1500 MHz"] + lines) + "\n")
         r = subprocess.run([sys.executable, os.path.join(HERE, "pi_run.py"), "bench", log], capture_output=True, text=True)
-        assert r.returncode == 0 and "ALL PASS" in r.stdout and "| dd |" in r.stdout, r.stdout + r.stderr
-        open(log, "w").write("\n".join(bench_lines(dict(good, dd=2100), 52)) + "\n")
+        assert r.returncode == 0 and "ALL PASS" in r.stdout and "| md |" in r.stdout, r.stdout + r.stderr
+        open(log, "w").write("\n".join(bench_lines(dict(good, md=2100), 52)) + "\n")
         r = subprocess.run([sys.executable, os.path.join(HERE, "pi_run.py"), "bench", log], capture_output=True, text=True)
-        assert r.returncode == 1 and "FAIL: bench dd: four voices fit a core" in r.stdout, r.stdout + r.stderr
+        assert r.returncode == 1 and "FAIL: bench md: four voices fit a core" in r.stdout, r.stdout + r.stderr
     print("ok  bench: per-core and summary lines parsed, the table, a machine over 20 % or a missing core fails")
     print("test_pi_run: PASS")
 

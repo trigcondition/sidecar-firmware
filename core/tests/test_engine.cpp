@@ -1,4 +1,4 @@
-// core/tests/test_engine.cpp - the engine's API: boot on a card (the last project's pool), the host's bytes,
+// core/tests/test_engine.cpp - the engine's API: boot on a card (the last project's SAMPLES pool, bank A: DSP SAMPLE), the host's bytes,
 // blocks, and the work between requests (a DSP SAMPLE prepare, the project's name saved).
 #include <cmath>
 #include <cstring>
@@ -18,17 +18,18 @@ int main() {
   CHECK(mkdtemp(tmpl));
   host_set_card(tmpl);
   Fs fs;
-  CHECK(fs.begin() && fs.mkdir("/Samples/S") && fs.mkdir("/.rytm/pools"));
+  CHECK(fs.begin() && fs.mkdir("/Samples/S") && fs.mkdir("/.rytm/projects/SMP"));
   write_wav("/Samples/S/tone.wav", 48000, 1, 16, 48000,
             [](int i, int) { return (int32_t)(10000 * std::sin(2 * M_PI * 440.0 * i / 48000)); });
   FILE* f = fopen(host_path("/.rytm/project").c_str(), "wb");
   fputs("SMP", f);
   fclose(f);
-  f = fopen(host_path("/.rytm/pools/SMP.txt").c_str(), "wb");
-  fputs("S/tone.wav\n", f);
+  f = fopen(host_path("/.rytm/projects/SMP/samples.pool.txt").c_str(), "wb");   // DSP SAMPLE's SMP 1 = A001
+  fputs("#sidecar samplepool 1\nA001 sample - 96044 /Samples/S/tone.wav\ttone\n", f);
   fclose(f);
   hooks.to_rytm = out;
   CHECK(engine_begin());
+  for (int i = 0; i < 2000 && npool == 0; ++i) idle_stream();   // the project's pool lists read (the card core's job)
   CHECK(!strcmp(project, "SMP") && npool == 1 && pool[0].folder >= 0);
   // DSP SAMPLE on voice 5, SMP 1, MIX 0 (the sample alone)
   std::vector<uint8_t> t = {0xf0, 0x7d, 0x52, 0x54, 0x04, 0x20 | 5, 60, 100};

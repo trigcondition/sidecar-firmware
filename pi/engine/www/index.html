@@ -16,6 +16,13 @@
     :root { --bg:#0e0e0e; --fg:#ececec; --mut:#8f8f8f; --line:#383838; --card:#1c1c1c; --acc:#2dbd5c; --acc-low:#0d3b1c; --acc-high:#8be3a6; --on-acc:#0e0e0e; --warn:#e3964f; --ok:#2dbd5c; --err:#ff6b6b; }
   }
   * { box-sizing:border-box; }
+  /* the pairing code's dialog (pi/engine/paircode.h): shown over everything until this device is paired */
+  #pair-wrap { position:fixed; inset:0; background:color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter:blur(3px);
+    display:flex; align-items:center; justify-content:center; padding:16px; z-index:50; }
+  #pair-wrap[hidden] { display: none; }   /* an ID selector outranks the UA's [hidden] rule */
+  #pair-box { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:14px 16px; max-width:460px; }
+  #pair-box h2 { margin-top:0; }
+  #pair-code { font:20px/1.3 var(--mono); letter-spacing:.14em; width:9em; text-align:center; }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 var(--font); -webkit-font-smoothing:antialiased; }
   main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:12px; }
   header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:4px 0 2px; }
@@ -32,9 +39,17 @@
   h2 { font-size:11px; text-transform:uppercase; letter-spacing:.14em; color:var(--mut); margin:0 0 8px; font-weight:700; }
   .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; }
   .tile { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:8px 10px; min-width:0; }
+  /* 1025: the 12 Rytm tracks' reported SRC machine - 12 narrow cells, 6 a row at a phone's width */
+  .chips { display:grid; grid-template-columns:repeat(auto-fit, minmax(62px, 1fr)); gap:6px; }
+  .chip { border:1px solid var(--line); border-radius:var(--r); padding:5px 6px; text-align:center; min-width:0; }
+  .chip .k { font-size:10px; letter-spacing:.1em; color:var(--mut); }
+  .chip .v { font-size:11px; font-weight:700; overflow:hidden; text-overflow:ellipsis; }
+  .chip.rytm .v { color:var(--mut); font-weight:400; }
   .tile .k { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--mut); }
-  .tile .v { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .tile .d { font:11px var(--mono); color:var(--mut); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* fix1049: a card's value and its lines wrap, never cut ("8.1 / 1.7 / 10...." at a phone's 390 px); its detail one
+     part a line (tileLines) */
+  .tile .v { font-size:18px; line-height:1.25; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .tile .d { font:11px/1.35 var(--mono); color:var(--mut); white-space:pre-line; overflow-wrap:anywhere; }
   .tile.bad .v { color:var(--warn); }
   .pwarn { border:1px solid var(--warn); color:var(--warn); border-radius:8px; padding:8px 12px; margin:0 0 10px; font-weight:600; }
   .tile.good .v { color:var(--ok); }
@@ -81,6 +96,8 @@
   .err { color:var(--err); }
   .mut { color:var(--mut); }
   .ok { color:var(--ok); }
+  .wn { color:var(--warn); }
+  .plbar { display:inline-block; vertical-align:middle; width:90px; } .plbar[hidden] { display:none; }
   .badge { font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid currentColor; white-space:nowrap; }
   .lnk { border:0; background:none; padding:0 2px; color:var(--acc); }
   .lnk:hover { text-decoration:underline; }
@@ -116,6 +133,7 @@
   .kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; font-size:13px; }
   .kv b { font-weight:normal; color:var(--mut); }
   .kv span { overflow-wrap:anywhere; }
+  .stor-t { font-size:12px; overflow:auto; margin:8px 0 0; padding:8px; background:var(--bg); border:1px solid var(--line); }
   .chg { margin:8px 0; }
   .chg h3 { font-size:11px; font-weight:600; color:var(--mut); margin:0 0 4px; text-transform:uppercase; letter-spacing:.04em; }
   .chs { display:grid; grid-template-columns:repeat(auto-fill, minmax(132px, 1fr)); gap:6px; }
@@ -152,12 +170,19 @@
     <span class="dot" id="dot"></span><span id="state">connecting</span>
   </header>
   <nav id="tabs" role="tablist">
-    <a href="#status" data-tab="status">Status</a><a href="#sound" data-tab="sound">Sound</a><a href="#sendfx" data-tab="sendfx">Send FX</a><a href="#lfo" data-tab="lfo">LFO</a><a href="#record" data-tab="record">Record</a><a href="#machines" data-tab="machines">User machines</a><a href="#library" data-tab="library">Pool &amp; presets</a><a href="#files" data-tab="files">Files</a><a href="#log" data-tab="log">Log &amp; console</a><a href="#about" data-tab="about">About</a>
+    <a href="#status" data-tab="status">Status</a><a href="#sound" data-tab="sound">Sound</a><a href="#sendfx" data-tab="sendfx">Send FX</a><a href="#lfo" data-tab="lfo">LFO</a><a href="#record" data-tab="record">Record</a><a href="#machines" data-tab="machines">User machines</a><a href="#pool" data-tab="pool">Pool</a><a href="#library" data-tab="library">Presets</a><a href="#project" data-tab="project">Project</a><a href="#files" data-tab="files">Files</a><a href="#log" data-tab="log">Log &amp; console</a><a href="#about" data-tab="about">About</a>
   </nav>
 
   <div class="tab" id="tab-status">
     <div class="pwarn" id="pwarn" role="alert" hidden></div>
     <div class="tiles" id="tiles"></div>
+    <section id="srcm" aria-labelledby="sm-h" hidden>
+      <h2 id="sm-h">Rytm tracks (SRC)</h2>
+      <div class="chips" id="sm-grid"></div>
+      <p class="note">The machine each track reports over the Sidecar link, as the Rytm itself names it - not what
+        Sidecar derives or what <code>wt=voice:V</code> and friends force. <b>RYTM</b> means the track is not ours: the
+        Rytm plays it with its own analog or sample voice, so nothing Sidecar does affects it.</p>
+    </section>
     <section id="wifi" aria-labelledby="wf-h">
       <h2 id="wf-h">Wi-Fi</h2>
       <div class="kv" id="wf-now"><b>Network</b><span>-</span></div>
@@ -180,7 +205,61 @@
         <span id="wf-trial">90</span> s, the previous setting comes back and Sidecar restarts on it (Ethernet, if Wi-Fi was off),
         so a wrong password cannot lock you out. This page follows to the Wi-Fi address at <code>sidecar.local</code> when this
         computer is on that network. The password is stored only as the network's key, never shown again; this page has no
-        login yet, so anyone on the same network can change these settings.</p>
+        login yet; the pairing code under <b>Access</b> is what keeps someone else on this network out.</p>
+    </section>
+    <section id="access" aria-labelledby="ac-h">
+      <h2 id="ac-h">Access</h2>
+      <div class="kv"><b>Pairing code</b><span id="ac-state">-</span></div>
+      <div class="kv"><b>This device</b><span id="ac-this">-</span></div>
+      <div class="row"><label></label><button id="ac-forget">Forget this device</button><button id="ac-all">Forget every device</button></div>
+      <p class="msg" id="ac-msg" role="status" aria-live="polite"></p>
+      <p class="note">Sidecar shows an 8-digit code on the Rytm's screen and on its own screen (STATUS page,
+        <b>PAIR CODE</b>). Entering it once lets this browser change things; reading the status and the log never needs it.
+        A remembered device keeps working after Sidecar restarts, and <b>Forget</b> makes it ask for the code again.
+        <b>Forget every device</b> also ends every other browser's and <code>sdboot.py</code>'s access. The code is
+        <i>not</i> encryption: this page is plain HTTP on your network, so treat the network itself as the lock.</p>
+    </section>
+    <section id="mb" aria-labelledby="mb-h">
+      <h2 id="mb-h">Rytm MIDI bridge</h2>
+      <div class="kv"><b>Bridge</b><span id="mb-state">-</span></div>
+      <div class="kv"><b>Traffic</b><span id="mb-bytes">-</span></div>
+      <div class="kv" id="mb-tokrow" hidden><b>Token</b><span><code id="mb-tok"></code> <button id="mb-copy" class="sm">Copy</button></span></div>
+      <div class="row"><label></label><button id="mb-on">Turn on for this boot</button><button id="mb-off">Turn off</button></div>
+      <div class="row"><label></label><label class="wf-check"><input type="checkbox" id="mb-os"> allow OS upgrades through the bridge (this session only)</label></div>
+      <div class="row"><label></label><label class="wf-check"><input type="checkbox" id="mb-data"> allow +Drive writes: put, delete, clear, move (this session only)</label></div>
+      <p class="msg" id="mb-msg" role="status" aria-live="polite"></p>
+      <p class="note">The Rytm's USB MIDI on TCP port 7330, for test tools on a computer (analogrun, analogusb.py, elkbench):
+        everything the Rytm sends is copied to the tool, and the tool's messages go to the Rytm between Sidecar's own.
+        It is <b>off at every start</b>, a tool must answer a challenge with the token (new at every turn-on), and
+        Elektron OS upgrades and +Drive writes are refused unless the boxes above are ticked. On the computer run
+        <code>SIDECAR_BRIDGE_TOKEN=&lt;token&gt; python3 tools/rytm_bridge.py --pi <span id="mb-host">sidecar.local</span></code> and point the
+        tool at <code>tcp:127.0.0.1:7321</code> (docs/HARDWARE-TESTING.md). Forgetting every device turns the bridge off.</p>
+    </section>
+    <section id="sdt" aria-labelledby="sdt-h">
+      <h2 id="sdt-h">SD card speed</h2>
+      <div class="kv"><b>Verdict</b><span id="sdt-v">-</span></div>
+      <div class="kv"><b>Measured</b><span id="sdt-m">-</span></div>
+      <div class="row"><label></label><button id="sdt-run">Run test</button><button id="sdt-stop" hidden>Cancel</button>
+        <progress id="sdt-p" max="100" value="0" hidden></progress></div>
+      <p class="msg" id="sdt-msg" role="status" aria-live="polite"></p>
+      <p class="note">Checks whether this card can stream multisamples (and record at the same time): about a minute, with a
+        temporary file in <code>/.rytm</code> (up to 256 MB, removed afterwards). Run it while nothing plays: the sound may
+        drop out while it runs. The result sets the streaming read-ahead and how many notes stream at once.</p>
+    </section>
+    <section id="stor" aria-labelledby="stor-h">
+      <h2 id="stor-h">Storage</h2>
+      <div class="kv" id="stor-vols"><b>SD card</b><span>-</span></div>
+      <div class="kv" id="lib-st"><b>Library</b><span>-</span></div>
+      <div class="row"><label for="stor-vol">Bench</label><select id="stor-vol"><option>SD</option></select>
+        <button id="stor-run">Run bench</button><button id="stor-stop" hidden>Cancel</button><button id="stor-ej" hidden>Eject</button>
+        <progress id="stor-p" max="100" value="0" hidden></progress></div>
+      <p class="msg" id="stor-msg" role="status" aria-live="polite"></p>
+      <pre id="stor-t" class="stor-t" hidden></pre>
+      <p class="note">USB drives (FAT32; a stick with the MBR scheme) mount when plugged in; <b>Eject</b> before pulling one.
+        The bench writes and reads a 256 MB file on the drive (removed afterwards), then random reads, the raw device and
+        reads while the Overbridge stream runs: a few minutes on the SD card, under a minute on a fast drive. It is refused
+        while the Rytm plays or records; the sound may drop out while it runs on the SD card. Same as the console's
+        <code>stor=bench:USB</code>; details in docs/STORAGE.md.</p>
     </section>
   </div>
 
@@ -216,6 +295,42 @@
         <button id="fifoset">Set</button><span class="mut" id="fifocur"></span>
         <span class="fb" data-fb="fifo" role="status" aria-live="polite"></span></div>
     </section>
+    <section id="poly-sec">
+      <h2>Poly tracks</h2>
+      <p class="note">The sequencer's poly config per seq track (docs/SEQ-IDEAS.md E0, after the Analog Four's POLY CONFIG):
+        VOICES (AUTO: the machine's own count), ALLOCATION, UNISON with its DETUNE and SPREAD. It is stored in the pattern
+        and kept as the track's default for patterns without one of their own.</p>
+      <div id="poly-rows"><p class="mut">No seq track.</p></div>
+      <p class="mut" id="poly-inst"></p>
+      <span class="fb" data-fb="poly" role="status" aria-live="polite"></span>
+    </section>
+    <section id="seqx-sec">
+      <h2>Sequencer</h2>
+      <p class="note">The Sidecar sequencer's top-8 features (docs/SEQUENCER.md "Built: seqtop"): the pattern's key, scale
+        and seed; per seq track its speed, play direction, random notes and SEED MOD; per step its ratchet or arp, its two
+        FX columns, random notes, and the condition and slide of a lock. Each Set sends console lines (seq=...).</p>
+      <div id="seqx-pat"><p class="mut">No pattern yet.</p></div>
+      <div id="seqx-rows"><p class="mut">No seq track.</p></div>
+      <div class="row"><label>Step</label>
+        <select id="sx-t" aria-label="track"></select>
+        <input id="sx-s" type="number" min="1" max="128" value="1" style="width:64px" aria-label="step">
+        <select id="sx-rm" aria-label="ratchet / arp mode"></select>
+        <input id="sx-rc" type="number" min="0" max="16" value="0" style="width:56px" aria-label="count">
+        <select id="sx-rr" aria-label="rate"></select>
+        <select id="sx-rv" aria-label="velocity curve"></select>
+        <input id="sx-rp" type="number" min="-24" max="24" value="0" style="width:56px" aria-label="pitch per repeat">
+        <input id="sx-ro" type="number" min="1" max="4" value="1" style="width:48px" aria-label="arp octaves">
+        <input id="sx-rg" type="number" min="1" max="100" value="100" style="width:56px" aria-label="gate %"></div>
+      <div class="row"><label></label>
+        <select id="sx-f1" aria-label="FX 1 command"></select><input id="sx-v1" value="" style="width:56px" aria-label="FX 1 value">
+        <select id="sx-f2" aria-label="FX 2 command"></select><input id="sx-v2" value="" style="width:56px" aria-label="FX 2 value">
+        <label class="wf-check"><input type="checkbox" id="sx-rnd"> random notes</label>
+        <input id="sx-lp" type="number" min="1" max="32" value="" placeholder="lock P" style="width:64px" aria-label="lock param">
+        <input id="sx-lc" value="" placeholder="cond" style="width:64px" aria-label="lock condition">
+        <label class="wf-check"><input type="checkbox" id="sx-sl"> slide</label>
+        <button id="sx-set">Set</button></div>
+      <span class="fb" data-fb="seqx" role="status" aria-live="polite"></span>
+    </section>
     <section>
       <h2>Display</h2>
       <div class="row"><label id="l-screensaver" title="black after this long without a touch on the display; the next touch only wakes it">Screensaver</label>
@@ -241,7 +356,7 @@
   </div>
 
   <div class="tab" id="tab-lfo">
-    <section><h2>LFOs</h2><p class="note">Eight LFOs on the Sidecar's voices (V1..V8: any parameter) or its send FX (FX1 / FX2
+    <section><h2>LFOs</h2><p class="note">Eight LFOs on the Sidecar's voices (BD, BT, SD, LT, CH/OH, MT/HT, CY/CB, RS/CP: any parameter) or its send FX (FX1 / FX2
       P2..P5), on top of the Rytm's value; the value comes back when the LFO stops. Saved per kit, as the Rytm's own LFOs (switched with the Rytm's kit); the same on the Rytm's LFO page (TRK + YES).</p></section>
     <div id="lfo-root" class="grid"></div>
   </div>
@@ -255,8 +370,13 @@
       <div class="row"><label id="l-rm">Start and stop</label><div class="seg" role="radiogroup" aria-labelledby="l-rm"><button type="button" role="radio" aria-checked="false" data-rm="manual">Manual</button><button type="button" role="radio" aria-checked="false" data-rm="arm">Arm: PLAY starts, STOP ends</button></div></div>
       <div class="row"><label id="l-rb">Bit depth</label><div class="seg" role="radiogroup" aria-labelledby="l-rb"><button type="button" role="radio" aria-checked="false" data-rb="24">24-bit</button><button type="button" role="radio" aria-checked="false" data-rb="16">16-bit</button></div>
         <span class="fb" data-fb="bits" role="status" aria-live="polite"></span></div>
-      <div class="row"><label>Take name</label><input id="rec-name" maxlength="24" value="take" style="width:160px" autocomplete="off">
-        <span class="mut" id="rec-namehint">_001, _002, ... in /Recordings</span></div>
+      <div class="row"><label id="l-rv">Record to</label><div class="seg" role="radiogroup" aria-labelledby="l-rv" id="rec-vol"></div>
+        <span class="fb" data-fb="vol" role="status" aria-live="polite"></span></div>
+      <p class="note" id="rec-volnote" hidden>A USB drive: FAT32 with the MBR scheme, on a blue USB 3 port (the Rytm keeps the black one). It shares the
+        USB host with the Rytm's audio: run the storage bench on it first (Status tab, Storage, <i>Run bench</i>) and keep an eye on
+        the drive's speed and the dropped blocks below. Eject it before pulling it (not while armed or recording).</p>
+      <div class="row"><label>Take name</label><input id="rec-name" maxlength="24" value="" placeholder="the project's name" style="width:160px" autocomplete="off">
+        <span class="mut" id="rec-namehint"></span></div>
       <div id="rec-card" class="note"></div>
     </section>
     <section>
@@ -268,11 +388,36 @@
     </section>
     <section>
       <h2>Takes</h2>
-      <div class="row"><button id="rec-re">Refresh</button><span class="spacer"></span><span class="mut">/Recordings (also in Files)</span></div>
+      <div class="row"><button id="rec-re">Refresh</button><span class="spacer"></span><span class="mut">/Recordings on the SD card (also in Files) and on each mounted drive</span></div>
       <div class="row"><button id="play-stop" class="sm" disabled>&#9632; Stop</button><span id="play-state" class="mut">Playback: click a channel to hear it on the Rytm's MAIN (not while recording).</span></div>
       <div class="tbl" id="rec-takes"></div>
       <div class="prog" id="rec-prog"></div>
       <div id="rec-msg" class="msg"></div>
+    </section>
+    <section id="smp">
+      <h2>Sample</h2>
+      <div class="row"><label for="smp-src">Source</label><select id="smp-src"><option value="in">AUDIO IN L/R</option><option value="main">MAIN (resample)</option>
+        <option value="track:1">BD</option><option value="track:2">SD</option><option value="track:3">RS/CP</option><option value="track:4">BT</option>
+        <option value="track:5">LT</option><option value="track:6">MT/HT</option><option value="track:7">CH/OH</option><option value="track:8">CY/CB</option>
+        <option value="voice:1">Sidecar voice BD</option><option value="voice:2">Sidecar voice BT</option><option value="voice:3">Sidecar voice SD</option><option value="voice:4">Sidecar voice LT</option>
+        <option value="voice:5">Sidecar voice CH/OH</option><option value="voice:6">Sidecar voice MT/HT</option><option value="voice:7">Sidecar voice CY/CB</option><option value="voice:8">Sidecar voice RS/CP</option></select>
+        <label for="smp-start">Start</label><select id="smp-start"><option value="now">now</option><option value="thr">threshold</option><option value="play">the Rytm's PLAY</option><option value="bar">its next bar</option></select></div>
+      <div class="row"><label for="smp-thr">Threshold dB</label><input id="smp-thr" type="number" min="-90" max="0" value="-30" style="width:70px">
+        <label for="smp-len">Length (bars, 0 free)</label><input id="smp-len" type="number" min="0" max="64" value="0" style="width:60px">
+        <label for="smp-sl">Slices</label><select id="smp-sl"><option value="trans">transients</option><option value="grid:16">grid 16</option><option value="grid:8">grid 8</option><option value="off">none</option></select></div>
+      <div class="row"><button id="smp-arm">&#9679; Arm / record</button><button id="smp-stop">&#9632; Stop</button><span id="smp-state" class="mut">-</span></div>
+      <p class="note">One take into /Samples/&lt;project&gt;/ (24-bit), trimmed and normalised (free takes), sliced; MULTISAMPLE lists it at once
+        (/MULTISAMPLE/&lt;project&gt;/: one zone, and its slices on keys from C1). DSP SAMPLE lists it after the next boot.</p>
+    </section>
+    <section id="asmp">
+      <h2>Auto-sampler</h2>
+      <div class="row"><label for="as-src">Source</label><input id="as-src" value="fm:0" style="width:130px" autocomplete="off" title="fm:PAT, juno:PAT, voice:V (a Sidecar voice), track:T[:CH[:chro]] (a Rytm track 1..12: BD..CB), ext[:usb|dev|rytm][:CH][:lr|l|r] (an external synth: MIDI out, AUDIO IN)">
+        <label for="as-notes">Notes</label><input id="as-notes" value="c2:c6:3" style="width:90px" autocomplete="off">
+        <label for="as-vel">Velocities</label><input id="as-vel" value="100" style="width:90px" autocomplete="off"></div>
+      <div class="row"><label for="as-hold">Hold ms</label><input id="as-hold" type="number" value="1500" style="width:70px">
+        <label for="as-tail">Release ms</label><input id="as-tail" type="number" value="2500" style="width:70px">
+        <label for="as-name">Name</label><input id="as-name" placeholder="auto" style="width:130px" autocomplete="off"></div>
+      <div class="row"><button id="as-go">Start</button><button id="as-stop">Cancel</button><progress id="as-p" max="100" value="0"></progress><span id="as-state" class="mut">-</span></div>
     </section>
   </div>
 
@@ -300,21 +445,41 @@
   </section>
   </div>
 
-  <div class="tab" id="tab-library">
-  <section id="lib-pool">
-    <h2>Sample pool</h2>
-    <div class="row"><b>Project</b> <span id="lib-proj">-</span><span class="spacer"></span><span id="lib-sram" class="mut"></span>
-      <button id="lib-re">Refresh</button></div>
-    <div class="tbl"><table><thead><tr><th class="r">Slot</th><th>Sample</th><th class="hm">Path under /Samples</th><th></th></tr></thead>
-      <tbody id="lib-pool-list"><tr><td colspan="4" class="mut">-</td></tr></tbody></table></div>
-    <div class="row"><label for="lib-slot">Assign slot</label><input id="lib-slot" type="number" min="1" max="127" value="1" style="width:5em">
-      <span class="mut">from</span> <span id="lib-crumb" class="mut">/Samples</span><span class="spacer"></span><button id="lib-up" class="sm">Up</button></div>
-    <div id="lib-browse" class="tbl" style="max-height:260px;overflow:auto"></div>
-    <div id="lib-pool-msg" class="msg"></div>
-    <p class="note">The pool is the project's (the Rytm's current project: /.rytm/pools/&lt;project&gt;.txt, as on the
-      Teensy). DSP SAMPLE's SMP knob and user machines (API 2) pick slot 1..127; the Rytm gets the table at once.
-      Pick a .wav below to put it into the slot above.</p>
+  <div class="tab" id="tab-pool">
+  <section id="pl">
+    <h2>Pool</h2>
+    <div class="row"><div class="seg" id="pl-lists" role="radiogroup" aria-label="POOL list">
+      <button data-pk="smp" aria-checked="true">SAMPLES</button><button data-pk="wt" aria-checked="false">WAVETABLES</button><button data-pk="inst" aria-checked="false">INSTRUMENTS</button></div>
+      <span class="spacer"></span><span class="mut">Project</span> <b id="pl-proj">-</b></div>
+    <div class="row"><div class="seg" id="pl-banks" role="radiogroup" aria-label="bank"></div>
+      <span class="spacer"></span><span style="white-space:nowrap"><span class="mut">RAM</span> <span id="pl-ram" title="the POOL's RAM: the samples and instruments (each file once) and the wavetables, of the budget">-</span>
+      <span class="bar plbar" id="pl-rambar" hidden><i></i></span></span></div>
+    <div id="pl-lock" class="pwarn" hidden></div>
+    <div class="row"><button id="pl-unused" title="the rows not seen playing in this project">Select unused</button>
+      <button id="pl-none">Select none</button><button id="pl-unload" disabled>Unload selected</button>
+      <button id="pl-undo" title="the last replace or unload of this list, back">Undo</button>
+      <span class="spacer"></span><span id="pl-count" class="mut"></span><button id="pl-re">Refresh</button></div>
+    <div id="pl-warn" class="pwarn" hidden></div>
+    <div class="tbl"><table><thead><tr><th></th><th class="r">Row</th><th>Name</th><th>State</th><th class="r">Size</th>
+      <th class="r" title="times seen playing in this project">Played</th><th class="r" title="voices on the row now">Now</th><th></th></tr></thead>
+      <tbody id="pl-rows"><tr><td colspan="8" class="mut">-</td></tr></tbody></table></div>
+    <div id="pl-pick" hidden>
+      <div class="row"><b id="pl-pick-what"></b><span class="spacer"></span><button id="pl-pick-up" class="sm">Up</button><button id="pl-pick-x" class="sm">Cancel</button></div>
+      <div class="row mut" id="pl-pick-dir"></div>
+      <div id="pl-pick-list" class="tbl" style="max-height:260px;overflow:auto"></div>
+    </div>
+    <div id="pl-msg" class="msg" role="status"></div>
+    <p class="note">The project's POOL: three lists (SAMPLES for GRANULAR, DSP SAMPLE and the sampler's takes;
+      WAVETABLES for WAVETABLE; INSTRUMENTS for MULTISAMPLE), each 8 banks of 128 rows, row 000 OFF. The Rytm's bank
+      list and the touchscreen show the same rows. Add files from the Files tab (+SMP / +WT / +INST, Fill bank).
+      Replacing or unloading a row in use asks first, and is refused while the Rytm plays. Select unused picks the
+      rows not seen playing in this project: a parameter lock on the Rytm that has not played yet is not known.
+      Undo takes back the last replace or unload of the list. MISSING: the file is gone from the card (the row is
+      silent); CHANGED: the file's content changed (Accept takes the new content).</p>
   </section>
+  </div>
+
+  <div class="tab" id="tab-library">
   <section id="lib-juno">
     <h2>JUNO list</h2>
     <div class="tbl"><table><thead><tr><th class="r">PAT</th><th>Patch</th><th></th></tr></thead><tbody id="lib-juno-list"></tbody></table></div>
@@ -343,18 +508,59 @@
   </section>
   </div>
 
+  <div class="tab" id="tab-project">
+  <section id="pb">
+    <h2>Projects</h2>
+    <div class="row"><span class="mut">Every Sidecar project on the card. A bundle (<b>.sidecar.zip</b>) holds a project's
+      Sidecar files, every sample it uses, its song takes and machines, and the Rytm project file if you add one.</span>
+      <span class="spacer"></span><label class="mut"><input type="checkbox" id="pb-takes" checked> unused sampler takes</label>
+      <button id="pb-re">Refresh</button></div>
+    <div id="pb-projects" class="tbl"></div>
+    <div id="pb-job" class="prog"></div>
+    <div id="pb-msg" class="msg"></div>
+    <div id="pb-plan" hidden></div>
+    <h2>Bundles on the card</h2>
+    <div class="row"><button id="pb-upb">Import a bundle…</button><input id="pb-file" type="file" accept=".zip,.sidecar.zip" hidden>
+      <span class="mut">or drop a .sidecar.zip here</span></div>
+    <div id="pb-bundles" class="tbl drop"></div>
+    <div class="prog" id="pb-prog"></div>
+    <h2>USB stick</h2>
+    <div class="row"><span id="pb-usbpick"></span><span class="mut">Export to a stick is off in this version (export to the card, then copy the
+      bundle); import reads a bundle straight from the stick (its /SIDECAR or its root). Eject before you pull it.</span></div>
+    <div id="pb-usb" class="tbl"></div>
+    <h2>Trash</h2>
+    <div class="row"><span class="mut">A project's Sidecar files go here when its slot is cleared, deleted, pasted over or
+      saved over on the Rytm, or deleted here; samples are never in it. The newest 64 are kept.</span>
+      <span class="spacer"></span><button id="pb-trash-empty">Empty…</button></div>
+    <div id="pb-trash" class="tbl"></div>
+    <p class="note">Export makes the bundle on the Sidecar a piece at a time on core 0, never on the audio core: while the
+      Rytm plays it only reads, slowly (card writes wait for STOP), and while the recorder records it waits. <b>Download</b>
+      streams it to this computer; very large bundles need a secure page (https or localhost) for the streaming download,
+      otherwise the page collects it first (up to 1 GB). Importing never touches the Rytm: the summary says which Rytm
+      project to load with Elektron Transfer and the name to save it under. On a card keyed by the Rytm's project slots
+      (since 0.3.0) the import goes <b>to a slot</b> instead: pick it in the summary; the bundle holds only the Sidecar's
+      side, so the Rytm's project must be in that slot (Transfer, or SAVE TO it before you import - a SAVE TO onto it
+      afterwards moves the imported files to the trash). A slot with Sidecar files is only replaced when you tick
+      replace: its files go to the project trash, restorable. Delete removes a project's Sidecar files only;
+      its samples stay on the card.</p>
+  </section>
+  </div>
+
   <div class="tab" id="tab-files">
   <section id="fs">
     <h2>Files</h2>
     <div class="row"><span class="mut">Go to</span>
       <button class="sm" data-go="/">/</button><button class="sm" data-go="/Samples">Samples</button>
       <button class="sm" data-go="/.rytm">.rytm</button><button class="sm" data-go="/Plugins">Plugins</button><button class="sm" data-go="/Recordings">Recordings</button>
+      <button class="sm" data-go="/GRANULAR" data-mk="1" title="GRANULAR's samples (made if missing)">GRANULAR</button><button class="sm" data-go="/WAVETABLES" data-mk="1" title="WAVETABLE's tables (made if missing)">WAVETABLES</button><button class="sm" data-go="/MULTISAMPLE" data-mk="1" title="MULTISAMPLE's instruments (made if missing)">MULTISAMPLE</button>
       <span class="spacer"></span><span id="fs-free" class="mut"></span></div>
     <div class="row" id="fs-crumb"></div>
     <div class="row"><button id="fs-upd">Up</button><button id="fs-mk">New folder</button>
       <button id="fs-upb">Upload files</button><input id="fs-file" type="file" multiple hidden>
       <button id="fs-upf">Upload folder</button><input id="fs-dir" type="file" webkitdirectory multiple hidden>
       <button id="fs-re">Refresh</button>
+      <label class="mut" for="fs-bank" title="the bank +SMP / +WT / +INST add to (its first free row)">POOL bank</label><select id="fs-bank">
+        <option>A</option><option>B</option><option>C</option><option>D</option><option>E</option><option>F</option><option>G</option><option>H</option></select>
       <span class="spacer"></span><label class="mut"><input type="checkbox" id="fs-hidden"> show hidden</label></div>
     <div id="fs-list" class="tbl drop"></div>
     <div class="prog" id="fs-prog"></div>
@@ -363,7 +569,12 @@
       subfolders; .DS_Store and ._ files are left out). Uploads go one at a time in small pieces: the page runs on
       core 0 with the network, USB and the card, apart from the audio (render cores 1 and 2, control core 3).
       🔒 marks boot files and the restore backup (read-only); Samples, Plugins and .rytm themselves are kept
-      (their contents can change).</p>
+      (their contents can change). WAV files uploaded into GRANULAR (and one folder level below it), WAVETABLES or
+      MULTISAMPLE are in the machines' browsers at once (rescanned after each upload). <b>+SMP</b> / <b>+WT</b> (any WAV
+      or AIFF) and <b>+INST</b> (an .sfz) add the file to the project's POOL (SAMPLES, WAVETABLES or INSTRUMENTS), into
+      the first free row of the POOL bank chosen above; a file already in that list keeps its row. <b>Fill bank</b>
+      puts a folder's files into a bank's empty rows. The rows are in the Pool tab, the Rytm's bank list and the
+      touchscreen; a row's audio is loaded into RAM when a voice plays it.</p>
   </section>
   </div>
 
@@ -395,38 +606,341 @@
         cores last published.</p>
     </section>
   </div>
+  <div id="pair-wrap" hidden>
+    <div id="pair-box" role="dialog" aria-modal="true" aria-labelledby="pair-h">
+      <h2 id="pair-h">Pairing code</h2>
+      <p id="pair-why">Sidecar asks for a code before this page may change anything. It is on the Rytm's screen and on
+        Sidecar's own screen (STATUS page, <b>PAIR CODE</b>), and it changes every time Sidecar restarts.</p>
+      <div class="row"><label for="pair-code">Code</label>
+        <input id="pair-code" inputmode="numeric" autocomplete="off" autocapitalize="off" spellcheck="false"
+               maxlength="11" placeholder="1234 5678"></div>
+      <div class="row"><label></label><label class="wf-check"><input type="checkbox" id="pair-rem" checked>
+        remember this device (no code after a restart)</label></div>
+      <div class="row"><label></label><button id="pair-go" class="on">Pair</button>
+        <button id="pair-showrytm" title="puts the code on the Rytm's screen again (at most every 10 s)">Show it on the Rytm</button></div>
+      <p class="msg" id="pair-msg" role="status" aria-live="polite"></p>
+      <p class="note" id="pair-note" hidden></p>
+      <p class="note">The status and the log are readable without the code, so you can watch Sidecar while it is
+        unpaired. Several wrong codes lock pairing for a while.</p>
+      <p class="sub" id="pair-build"></p>
+    </div>
+  </div>
 </main>
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
+// ---- the pairing code (pi/engine/paircode.h, docs/pi-engine.md "Pairing code"). The code is entered once; what this
+// browser keeps is a client id and a secret in localStorage (not the code), and it trades those for a session token at
+// every load. The token rides in the X-Sidecar-Auth header of every request - a header another site's page cannot set,
+// and one a browser does not keep in its history, unlike a query string. Reading /status and /log needs none of it.
+// gen rises at every pairing transition. A request issued while this page was unpaired can land after the code was
+// accepted - it was queued behind the pairing request, or already in flight - and its refusal would otherwise wipe
+// the token that just worked and reopen the dialog, which is what happened on the device (2026-10-25: "it confirms
+// it is correct and saved, but the dialog stays on top"). The wrapper remembers the gen it sent with and only acts
+// on a refusal that still belongs to the current one.
+const PAIR = { tok: "", gen: 0, gate: "on", clients: 0, ready: false, mine: false, hdr: true, host: "", build: "", asked: false };
+// Both ends are checked for shape. A junk entry here - `undefined` written as a string when a field was missing, or
+// anything left by an older build - used to be sent to the Sidecar on every load: it answered "the pairing code is
+// 8 digits", which reads as a complaint about a code the user typed correctly, and until 0.3.0 each one also burned
+// a pairing attempt, so five reloads locked the owner out (hardware, 2026-10-25). Junk is now dropped here instead.
+const pairId = (v) => (typeof v === "string" && /^[0-9a-f]{8}$/i.test(v) ? v.toLowerCase() : "");
+const pairSecret = (v) => (typeof v === "string" && /^[0-9a-f]{32}$/i.test(v) ? v.toLowerCase() : "");
+const pairStore = {
+  get() {
+    try {
+      const c = pairId(localStorage.getItem("scPairClient")), s = pairSecret(localStorage.getItem("scPairSecret"));
+      if (!c || !s) { pairStore.clear(); return { c: "", s: "" }; }   // never send what cannot be a credential
+      return { c, s };
+    } catch (e) { return { c: "", s: "" }; }
+  },
+  set(c, s) {
+    if (!pairId(c) || !pairSecret(s)) return pairStore.clear();       // nor write it
+    try { localStorage.setItem("scPairClient", pairId(c)); localStorage.setItem("scPairSecret", pairSecret(s)); } catch (e) {}
+  },
+  clear() { try { localStorage.removeItem("scPairClient"); localStorage.removeItem("scPairSecret"); } catch (e) {} },
+};
 // ---- every request through one gate: at most 2 at once from this page. The Pi serves 4 connections (pi/engine/web.h
 // MaxWorkers; a 5th gets "503 busy"), and a browser keeps spare connections of its own, so the page's polls (status,
 // log, Wi-Fi, lists) wait their turn here instead of piling up there. A 503 is tried again after 0.3/0.6/1.2 s.
+// The pairing token goes on here too, in one place, and a "not paired" answer (the X-Sidecar-Pair header) opens the
+// dialog again - so a device unpaired from somewhere else notices by itself.
 {
   const raw = window.fetch.bind(window), wait = [];
   let busy = 0;
   const take = () => busy < 2 ? (busy++, Promise.resolve()) : new Promise((ok) => wait.push(ok));
   const give = () => { const n = wait.shift(); if (n) n(); else busy--; };
   window.fetch = async (url, opt) => {
+    const gen = PAIR.gen;                           // the pairing this request belongs to
+    if (PAIR.tok && typeof url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("//")) {
+      opt = { ...(opt || {}) };
+      const h = new Headers(opt.headers || {});     // a Headers or a plain object, both
+      h.set("X-Sidecar-Auth", PAIR.tok);
+      opt.headers = h;
+    }
     for (let i = 0; ; i++) {
       await take();
       let r;
       try { r = await raw(url, opt); } finally { give(); }
-      if (r.status !== 503 || i >= 3 || (opt && opt.signal && opt.signal.aborted)) return r;
+      if (r.status !== 503 || i >= 3 || (opt && opt.signal && opt.signal.aborted)) {
+        if (r.headers.get("X-Sidecar-Pair") && gen === PAIR.gen) pairLost();
+        return r;
+      }
       await new Promise((ok) => setTimeout(ok, 300 << i));
     }
   };
 }
+// While this page is unpaired the Sidecar refuses everything but the open set, so its pollers would do nothing but
+// make work for core 0 - which the audio shares - two or three times a second, for as long as the tab is open (a unit
+// left on overnight on the dialog did 1992 refused requests in 24 minutes, measured on the device 2026-10-25). They
+// stop until the code is entered; /pair/status keeps ticking every 5 s, so the page still notices a reboot (a new
+// code), the gate being turned off, or someone else pairing this browser.
+const pairBlocked = () => PAIR.gate !== "off" && !PAIR.tok;
+// One tick reconciles the whole thing, instead of a timer that each path has to start and stop in the right order:
+// whenever this page is unpaired the dialog is up and /pair/status is asked every 5 s (so a reboot, the gate being
+// turned off, or this browser being paired elsewhere are all noticed), and whenever it is paired the dialog is down.
+// An earlier version started and stopped that timer by hand and could leave the page unpaired with no dialog and
+// nothing running - inert, which is worse than the bug it was fixing.
+setInterval(() => {
+  if (!PAIR.ready) return;
+  if (pairBlocked()) {
+    if ($("#pair-wrap").hidden) pairAsk();
+    pairBoot();
+  }
+}, 5000);
+function pairAsk(why) {                 // show the dialog (nothing before the first /pair/status has answered)
+  if (!PAIR.ready || PAIR.gate === "off") return;
+  // (the 5 s tick above keeps this true while unpaired)
+  $("#pair-wrap").hidden = false;
+  if (why) say($("#pair-msg"), why, true);
+  $("#pair-code").focus();
+}
+// The code on the Rytm's screen, asked for by this page once it knows it really is unpaired - no saved pairing, or a
+// stale one - and once per time that happens. Not on every load: the engine used to show it on GET /, which a page
+// load sends without the token, so a paired owner's every reload flashed the code over the Rytm. The engine
+// rate-limits it too (paircode_pi.h kShowGapS), because anyone on the network can ask.
+// The answer says whether it went up ({shown: true}) or how long the engine's 10 s gap still runs ({wait: N}).
+function pairShowCode(force) {
+  if (PAIR.asked && !force) return Promise.resolve(null);
+  PAIR.asked = true;
+  return fetch("/pair/show", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "" })
+    .then((r) => r.json()).catch(() => null);
+}
+function pairDone(tok) {                // a pairing transition: nothing from before it may undo it
+  PAIR.gen++;
+  PAIR.tok = tok;
+  PAIR.asked = false;                   // a later loss may show the code again
+  pollStatus();                         // the pollers run again from here
+  $("#pair-wrap").hidden = true;
+  say($("#pair-msg"), "");
+  pairShow();
+  if (typeof sendTime === "function") sendTime();   // it was refused while this page was unpaired
+}
+// The Sidecar refused a request this page thought was authenticated: the session went (a reboot, a revoke, an hour
+// idle). The generation guard in the wrapper means this is only ever reached for a refusal of the *current* pairing,
+// so a stale one cannot undo a code that has just been accepted.
+function pairLost(why) {
+  PAIR.gen++;
+  PAIR.tok = "";
+  pairAsk(why);
+  pairShow();
+}
+async function pairJson(url, form) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                               body: new URLSearchParams(form).toString() });
+  return r.json();
+}
+// A browser keeps what it remembers per origin, so a device paired at http://sidecar.local is a different, unpaired
+// browser at http://192.168.1.5 - and the Sidecar sees two devices for one. It cannot be detected from here (the
+// other origin's storage is invisible), but it can be said when it is the likely explanation.
+function pairHint() {
+  const el = $("#pair-note"), k = pairStore.get(), here = location.origin;
+  const there = PAIR.host ? `http://${PAIR.host}.local` : "";
+  let t = "";
+  if (PAIR.clients > 0 && !(k.c && k.s)) {
+    t = `This Sidecar already remembers ${PAIR.clients} device${PAIR.clients > 1 ? "s" : ""}, but this browser is not one of them. `;
+    if (there && here !== there)
+      t += `A browser treats ${here} and ${there} as different sites, so pairing does not carry between them: `
+         + `open ${there}/ if that is where you paired, or enter the code here as well (this Sidecar will then remember both).`;
+    else t += "Enter the code here as well.";
+  }
+  el.textContent = t;
+  el.hidden = !t;
+}
+function pairShow() {                   // the Access section
+  pairHint();
+  const g = PAIR.gate;
+  $("#ac-state").textContent = g === "off" ? "off on this card (cmdline.txt paircode=0): anyone on this network can change Sidecar"
+    : g === "fixed" ? `a fixed code from cmdline.txt (a development card) — ${PAIR.clients} device(s) remembered`
+    : `on — ${PAIR.clients} device(s) remembered`;
+  $("#ac-state").className = g === "on" ? "" : "err";
+  $("#ac-this").textContent = g === "off" ? "no code needed" : PAIR.tok ? (PAIR.mine ? "paired and remembered" : "paired for this visit only")
+    : "not paired";
+  for (const b of ["#ac-forget", "#ac-all"]) $(b).disabled = g === "off" || !PAIR.tok;
+}
+async function pairBoot() {
+  const gen = PAIR.gen;
+  let st;
+  try { st = await (await fetch("/pair/status", { cache: "no-store" })).json(); }
+  catch (e) { setTimeout(pairBoot, 2000); return; }
+  // What the Sidecar says about itself is current either way, so it is recorded first. Only the decisions below
+  // are guarded: an earlier version returned here and never set `ready`, which left the page unpaired with no
+  // dialog and nothing polling - inert.
+  PAIR.gate = st.gate; PAIR.clients = st.clients; PAIR.ready = true;
+  PAIR.hdr = st.hdr !== false; PAIR.host = st.host || "";
+  if (!PAIR.build) {                    // once: which build is answering, so a page left open from before an
+    PAIR.build = "?";                   // install is visible instead of looking like a bug in the page
+    fetch("/health", { cache: "no-store" }).then((r) => r.json()).then((h) => {
+      PAIR.build = `${h.version} ${h.commit}${h.dirty ? "+" : ""}`;
+      $("#pair-build").textContent = `Sidecar ${PAIR.build} — if this page looks older than the build you installed, reload it (the page is served by the kernel).`;
+    }).catch(() => {});
+  }
+  if (gen !== PAIR.gen) return;         // a pairing finished while this was in flight: it decides, not this answer
+  if (st.gate === "off" || st.paired) { $("#pair-wrap").hidden = true; pairShow(); return; }
+  if (st.rng === false) {               // the engine refuses every pairing this boot (paircode.h): say why, try nothing
+    pairAsk("This Sidecar's random number generator failed its self-test at boot, so it refuses to pair (a guessable code would be worse). Restart it; if this stays, report it.");
+    pairShow();
+    return;
+  }
+  const k = pairStore.get();
+  if (k.c && k.s) {
+    const r = await pairJson("/pair/resume", { client: k.c, secret: k.s });
+    if (gen !== PAIR.gen) return;
+    if (r.ok) { PAIR.mine = true; pairDone(r.token); return; }
+    pairStore.clear();                  // Sidecar does not know this device any more (revoked, or a new card)
+    pairShowCode();
+    pairAsk("This browser's saved pairing is no longer valid on this Sidecar, so it is asking for the code again.");
+    pairShow();
+    return;
+  }
+  pairShowCode();
+  pairAsk();
+  pairShow();
+}
+$("#pair-showrytm").onclick = async () => {
+  const r = await pairShowCode(true);
+  if (r && r.shown) say($("#pair-msg"), "Shown on the Rytm (for 30 s; it is always on its SIDECAR page too: UP + T10)");
+  else if (r && r.wait > 0) say($("#pair-msg"), `Wait ${r.wait} s, then ask again (or read it on the Rytm's SIDECAR page: UP + T10)`, true);
+  else say($("#pair-msg"), "Not shown: read the code on the Rytm's SIDECAR page (UP + T10)", true);
+};
+$("#pair-go").onclick = async () => {
+  const code = $("#pair-code").value.replace(/\s+/g, "");
+  if (!/^[0-9]{8}$/.test(code)) return say($("#pair-msg"), "the code is 8 digits", true);
+  $("#pair-go").disabled = true;
+  try {
+    const r = await pairJson("/pair", { code, name: navigator.platform || "a browser", remember: $("#pair-rem").checked ? "1" : "0" });
+    if (!r.ok) return say($("#pair-msg"), r.error + (r.wait ? ` (try again in ${r.wait} s)` : ""), true);
+    $("#pair-code").value = "";
+    if (r.secret) { pairStore.set(r.client, r.secret); PAIR.mine = true; } else pairStore.clear();
+    PAIR.clients += r.secret ? 1 : 0;
+    pairDone(r.token);
+    pairBoot();                         // the counts again
+  } catch (e) { say($("#pair-msg"), "Sidecar did not answer: " + e, true); }
+  finally { $("#pair-go").disabled = false; }
+};
+$("#pair-code").onkeydown = (e) => { if (e.key === "Enter") $("#pair-go").click(); };
+$("#ac-forget").onclick = async () => {
+  if (!confirm("Forget this device? This browser will ask for the pairing code again.")) return;
+  const r = await pairJson("/pair/forget", {});
+  pairStore.clear();
+  PAIR.tok = ""; PAIR.mine = false;
+  say($("#ac-msg"), r.ok ? "this device was unpaired" : r.error || "it did not work", !r.ok);
+  pairBoot();
+};
+$("#ac-all").onclick = async () => {
+  if (!confirm("Forget every paired device? Every browser and sdboot.py will need the pairing code again.")) return;
+  const r = await pairJson("/pair/revoke", {});
+  pairStore.clear();
+  PAIR.tok = ""; PAIR.mine = false;
+  say($("#ac-msg"), r.ok ? "every device was unpaired" : r.error || "it did not work", !r.ok);
+  pairBoot();
+};
+pairBoot();                             // before anything that changes Sidecar is tried
+// ---- the Rytm MIDI bridge (pi/engine/midibridge_pi.h): its state from /status every second; the token only from GET
+// /midibridge (paired, same-origin), fetched while the bridge is on and shown here only
+let mbTok = "", mbClient = "", mbGetting = false;
+function mbRender(m) {
+  if (!m) return;
+  if (m.client !== undefined) mbClient = m.client;      // GET /midibridge's only (/status does not carry it)
+  const st = m.state === "connected" ? `connected${mbClient ? " from " + mbClient : ""}` : m.state === "waiting" ? "on, waiting for a client" : "off";
+  $("#mb-state").textContent = `${st} — port ${m.port}` + (m.osUpgrade ? " — OS UPGRADES ALLOWED" : "") + (m.dataWrites ? " — +DRIVE WRITES ALLOWED" : "");
+  $("#mb-state").className = m.osUpgrade || m.dataWrites ? "err" : "";
+  const kb = (n) => n >= 10240 ? `${Math.round(n / 1024)} KB` : `${n} B`;
+  $("#mb-bytes").textContent = `to the Rytm ${kb(m.toRytm)} (${m.toRytmMsgs} msgs), from it ${kb(m.fromRytm)}; ` +
+    `${m.drops} dropped (the tool did not read), ${m.blocked} OS upgrade and ${m.blockedData} +Drive write message(s) blocked` +
+    (m.tooLong || m.junk ? `, ${m.tooLong} too long, ${m.junk} stray bytes` : "") + (m.rytmFail ? `, ${m.rytmFail} USB send(s) failed` : "");
+  $("#mb-on").disabled = m.on; $("#mb-off").disabled = !m.on;
+  $("#mb-os").checked = !!m.osUpgrade; $("#mb-os").disabled = !m.on;
+  $("#mb-data").checked = !!m.dataWrites; $("#mb-data").disabled = !m.on;
+  if (status && status.host) $("#mb-host").textContent = `${status.host}.local`;
+  if (m.on && (!mbTok || (m.state === "connected" && !mbClient) || (m.state !== "connected" && mbClient))) mbGet();
+  if (!m.on) { mbTok = ""; mbClient = ""; $("#mb-tokrow").hidden = true; }
+}
+async function mbGet() {
+  if (mbGetting) return;
+  mbGetting = true;
+  try {
+    const r = await (await fetch("/midibridge", { cache: "no-store" })).json();
+    mbTok = r.token || "";
+    mbClient = r.client || "";
+    $("#mb-tok").textContent = mbTok;
+    $("#mb-tokrow").hidden = !mbTok;
+  } catch (e) {}
+  mbGetting = false;
+}
+async function mbSet(f) {
+  const r = await wfPost("/midibridge/set", f);
+  say($("#mb-msg"), r.ok === false ? r.error : "", r.ok === false);
+  if (r.ok !== false) { mbRender(r); if (r.token) { mbTok = r.token; $("#mb-tok").textContent = mbTok; $("#mb-tokrow").hidden = false; } }
+}
+$("#mb-on").onclick = () => mbSet({ on: "1" });
+$("#mb-off").onclick = () => mbSet({ on: "0" });
+$("#mb-os").onchange = () => {
+  const on = $("#mb-os").checked;
+  if (on && !confirm("Allow Elektron OS upgrades through the bridge? A tool connected to it could then flash the Rytm. This lasts until the bridge is turned off.")) { $("#mb-os").checked = false; return; }
+  mbSet({ os: on ? "1" : "0" });
+};
+$("#mb-data").onchange = () => {
+  const on = $("#mb-data").checked;
+  if (on && !confirm("Allow +Drive writes through the bridge? A tool connected to it could then replace, delete or clear projects and samples on the Rytm. This lasts until the bridge is turned off.")) { $("#mb-data").checked = false; return; }
+  mbSet({ data: on ? "1" : "0" });
+};
+$("#mb-copy").onclick = () => { try { navigator.clipboard.writeText(mbTok); say($("#mb-msg"), "token copied"); } catch (e) {} };
 // ---- the LFO tab: web/seg.js's Pending and web/lfo.js, put here by build.sh / tests/mock_web.py (shared with the Mini's page)
 /*@include web/seg.js@*/
 /*@include web/lfo.js@*/
+// 1025: the Rytm's own SRC machine per track (/status "src"). TNAME is the Rytm's track order, which is the order
+// the report uses; the voice order (VNAME) is a different thing and stays separate.
+const TNAME = ["BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"];
+$("#sm-grid").innerHTML = TNAME.map((n, t) =>
+  `<div class="chip" id="sm-${t}"><div class="k">${n}</div><div class="v">-</div></div>`).join("");
+function paintSrc(src) {
+  const any = Array.isArray(src) && src.some((x) => x && x.vb >= 0);
+  $("#srcm").hidden = !any;                        // before the Rytm has reported there is nothing to show
+  if (!any) return;
+  for (let t = 0; t < TNAME.length; t++) {
+    const e = $("#sm-" + t), x = src[t] || {};
+    if (!e) continue;
+    e.querySelector(".v").textContent = x.m || "-";
+    e.classList.toggle("rytm", x.m === "RYTM" || x.m === "?");
+    e.title = x.vb === undefined || x.vb < 0 ? "not reported yet" : `voice byte 0x${(+x.vb).toString(16).toUpperCase()}`;
+  }
+}
 const TILES = [["cpu","CPU (cores 1/2/3)"],["fifo","FIFO"],["under","Underruns"],["ob","Overbridge"],
   ["rytm","Rytm"],["gadget","USB-C"],["temp","Temperature"],["power","Power"],["web","This page"]];
 $("#tiles").innerHTML = TILES.map(([k,n]) => `<div class="tile" id="t-${k}"><div class="k">${n}</div><div class="v">-</div><div class="d">&nbsp;</div></div>`).join("");
+// the temperature card's detail and class (pi/engine/thermal.h): the warning on at 80 °C, off below 75 °C; clockLow,
+// the ARM clock Circle's throttle lowered (socmaxtemp 78: 600 MHz), said with the warning and quietly under it
+function tempTile(st) {
+  const low = st.clockLow > 0 ? `clock lowered to ${st.clockLow} MHz` : "";
+  if (st.tempWarn) return [low ? `SoC · ${low} · warning until below 75 °C` : "SoC · running hot (warning until below 75 °C)", "bad"];
+  return [low ? `SoC · ${low} (hot)` : "SoC", ""];   // (quiet: no alert colour, no popup)
+}
+// a card's detail: one part a line (its " · " parts), so a narrow card cuts none (fix1049)
+function tileLines(d) { return d ? String(d).split(" · ").join("\n") : " "; }
 function tile(k, v, d, cls) {
   const t = $("#t-" + k);
   t.querySelector(".v").textContent = v;
-  t.querySelector(".d").textContent = d || " ";
+  t.querySelector(".d").textContent = tileLines(d);
   t.className = "tile" + (cls ? " " + cls : "");
 }
 // ---- tabs: #status, #sound, ... (deep links); the last one remembered
@@ -442,13 +956,16 @@ function showTab(t) {
   if (t === "status") wfPoll();
   if (t === "sound" || t === "lfo") pollStatus();
   if (t === "machines") pollUm(true);
-  if (t === "library") { pollLib(true); libBrowse(libDir); }
+  if (t === "library") pollLib(true);
+  if (t === "pool") plPoll(true);
   if (t === "files") fsLs(fsCur);
+  if (t === "project") { pbProjects(); pbBundles(); pbPoll(); }
   if (t === "record") recTakes();
   if (t === "log") { const l = $("#log"); if ($("#follow").checked) l.scrollTop = l.scrollHeight; }
 }
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
-for (let v = 0; v < 8; v++) { $("#mvoice").add(new Option("voice " + v, v)); $("#dvoice").add(new Option("voice " + v, v)); }
+const VNAME = ["BD", "BT", "SD", "LT", "CH/OH", "MT/HT", "CY/CB", "RS/CP"];   // a voice by the Rytm track(s) that play it; its index stays the value
+for (const v of [0, 2, 7, 1, 3, 5, 4, 6]) { $("#mvoice").add(new Option(VNAME[v], v)); $("#dvoice").add(new Option(VNAME[v], v)); }
 
 let status = null, last = {};          // last: the newest stats lines, by kind
 const STATS = /(rytmob: \d+ms IN|engine: engine: fifo|sidecar: \w+ alt|midigadget:)/;
@@ -547,6 +1064,163 @@ document.querySelectorAll(".seg").forEach((g) => g.addEventListener("keydown", (
 }));
 document.querySelectorAll("[data-cmd]").forEach((b) => { if (!b.closest(".seg")) b.addEventListener("click", () => cmd(b.dataset.cmd)); });
 $("#mvoice").onchange = () => { const m = status && status.machines && status.machines[+$("#mvoice").value]; if (m) $("#mname").value = m.toLowerCase(); paintSeg(); };
+// ---- E0: the poly tracks (/status "poly" and "inst"): one row per seq track, Set sends one seq=poly line
+const POLY_ALLOC = ["reassign", "rotate", "reset"];
+function polyLine(t, f) {   // the console line for track t (1..12) from the row's fields
+  const v = Math.max(0, Math.min(8, f.v | 0)), u = Math.max(1, Math.min(8, f.u | 0));
+  const d = Math.max(0, Math.min(127, f.d | 0)), s = Math.max(0, Math.min(127, f.s | 0));
+  return "seq=poly:" + t + ":voices=" + v + ",alloc=" + (POLY_ALLOC[f.a | 0] || "reassign") + ",unison=" + u + ",detune=" + d + ",spread=" + s;
+}
+function polyRow(p) {
+  const opt = (vals, cur, names) => vals.map((x, i) => '<option value="' + x + '"' + (x === cur ? " selected" : "") + ">" + (names ? names[i] : x) + "</option>").join("");
+  return '<div class="row" data-t="' + p.t + '"><label>T' + p.t + "</label>" +
+    '<select data-f="v" aria-label="voices">' + opt([0, 1, 2, 3, 4, 5, 6, 7, 8], p.v, ["AUTO", 1, 2, 3, 4, 5, 6, 7, 8]) + "</select>" +
+    '<select data-f="a" aria-label="allocation">' + opt([0, 1, 2], p.a, ["REASSIGN", "ROTATE", "RESET"]) + "</select>" +
+    '<select data-f="u" aria-label="unison">' + opt([1, 2, 3, 4, 5, 6, 7, 8], Math.max(1, p.u), ["OFF", 2, 3, 4, 5, 6, 7, 8]) + "</select>" +
+    '<input data-f="d" type="number" min="0" max="127" value="' + p.d + '" style="width:64px" aria-label="detune">' +
+    '<input data-f="s" type="number" min="0" max="127" value="' + p.s + '" style="width:64px" aria-label="spread">' +
+    '<button data-poly="' + p.t + '">Set</button><span class="mut">' + (p.info || "") + (p.own ? "" : " (the track's default)") + "</span></div>";
+}
+let polySig = "";
+function showPoly(st) {
+  if (!st.poly) return;
+  const sig = JSON.stringify(st.poly);
+  if (sig !== polySig && !document.activeElement?.closest?.("#poly-rows")) {   // (not while a field is being edited)
+    polySig = sig;
+    $("#poly-rows").innerHTML = st.poly.length ? st.poly.map(polyRow).join("") : '<p class="mut">No seq track.</p>';
+  }
+  const i = st.inst;
+  if (i) {
+    const used = i.v.reduce((a, x) => a + (x.path === "inst" ? x.on : 0), 0);
+    $("#poly-inst").textContent = "Instances " + used + " of " + i.total + ", " + Math.round(i.bytes / 1024) + " KB each" +
+      (i.noroom ? ", " + i.noroom + " notes found no free instance" : "");
+  }
+}
+$("#poly-rows").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-poly]");
+  if (!b) return;
+  const row = b.closest(".row"), f = {};
+  row.querySelectorAll("[data-f]").forEach((x) => { f[x.dataset.f] = +x.value; });
+  polySig = "";   // the answer's /status redraws the rows
+  cmd(polyLine(b.dataset.poly, f));
+});
+// ---- seqtop: the pattern's key / scale / seed, the seq tracks' seqtop settings, a step's extras (/status "seqx")
+const SX_KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const SX_SCALES = ["CHR", "MAJ", "MIN", "DOR", "PENT", "PHR", "LYD", "MIX", "LOC", "HMIN", "MMIN", "PMAJ", "BLUES", "WHOLE"];
+const SX_QNT = ["off", "edit", "play"];
+const SX_SPD = ["follow", "1/8", "1/4", "1/2", "3/4", "3/2", "2", "2/3", "5/4", "7/8"];
+const SX_DIR = ["fwd", "rev", "pend", "ping", "rnd", "brown"];
+const SX_RND = ["off", "steps", "track"], SX_W = ["flat", "root", "chord", "low", "high", "step"];
+const SX_SQ = ["step", "loop", "bar"], SX_AFF = ["notes", "chance", "order", "all"];
+const SX_RT = ["chord", "walk", "up", "down", "updn", "rnd", "played", "conv"];
+const SX_RATE = ["auto", "2", "1", "2/3", "1/2", "1/3", "1/4", "1/6", "1/8"], SX_VC = ["flat", "up", "down", "updn"];
+const SX_FX = ["---", "RTG", "DLY", "CUT", "CHN", "RND", "RNV", "OCT", "TRS", "JMP", "JRN", "LOP", "SKP", "DIR", "FIL"];
+const sxClamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v | 0));
+function seqxPatLines(f) {   // the pattern's row -> console lines
+  const l = ["seq=key:" + SX_KEYS[sxClamp(f.key, 0, 11)] + ":" + SX_SCALES[sxClamp(f.scale, 0, 13)] + ":" + SX_QNT[sxClamp(f.qnt, 0, 2)]];
+  l.push(f.free ? "seq=seed:free" : "seq=seed:" + sxClamp(f.seed, 0, 9999));
+  return l;
+}
+function seqxTrackLines(t, f) {   // a track's row -> console lines (t 1..12)
+  return ["seq=spd:" + t + ":" + SX_SPD[sxClamp(f.spd, 0, 9)], "seq=dir:" + t + ":" + SX_DIR[sxClamp(f.dir, 0, 5)],
+    "seq=rnd:" + t + ":mode=" + SX_RND[sxClamp(f.rm, 0, 2)] + ",low=" + sxClamp(f.rl, 0, 127) + ",oct=" + sxClamp(f.ro, 1, 4) + ",wght=" + SX_W[sxClamp(f.rw, 0, 5)],
+    "seq=smod:" + t + ":src=" + sxClamp(f.ms, 0, 16) + ",range=" + sxClamp(f.mr, 2, 64) + ",quant=" + SX_SQ[sxClamp(f.mq, 0, 2)] + ",aff=" + SX_AFF[sxClamp(f.ma, 0, 3)]];
+}
+// a lock's COND code (core/seq) as seq=lcond takes it; an FX value as seq=fx takes it (DIR by name, LOP NxX)
+function sxCondText(c) {
+  if (c >= 44) return (c - 43) + "%";
+  if (c >= 9) { let i = c - 9, b = 2; while (i >= b) { i -= b; b++; } return (i + 1) + ":" + b; }
+  return ["---", "fill", "!fill", "pre", "!pre", "nei", "!nei", "1st", "!1st"][c] || "---";
+}
+function sxFxText(c, v) { return c === 13 ? SX_DIR[v] || "fwd" : c === 11 ? ((v & 15) + 1) + "x" + ((v >> 4) + 1) : String(v); }
+function seqxStepLines(t, s, f, was) {   // the step editor -> console lines (t 1..12, s 1..128; was: the step as loaded -
+                                         // a lock's condition and slide sent only when changed)
+  const p = "seq=", ts = t + ":" + sxClamp(s, 1, 128) + ":", l = [];
+  if ((f.rm | 0) < 0) l.push(p + "rtrg:" + ts + "off");
+  else l.push(p + "rtrg:" + ts + "cnt=" + sxClamp(f.rc, 0, 16) + ",rate=" + SX_RATE[sxClamp(f.rr, 0, 8)] + ",vcrv=" + SX_VC[sxClamp(f.rv, 0, 3)] +
+    ",pcrv=" + sxClamp(f.rp, -24, 24) + ",mode=" + SX_RT[sxClamp(f.rm, 0, 7)] + ",oct=" + sxClamp(f.ro, 1, 4) + ",gate=" + sxClamp(f.rg, 1, 100));
+  for (const c of [1, 2]) {
+    const cmdn = SX_FX[sxClamp(f["f" + c], 0, 14)], v = String(f["v" + c] ?? "").trim();
+    l.push(p + "fx:" + ts + c + ":" + (cmdn === "---" ? "off" : cmdn + ":" + (v || "0")));
+  }
+  l.push(p + "rndstep:" + ts + (f.rnd ? 1 : 0));
+  const same = was && (was.lp | 0) === (f.lp | 0);
+  if ((f.lp | 0) >= 1 && !(same && String(was.lc) === String(f.lc ?? "").trim()))
+    l.push(p + "lcond:" + ts + sxClamp(f.lp, 1, 32) + ":" + (String(f.lc ?? "").trim() || "---"));
+  if ((f.lp | 0) >= 1 && !(same && !!was.sl === !!f.sl)) l.push(p + "slide:" + ts + sxClamp(f.lp, 1, 32) + ":" + (f.sl ? 1 : 0));
+  return l;
+}
+const sxOpt = (names, cur) => names.map((x, i) => '<option value="' + i + '"' + (i === cur ? " selected" : "") + ">" + String(x).toUpperCase() + "</option>").join("");
+function seqxPatRow(x) {
+  return '<div class="row"><label>Pattern</label><select data-f="key" aria-label="key">' + sxOpt(SX_KEYS, x.key) + "</select>" +
+    '<select data-f="scale" aria-label="scale">' + sxOpt(SX_SCALES, x.scale) + "</select>" +
+    '<select data-f="qnt" aria-label="QNT">' + sxOpt(SX_QNT, x.qnt) + "</select>" +
+    '<input data-f="seed" type="number" min="0" max="9999" value="' + x.seed + '" style="width:72px" aria-label="seed">' +
+    '<label class="wf-check"><input type="checkbox" data-f="free"' + (x.fixed ? "" : " checked") + "> FREE</label>" +
+    '<button data-sxpat="1">Set</button></div>';
+}
+function seqxRow(t) {
+  const num = (f, v, lo, hi, w, lab) => '<input data-f="' + f + '" type="number" min="' + lo + '" max="' + hi + '" value="' + v + '" style="width:' + w + 'px" aria-label="' + lab + '">';
+  return '<div class="row" data-t="' + t.t + '"><label>T' + t.t + "</label>" +
+    '<select data-f="spd" aria-label="speed">' + sxOpt(SX_SPD, t.spd) + "</select>" +
+    '<select data-f="dir" aria-label="direction">' + sxOpt(SX_DIR, t.dir) + "</select>" +
+    '<select data-f="rm" aria-label="random notes">' + sxOpt(SX_RND, t.rnd[0]) + "</select>" +
+    num("rl", t.rnd[1], 0, 127, 56, "random low note") + num("ro", t.rnd[2], 1, 4, 44, "random octaves") +
+    '<select data-f="rw" aria-label="weight">' + sxOpt(SX_W, t.rnd[3]) + "</select>" +
+    num("ms", t.smod[0], 0, 16, 48, "SEED MOD source P") + num("mr", t.smod[1], 2, 64, 48, "SEED MOD range") +
+    '<select data-f="mq" aria-label="SEED QUANT">' + sxOpt(SX_SQ, t.smod[2]) + "</select>" +
+    '<select data-f="ma" aria-label="SEED AFFECTS">' + sxOpt(SX_AFF, t.smod[3]) + "</select>" +
+    '<button data-sxt="' + t.t + '">Set</button><span class="mut">' + (t.smod[0] ? "seed +" + t.off : "") + "</span></div>";
+}
+let seqxSig = "", seqxLast = null, seqxWas = null;
+function showSeqx(st) {
+  const x = st.seqx;
+  if (!x) return;
+  seqxLast = x;
+  const sig = JSON.stringify([x.key, x.scale, x.qnt, x.seed, x.fixed, x.t.map((t) => [t.t, t.spd, t.dir, t.rnd, t.smod, t.off])]);
+  if (sig !== seqxSig && !document.activeElement?.closest?.("#seqx-sec")) {   // (not while a field is being edited)
+    seqxSig = sig;
+    $("#seqx-pat").innerHTML = seqxPatRow(x);
+    $("#seqx-rows").innerHTML = x.t.length ? x.t.map(seqxRow).join("") : '<p class="mut">No seq track.</p>';
+    const cur = $("#sx-t").value;
+    $("#sx-t").innerHTML = x.t.map((t) => '<option value="' + t.t + '"' + (String(t.t) === cur ? " selected" : "") + ">T" + t.t + "</option>").join("");
+    seqxFillStep();
+  }
+}
+function seqxFillStep() {   // the step editor from the last /status (a step without extras: the defaults)
+  const x = seqxLast, t = +$("#sx-t").value, s = +$("#sx-s").value;
+  const tr = x && x.t.find((q) => q.t === t), e = tr && tr.x.find((q) => q.s === s);
+  const rt = e ? e.rt : [0, 0, 0, 0, 0, 0, 0], on = rt[0] >= 2 || rt[4] >= 2;
+  $("#sx-rm").value = on ? rt[4] : -1, $("#sx-rc").value = rt[0], $("#sx-rr").value = rt[1], $("#sx-rv").value = rt[2];
+  $("#sx-rp").value = rt[3], $("#sx-ro").value = rt[5] || 1, $("#sx-rg").value = rt[6] || 100;
+  const fx = e ? e.fx : [[0, 0], [0, 0]];
+  $("#sx-f1").value = fx[0][0], $("#sx-v1").value = fx[0][0] ? sxFxText(fx[0][0], fx[0][1]) : "";
+  $("#sx-f2").value = fx[1][0], $("#sx-v2").value = fx[1][0] ? sxFxText(fx[1][0], fx[1][1]) : "";
+  $("#sx-rnd").checked = !!(e && e.r);
+  const lp = e && e.lc.length ? e.lc[0][0] : e && e.sl.length ? e.sl[0] : "";
+  const lc = e && e.lc.find((q) => q[0] === lp);
+  $("#sx-lp").value = lp, $("#sx-lc").value = lc ? sxCondText(lc[1]) : "";
+  $("#sx-sl").checked = !!(e && e.sl.includes(lp));
+  seqxWas = { lp: lp === "" ? 0 : lp, lc: $("#sx-lc").value, sl: $("#sx-sl").checked };
+}
+$("#sx-rm").innerHTML = '<option value="-1">OFF</option>' + sxOpt(SX_RT, -1);
+$("#sx-rr").innerHTML = sxOpt(SX_RATE, 0), $("#sx-rv").innerHTML = sxOpt(SX_VC, 0);
+$("#sx-f1").innerHTML = sxOpt(SX_FX, 0), $("#sx-f2").innerHTML = sxOpt(SX_FX, 0);
+$("#sx-t").onchange = seqxFillStep, $("#sx-s").onchange = seqxFillStep;
+async function sxSend(lines) { for (const l of lines) await cmd(l); seqxSig = ""; }
+$("#seqx-sec").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-sxpat],button[data-sxt]");
+  if (!b) return;
+  const row = b.closest(".row"), f = {};
+  row.querySelectorAll("[data-f]").forEach((q) => { f[q.dataset.f] = q.type === "checkbox" ? q.checked : +q.value; });
+  sxSend(b.dataset.sxpat ? seqxPatLines(f) : seqxTrackLines(b.dataset.sxt, f));
+});
+$("#sx-set").onclick = () => {
+  const f = { rm: +$("#sx-rm").value, rc: +$("#sx-rc").value, rr: +$("#sx-rr").value, rv: +$("#sx-rv").value, rp: +$("#sx-rp").value,
+    ro: +$("#sx-ro").value, rg: +$("#sx-rg").value, f1: +$("#sx-f1").value, v1: $("#sx-v1").value, f2: +$("#sx-f2").value,
+    v2: $("#sx-v2").value, rnd: $("#sx-rnd").checked, lp: +$("#sx-lp").value, lc: $("#sx-lc").value, sl: $("#sx-sl").checked };
+  sxSend(seqxStepLines(+$("#sx-t").value, +$("#sx-s").value, f, seqxWas));
+};
 $("#mset").onclick = () => { const v = $("#mvoice").value, n = $("#mname").value; choose("mach", v + ":" + n, "notemach=" + v + ":" + n); };
 $("#fifoset").onclick = () => { const n = $("#fifo").value | 0; pend.start("fifo", n); cmd("fifo=" + n).then((ok) => { if (!ok) pend.fail("fifo", "Sidecar refused the command"); }); };
 $("#bright").oninput = () => { $("#brightv").textContent = $("#bright").value + " %"; };
@@ -582,8 +1256,11 @@ let since = 0, partial = "", online = false;
 const lfoUi = initLfo({ root: $("#lfo-root"), send: (c) => cmd(c), Pending, isOn: () => online });
 async function pollLog() {
   if (qBusy || wifiBusy) { setTimeout(pollLog, 800); return; }    // paused while uploads or a Wi-Fi join run (the Pi's 4 connections)
+  // /log is open even while unpaired, but the dialog covers this page's view of it, so nothing is fetched: this
+  // only re-checks every 5 s, and `since` is kept, so the view catches up the moment the code is entered
+  if (pairBlocked()) { setTimeout(pollLog, 5000); return; }
   try {
-    const r = await fetch("/log?since=" + since, { cache: "no-store" });
+    const since0 = since, r = await fetch("/log?since=" + since, { cache: "no-store" });
     const t = await r.text();
     const nl = t.indexOf("\n"), [start, end] = t.slice(0, nl).split(" ").map(Number);
     let body = t.slice(nl + 1);
@@ -594,6 +1271,7 @@ async function pollLog() {
     partial = parts.pop();
     const out = [];
     for (const p of parts) {
+      if (since0) logMatch(p);   // an answer a command waits for (never from the first, whole read)
       const m = p.match(STATS);
       if (m) last[m[1].split(":")[0]] = p;
       const per = !!m || PERIODIC.test(p);
@@ -610,26 +1288,33 @@ async function pollLog() {
 // was busy) would arrive together, and every open connection is one of Circle's tasks (MAX_TASKS 20: a panic beyond)
 let statusBusy = false;
 async function pollStatus() {
-  if (statusBusy || qBusy || wifiBusy) return;         // paused while uploads or a Wi-Fi join run
+  if (statusBusy || qBusy || wifiBusy || pairBlocked()) return;   // paused while uploads or a Wi-Fi join run, and
   statusBusy = true;
   const t0 = Date.now();
   try {
     const r = await fetch("/status", { cache: "no-store", signal: AbortSignal.timeout(4000) });
+    // gated since 0.3.0 (pi/engine/paircode.h): unpaired is not "away" - the wrapper has already opened the dialog
+    if (r.headers.get("X-Sidecar-Pair")) { setOnline(false, "waiting for the pairing code"); statusBusy = false; return; }
     status = await r.json();
     statusAt = t0;
     renderStats();
     if (status.rec) recRender(status.rec);
+    if (status.sdtest) sdtRender(status.sdtest);
+    if (status.stor) storRender(status.stor);
+    if (status.library) $("#lib-st span").textContent = libText(status.library);
     if (status.play) playRender(status.play);
+    if (status.samp) smpRender(status.samp, status.asamp);
+    if (status.midibridge) mbRender(status.midibridge);
     setOnline(true);
   } catch (e) { setOnline(false); }
   statusBusy = false;
 }
 setInterval(pollStatus, 1000);
-function setOnline(on) {
+function setOnline(on, why) {
   online = on;
   paintSeg();
   $("#dot").className = "dot" + (on ? " on" : "");
-  if (!on) { $("#state").textContent = "not reachable"; return; }
+  if (!on) { $("#state").textContent = why || "not reachable"; return; }
   if (status) {
     const up = status.uptime, h = Math.floor(up / 3600), m = Math.floor(up / 60) % 60, s = up % 60;
     $("#state").textContent = `${status.host || "sidecar"}.local · ${status.ip} · up ${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
@@ -638,13 +1323,15 @@ function setOnline(on) {
 const num = (re, s, i = 1) => { const m = s && s.match(re); return m ? m[i] : null; };
 function renderStats() {
   const e = last["engine"], ob = last["rytmob"], sc = last["sidecar"], st = status || {};
+  paintSrc(st.src);
   if (e) {
     const c = e.match(/cpu c1 ([\d.]+) c2 ([\d.]+) c3 ([\d.]+)/);
-    if (c) tile("cpu", `${c[1]} / ${c[2]} / ${c[3]} %`, "block max " + num(/max (\d+) us \|/, e) + " us · pass max " + num(/pass max (\d+)/, e) + " us");
-    const f = e.match(/fifo min (\d+) max (\d+) target (\d+) under (\d+)/);
+    if (c) tile("cpu", `${c[1]} / ${c[2]} / ${c[3]} %`, "block max " + num(/max (\d+) us \|/, e) + " us · pass max " + num(/pass max (\d+)/, e) + " us"
+      + (st.cpu && st.cpu.mhz ? ` · ${st.cpu.mhz} MHz, voice budget ${st.cpu.budgetUs} us` : ""));
+    const f = e.match(/fifo min (\d+) max (\d+) target (\d+) under (\d+)(?: \(restart (\d+), streams (\d+)\))?/);
     if (f) tile("fifo", `${f[1]}..${f[2]}`, `target ${f[3]} frames`, +f[1] === 0 ? "bad" : "");
   }
-  if (st.underruns !== undefined) tile("under", String(st.underruns), "engine FIFO, since boot", st.underruns ? "bad" : "good");
+  if (st.underruns !== undefined) tile("under", String(st.underruns), (st.restartUnderruns !== undefined ? `restart ${st.restartUnderruns} · streams ${st.streams} · ` : "") + "glitches while playing", st.underruns ? "bad" : "good");
   if (st.streaming) {
     const g = ob ? num(/gap (\d+)/, ob) : null, l = ob ? num(/lost (\d+)/, ob) : null;
     tile("ob", "streaming", ob ? `IN ${num(/IN (\d+)\/s/, ob)}/s · gap ${g} · lost ${l} · link ${st.link}` : "link " + st.link, (+g || +l) ? "bad" : "good");
@@ -658,7 +1345,7 @@ function renderStats() {
     if (sc) d = `alt ${num(/alt (\d+\/\d+)/, sc)} · computer audio ${st.mac ? "on" : "off"} · late ${num(/late (\d+\/\d+\/\d+)/, sc)}`;
     tile("gadget", st.gadget === "0" ? "off" : st.gadget, d);
   }
-  if (st.temp !== undefined) tile("temp", st.temp + " °C", "SoC", st.temp >= 80 ? "bad" : "");
+  if (st.temp !== undefined) tile("temp", st.temp + " °C", ...tempTile(st));
   if (st.power) {                    // the supply (pi/engine/power_state.h): get_throttled, the Pi 5's USB-PD current
     const p = st.power, bad = !!p.warn;
     tile("power", !p.known ? "unknown" : bad ? "too weak" : "ok",
@@ -671,6 +1358,8 @@ function renderStats() {
   settle();
   if (st.fxin) fxinShow(st.fxin);
   if (st.lfo) lfoUi.show(st.lfo);   // the LFO tab (/status "lfo": core/lfo.cpp json)
+  showPoly(st);                       // E0: the poly tracks (/status "poly", "inst": core/seq, core/inst.h)
+  showSeqx(st);                       // seqtop: the sequencer's top-8 settings (/status "seqx": core/seq)
   if (st.brightness && document.activeElement !== $("#bright")) { $("#bright").value = st.brightness; $("#brightv").textContent = st.brightness + " %"; }
   if (st.display !== undefined) $("#blank").textContent = !st.display ? "no display attached" : st.blank ? "the screen is black now (a touch wakes it)" : "";
   if (st.fx && tab === "sendfx") $("#fx").innerHTML = st.fx.map((f, i) => `<div><b>FX ${i + 1}</b> · ${esc(f.type || "OFF")}
@@ -697,6 +1386,101 @@ function hb(n) {
   return (i && n < 10 ? n.toFixed(1) : Math.round(n)) + " " + u[i];
 }
 const join = (dir, name) => (dir === "/" ? "" : dir) + "/" + name;
+// ---- the SD card test (/status "sdtest", the console's sdtest= commands; core/msamp/sdtest.h)
+function sdtRender(t) {
+  const run = t.state === "running";
+  $("#sdt-run").hidden = run; $("#sdt-stop").hidden = !run; $("#sdt-p").hidden = !run; $("#sdt-p").value = t.progress;
+  $("#sdt-v").textContent = run ? `testing: ${t.phase}, ${t.progress} %` : t.have ? t.verdict : "not tested yet";
+  $("#sdt-v").className = !run && t.have ? (t.level === 2 ? "ok" : t.level === 1 ? "warn" : "err") : "";
+  $("#sdt-m").textContent = t.have ? `write ${t.writeMBps} MB/s, read ${t.readMBps} MB/s, 32 KB reads ${t.rand32Iops}/s ` +
+    `(99 % within ${t.rand32P99Ms} ms, worst ${t.rand32MaxMs} ms; ${t.mixedMaxMs} ms while writing), read-ahead ${t.aheadMs} ms` : "-";
+  if (t.state === "failed" || t.state === "cancelled") say($("#sdt-msg"), t.phase, t.state === "failed");
+}
+$("#sdt-run").onclick = async () => {
+  if (!confirm("Run the SD card test now? About a minute; the sound may drop out meanwhile.")) return;
+  say($("#sdt-msg"), "starting...");
+  await cmd("sdtest=start!");
+};
+$("#sdt-stop").onclick = () => cmd("sdtest=cancel");
+// ---- the sample library (/status "library", core/lib/library.h; docs/LIBRARY.md): one line on the Status tab
+function libText(l) {
+  const n = (x) => Number(x || 0).toLocaleString("en-US");
+  if (l.state === "OFF") return "off (no card)";
+  if (l.state === "FAILED") return "failed (see the log)";
+  if (l.state === "LOADING") return "loading the index";
+  let t = l.state === "WALKING" ? `${n(l.files)} files, looking at the card`
+    : `${n(l.files)} files (${hb(l.bytes)}), ` + (l.state === "HASHING" ? `${l.pct} % hashed, ${n(l.pending)} pending` : "all hashed");
+  if (l.dups) t += `, ${n(l.dups)} duplicates (${hb(l.dupBytes)})`;
+  if (l.missing) t += `, ${n(l.missing)} missing`;
+  if (l.unreadable) t += `, ${n(l.unreadable)} unreadable`;
+  if (l.recordings) t += `, ${n(l.recordings)} recordings indexed`;
+  if (l.readOnly) t += " · its index is a newer Sidecar's: read-only here";
+  if (l.waiting) t += ` · waiting: ${l.waiting.toLowerCase()}`;
+  return t;
+}
+// ---- the volumes and the storage bench (/status "stor", the console's stor= commands; pi/engine/stor_pi.h)
+const STOR_CAP = { SD: "SD card", USB: "USB drive", USB2: "USB drive 2", USB3: "USB drive 3", NVME: "NVMe SSD" };
+function storVolText(v) {
+  if (v.state === "mounted") return `${v.fs} · ` + (v.freeMB == null ? `${hb(v.totalMB * 1048576)}, free space not counted (stor=free:${v.name})`
+    : `${hb(v.freeMB * 1048576)} free of ${hb(v.totalMB * 1048576)}`) +
+    (v.link ? " · " + v.link : "") + (v.model ? " · " + v.model : "") + (v.pulls ? ` · pulled without eject ${v.pulls}×` : "");
+  if (v.state === "present") return "not mounted" + (v.why ? ": " + v.why : "");
+  if (v.state === "ejected") return "ejected: safe to remove";
+  if (v.state === "unavailable") return "not on this board";
+  return v.why ? "none (" + v.why + ")" : "none";
+}
+function storRender(s) {
+  const show = s.vols.filter((v) => v.state !== "absent" || v.name === "SD" || v.name === "USB" || (v.name === "NVME" && v.state !== "unavailable"));
+  $("#stor-vols").innerHTML = show.map((v) => `<b>${esc(STOR_CAP[v.name] || v.name)}</b><span>${esc(storVolText(v))}</span>`).join("") +
+    `<b>exFAT</b><span>${s.exfat ? "on in this build" : "off in this build (FAT32 drives; docs/STORAGE.md)"}</span>`;
+  const sel = $("#stor-vol"), cur = sel.value, names = s.vols.filter((v) => v.state === "mounted").map((v) => v.name);
+  if (sel.dataset.k !== names.join()) {
+    sel.dataset.k = names.join();
+    sel.innerHTML = names.map((n) => `<option>${n}</option>`).join("");
+    if (names.includes(cur)) sel.value = cur;
+  }
+  const b = s.bench || {}, run = b.state === "running", vol = s.vols.find((v) => v.name === sel.value);
+  $("#stor-run").hidden = run; $("#stor-stop").hidden = !run; $("#stor-p").hidden = !run; $("#stor-p").value = b.progress || 0;
+  $("#stor-ej").hidden = run || !vol || vol.name === "SD" || vol.state !== "mounted";
+  if (run) say($("#stor-msg"), `${b.vol}: ${b.phase}, ${b.progress} %`);
+  else if (b.state === "failed" || b.state === "cancelled") say($("#stor-msg"), `${b.vol}: ${b.phase}`, b.state === "failed");
+  else if (b.state === "done") say($("#stor-msg"), "");
+  $("#stor-t").hidden = !b.have;
+  if (b.have) $("#stor-t").textContent = b.table;
+}
+$("#stor-run").onclick = async () => {
+  const v = $("#stor-vol").value || "SD";
+  if (!confirm(`Run the storage bench on ${v} now? A temporary file of up to 256 MB is written and removed; ` +
+    (v === "SD" ? "a few minutes, and the sound may drop out meanwhile." : "a minute or so."))) return;
+  say($("#stor-msg"), "starting...");
+  await cmd("stor=bench:" + v);
+};
+$("#stor-stop").onclick = () => cmd("stor=cancel");
+$("#stor-ej").onclick = () => cmd("stor=eject:" + $("#stor-vol").value);
+// ---- the sampler and the auto-sampler (/status "samp", "asamp"; the console's samp= / asamp=; core/samp)
+const SMP_STATES = ["idle", "armed", "recording", "captured", "writing", "done", "failed"];
+const AS_STATES = ["idle", "taking", "writing", "done", "failed", "cancelled"];
+function smpRender(s, a) {
+  const t = SMP_STATES[s.state] || "?";
+  $("#smp-state").textContent = `${t}${s.state === 2 ? " " + (s.ms / 1000).toFixed(1) + " s" : ""}${s.bpm ? " · " + s.bpm + " bpm" : ""}` +
+    (s.wav ? ` · last ${s.wav} (${s.nSlices} slices)` : "") + (s.error ? " · " + s.error : "");
+  if (!a) return;
+  $("#as-p").value = a.total ? Math.round(100 * a.done / a.total) : 0;
+  $("#as-state").textContent = `${AS_STATES[a.state] || "?"}${a.state === 1 || a.state === 2 ? " " + a.label : ""}` +
+    (a.sfz ? ` · ${a.sfz} (${a.written} samples, ${a.loops} loops)` : "") + (a.error ? " · " + a.error : "");
+}
+$("#smp-arm").onclick = async () => {
+  const st = $("#smp-start").value;
+  for (const c of ["samp=src:" + $("#smp-src").value, "samp=start:" + (st === "thr" ? "thr:" + Math.abs($("#smp-thr").value | 0) : st),
+                   "samp=len:" + ($("#smp-len").value | 0), "samp=slices:" + $("#smp-sl").value, "samp=arm"]) await cmd(c);
+};
+$("#smp-stop").onclick = () => cmd("samp=stop");
+$("#as-go").onclick = async () => {
+  const n = $("#as-name").value.trim();
+  for (const c of ["asamp=src:" + $("#as-src").value.trim(), "asamp=notes:" + $("#as-notes").value.trim(), "asamp=vel:" + $("#as-vel").value.trim(),
+                   "asamp=hold:" + ($("#as-hold").value | 0), "asamp=tail:" + ($("#as-tail").value | 0), "asamp=name:" + (n || "auto"), "asamp=start"]) await cmd(c);
+};
+$("#as-stop").onclick = () => cmd("asamp=cancel");
 function say(el, text, bad) { el.textContent = text || ""; el.className = "msg" + (bad ? " err" : ""); }
 async function fsPost(url, body, ac) {       // every /fs/* POST answers "<code> <message>" as text
   const r = await fetch(url, { method: "POST", body: body || "", signal: ac && ac.signal });
@@ -821,6 +1605,321 @@ async function uploadRetry(it) {
   }
 }
 
+// ---- project bundles (the Project tab: /bundle/*, pi/engine/bundleweb.h, docs/BUNDLES.md)
+const PB = { projects: [], st: null, served: "", planShown: "", timer: 0, vol: "" };
+function pbPhase(st) {                       // "HASH 45 % · 12 MB of 26 MB · WAITING (PLAYING)"
+  if (!st || st.phase === "IDLE") return "";
+  const f = st.total ? Math.floor(100 * st.done / st.total) : null;
+  let t = st.phase + (f != null && st.phase !== "SERVE" ? ` ${f} %` : "");
+  if (st.total > 4096 && st.phase !== "COMMIT" && st.phase !== "COLLECT") t += ` · ${hb(st.done)} of ${hb(st.total)}`;
+  if (st.waiting) t += ` · WAITING (${st.waiting})`;
+  return t;
+}
+function pbRows(list, usb) {                 // the projects' table: the current one first, then the last used (usb: a stick mounted)
+  const l = list.slice().sort((a, b) => (b.current - a.current) || (b.used - a.used) || a.key.localeCompare(b.key));
+  return l.map((p) => `<tr data-key="${esc(p.key)}"><td>${esc(p.rytm)}${p.current ? " <b>*</b>" : ""}${p.imported ? ' <span class="mut">imp.</span>' : ""}` +
+    `${p.rytm !== p.key ? ` <span class="mut">(${esc(p.key)})</span>` : ""}</td><td>${p.files}</td><td>${hb(p.bytes)}</td>` +
+    `<td class="mut">${esc(p.date ? p.date.slice(0, 16).replace("T", " ") : p.used ? "#" + p.used : "-")}</td>` +
+    `<td><button class="sm" data-act="dl">Download</button><button class="sm" data-act="card">To card</button>` +
+    `${""}` +   // 0.3.0: no export to a stick (core/bundle/export.cpp BUNDLE_USB_EXPORT)
+    `<label class="sm"><input type="file" data-act="rytm" hidden><span class="btn">Rytm file…</span></label>` +
+    `${p.current ? "" : '<button class="sm" data-act="del">Delete</button>'}</td></tr>`).join("");
+}
+function pbVolHtml(u, sel) {                // the USB stick picker (/usb/status): its sticks with their free space, Eject
+  if (!u || !u.present || !u.vols.length) return '<span class="mut">no USB stick (FAT32, in a blue port)</span>';
+  return `<select id="pb-vol">` + u.vols.map((v) => `<option value="${esc(v.drive)}"${v.drive === sel ? " selected" : ""}>` +
+    `${esc(v.name)} · ${v.free_known ? hb(v.free) + " free" : "free not counted"}</option>`).join("") +
+    `</select> <button class="sm" id="pb-eject">Eject</button>`;
+}
+function pbBundleRows(l, src) {              // the bundles on the card or a stick: each by its path
+  if (!l.length) return `<p class="mut">${src === "usb" ? "none on the stick (it looks in /SIDECAR and its root)" : "none yet"}</p>`;
+  return `<table><tr><th>Bundle</th><th>Size</th><th>Date</th><th></th></tr>` + l.map((b) =>
+    `<tr data-name="${esc(b.name)}" data-path="${esc(b.path || "/Bundles/" + b.name)}"><td>${esc(b.name)}${b.incomplete ? ' <span class="mut">(incomplete)</span>' : ""}</td><td>${hb(b.size)}</td>` +
+    `<td class="mut">${esc(b.date)}</td><td>${b.incomplete ? "" : '<button class="sm" data-act="imp">Import</button>'}` +
+    `<button class="sm" data-act="rm">Delete</button></td></tr>`).join("") + "</table>";
+}
+function pbSkip(machines, unticked) {        // the slots whose machine the user left out: bit (slot - 1)
+  let b = 0;
+  for (const m of machines) if (m.slot && unticked.includes(m.slot)) b |= 1 << (m.slot - 1);
+  return b;
+}
+// slot mode (2026-10-29: a card keyed by the Rytm's slots): the slot picker's rows and the Rytm's step for a slot (as
+// core/bundle/import.cpp's step_text: the bundle holds the Sidecar's side, the Rytm's project goes into that slot)
+const pbN3 = (n) => String(n).padStart(3, "0");
+function pbSameName(rytm, bundle) {
+  const a = String(rytm || "").replace(/ +$/, ""), b = String(bundle || "").replace(/ +$/, "").slice(0, 15).replace(/ +$/, "");
+  return !!a && !!b && a.toUpperCase() === b.toUpperCase();
+}
+function pbSlotStep(p, n) {
+  const x = p.slots[n - 1] || ["", 0, 0], s = pbN3(n), bn = p.from.rytm_name || p.from.key;
+  if (p.rytm) return `Send ${p.rytm.file.replace(/^rytm\//, "")} to the Rytm's slot ${s} with Elektron Transfer, then load slot ${s} on the Rytm.`;
+  if (pbSameName(x[0], bn)) return `This bundle holds only the Sidecar's side, no Rytm project file. Slot ${s} on the Rytm holds ${x[0]}: load it on the Rytm.`;
+  return `This bundle holds only the Sidecar's side, no Rytm project file: put the Rytm project into slot ${s} yourself ` +
+    `(Elektron Transfer, or SAVE TO ${s}) before you import, then load it. A SAVE TO onto ${s} after the import moves these files to the trash.`;
+}
+function pbSlotOpts(p) {                     // (slot 0: every slot taken, none by default - the user picks one)
+  return (p.slot ? "" : '<option value="" selected disabled>pick a slot</option>') + p.slots.map((x, i) => `<option value="${i + 1}"${i + 1 === p.slot ? " selected" : ""}${x[2] ? " disabled" : ""}>` +
+    `${pbN3(i + 1)} ${esc(x[0] || (p.rytm_list ? "(empty)" : "-"))}${x[1] ? ` · ${x[1]} Sidecar files` : ""}` +
+    `${x[2] ? " · the Rytm's current project" : ""}</option>`).join("");
+}
+function pbPlanHtml(p) {                     // the import's summary (READY) or its done screen (DONE)
+  const ms = p.machines.map((m) => `<label><input type="checkbox" data-slot="${m.slot}" ${m.action === "left out" ? "" : "checked"}` +
+    `${m.action === "install" || m.action === "side-by-side" || m.action === "left out" ? "" : " disabled"}> U${m.slot} ${esc(m.name || m.id)} ` +
+    `${esc(m.ver)} <span class="mut">${esc(m.action)}</span></label>`).join("<br>");
+  const done = p.phase === "DONE", slots = Array.isArray(p.slots), cur = slots ? p.slots[p.slot - 1] || ["", 0, 0] : null;
+  const named = slots && !!cur[0];           // (a slot the Rytm names: the import takes its name)
+  return `<h2>${done ? "Imported" : "Import"} ${esc(p.from.rytm_name || p.from.key)}</h2>` +
+    `<div class="kv">` +
+    (slots ? `<span>to slot</span><span>${done ? pbN3(p.slot) : `<select id="pb-slot">${pbSlotOpts(p)}</select>`}` +
+             ` <span class="mut" id="pb-slot-note">${cur[1] ? `(${cur[1]} Sidecar files there)` : ""}</span></span>` : "") +
+    `<span>as</span><span>${done ? esc(p.name) : `<input id="pb-name" maxlength="23" value="${esc(p.name)}"${named ? " disabled" : ""}>`}` +
+    `${p.clash && !slots ? ` <span class="mut">(a project ${esc(p.from.key)} is on the card)</span>` : ""}` +
+    `${slots && !done ? ` <span class="mut" id="pb-name-note">${named ? "(the Rytm's name for that slot)" : ""}</span>` : ""}</span>` +
+    `<span>new on the card</span><span>${hb(p.new_bytes)} (${p.files.write} files)</span>` +
+    `<span>already on the card</span><span>${hb(p.reused_bytes)} (${p.files.reuse} files)</span>` +
+    `<span>moved</span><span>${p.files.relocated} files under /Samples/Projects</span>` +
+    `<span>contents</span><span>${p.totals.samples} samples, ${p.totals.songs} songs, ${p.totals.patterns} patterns</span>` +
+    (p.machines.length ? `<span>machines (code)</span><span>${ms}</span>` : "") +
+    (p.missing.length ? `<span>missing</span><span>${p.missing.map(esc).join(", ")}</span>` : "") +
+    (p.warnings.length ? `<span>note</span><span>${p.warnings.map(esc).join("<br>")}</span>` : "") +
+    `<span>the Rytm</span><span><b id="pb-step">${esc(p.step)}</b>${p.rytm && done ? ` <button class="sm" id="pb-rytm">download it</button>` : ""}</span></div>` +
+    (done ? `<div class="row"><button id="pb-ok">OK</button></div>`
+          : `<div class="row">${slots ? `<label id="pb-replace-l"${cur[1] ? "" : " hidden"}><input type="checkbox" id="pb-replace"> replace its Sidecar files (they go to the project trash, restorable)</label>`
+                                      : p.clash ? '<label><input type="checkbox" id="pb-replace"> replace the one on the card (it is backed up first)</label>' : ""}` +
+            `<button id="pb-go">Import</button><button id="pb-no">Cancel</button></div>`);
+}
+// the project trash (core/bundle/prjslot.h: GET /bundle/trash, the newest first)
+function pbTrashRows(l) {
+  if (!l.length) return '<p class="mut">empty</p>';
+  return `<table><tr><th>Project</th><th>Was</th><th>Why</th><th>Files</th><th>Date</th><th></th></tr>` + l.map((t) =>
+    `<tr data-id="${t.id}" data-key="${esc(t.key)}"><td>${esc(t.name || t.key)}</td><td>${esc(t.key)}</td><td>${esc(t.why)}</td>` +
+    `<td>${t.items}</td><td>${esc((t.date || "").replace("T", " ").slice(0, 16))}</td>` +
+    `<td><button class="sm" data-act="restore">Restore</button> <button class="sm" data-act="rm">Remove…</button></td></tr>`).join("") +
+    "</table>";
+}
+async function pbJson(url, form) {
+  const r = await fetch(url, form == null ? { cache: "no-store" } : { method: "POST", body: new URLSearchParams(form) });
+  return r.json();
+}
+async function pbProjects() {
+  try { PB.projects = await pbJson("/bundle/projects"); } catch (e) { return say($("#pb-msg"), "the projects: " + e, true); }
+  $("#pb-projects").innerHTML = `<table><tr><th>Project</th><th>Files</th><th>Size</th><th>Last used</th><th></th></tr>${pbRows(PB.projects, PB.vol)}</table>`;
+  pbTrash();
+}
+async function pbTrash() {
+  let l;
+  try { l = await pbJson("/bundle/trash"); } catch (e) { return; }
+  $("#pb-trash").innerHTML = pbTrashRows(Array.isArray(l) ? l : []);
+}
+async function pbTrashDone(what) {   // the control core runs it at its next ticks: its outcome, a moment later
+  await new Promise((r) => setTimeout(r, 1200));
+  let st = {};
+  try { st = await pbJson("/bundle/prjslot"); } catch (e) {}
+  say($("#pb-msg"), `${what}: ${st.last || "queued"}`);
+  pbProjects();
+}
+async function pbBundles() {
+  let l;
+  try { l = await pbJson("/bundle/list?src=card"); } catch (e) { return; }
+  $("#pb-bundles").innerHTML = pbBundleRows(l, "card");
+  let u = { present: false, vols: [] };
+  try { u = await pbJson("/usb/status"); } catch (e) {}
+  if (!u.vols.some((v) => v.drive === PB.vol)) PB.vol = u.vols.length ? u.vols[0].drive : "";
+  $("#pb-usbpick").innerHTML = pbVolHtml(u, PB.vol);
+  $("#pb-usb").innerHTML = "";
+  if (PB.vol) try {
+    const ul = await pbJson(`/bundle/list?src=usb&vol=${E(PB.vol)}`);
+    $("#pb-usb").innerHTML = Array.isArray(ul) ? pbBundleRows(ul, "usb") : `<p class="mut">${esc(ul.error || "")}</p>`;
+  } catch (e) {}
+  if ($("#pb-vol")) $("#pb-vol").onchange = (e) => { PB.vol = e.target.value; pbBundles(); };
+  if ($("#pb-eject")) $("#pb-eject").onclick = async () => {
+    const r = await pbJson("/usb/eject", { vol: PB.vol });
+    say($("#pb-msg"), r.ok ? `${PB.vol} ejected: safe to remove` : r.error, !r.ok);
+    PB.vol = ""; pbBundles(); pbPoll();
+  };
+  $("#pb-projects").innerHTML = `<table><tr><th>Project</th><th>Files</th><th>Size</th><th>Last used</th><th></th></tr>${pbRows(PB.projects, PB.vol)}</table>`;
+}
+async function pbDownload(name, size) {      // a constant-memory stream through our service worker, else a Blob
+  if (window.isSecureContext && navigator.serviceWorker) {
+    const reg = await navigator.serviceWorker.register("/bundle-sw.js", { scope: "/bundle-dl/" });
+    await navigator.serviceWorker.ready;
+    // /bundle/zip is gated and the worker has none of this page's headers: hand it this run's token (not the code,
+    // not the stored secret), again each time, because a reload or a re-pair makes a new one
+    const sw = reg.active || (await navigator.serviceWorker.ready).active;
+    if (sw) sw.postMessage({ sidecarAuth: PAIR.tok });
+    const f = document.createElement("iframe");
+    f.hidden = true;
+    f.src = `/bundle-dl/${E(name)}?size=${size}`;
+    document.body.appendChild(f);
+    setTimeout(() => f.remove(), 60000);
+    return;
+  }
+  if (size > 1 << 30) return say($("#pb-msg"), `${hb(size)}: too big to collect in this page (1 GB at most on plain http). Use "To card", then copy it from the SD card.`, true);
+  const parts = [];
+  for (let off = 0; off < size;) {
+    const r = await fetch(`/bundle/zip?off=${off}&len=65536`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`the download stopped at ${hb(off)} (export again)`);
+    const b = new Uint8Array(await r.arrayBuffer());
+    if (!b.length) { await sleep(500); continue; }   // paused: the recorder records
+    parts.push(b);
+    off += b.length;
+    say($("#pb-msg"), `downloading ${name}: ${Math.floor(100 * off / size)} %`);
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(parts, { type: "application/zip" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+async function pbPoll() {
+  clearTimeout(PB.timer);
+  if (pairBlocked()) { PB.timer = setTimeout(pbPoll, 5000); return; }
+  let st;
+  try { st = await pbJson("/bundle/status"); } catch (e) { PB.timer = setTimeout(pbPoll, 2000); return; }
+  PB.st = st;
+  const box = $("#pb-job");
+  box.innerHTML = st.phase === "IDLE" ? "" : `<div><span class="nm">${esc(st.job)} ${esc(st.key)}</span><span class="bar"><i style="width:${st.total ? (100 * st.done / st.total).toFixed(1) : 0}%"></i></span>` +
+    `<span class="st mut">${esc(pbPhase(st))}</span>${["DONE", "FAILED", "CANCELLED", "SERVE", "READY"].includes(st.phase) ? "" : '<button class="sm" id="pb-cancel">Cancel</button>'}</div>`;
+  if ($("#pb-cancel")) $("#pb-cancel").onclick = () => pbJson("/bundle/cancel", { x: 1 }).then(pbPoll);
+  const crumb = st.phase === "IDLE" && /^the last run stopped in/.test(st.msg || "");   // recover()'s at boot (a reset)
+  say($("#pb-msg"), st.phase === "IDLE" && !crumb ? "" : st.msg, st.phase === "FAILED" || crumb);
+  if (st.phase === "SERVE" && PB.served !== st.name + st.seq) {
+    PB.served = st.name + st.seq;
+    pbDownload(st.name, st.bytes).catch((e) => say($("#pb-msg"), String(e.message || e), true));
+  }
+  if ((st.phase === "READY" || (st.phase === "DONE" && st.job === "import")) && PB.planShown !== st.phase + st.seq) {
+    PB.planShown = st.phase + st.seq;
+    pbShowPlan(await pbJson("/bundle/plan"));
+  }
+  if (st.phase === "DONE" && st.job !== "import") { pbProjects(); pbBundles(); }
+  const going = !["IDLE", "DONE", "FAILED", "CANCELLED", "SERVE", "READY"].includes(st.phase);
+  if (going || tab === "project") PB.timer = setTimeout(pbPoll, going ? 500 : 3000);
+}
+function pbShowPlan(p) {
+  const el = $("#pb-plan");
+  el.hidden = false;
+  el.innerHTML = pbPlanHtml(p);
+  if ($("#pb-rytm")) $("#pb-rytm").onclick = () => download(p.rytm.to, p.rytm.size, $("#pb-prog"));
+  if ($("#pb-ok")) $("#pb-ok").onclick = () => { el.hidden = true; pbJson("/bundle/finish", { x: 1 }).then(() => { pbProjects(); pbPoll(); }); };
+  if ($("#pb-no")) $("#pb-no").onclick = () => { el.hidden = true; pbJson("/bundle/cancel", { x: 1 }).then(() => pbJson("/bundle/finish", { x: 1 })).then(pbPoll); };
+  if ($("#pb-slot")) $("#pb-slot").onchange = () => {   // slot mode: the slot's name, its files (replace), the Rytm's step
+    const n = +$("#pb-slot").value, x = p.slots[n - 1] || ["", 0, 0], nm = $("#pb-name");
+    nm.disabled = !!x[0];
+    nm.value = x[0] || (nm.dataset.typed || p.from.rytm_name || p.from.key);
+    $("#pb-name-note").textContent = x[0] ? "(the Rytm's name for that slot)" : "";
+    $("#pb-slot-note").textContent = x[1] ? `(${x[1]} Sidecar files there)` : "";
+    $("#pb-replace-l").hidden = !x[1];
+    if (!x[1]) $("#pb-replace").checked = false;
+    $("#pb-step").textContent = pbSlotStep(p, n);
+  };
+  if ($("#pb-slot")) $("#pb-name").oninput = (e) => { e.target.dataset.typed = e.target.value; };
+  if ($("#pb-go")) $("#pb-go").onclick = async () => {
+    const off = [...el.querySelectorAll("input[data-slot]")].filter((c) => !c.checked).map((c) => +c.dataset.slot);
+    const f = { name: $("#pb-name").disabled ? "" : $("#pb-name").value.trim(), mode: $("#pb-replace") && $("#pb-replace").checked ? "replace" : "new", packages: 1, skip: pbSkip(p.machines, off) };
+    if ($("#pb-slot")) f.slot = $("#pb-slot").value;
+    if ($("#pb-slot") && !f.slot) return say($("#pb-msg"), "pick the slot it goes to", true);
+    const r = await pbJson("/bundle/import", f);
+    if (!r.ok) say($("#pb-msg"), r.msg || r.error, true);
+    el.hidden = true;
+    pbPoll();
+  };
+}
+async function pbVerify(path) {
+  const r = await pbJson("/bundle/verify", { path });
+  if (!r.ok) say($("#pb-msg"), r.msg || r.error, true);
+  pbPoll();
+}
+function pbUpload(file) {                    // the safe upload (/fs/put) into /Bundles/incoming, then VERIFY
+  if (!/\.zip$/i.test(file.name)) return say($("#pb-msg"), "a bundle is a .sidecar.zip", true);
+  const name = /\.sidecar\.zip$/i.test(file.name) ? file.name : file.name.replace(/\.zip$/i, ".sidecar.zip");
+  fsRetry(`/fs/mkdir?path=${E("/Bundles/incoming")}&p=1`).then(() => {
+    enqueue(new File([file], name), "/Bundles/incoming", $("#pb-prog"), (it, res) => { if (res.ok) pbVerify(it.path); pbBundles(); });
+  });
+}
+$("#pb-re").onclick = () => { pbProjects(); pbBundles(); pbPoll(); };
+$("#pb-upb").onclick = () => $("#pb-file").click();
+$("#pb-file").onchange = (e) => { for (const f of e.target.files) pbUpload(f); e.target.value = ""; };
+$("#pb-bundles").addEventListener("dragover", (e) => e.preventDefault());
+$("#pb-bundles").addEventListener("drop", (e) => { e.preventDefault(); for (const f of e.dataTransfer.files) pbUpload(f); });
+$("#pb-bundles").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"), tr = e.target.closest("tr");
+  if (!b || !tr) return;
+  const path = tr.dataset.path;
+  if (b.dataset.act === "imp") pbVerify(path);
+  if (b.dataset.act === "rm") pbRemove(path, tr.dataset.name, "the card");
+});
+async function pbRemove(path, name, where) {   // a bundle file, or an interrupted export's .part (/bundle/remove)
+  if (!confirm(`Delete ${name} from ${where}?`)) return;
+  let r = {};
+  try { r = await pbJson("/bundle/remove", { path }); } catch (e) { r = { error: String(e) }; }
+  say($("#pb-msg"), r.ok ? `${name} deleted` : `not deleted: ${r.error || "?"}`, !r.ok);
+  pbBundles();
+}
+$("#pb-usb").addEventListener("click", async (e) => {   // a stick's bundle: imported straight from the stick
+  const b = e.target.closest("button"), tr = e.target.closest("tr");
+  if (!b || !tr) return;
+  if (b.dataset.act === "imp") pbVerify(tr.dataset.path);
+  if (b.dataset.act === "rm") pbRemove(tr.dataset.path, tr.dataset.name, PB.vol || "the stick");
+});
+$("#pb-projects").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"), tr = e.target.closest("tr");
+  if (!b || !tr) return;
+  const key = tr.dataset.key, p = PB.projects.find((x) => x.key === key);
+  if (b.dataset.act === "dl" || b.dataset.act === "card" || b.dataset.act === "usb") {
+    const dest = b.dataset.act === "dl" ? "browser" : b.dataset.act;
+    const r = await pbJson("/bundle/export", { key, dest, vol: PB.vol, takes: $("#pb-takes").checked ? 1 : 0 });
+    if (!r.ok) say($("#pb-msg"), r.msg, true);
+    pbPoll();
+  }
+  if (b.dataset.act === "del" && confirm(`Move the Sidecar files of ${p ? p.rytm : key} (${p ? p.files : "?"} files) to the trash?\nIts samples stay on the card; restore it from the trash below.`)) {
+    const r = await pbJson("/bundle/delete", { key, confirm: key });
+    if (!r.ok) say($("#pb-msg"), r.msg, true);
+    pbPoll();
+  }
+});
+$("#pb-trash").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"), tr = e.target.closest("tr");
+  if (!b || !tr) return;
+  const id = tr.dataset.id;
+  if (b.dataset.act === "restore") {
+    const to = prompt(`Restore ${tr.dataset.key} to (blank: where it was; or a slot 1..128):`, "");
+    if (to === null) return;
+    const form = { id };
+    if (to.trim()) form.to = "@" + String(parseInt(to, 10)).padStart(3, "0");
+    if (confirm("If that slot has Sidecar files, move them to the trash first?\n(Cancel: refuse instead)")) form.replace = 1;
+    const r = await pbJson("/bundle/trash/restore", form);
+    if (!r.ok) return say($("#pb-msg"), r.error || r.msg, true);
+    pbTrashDone("restore");
+  }
+  if (b.dataset.act === "rm" && confirm(`Remove trash entry ${id} (${tr.dataset.key}) for good? This cannot be undone.`)) {
+    const r = await pbJson("/bundle/trash/remove", { id, confirm: id });
+    if (!r.ok) return say($("#pb-msg"), r.error || r.msg, true);
+    pbTrashDone("remove");
+  }
+});
+$("#pb-trash-empty").onclick = async () => {
+  if (!confirm("Empty the trash: every entry removed for good. This cannot be undone.")) return;
+  const r = await pbJson("/bundle/trash/empty", { confirm: "EMPTY" });
+  if (!r.ok) return say($("#pb-msg"), r.error || r.msg, true);
+  pbTrashDone("empty");
+};
+$("#pb-projects").addEventListener("change", (e) => {   // the Rytm project file (Transfer's export) for a project: /Bundles/Rytm/<key>.<ext>
+  const i = e.target, tr = i.closest("tr");
+  if (i.dataset.act !== "rytm" || !i.files.length || !tr) return;
+  const f = i.files[0], ext = (f.name.match(/\.[^./]+$/) || [""])[0];
+  fsRetry(`/fs/mkdir?path=${E("/Bundles/Rytm")}&p=1`).then(() =>
+    enqueue(new File([f], tr.dataset.key + ext), "/Bundles/Rytm", $("#pb-prog"), () => say($("#pb-msg"), `the Rytm file goes into ${tr.dataset.key}'s next export`)));
+  i.value = "";
+});
+// the Pi has no clock: the page's, with its zone (minutes east of UTC: the take folders' names and the files' dates are
+// local time). POST /time is gated, so it goes again as soon as this page is paired
+const timeForm = (now, offMin) => ({ epoch: Math.floor(now / 1000), tz: -offMin });
+function sendTime() {
+  if (pairBlocked()) return;
+  fetch("/time", { method: "POST", body: new URLSearchParams(timeForm(Date.now(), new Date().getTimezoneOffset())) }).catch(() => {});
+}
+sendTime();
+// ---- end project bundles
 // ---- user machines (GET /um)
 const umEl = $("#um");
 let umLast = "", umPlugins = [], umBlockNs = 250000;
@@ -840,7 +1939,7 @@ async function pollUm1(force) {
     renderUm(JSON.parse(t));
   } catch (e) { $("#um-info").textContent = "no answer"; }
 }
-setInterval(() => { if (!document.hidden && tab === "machines" && !qBusy) pollUm(); }, 2000);
+setInterval(() => { if (!document.hidden && tab === "machines" && !qBusy && !pairBlocked()) pollUm(); }, 2000);
 const SLOTBAD = { MISSING: 1, BAD: 1, NO_ROOM: 1 };
 function cpuCell(p) {     // measured once it played (% of one Pi core, us per block); the declared figure as well
   const decl = p.cpu != null ? `~${(p.cpu / 10).toFixed(1)} % decl.` : "";
@@ -1014,17 +2113,70 @@ function fxinShow(f) {
 // ---- record (/status "rec", the console's rec= commands, the takes through /fs)
 const REC = [["Master",[[0,"MASTER (stereo)"]]],
   ["Drum machine inputs",[[1,"MAIN L"],[2,"MAIN R"],[3,"BD"],[4,"SD"],[5,"RS/CP"],[6,"BT"],[7,"LT"],[8,"MT/HT"],[9,"CH/OH"],[10,"CY/CB"],[11,"AUDIO IN L"],[12,"AUDIO IN R"]]],
-  ["Sidecar voices",[1,2,3,4,5,6,7,8].map((v) => [12 + v, "VOICE " + v])],
-  ["Send FX returns",[[21,"FX1 (stereo)"],[22,"FX2 (stereo)"]]]];
-const STEREO = { 0: 1, 21: 1, 22: 1 };
-let recSel = new Set([0]), recMode = "manual", recBits = 24, recLast = null, recPrevState = -1, recSynced = false;
+  ["Sidecar voices",[0, 2, 7, 1, 3, 5, 4, 6].map((v) => [13 + v, VNAME[v]])],
+  ["Send FX returns",[[21,"FX1 (stereo)"],[22,"FX2 (stereo)"]]],
+  // docs/STEREO.md: the PRE / POST voices' pairs as sent (a voice on PRE / POST records its own file in stereo)
+  ["OUT route pairs",[[23,"PRE (stereo)"],[24,"POST (stereo)"]]]];
+const STEREO = { 0: 1, 21: 1, 22: 1, 23: 1, 24: 1 };
+let recSel = new Set([0]), recMode = "manual", recBits = 24, recVol = "SD", recLast = null, recPrevState = -1, recSynced = false;
 try { const j = JSON.parse(store("sidecar.rec") || "null");
-  if (j) { recSel = new Set(j.ch || [0]); recMode = j.mode === "arm" ? "arm" : "manual"; recBits = j.bits === 16 ? 16 : 24; $("#rec-name").value = j.name || "take"; }
+  if (j) { recSel = new Set(j.ch || [0]); recMode = j.mode === "arm" ? "arm" : "manual"; recBits = j.bits === 16 ? 16 : 24; $("#rec-name").value = j.name && j.name !== "take" ? j.name : ""; }
 } catch (e) {}
+// the destinations (rec=vol:, pi/engine/rec_pi.cpp): the SD, each mounted drive (/status "stor" vols), and the chosen
+// one even while it is not mounted (start / arm are refused then: "USB drive not mounted", never the SD instead).
+// The destination is the Pi's: the page shows /status "rec" "vol" and sends rec=vol: only when it is clicked here
+// (never on opening: another browser, the console or the touchscreen may have chosen it)
+function recVolChoices(vols, cur) {
+  const up = (n) => n === "SD" || (vols || []).some((v) => v.name === n && v.state === "mounted");
+  const names = ["SD", ...(vols || []).filter((v) => v.name !== "SD" && v.state === "mounted").map((v) => v.name)];
+  if (!names.includes(cur)) names.push(cur);
+  return names.map((n) => ({ n, ok: up(n) }));
+}
+// where the takes are listed from: the SD's /Recordings and each mounted drive's (/USB/Recordings: fsweb.h)
+function recTakeRoots(vols) {
+  return [["SD", "/Recordings", ""], ...(vols || []).filter((v) => v.name !== "SD" && v.state === "mounted").map((v) => [v.name, `/${v.name}/Recordings`, v.name + ":"])];
+}
 $("#rec-ch").innerHTML = REC.map(([g, chs]) => `<div class="chg"><h3>${g}</h3><div class="chs">` +
   chs.map(([id, n]) => `<label class="ch" data-ch="${id}"><span${id === 11 || id === 12 ? ` data-nm="${n}" data-fx="FX RETURN ${id === 11 ? "L" : "R"}"` : ""}><input type="checkbox" data-ci="${id}"> ${n}</span><div class="bar"><i style="width:0"></i></div></label>`).join("") +
   `</div></div>`).join("");
 const recIds = () => [...recSel].sort((a, b) => a - b).join(",") || "none";
+// 5d: the warning before a take - the selection needs more than 70 % of the destination's write speed (/status rec
+// speedKBps: stor=bench's, else a default for the kind of volume): its load in %, 0 when it fits (or no speed known)
+function recLoad(needKBps, speedKBps) { return speedKBps > 0 ? Math.round(needKBps * 100 / speedKBps) : 0; }
+function recWarn(needKBps, speedKBps, pct = 70) { return speedKBps > 0 && needKBps * 100 > speedKBps * pct ? recLoad(needKBps, speedKBps) : 0; }
+function recWarnText(pct, needKBps, r) {
+  const mb = (k) => (k / 1024).toFixed(1) + " MB/s", where = r.vol && r.vol !== "SD" ? `the ${r.vol} drive` : "the SD card";
+  return `This take needs ${mb(needKBps)}: ${pct} % of ${where}'s ${mb(r.speedKBps)} (${r.speedMeasured ? "measured by the storage bench" : "not measured: an estimate - Status, Storage, Run bench"}).\n\n` +
+    `The card may fall behind: the blocks it misses are written as silence. Fewer channels or 16-bit need less.\n\nRecord anyway?`;
+}
+// the take folders' names (recorder.h): "<name>_<date>_<time>" with this page's clock, "<name>_take-001" without
+function recNameHint(name, vol) {
+  return `${name || "<project>"}_2026-10-27_1432 (_2, _3 ... in the same minute) in ${vol === "SD" ? "/Recordings" : vol + ":/Recordings"}`;
+}
+// 5d: a listing's order - by name ("n") or date ("t": "YYYY-MM-DD HH:MM", none sorts as the oldest); dir 1 up, -1 down;
+// a tie by name the same way. nm / tm: an entry's name and date (the files' n / t by default)
+// names compare as text, their runs of digits as numbers ("_2" before "_10", take-009 before take-010)
+function natCmp(a, b) {
+  const x = a.match(/\d+|\D+/g) || [], y = b.match(/\d+|\D+/g) || [];
+  for (let i = 0; i < x.length && i < y.length; i++) {
+    if (x[i] === y[i]) continue;
+    const dx = /^\d/.test(x[i]), dy = /^\d/.test(y[i]);
+    if (dx && dy && +x[i] !== +y[i]) return +x[i] < +y[i] ? -1 : 1;
+    return x[i] < y[i] ? -1 : 1;
+  }
+  return x.length - y.length;
+}
+function byKey(key, dir, nm = (x) => x.n, tm = (x) => x.t || "") {
+  return (a, b) => {
+    const na = nm(a).toLowerCase(), nb = nm(b).toLowerCase();
+    if (key === "t") { const ta = tm(a), tb = tm(b); if (ta !== tb) return ta < tb ? -dir : dir; }
+    return na === nb ? 0 : natCmp(na, nb) * dir;
+  };
+}
+const SORT0 = { k: "t", d: -1 };   // newest first
+function sortNext(cur, k) { return cur.k === k ? { k, d: -cur.d } : { k, d: k === "t" ? -1 : 1 }; }
+function sortLoad(name) { try { const j = JSON.parse(store(name) || "null"); return j && (j.k === "n" || j.k === "t") && (j.d === 1 || j.d === -1) ? j : SORT0; } catch (e) { return SORT0; } }
+const sortTh = (cur, k, label, attr) => `<button type="button" class="lnk" ${attr}="${k}" title="sort by ${k === "t" ? "date" : "name"}">${label}${cur.k === k ? (cur.d < 0 ? " ▾" : " ▴") : ""}</button>`;
 const recSamples = () => [...recSel].reduce((a, id) => a + (STEREO[id] ? 2 : 1), 0);
 const hms = (s) => `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 function recSave() { store("sidecar.rec", JSON.stringify({ ch: [...recSel], mode: recMode, bits: recBits, name: $("#rec-name").value })); }
@@ -1033,19 +2185,36 @@ async function recPush(what) {   // the device's settings from the page's (idle 
   if (recBusy()) return;
   if (!what || what === "ch") await cmd("rec=ch:" + recIds());
   if (!what || what === "bits") await cmd("rec=bits:" + recBits);
-  if (!what || what === "name") { const n = $("#rec-name").value; if (/^[A-Za-z0-9_-]{1,24}$/.test(n)) await cmd("rec=name:" + n); }
+  if (!what || what === "name") { const n = $("#rec-name").value; if (/^[A-Za-z0-9_-]{0,24}$/.test(n)) await cmd("rec=name:" + n); }   // "": the project's
+  if (what === "vol") { if (!(await cmd("rec=vol:" + recVol))) pend.fail("vol", "Sidecar refused it"); }   // a click only
 }
 function recView() {
   document.querySelectorAll("#rec-ch .ch").forEach((el) => { const id = +el.dataset.ch, on = recSel.has(id);
     el.classList.toggle("on", on); el.querySelector("input").checked = on; el.querySelector("input").disabled = recBusy(); });
   document.querySelectorAll("[data-rm]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.rm === recMode)));
   document.querySelectorAll("[data-rb]").forEach((b) => { b.setAttribute("aria-checked", String(+b.dataset.rb === recBits)); b.classList.toggle("pend", pend.want("bits") === b.dataset.rb); });
-  const bps = recSamples() * recBits / 8 * 48000, files = recSel.size;
-  $("#rec-sum").textContent = `${files} file${files === 1 ? "" : "s"} · ${(bps / 1048576).toFixed(2)} MB/s`;
-  const free = recLast ? recLast.freeMB * 1048576 : 0;
-  $("#rec-free").textContent = recLast && recLast.totalMB ? `${hb(free)} free · ${bps ? hms(free / bps) : "-"} left at this selection` : "";
+  const bps = recSamples() * recBits / 8 * 48000, files = recSel.size, sp = recLast ? recLast.speedKBps : 0, ld = recLoad(bps / 1024, sp);
+  $("#rec-sum").textContent = `${files} file${files === 1 ? "" : "s"} · ${(bps / 1048576).toFixed(2)} MB/s` +
+    (sp ? ` · ${ld} % of ${recLast.vol && recLast.vol !== "SD" ? recLast.vol : "the card"}'s ${(sp / 1024).toFixed(1)} MB/s${recLast.speedMeasured ? "" : " (estimated)"}` : "");
+  $("#rec-sum").classList.toggle("err", !!recWarn(bps / 1024, sp));
+  const free = recLast ? recLast.freeMB * 1048576 : 0, on = recLast && recLast.vol && recLast.vol !== "SD" ? ` on ${recLast.vol}` : "";
+  $("#rec-free").textContent = recLast && recLast.vol && recLast.vol !== "SD" && recLast.volOk === 0 ? `${recLast.vol} not mounted`
+    : recLast && recLast.freeKnown === 0 ? `free space on ${recLast.vol} not counted (stor=free:${recLast.vol})`
+    : recLast && recLast.totalMB ? `${hb(free)} free${on} · ${bps ? hms(free / bps) : "-"} left at this selection` : "";
   $("#rec-name").disabled = recBusy();
+  const vb = $("#rec-vol"), vs = recVolChoices(status && status.stor ? status.stor.vols : [], recVol), vk = vs.map((v) => v.n + v.ok).join();
+  if (vb.dataset.k !== vk) {
+    vb.dataset.k = vk;
+    vb.innerHTML = vs.map((v) => `<button type="button" role="radio" aria-checked="false" data-rv="${v.n}">${esc(STOR_CAP[v.n] || v.n)}${v.ok ? "" : " (not mounted)"}</button>`).join("");
+  }
+  vb.querySelectorAll("[data-rv]").forEach((b) => { b.setAttribute("aria-checked", String(b.dataset.rv === recVol)); b.classList.toggle("pend", pend.want("vol") === b.dataset.rv); b.disabled = recBusy(); });
+  $("#rec-volnote").hidden = recVol === "SD";
+  $("#rec-namehint").textContent = recNameHint($("#rec-name").value, recVol);
 }
+$("#rec-vol").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-rv]"); if (!b || recBusy() || b.dataset.rv === recVol) return;
+  recVol = b.dataset.rv; recSave(); pend.start("vol", recVol); recView(); recPush("vol");
+});
 $("#rec-ch").addEventListener("change", (e) => {
   const id = e.target.dataset.ci; if (id === undefined) return;
   e.target.checked ? recSel.add(+id) : recSel.delete(+id); recSave(); recView(); recPush("ch");
@@ -1054,21 +2223,25 @@ $("#rec-all").onclick = () => { if (recBusy()) return; recSel = new Set(REC.flat
 $("#rec-none").onclick = () => { if (recBusy()) return; recSel = new Set(); recSave(); recView(); recPush("ch"); };
 document.querySelectorAll("[data-rm]").forEach((b) => b.onclick = () => { if (recBusy()) return; recMode = b.dataset.rm; recSave(); recView(); });
 document.querySelectorAll("[data-rb]").forEach((b) => b.onclick = () => { if (recBusy()) return; recBits = +b.dataset.rb; recSave(); pend.start("bits", recBits); recView(); recPush("bits"); });
-$("#rec-name").onchange = () => { const ok = /^[A-Za-z0-9_-]{1,24}$/.test($("#rec-name").value);
-  say($("#rec-msg"), ok ? "" : "take name: 1 to 24 of A-Z a-z 0-9 _ -", !ok); if (ok) { recSave(); recPush("name"); } };
+$("#rec-name").onchange = () => { const ok = /^[A-Za-z0-9_-]{0,24}$/.test($("#rec-name").value);
+  say($("#rec-msg"), ok ? "" : "take name: up to 24 of A-Z a-z 0-9 _ - (empty: the project's name)", !ok); if (ok) { recSave(); recPush("name"); recView(); } };
 $("#rec-go").onclick = async () => {
   if (recBusy()) { await cmd("rec=stop"); return; }
   if (!recSel.size) return say($("#rec-msg"), "select a channel first", true);
+  const need = recSamples() * recBits / 8 * 48000 / 1024, w = recLast ? recWarn(need, recLast.speedKBps) : 0;
+  if (w && !confirm(recWarnText(w, need, recLast))) return;
   await recPush();
   await cmd(recMode === "arm" ? "rec=arm" : "rec=start");
 };
 function recRender(r) {
   recLast = r;
   if (pend.has("bits") && r.bits === +pend.want("bits")) { pend.report("bits", r.bits); recView(); }
+  if (pend.has("vol") && r.vol === pend.want("vol")) { pend.report("vol", r.vol); recView(); }
   if (!recSynced && r.state === 0) {   // the page's remembered settings to the device, once
     recSynced = true;
     if (r.ch.join(",") !== [...recSel].sort((a, b) => a - b).join(",") || r.bits !== recBits || r.prefix !== $("#rec-name").value) recPush();
   }
+  if (r.vol && !pend.has("vol")) recVol = r.vol;   // the Pi's destination, always
   if (r.state !== 0) { recSel = new Set(r.ch); recBits = r.bits; recMode = r.arm ? "arm" : recMode; $("#rec-name").value = r.prefix; }
   const secs = r.frames / 48000, b = $("#rec-go"), st = r.state;
   b.className = st === 2 || st === 3 ? "on" : st === 1 ? "armed" : "";
@@ -1078,22 +2251,28 @@ function recRender(r) {
   $("#rec-state").textContent = !r.ready ? "recording is off (cmdline recbuf=0, or no card)" : st === 1 ? "armed: waiting for PLAY" + (r.take ? ` (last: ${r.take})` : "")
     : st === 2 ? r.take : st === 3 ? r.take + ": closing the files" : r.take ? "last take: " + r.take : "";
   const w = [];
-  if (r.drops) w.push(`the card fell behind: ${r.drops} blocks dropped (${(r.silence / 48).toFixed(0)} ms written as silence)`);
+  const drv = r.vol && r.vol !== "SD", dn = drv ? "the drive" : "the card";
+  if (drv && st === 0 && r.volOk === 0)
+    w.push(`${STOR_CAP[r.vol] || r.vol} not mounted: plug it in, or record to the SD card`);
+  if (r.drops) w.push(`${dn} fell behind: ${r.drops} blocks dropped (${(r.silence / 48).toFixed(0)} ms written as silence)`);
   if (r.outShort) w.push(`${r.outShort} Sidecar frames missing (written as silence)`);
   if (r.error) w.push(r.error);
+  if (r.abandoned) w.push("the drive stopped answering: the take's files were left as they were (plugged in again, their lengths are fixed)");
   $("#rec-warn").textContent = w.join(" · ");
-  $("#rec-card").textContent = r.writes ? `Card: ${(r.cardKBps / 1024).toFixed(1)} MB/s while writing (needs ${(r.needKBps / 1024).toFixed(2)}), ` +
+  $("#rec-card").textContent = r.writes ? `${drv ? r.vol + " drive" : "Card"}: ${(r.cardKBps / 1024).toFixed(1)} MB/s while writing (needs ${(r.needKBps / 1024).toFixed(2)}), ` +
     `worst write ${r.worstWriteMs} ms, buffer ${(r.ringMs / 1000).toFixed(1)} s (most used ${r.ringSlots ? Math.round(100 * r.ringMax / r.ringSlots) : 0} %), ${hb(r.bytes * 1024)} written.` : r.ready ? `Buffer: ${(r.ringMs / 1000).toFixed(1)} s at the device's selection.` : "";
   document.querySelectorAll("#rec-ch .ch").forEach((el) => { const id = +el.dataset.ch, p = r.peak[id] || 0, bar = el.querySelector(".bar");
     bar.querySelector("i").style.width = (recSel.has(id) && st ? Math.min(100, p / 10) : 0) + "%"; bar.classList.toggle("hot", p >= 990); });
-  if (recPrevState > 0 && st === 0 && tab === "record") recTakes();
+  const dk = recTakeRoots(status && status.stor ? status.stor.vols : []).map((x) => x[0]).join();   // a drive came or went
+  if (tab === "record" && ((recPrevState > 0 && st === 0) || dk !== recDrives)) recTakes();
+  recDrives = dk;
   recPrevState = st;
   recView();
 }
-let recList = [];
+let recList = [], recDrives = "SD";   // recDrives: the volumes the takes were last listed from (none known yet: the SD)
 async function lsJson(p) { const r = await getRetry("/fs/ls?path=" + E(p)), t = (await r.text()).trim(); return t[0] === "{" ? JSON.parse(t) : null; }
-// ---- pool & presets (core/user/lists.h's /lists; /um's slots; the presets' folders through /fs)
-let libLast = "", libData = null, libDir = "/Samples", libUm = [];
+// ---- presets (core/user/lists.h's /lists: the JUNO / FM lists; /um's slots; the presets' folders through /fs)
+let libLast = "", libData = null, libUm = [];
 async function pollLib(force) {
   try {
     const [r, u] = await Promise.all([fetch("/lists", { cache: "no-store", signal: AbortSignal.timeout(4000) }),
@@ -1105,9 +2284,9 @@ async function pollLib(force) {
     libData = JSON.parse(t);
     libUm = JSON.parse(ut).filter((x) => x.t === "slot");
     renderLib();
-  } catch (e) { $("#lib-sram").textContent = "no answer"; }
+  } catch (e) { say($("#lib-juno-msg"), "no answer from Sidecar", true); }
 }
-setInterval(() => { if (!document.hidden && tab === "library" && !qBusy) pollLib(); }, 2000);
+setInterval(() => { if (!document.hidden && tab === "library" && !qBusy && !pairBlocked()) pollLib(); }, 2000);
 function libVoices(sel, m) {
   const was = sel.value, vs = (libData.voices || []).filter((v) => v.m === m);
   sel.innerHTML = vs.length ? vs.map((v) => `<option value="${v.v}">voice ${v.v} (PAT ${v.pat})</option>`).join("")
@@ -1123,35 +2302,17 @@ function libList(L, kind) {
 }
 function renderLib() {
   const d = libData;
-  $("#lib-proj").textContent = d.project || "-";
-  $("#lib-sram").textContent = d.card ? (d.sram && d.sram[0] ? `sample RAM ${hb(d.sram[1])} / ${hb(d.sram[0])}` : "no sample RAM: DSP SAMPLE streams from the card") : "no card";
-  $("#lib-pool-list").innerHTML = (d.pool || []).map((e) => `<tr><td class="r">${e.slot}</td><td class="w${e.ok ? "" : " err"}">${esc(e.name)}${e.ok ? "" : " (not on the card)"}</td>
-    <td class="hm w mut">${esc(e.path)}</td><td class="r"><button class="sm" data-pslot="${e.slot}">Select</button> <button class="sm" data-pclr="${e.slot}">Clear</button></td></tr>`).join("")
-    || `<tr><td colspan="4" class="mut">empty pool</td></tr>`;
   $("#lib-juno-list").innerHTML = libList(d.juno || {}, "juno");
   $("#lib-fm-list").innerHTML = libList(d.fm || {}, "fm");
   libVoices($("#lib-juno-v"), "JUNO");
   libVoices($("#lib-fm-v"), "FM");
   libPresets();
 }
-async function libBrowse(dir) {
-  const j = await lsJson(dir);
-  if (!j) { say($("#lib-pool-msg"), dir + ": not readable", true); return; }
-  libDir = j.path || dir;
-  $("#lib-crumb").textContent = libDir;
-  const ents = (j.entries || []).filter((x) => x.n[0] !== "." && (x.d || /\.wav$/i.test(x.n)))
-    .sort((a, b) => (b.d - a.d) || (a.n < b.n ? -1 : a.n > b.n ? 1 : 0));
-  $("#lib-browse").innerHTML = `<table><tbody>${ents.map((x) => `<tr><td class="w">${x.d ? `<button class="lnk" data-bdir="${esc(join(libDir, x.n))}">${esc(x.n)}/</button>`
-    : `<button class="lnk" data-bwav="${esc(join(libDir, x.n))}" title="put into the slot above">${esc(x.n)}</button>`}</td><td class="r mut">${x.d ? "" : hb(x.s)}</td></tr>`).join("")
-    || `<tr><td class="mut">no .wav here</td></tr>`}</tbody></table>`;
-}
 async function libCmd(c, box) {
   say(box, c);
   await cmd(c);
   setTimeout(() => pollLib(true), 400);
 }
-$("#lib-re").onclick = () => { pollLib(true); libBrowse(libDir); };
-$("#lib-up").onclick = () => { if (libDir !== "/Samples") libBrowse(libDir.replace(/\/[^/]*$/, "") || "/Samples"); };
 $("#lib-juno-save").onclick = () => { const v = $("#lib-juno-v").value, n = $("#lib-juno-n").value.trim().replace(/[:\t]/g, " ");
   if (v !== "") libCmd("juno=save:" + v + (n ? ":" + n : ""), $("#lib-juno-msg")); };
 $("#lib-fm-save").onclick = () => { const v = $("#lib-fm-v").value; if (v !== "") libCmd("fm=save:" + v, $("#lib-fm-msg")); };
@@ -1159,10 +2320,6 @@ $("#tab-library").addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   const D = b.dataset;
-  if (D.bdir) return libBrowse(D.bdir);
-  if (D.bwav) return libCmd(`pool=${+$("#lib-slot").value || 1}:${D.bwav.replace(/^\/Samples\//, "")}`, $("#lib-pool-msg"));
-  if (D.pslot) { $("#lib-slot").value = D.pslot; return; }
-  if (D.pclr) return libCmd(`pool=${D.pclr}:`, $("#lib-pool-msg"));
   if (D.lact) {
     const box = $("#lib-" + D.k + "-msg"), s = +D.s;
     if (D.lact === "del" && confirm(`Delete ${D.k.toUpperCase()} slot ${s}?`)) return libCmd(`${D.k}=del:${s}`, box);
@@ -1208,20 +2365,32 @@ async function libPresets() {
 async function recTakes() {
   const box = $("#rec-takes");
   try {
-    const j = await lsJson("/Recordings");
-    if (!j) { box.innerHTML = `<p class="mut">No takes yet.</p>`; return; }
-    const takes = (j.entries || []).filter((x) => x.d).map((x) => x.n).sort().reverse().slice(0, 50);
-    recList = [];
-    for (const t of takes) {
-      const k = await lsJson("/Recordings/" + t), fs = k ? (k.entries || []).filter((x) => !x.d && /\.wav$/i.test(x.n)).sort((a, b) => a.n < b.n ? -1 : 1) : [];
-      recList.push({ t, files: fs, size: fs.reduce((a, x) => a + x.s, 0) });
+    // t: the take's id (the player's, rec=del:'s: "take_004", "USB:take_004"), dir: its folder through /fs
+    const list = [];
+    for (const [vol, base, pre] of recTakeRoots(status && status.stor ? status.stor.vols : [])) {
+      const j = await lsJson(base);
+      if (!j) continue;
+      const takes = (j.entries || []).filter((x) => x.d && x.n[0] !== ".").sort(byKey("t", -1)).slice(0, 50);   // the newest 50
+      for (const e of takes) {
+        const t = e.n, k = await lsJson(base + "/" + t), fs = k ? (k.entries || []).filter((x) => !x.d && /\.wav$/i.test(x.n)).sort((a, b) => a.n < b.n ? -1 : 1) : [];
+        list.push({ t: pre + t, name: t, date: e.t || "", vol, dir: base + "/" + t, files: fs, size: fs.reduce((a, x) => a + x.s, 0) });
+      }
     }
-    box.innerHTML = recList.length ? `<table><thead><tr><th>Take</th><th class="r">Files</th><th class="r">Size</th><th class="hm">Channels</th><th></th></tr></thead><tbody>` +
-      recList.map((x, i) => `<tr><td>${esc(x.t)}</td><td class="r">${x.files.length}</td><td class="r">${hb(x.size)}</td>
+    recList = list;
+    recShow();
+  } catch (e) { say($("#rec-msg"), "takes: " + e, true); }
+}
+let recSort = sortLoad("sidecar.recsort");
+function recShow() {   // the takes of every volume in one list, by date (newest first) or name
+  const box = $("#rec-takes");
+  recList.sort(byKey(recSort.k, recSort.d, (x) => x.name, (x) => x.date));
+  {
+    box.innerHTML = recList.length ? `<table><thead><tr><th>${sortTh(recSort, "n", "Take", "data-rsort")}</th><th>${sortTh(recSort, "t", "Date", "data-rsort")}</th><th class="r">Files</th><th class="r">Size</th><th class="hm">Channels</th><th></th></tr></thead><tbody>` +
+      recList.map((x, i) => `<tr><td>${esc(x.name)}${x.vol !== "SD" ? ` <span class="mut">· ${esc(x.vol)}</span>` : ""}</td><td class="mut">${esc(x.date) || "-"}</td><td class="r">${x.files.length}</td><td class="r">${hb(x.size)}</td>
         <td class="w hm">${x.files.map((f) => /^\d\d_/.test(f.n) ? `<button class="sm" type="button" aria-pressed="false" data-rp="${i}" data-nn="${+f.n.slice(0, 2)}" data-t="${esc(x.t)}" data-c="${esc(f.n.replace(/^\d+_|\.wav$/gi, ""))}" title="play on the Rytm's MAIN">&#9654; ${esc(f.n.replace(/^\d+_|\.wav$/gi, ""))}</button>` : "").join(" ")}</td>
         <td class="r"><button class="sm" data-rt="get" data-i="${i}">Download</button> <button class="sm" data-rt="del" data-i="${i}">Delete</button></td></tr>`).join("") +
       `</tbody></table>` : `<p class="mut">No takes yet.</p>`;
-  } catch (e) { say($("#rec-msg"), "takes: " + e, true); }
+  }
 }
 $("#rec-re").onclick = recTakes;
 let playPend = null;   // the play button clicked, until /status confirms it (or 2 s)
@@ -1239,6 +2408,8 @@ function playRender(p) {   // /status "play" (rec_play.h): the take's channel pl
 }
 $("#play-stop").onclick = () => cmd("play=stop");
 $("#rec-takes").addEventListener("click", async (e) => {
+  const so = e.target.closest("[data-rsort]");
+  if (so) { recSort = sortNext(recSort, so.dataset.rsort); store("sidecar.recsort", JSON.stringify(recSort)); recShow(); if (status && status.play) playRender(status.play); return; }
   const pb = e.target.closest("[data-rp]");
   if (pb) {
     if (recBusy() && (recLast.state === 2 || recLast.state === 3)) return say($("#rec-msg"), "a take is recording: no playback now", true);
@@ -1248,18 +2419,20 @@ $("#rec-takes").addEventListener("click", async (e) => {
   }
   const b = e.target.closest("[data-rt]"); if (!b) return;
   const x = recList[b.dataset.i], m = $("#rec-msg");
-  if (recBusy() && recLast.take === x.t) return say(m, x.t + " is recording: stop it first", true);
-  if (b.dataset.rt === "get") { for (const f of x.files) await download(`/Recordings/${x.t}/${f.n}`, f.s, $("#rec-prog")); return; }
-  if (!confirm(`Delete the take ${x.t} (${x.files.length} files, ${hb(x.size)})?`)) return;
-  for (const f of x.files) { const r = await fsPost("/fs/del?path=" + E(`/Recordings/${x.t}/${f.n}`)); if (r.code !== 200) return say(m, `${f.n}: ${r.code} ${r.msg}`, true); }
-  const r = await fsPost("/fs/del?path=" + E("/Recordings/" + x.t));
+  // only a take being written (2 recording, 3 finishing) is busy: armed (1) waits for the next PLAY, and its take
+  // name is still the last take's, which is done
+  if ((recLast?.state === 2 || recLast?.state === 3) && recLast.take === x.t) return say(m, x.t + " is recording: stop it first", true);
+  if (b.dataset.rt === "get") { for (const f of x.files) await download(`${x.dir}/${f.n}`, f.s, $("#rec-prog")); return; }
+  if (!confirm(`Delete the take ${x.t} (${x.files.length} files, ${hb(x.size)})${x.vol !== "SD" ? " from the " + (STOR_CAP[x.vol] || x.vol) : ""}?`)) return;
+  for (const f of x.files) { const r = await fsPost("/fs/del?path=" + E(`${x.dir}/${f.n}`)); if (r.code !== 200) return say(m, `${f.n}: ${r.code} ${r.msg}`, true); }
+  const r = await fsPost("/fs/del?path=" + E(x.dir));
   say(m, `delete ${x.t}: ${r.code} ${r.msg}`, r.code !== 200);
   recTakes();
 });
 recView();
 
-// ---- files (GET /fs/ls)
-let fsCur = "/", fsEnt = [];
+// ---- files (GET /fs/ls: each entry's name, size and date "t")
+let fsCur = "/", fsEnt = [], fsSort = sortLoad("sidecar.fssort");
 async function fsLs(path) {
   try {
     const r = await getRetry("/fs/ls?path=" + E(path)), t = (await r.text()).trim();
@@ -1267,29 +2440,34 @@ async function fsLs(path) {
     const j = JSON.parse(t);
     fsCur = j.path || path;
     const all = j.entries || [], hide = !$("#fs-hidden").checked;
-    fsEnt = all.filter((x) => !(hide && x.n[0] === ".")).sort((a, b) => (b.d - a.d) || (a.n < b.n ? -1 : a.n > b.n ? 1 : 0));
+    const by = byKey(fsSort.k, fsSort.d);
+    fsEnt = all.filter((x) => !(hide && x.n[0] === ".")).sort((a, b) => (b.d - a.d) || by(a, b));   // the folders first
     const nHidden = all.length - fsEnt.length;
     $("#fs-free").textContent = j.total ? `${hb(j.free)} free of ${hb(j.total)}` : "";
     const parts = fsCur.split("/").filter(Boolean);
     let acc = "", cr = `<button class="lnk" data-go="/">/</button>`;
     parts.forEach((p, i) => { acc += "/" + p; cr += `<button class="lnk" data-go="${esc(acc)}">${esc(p)}</button>${i < parts.length - 1 ? "/" : ""}`; });
     $("#fs-crumb").innerHTML = cr;
-    $("#fs-list").innerHTML = `<table><thead><tr><th>Name</th><th class="r">Size</th><th></th></tr></thead><tbody>` +
+    $("#fs-list").innerHTML = `<table><thead><tr><th>${sortTh(fsSort, "n", "Name", "data-fsort")}</th><th class="hm">${sortTh(fsSort, "t", "Date", "data-fsort")}</th><th class="r">Size</th><th></th></tr></thead><tbody>` +
       (fsEnt.length ? fsEnt.map((x, i) => `<tr><td class="w">${x.d ? `<button class="lnk" data-open="${i}">${esc(x.n)}/</button>` : esc(x.n)}${x.ro === 1 ? ` <span title="boot file or restore backup: read-only">🔒</span>` : x.ro === 2 ? ` <span class="mut" title="the Sidecar's own folder: kept (its contents can change)">kept</span>` : ""}</td>
-        <td class="r">${x.d ? "" : hb(x.s)}</td><td class="r">${x.d ? "" : `<button class="sm" data-act="get" data-i="${i}">Download</button> `}${x.ro ? "" :
+        <td class="hm mut">${esc(x.t || "")}</td><td class="r">${x.d ? "" : hb(x.s)}</td><td class="r">${poolBtns(x, i)}${bankBtn(x, i)}${x.d ? "" : `<button class="sm" data-act="get" data-i="${i}">Download</button> `}${x.ro ? "" :
         `<button class="sm" data-act="mv" data-i="${i}">Rename</button> <button class="sm" data-act="del" data-i="${i}">Delete</button>`}</td></tr>`).join("")
-        : `<tr><td colspan="3" class="mut">empty folder</td></tr>`) +
-      (nHidden ? `<tr><td colspan="3" class="mut">${nHidden} hidden (dot-file${nHidden === 1 ? "" : "s"}): tick "show hidden"</td></tr>` : "") +
-      (j.more ? `<tr><td colspan="3" class="mut">more entries not shown</td></tr>` : "") + `</tbody></table>`;
+        : `<tr><td colspan="4" class="mut">empty folder</td></tr>`) +
+      (nHidden ? `<tr><td colspan="4" class="mut">${nHidden} hidden (dot-file${nHidden === 1 ? "" : "s"}): tick "show hidden"</td></tr>` : "") +
+      (j.more ? `<tr><td colspan="4" class="mut">more entries not shown</td></tr>` : "") + `</tbody></table>`;
   } catch (e) { say($("#fs-msg"), path + ": " + e, true); }
 }
-document.addEventListener("click", (e) => {
+document.addEventListener("click", async (e) => {
   const g = e.target.closest("[data-go]");
-  if (g) fsLs(g.dataset.go);
+  if (!g) return;
+  if (g.dataset.mk) { try { await fsPost("/fs/mkdir?p=1&path=" + E(g.dataset.go)); } catch (_) { /* there already */ } }
+  fsLs(g.dataset.go);
 });
 $("#fs-upd").onclick = () => fsLs(fsCur.replace(/\/[^/]*$/, "") || "/");
 $("#fs-re").onclick = () => fsLs(fsCur);
 $("#fs-hidden").checked = store("sidecar.hidden") === "1";
+$("#fs-bank").value = /^[A-H]$/.test(store("sidecar.fsbank") || "") ? store("sidecar.fsbank") : "A";
+$("#fs-bank").onchange = (e) => store("sidecar.fsbank", e.target.value);
 $("#fs-hidden").onchange = (e) => { store("sidecar.hidden", e.target.checked ? "1" : "0"); fsLs(fsCur); };
 const fsChanged = () => { fsLs(fsCur); if (fsCur === "/Plugins") umRescan(); };
 $("#fs-mk").onclick = async () => {
@@ -1300,13 +2478,61 @@ $("#fs-mk").onclick = async () => {
   say($("#fs-msg"), `new folder ${n}: ${r.code} ${r.msg}`, r.code !== 200);
   fsLs(fsCur);
 };
+// The POOL (core/lib/pools.h): a WAV / AIFF into SAMPLES or WAVETABLES, an .sfz into INSTRUMENTS, into the first free
+// row of the bank chosen in the toolbar (pool=K:add:B:PATH); a folder's files into a bank's empty rows (pool=K:fill:B:DIR)
+const POOLS = { smp: "SAMPLES", wt: "WAVETABLES", inst: "INSTRUMENTS" };
+function poolBtns(x, i) {
+  if (x.d || x.n[0] === ".") return "";
+  const k = /\.(wav|aif|aiff)$/i.test(x.n) ? ["smp", "wt"] : /\.sfz$/i.test(x.n) ? ["inst"] : [];
+  return k.map((m) => `<button class="sm" data-act="pool" data-k="${m}" data-i="${i}" title="Add to the POOL's ${POOLS[m]} (the first free row of the POOL bank)">+${m.toUpperCase()}</button> `).join("");
+}
+function bankBtn(x, i) {
+  if (!x.d || x.n[0] === ".") return "";
+  return `<button class="sm" data-act="fill" data-i="${i}" title="Fill a POOL bank (SAMPLES or WAVETABLES, A..H) with this folder's files">Fill bank</button> `;
+}
+// "smp c" / "WT H" / "inst a" -> ["smp", "C"] (null: not a list and a bank A..H)
+function bankOf(t) {
+  const m = /^\s*(smp|wt|inst)\s+([a-h])\s*$/i.exec(t || "");
+  return m ? [m[1].toLowerCase(), m[2].toUpperCase()] : null;
+}
+// the answers to +SMP / +WT / +INST and Fill bank (poolAns objects; null: none in time) as [text, bad]
+function addSay(a, name, k, bank) {
+  if (!a) return [`${name}: sent, no answer yet (see Log & console)`, true];
+  if (a.res === "SET") return [`${name} -> ${POOLS[k]} ${a.row}`, false];
+  if (a.res === "IN POOL") return [`${name}: already in ${a.row}`, false];
+  if (a.res === "READING") return [`${name}: reading the .sfz, then into ${POOLS[k]} bank ${bank} (the Pool tab shows its row)`, false];
+  if (a.res === "BANK FULL") return [`${POOLS[k]} bank ${bank} is full: choose another POOL bank`, true];
+  return [`${name}: ${a.res || a.text}`, true];
+}
+function fillSay(a, dir, k, bank) {
+  if (!a) return [`${dir}: sent, no answer yet (see Log & console)`, true];
+  if (/cannot fill/.test(a.text)) return [`${POOLS[k]} bank ${bank}: cannot fill from ${dir} (not a folder, or the list is locked)`, true];
+  return [`${POOLS[k]} bank ${bank}: filling from ${dir} (empty rows only, in name order; the Pool tab shows them)`, false];
+}
 $("#fs-list").addEventListener("click", async (e) => {
+  const so = e.target.closest("[data-fsort]");
+  if (so) { fsSort = sortNext(fsSort, so.dataset.fsort); store("sidecar.fssort", JSON.stringify(fsSort)); return fsLs(fsCur); }
   const o = e.target.dataset.open;
   if (o !== undefined) return fsLs(join(fsCur, fsEnt[o].n));
   const b = e.target.closest("[data-act]");
   if (!b) return;
   const x = fsEnt[b.dataset.i], p = join(fsCur, x.n), m = $("#fs-msg");
   if (b.dataset.act === "get") return download(p, x.s);
+  if (b.dataset.act === "fill") {
+    const kb = bankOf(prompt(`Fill which POOL bank with ${p}'s files? A list (smp, wt or inst) and a bank A..H, e.g. "smp C"`, `smp ${$("#fs-bank").value}`));
+    if (!kb) return say(m, 'a list (smp, wt or inst) and a bank A..H, e.g. "smp C"', true);
+    if (kb[0] === "inst") return say(m, "INSTRUMENTS are not filled from a folder: add each .sfz with +INST", true);
+    if (p.length > 159) return say(m, "the path is too long for the POOL (159 characters at most)", true);
+    const [t, bad] = fillSay(await poolSend(`pool=${kb[0]}:fill:${kb[1]}:${p}`, kb[0]), p, kb[0], kb[1]);
+    return say(m, t, bad);
+  }
+  if (b.dataset.act === "pool") {
+    const k = b.dataset.k, bank = $("#fs-bank").value;
+    if (p.length > 159) return say(m, "the path is too long for the POOL (159 characters at most)", true);
+    say(m, `${x.n}: into ${POOLS[k]} bank ${bank} ...`);
+    const [t, bad] = addSay(await poolSend(`pool=${k}:add:${bank}:${p}`, k), x.n, k, bank);
+    return say(m, t, bad);
+  }
   if (b.dataset.act === "del") {
     if (!confirm(`Delete ${p}?` + (x.d ? " (a folder: only when empty)" : ""))) return;
     const r = await fsPost("/fs/del?path=" + E(p));
@@ -1321,6 +2547,247 @@ $("#fs-list").addEventListener("click", async (e) => {
     fsChanged();
   }
 });
+// ---- the Pool tab (GET /pool: pi/engine/poolweb.h; the edits are the console's pool=smp|wt|inst:... lines,
+// core/lib/pools.h, whose one-line answers come back through the log)
+const POOL_BANKS = "ABCDEFGH";
+// pools.cpp result_text (the ones with a ": " in them first)
+const POOL_RES = ["IN USE: REPLACE?", "PLAYING: STOP FIRST", "NOT FOR THIS POOL", "POOL LOCKED", "NO SUCH FILE", "NO SUCH ROW",
+  "000 IS OFF", "BUILT-IN", "BANK FULL", "IN POOL", "READING", "BUSY", "EMPTY", "SET"];
+const rowText = (c) => POOL_BANKS[(c >> 7) & 7] + String(c & 127).padStart(3, "0");
+// one bank_json row: [row, type, name, state, path, used_count, users, size, members, channels, always_ram]
+const plRow = (a) => ({ row: a[0], type: a[1], name: a[2], state: a[3], path: a[4], used: a[5], users: a[6], size: a[7], members: a[8],
+  ch: a[9] || 0, ram: !!a[10] });
+// docs/STEREO.md: a sample's ST / M tag (its channels, once a machine has read it), RAM when it is always held in RAM
+const plTags = (e) => (e.ch >= 2 ? " · ST" : e.ch === 1 ? " · M" : "") + (e.ram ? " · RAM" : "");
+const inUse = (e) => !!e && (e.used > 0 || e.users > 0);
+// a log line with list k's answer (cores.cpp logs pools::command's): "pool: smp C004 /x.wav: IN POOL",
+// "pool: smp: 2 unloaded, refused: IN USE: REPLACE?", "pool: smp: undone", "pool: smp bank C: filling from /x" ->
+// {row, res, n (rows unloaded, -1: not an unload), text}; null: not one
+function poolAns(line, k) {
+  const m = new RegExp("\\bpool: " + k + "([ :].*)$").exec(line || "");
+  if (!m) return null;
+  const t = m[1], res = POOL_RES.find((r) => t.endsWith(": " + r)) || "";
+  const r = /^ ([A-H]\d{3}|-) /.exec(t), u = /^: (\d+) unloaded/.exec(t);
+  return { row: r && r[1] !== "-" ? r[1] : "", res, n: u ? +u[1] : -1, text: t.replace(/^:?\s*/, "") };
+}
+// P3 (docs/UX-REVIEW-2026-10-22.md): what a row in use asks before it is replaced or unloaded
+function p3Ask(row, e, verb) {
+  if (e && e.users > 0) return `ROW ${row} USED BY ${e.users} SOUND${e.users === 1 ? "" : "S"} - ${verb}?`;
+  return `ROW ${row} PLAYED IN THIS PROJECT${e && e.used ? ` (${e.used}x)` : ""} - ${verb}?`;
+}
+function plRam(r) {
+  if (!r || !r.budget) return "-";
+  return `${hb(r.used + r.tables)} of ${hb(r.budget)} (${r.pct} %)`;
+}
+// the rows to unload as console lines of at most 190 characters (TCmd's 192); rows in yes go with :yes (P3, confirmed)
+function unloadCmds(k, rows, yes) {
+  const head = `pool=${k}:unload:`, out = [];
+  let cur = "";
+  for (const r of rows) {
+    const t = r + (yes.has(r) ? ":yes" : "");
+    if (cur && head.length + cur.length + 1 + t.length > 190) { out.push(head + cur); cur = ""; }
+    cur += (cur ? "," : "") + t;
+  }
+  if (cur) out.push(head + cur);
+  return out;
+}
+const PL_ST = { EXACT: "ok", MOVED: "ok", MISSING: "err", CHANGED: "wn", PENDING: "mut", UNVERIFIED: "mut", INPUT: "mut", "BUILT-IN": "mut" };
+// one bank (bank_json) as the table's rows: row 000 OFF first; sel: the selected rows; locked: no edits
+function plRowsHtml(d, sel, locked) {
+  const B = POOL_BANKS[d.bank & 7], dis = locked ? " disabled" : "", rows = (d.rows || []).map(plRow);
+  return `<tr class="mut"><td></td><td class="r">${B}000</td><td colspan="6">OFF</td></tr>` + rows.map((e) => {
+    const row = B + String(e.row).padStart(3, "0"), file = e.type === "sample" || e.type === "instrument";
+    return `<tr data-row="${row}"><td><input type="checkbox" data-sel="${row}" aria-label="select ${row}"${sel.has(row) ? " checked" : ""}${dis}></td>
+      <td class="r">${row}</td><td class="w"${e.path ? ` title="${esc(e.path)}"` : ""}>${esc(e.name || "-")}${e.state === "MISSING" && e.path ? ` <span class="mut">${esc(e.path)}</span>` : ""}</td>
+      <td><span class="badge ${PL_ST[e.state] || ""}">${esc(e.state)}</span></td>
+      <td class="r">${file && e.size ? hb(e.size) : file ? "-" : ""}${e.type === "instrument" ? ` · ${e.members} samples` : ""}${file ? plTags(e) : ""}</td>
+      <td class="r">${e.used || ""}</td><td class="r">${e.users || ""}</td>
+      <td class="r w">${e.state === "CHANGED" ? `<button class="sm" data-pa="accept" data-row="${row}"${dis} title="take the file's new content">Accept</button> ` : ""}${file ? `<button class="sm" data-pa="replace" data-row="${row}"${dis}>Replace</button> ` : ""}<button class="sm" data-pa="unload" data-row="${row}"${dis}>Unload</button></td></tr>`;
+  }).join("") + (rows.length ? "" : `<tr><td colspan="8" class="mut">bank ${B} is empty: add files from the Files tab (+SMP / +WT / +INST, Fill bank)</td></tr>`);
+}
+// a row's replace (path) or unload with P3: a row in use asks first and is sent with :yes; one found in use only by
+// the console asks then; while the Rytm plays a row in use is refused. io: {send(line) -> poolAns | null, ask(q) -> bool}.
+// Returns [text, bad].
+async function poolEdit(io, k, op, row, e, path) {
+  const verb = op === "replace" ? "REPLACE" : "UNLOAD", line = op === "replace" ? `pool=${k}:replace:${row}:${path}` : `pool=${k}:unload:${row}`;
+  const yes = inUse(e);
+  if (yes && !(await io.ask(p3Ask(row, e, verb)))) return [`${row}: not changed`, false];
+  let a = await io.send(line + (yes ? ":yes" : ""));
+  if (a && a.res === "IN USE: REPLACE?" && !yes) {   // in use since the list was read
+    if (!(await io.ask(p3Ask(row, e, verb)))) return [`${row}: not changed`, false];
+    a = await io.send(line + ":yes");
+  }
+  const name = (path || "").split("/").pop();
+  if (!a) return [`${row}: sent, no answer yet (see Log & console)`, true];
+  if (a.res === "PLAYING: STOP FIRST") return [`${row} is in use: not changed while the Rytm plays (stop it first)`, true];
+  if (op === "unload") return a.n > 0 ? [`${row} unloaded (Undo takes it back)`, false] : [`${row}: ${a.res || a.text}`, true];
+  if (a.res === "SET") return [`${row} = ${name} (Undo takes it back)`, false];
+  if (a.res === "IN POOL") return [`${name} is in ${a.row} already: one row per file`, true];
+  if (a.res === "READING") return [`${row}: reading the .sfz (the row shows it when done)`, false];
+  return [`${row}: ${a.res || a.text}`, true];
+}
+// ---- the Pool tab's wiring
+const logWaits = [];
+// the next log line match(line) answers (FIFO); null after ms
+function logAnswer(match, ms = 6000) {
+  const w = { match };
+  w.p = new Promise((ok) => { w.ok = ok; });
+  w.done = (a) => { const i = logWaits.indexOf(w); if (i >= 0) logWaits.splice(i, 1); clearTimeout(w.t); w.ok(a); };
+  w.t = setTimeout(() => w.done(null), ms);
+  logWaits.push(w);
+  return w;
+}
+function logMatch(line) {
+  for (const w of logWaits) { const a = w.match(line); if (a) { w.done(a); return; } }
+}
+// a pool= line to the control core and its answer from the log (null: refused, or none in time)
+async function poolSend(c, k) {
+  const w = logAnswer((line) => poolAns(line, k));
+  if (!(await cmd(c))) { w.done(null); return null; }
+  return w.p;
+}
+let plK = store("sidecar.pool") || "smp", plB = +(store("sidecar.poolbank") || 0) & 7, plLast = "", plData = null, plBusy = false;
+let plSel = new Set(), plWarn = "", plPickAt = null, plPickDir = "/Samples";
+if (!POOLS[plK]) plK = "smp";
+$("#pl-banks").innerHTML = [...POOL_BANKS].map((b, i) => `<button data-pb="${i}" aria-checked="${i === plB}">${b}</button>`).join("");
+const plIo = (k) => ({ send: (c) => poolSend(c, k), ask: async (q) => confirm(q) });
+const plEntry = (row) => { const d = plData && plData.bank; return d ? (d.rows || []).map(plRow).find((e) => POOL_BANKS[d.bank] + String(e.row).padStart(3, "0") === row) : null; };
+async function plPoll(force) {
+  try {
+    const r = await getRetry(`/pool?l=${plK}&b=${plB}`), t = await r.text();
+    if (t === plLast && !force) return;
+    plLast = t;
+    plData = JSON.parse(t);
+    plRender();
+  } catch (e) { $("#pl-count").textContent = "no answer from Sidecar"; }
+}
+setInterval(() => { if (!document.hidden && tab === "pool" && !qBusy && !plBusy && !pairBlocked()) plPoll(); }, 2000);
+function plRender() {
+  const d = plData || {}, st = d.st || {}, L = st[plK] || {}, bk = d.bank, locked = !!(L.locked || (bk && bk.locked));
+  $("#pl-proj").textContent = st.project || "-";
+  $("#pl-ram").textContent = plRam(d.ram);
+  $("#pl-rambar").hidden = !(d.ram && d.ram.budget);
+  $("#pl-rambar").classList.toggle("full", !!(d.ram && d.ram.pct >= 95));
+  $("#pl-rambar i").style.width = (d.ram && d.ram.pct || 0) + "%";
+  document.querySelectorAll("#pl-lists button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.pk === plK)));
+  document.querySelectorAll("#pl-banks button").forEach((b) => b.setAttribute("aria-checked", String(+b.dataset.pb === plB)));
+  $("#pl-lock").hidden = !(L.locked || L.ro);
+  $("#pl-lock").textContent = L.locked ? `${POOLS[plK]} is locked: ${L.why || "its file could not be read"} (nothing is changed or written)`
+    : L.ro ? `${POOLS[plK]} is read-only here: ${L.why || "a newer Sidecar's file"} (edits are not written to the card)` : "";
+  $("#pl-count").textContent = st.ready === false ? "loading" : L.n !== undefined ? `${L.n} row${L.n === 1 ? "" : "s"} in ${POOLS[plK]}` : "";
+  $("#pl-rows").innerHTML = bk ? plRowsHtml(bk, plSel, locked)
+    : `<tr><td colspan="8" class="mut">${st.ready === false ? "loading the project's POOL" : "no POOL yet (no card, or the lists are still loading)"}</td></tr>`;
+  $("#pl-unload").disabled = !plSel.size || locked;
+  $("#pl-unload").textContent = plSel.size ? `Unload selected (${plSel.size})` : "Unload selected";
+  $("#pl-unused").disabled = $("#pl-undo").disabled = locked || !bk;
+  $("#pl-warn").hidden = !plWarn;
+  $("#pl-warn").textContent = plWarn;
+}
+async function plAct(fn) {   // one edit at a time, then the bank again
+  if (plBusy) return;
+  plBusy = true;
+  try { await fn(); } finally { plBusy = false; plPoll(true); }
+}
+$("#pl-lists").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pk]");
+  if (!b || b.dataset.pk === plK) return;
+  plK = b.dataset.pk;
+  store("sidecar.pool", plK);
+  plSel.clear(); plWarn = ""; plPickAt = null; $("#pl-pick").hidden = true; say($("#pl-msg"), "");
+  cmd(`pool=${plK}:shown:${POOL_BANKS[plB]}`);   // the bank a view shows: the sampler's takes go there
+  plPoll(true);
+});
+$("#pl-banks").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pb]");
+  if (!b || +b.dataset.pb === plB) return;
+  plB = +b.dataset.pb;
+  store("sidecar.poolbank", String(plB));
+  cmd(`pool=${plK}:shown:${POOL_BANKS[plB]}`);
+  plPoll(true);
+});
+$("#pl-rows").addEventListener("change", (e) => {
+  const r = e.target.dataset.sel;
+  if (!r) return;
+  if (e.target.checked) plSel.add(r); else plSel.delete(r);
+  $("#pl-unload").disabled = !plSel.size;
+  $("#pl-unload").textContent = plSel.size ? `Unload selected (${plSel.size})` : "Unload selected";
+});
+$("#pl-rows").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pa]");
+  if (!b) return;
+  const row = b.dataset.row, k = plK, ent = plEntry(row), box = $("#pl-msg");
+  if (b.dataset.pa === "accept") return plAct(async () => {
+    const a = await poolSend(`pool=${k}:accept:${row}`, k);
+    say(box, a ? `${row}: the file's new content accepted (now ${a.text.replace(/^\S+ /, "").replace(/: SET$/, "")})` : `${row}: sent, no answer yet`, !a);
+  });
+  if (b.dataset.pa === "unload") return plAct(async () => { const [t, bad] = await poolEdit(plIo(k), k, "unload", row, ent); say(box, t, bad); });
+  if (b.dataset.pa === "replace") {
+    plPickAt = { k, row, e: ent };
+    const dir = ent && ent.path && ent.path.lastIndexOf("/") > 0 ? ent.path.slice(0, ent.path.lastIndexOf("/"))
+      : { smp: "/Samples", wt: "/WAVETABLES", inst: "/MULTISAMPLE" }[k];
+    plPick(dir);
+  }
+});
+// the small file browser REPLACE picks from: folders and the files the list takes
+async function plPick(dir) {
+  if (!plPickAt) return;
+  const j = await lsJson(dir) || (dir !== "/" ? await lsJson("/") : null);
+  if (!j) return say($("#pl-msg"), dir + ": not readable", true);
+  plPickDir = j.path || dir;
+  const want = plPickAt.k === "inst" ? /\.sfz$/i : /\.(wav|aif|aiff)$/i;
+  const ents = (j.entries || []).filter((x) => x.n[0] !== "." && (x.d || want.test(x.n)))
+    .sort((a, b) => (b.d - a.d) || (a.n < b.n ? -1 : a.n > b.n ? 1 : 0));
+  $("#pl-pick").hidden = false;
+  $("#pl-pick-what").textContent = `Replace ${POOLS[plPickAt.k]} ${plPickAt.row}${plPickAt.e ? " (" + plPickAt.e.name + ")" : ""} with:`;
+  $("#pl-pick-dir").textContent = plPickDir;
+  $("#pl-pick-list").innerHTML = `<table><tbody>${ents.map((x) => `<tr><td class="w">${x.d ? `<button class="lnk" data-pdir="${esc(join(plPickDir, x.n))}">${esc(x.n)}/</button>`
+    : `<button class="lnk" data-pfile="${esc(join(plPickDir, x.n))}">${esc(x.n)}</button>`}</td><td class="r mut">${x.d ? "" : hb(x.s)}</td></tr>`).join("")
+    || `<tr><td class="mut">no ${plPickAt.k === "inst" ? ".sfz" : "WAV / AIFF"} files here</td></tr>`}</tbody></table>`;
+}
+$("#pl-pick-list").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || !plPickAt) return;
+  if (b.dataset.pdir) return plPick(b.dataset.pdir);
+  const p = b.dataset.pfile, at = plPickAt;
+  if (!p) return;
+  if (p.length > 159) return say($("#pl-msg"), "the path is too long for the POOL (159 characters at most)", true);
+  plAct(async () => {
+    const [t, bad] = await poolEdit(plIo(at.k), at.k, "replace", at.row, at.e, p);
+    say($("#pl-msg"), t, bad);
+    if (!bad) { plPickAt = null; $("#pl-pick").hidden = true; }
+  });
+});
+$("#pl-pick-up").onclick = () => plPick(plPickDir.replace(/\/[^/]*$/, "") || "/");
+$("#pl-pick-x").onclick = () => { plPickAt = null; $("#pl-pick").hidden = true; };
+$("#pl-unused").onclick = () => plAct(async () => {
+  const r = await getRetry(`/pool?l=${plK}&b=${plB}&u=1`), j = JSON.parse(await r.text()), rows = (j.unused || []).map(rowText);
+  plSel = new Set(rows);
+  const banks = [...new Set(rows.map((x) => x[0]))].join(" ");
+  plWarn = rows.length ? `${rows.length} row${rows.length === 1 ? "" : "s"} of ${POOLS[plK]} selected (bank${banks.length > 1 ? "s" : ""} ${banks}): ${j.warn}` : "";
+  say($("#pl-msg"), rows.length ? "" : `every row of ${POOLS[plK]} was seen playing in this project`);
+});
+$("#pl-none").onclick = () => { plSel.clear(); plWarn = ""; plRender(); };
+$("#pl-unload").onclick = () => plAct(async () => {
+  const k = plK, rows = [...plSel].sort(), used = rows.filter((r) => inUse(plEntry(r)));
+  const q = `UNLOAD ${rows.length} ROW${rows.length === 1 ? "" : "S"} OF ${POOLS[k]}?` + (used.length ? "\n" + used.map((r) => p3Ask(r, plEntry(r), "UNLOAD")).join("\n") : "")
+    + (plWarn ? "\n" + plWarn.replace(/^.*: /, "") : "") + "\n(Undo takes back only the last one.)";
+  if (!rows.length || !confirm(q)) return;
+  let done = 0, refused = "";
+  for (const c of unloadCmds(k, rows, new Set(used))) {
+    const a = await poolSend(c, k);
+    if (!a) { refused = "no answer (see Log & console)"; break; }
+    done += Math.max(a.n, 0);
+    if (a.res) refused = a.res === "PLAYING: STOP FIRST" ? "rows in use are not unloaded while the Rytm plays" : a.res;
+  }
+  plSel.clear(); plWarn = "";
+  say($("#pl-msg"), `${done} of ${rows.length} unloaded` + (refused ? `; refused: ${refused}` : ""), !!refused);
+});
+$("#pl-undo").onclick = () => plAct(async () => {
+  const a = await poolSend(`pool=${plK}:undo`, plK);
+  say($("#pl-msg"), a ? `${POOLS[plK]}: ${a.text}` : "sent, no answer yet", !a || a.text !== "undone");
+});
+$("#pl-re").onclick = () => plPoll(true);
+// ---- end the Pool tab
 async function download(path, size, box) {
   const it = progRow(box || $("#fs-prog"), "download " + path), parts = [], t0 = performance.now();
   let off = 0, stop = false;
@@ -1542,7 +3009,7 @@ async function wfPoll() {
   try { wfRender(await wfGet()); } catch (e) { /* the tiles say "not reachable" */ }
   if (wifi && wifi.scanning) { clearTimeout(wfScanT); wfScanT = setTimeout(wfPoll, 1000); }
 }
-setInterval(() => { if (!document.hidden && tab === "status") wfPoll(); }, 3000);
+setInterval(() => { if (!document.hidden && tab === "status" && !pairBlocked()) wfPoll(); }, 3000);
 $("#wf-net").onchange = wfPick;
 $("#wf-open").onchange = wfOpen;
 $("#wf-show").onclick = () => {

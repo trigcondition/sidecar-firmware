@@ -23,6 +23,7 @@
 // machine plays Plaits' 96 ROM voices instead (core/voices.cpp).
 #pragma once
 #include "../platform.h"
+#include "../project_key.h"
 
 #include "md5.h"
 #include "plaits/resources.h"
@@ -156,6 +157,8 @@ class Lib {
   int listed() const { return nlist_; }
   const Slot& slot(int i) const { return list_[i]; }
 
+  // 2026-10-27 (core/bundle/prjslot.h): the list's next writes under another project key (a SAVE AS copy placed)
+  void rekey(const char* project) { project_file(project); }
   DX7_FLASH(load_list) void load_list(const char* project) {
     project_file(project);
     nlist_ = 0;
@@ -462,17 +465,9 @@ class Lib {
   }
 
   DX7_FLASH(project_file) void project_file(const char* project) {
-    char n[24];
-    int k = 0;
-    for (const char* c = project; *c && k < 23; ++c) {
-      char x = *c;
-      bool ok = (x >= 'A' && x <= 'Z') || (x >= 'a' && x <= 'z') || (x >= '0' && x <= '9') ||
-                x == '-' || x == '_' || x == ' ' || x == '.';
-      n[k++] = ok ? x : '_';
-    }
-    while (k && (n[k - 1] == ' ' || n[k - 1] == '.')) --k;
-    n[k] = 0;
-    sniprintf(file_, sizeof file_, "/.rytm/fm/%s.txt", k ? n : "_default");
+    char n[core::kKeyMax];
+    core::project_key(project, n, sizeof n);
+    sniprintf(file_, sizeof file_, "/.rytm/fm/%s.txt", n);
   }
 
   static int hex(char c) {

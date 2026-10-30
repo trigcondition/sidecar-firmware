@@ -23,8 +23,16 @@ struct Hooks {
   void (*project_changed)();                  // 0x10 named another project
   void (*slot_prints)(const uint8_t* d, int len);   // 0x25 SLOT PRINTS: the project's sounds' fingerprints per slot (null: ignored)
   void (*pool_changed)(int line);             // pool line `line` (0..126) changed; -1 the whole pool
+  // the Rytm's transport as the mods report it (seq's kTransport state, whatever the Rytm's MIDI TRANSPORT SEND says),
+  // as MIDI realtime: 0xFA start, 0xFB continue, 0xFC stop (pause too). The control core; null: ignored. The Pi's
+  // recorder arms on it as on the MIDI messages (its gate is idempotent: both may arrive).
+  void (*transport)(uint8_t status);
 };
 extern Hooks hooks;
+// True while the core itself calls user_report for a parameter change of its own (voice_params_changed: the Sidecar's
+// LFOs, the sequencer's step locks), not for a report from the Rytm: a user machine's glue tells a knob the user moved
+// from a modulation (core/user/um.cpp: whose TYPE a slot's labels follow).
+extern bool user_report_internal;
 
 uint32_t to_rytm_dropped();                  // messages to_rytm dropped (no hook)
 void to_rytm(const uint8_t* m, int n);

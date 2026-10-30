@@ -7,8 +7,10 @@
 #     SDBOOT  the Pi 4's sdboot (pi/circle/out/sdboot.img, build-sdboot.sh)
 #     K5      the Pi 5 kernel (pi/engine/kernel_2712.img, RASPPI=5 pi/engine/build.sh), as kernel_2712.img
 # Environment (optional): CIRCLE_BUILD (default pi/circle/build), OUT, CMDLINE (default "sdport=0"), CONTENT (a
-# sidecar-content-* folder: JUNO/, DX7/, README.txt, NOTICE.txt, copied to the card; README/NOTICE as
-# STARTER-CONTENT-*.txt), NO_DISPLAY=1 (both boards' 800x480 HDMI lines commented out).
+# sidecar-content-* folder: JUNO/, DX7/, MULTISAMPLE/ if present, README.txt, NOTICE.txt, copied to the card; README/NOTICE as
+# STARTER-CONTENT-*.txt), NO_DISPLAY=1 (both boards' HDMI lines commented out), HDMI_RES=800x480 (default: the
+# Waveshare 5"/7" HDMI LCDs) or 1024x600 (a 1024x600 panel such as the GeeekPi EP-0194: the HDMI mode; the engine then
+# draws its 1024x600 layouts, docs/pi-display.md "Screen sizes").
 # The two kernels must carry the same Sidecar version stamp ("0.1.0 (<commit>)"), not -dirty.
 # The Pi 4 boots exactly as the 0.1.0 Pi 4 card did (sdboot.img -> engine.img, its settings, now under [pi4]); the
 # Pi 5 boots kernel_2712.img directly ([pi5], no sdboot there yet). The Pi 5 keeps its boot firmware in its EEPROM:
@@ -26,7 +28,13 @@ SDB=${2:-out/sdboot.img}
 K5=${3:-../engine/kernel_2712.img}
 BUILD=${CIRCLE_BUILD:-$PWD/build}
 OUT=${OUT:-$PWD/out}
-CMDLINE=${CMDLINE:-sdport=0}
+CMDLINE=${CMDLINE:-sdport=0 socmaxtemp=78}   # socmaxtemp: Circle drops the clock to 600 MHz above it (default 60 C: in normal use); 78 is its maximum, the firmware still limits at 80 / 85 C
+# A release card has the pairing code ON (docs/pi-engine.md "Pairing code"): a builder's own CMDLINE with paircode= in
+# it (a dev card's gate turned off, or a fixed code) must not end up on cards for others. DEV=1 makes such a card on purpose.
+case " $CMDLINE " in *" paircode="*) [ -n "${DEV:-}" ] || { echo "CMDLINE has paircode=: not on a release card (DEV=1 for a dev card)"; exit 1; };; esac
+HDMI_RES=${HDMI_RES:-800x480}
+case "$HDMI_RES" in 800x480|1024x600) ;; *) echo "HDMI_RES: 800x480 or 1024x600"; exit 1;; esac
+HW=${HDMI_RES%x*}; HH=${HDMI_RES#*x}
 for f in "$K4" "$SDB" "$K5"; do [ -s "$f" ] || { echo "missing $f"; exit 1; }; done
 B=$BUILD/circle/boot
 P4="start4.elf fixup4.dat bcm2711-rpi-4-b.dtb armstub8-rpi4.bin"
@@ -98,13 +106,14 @@ max_framebuffers=2
 # (docs/pi-display.md). Upside down: lcd_rotate=2 here. Never ignore_lcd=1, disable_touchscreen=1, a vc4-kms-*
 # overlay or display_auto_detect=1 (Circle has no KMS: the screen would stay dark).
 
-# The Pi 4's 800x480 HDMI display (optional; for another resolution change hdmi_cvt and set width=/height= in
-# cmdline.txt; without a display these lines do no harm).
+# The Pi 4's ${HW}x${HH} HDMI display (optional; without a display these lines do no harm). The engine draws the
+# frame buffer's size if it is 800x480 or 1024x600, else 800x480 centred. A 1024x600 panel (GeeekPi EP-0194):
+# hdmi_cvt=1024 600 60 6 0 0 0 (HDMI_RES=1024x600 when the card is made); a 800x480 one: hdmi_cvt=800 480 60 6 0 0 0.
 ${D}[pi4]
 ${D}hdmi_force_hotplug=1
 ${D}hdmi_group=2
 ${D}hdmi_mode=87
-${D}hdmi_cvt=800 480 60 6 0 0 0
+${D}hdmi_cvt=${HW} ${HH} 60 6 0 0 0
 ${D}disable_overscan=1
 
 # The Pi 5: its boot firmware is in its EEPROM; it starts kernel_2712.img directly (no sdboot on the Pi 5 yet).
@@ -120,14 +129,15 @@ os_check=0
 
 # The Pi 5's HDMI display (micro-HDMI 0, next to USB-C, on before power-on; docs/pi5.md "HDMI display"): only
 # hdmi_force_hotplug=1 matters (measured). The Pi 5's firmware picks the mode itself (1920x1080 on an 800x480 LCD) and
-# the engine scales its 800x480 UI to it; the other five lines are ignored by the Pi 5 (measured), kept as harmless.
+# the engine scales its 800x480 UI to it (1024x600 when the display's EDID prefers 1024x600, or res=1024x600 in
+# cmdline.txt); the other five lines are ignored by the Pi 5 (measured), kept as harmless.
 ${D}[pi5]
 ${D}hdmi_force_hotplug=1
-${D}framebuffer_width=800
-${D}framebuffer_height=480
+${D}framebuffer_width=${HW}
+${D}framebuffer_height=${HH}
 ${D}hdmi_group=2
 ${D}hdmi_mode=87
-${D}hdmi_cvt=800 480 60 6 0 0 0
+${D}hdmi_cvt=${HW} ${HH} 60 6 0 0 0
 
 # The Pi 4: sdboot.img checks and starts engine.img (the block below; sdboot.py disable/enable edits it).
 CFG
@@ -162,6 +172,7 @@ PY
 
 if [ -n "${CONTENT:-}" ]; then
   cp -R "$CONTENT/JUNO" "$CONTENT/DX7" "$SD/"
+  [ -d "$CONTENT/MULTISAMPLE" ] && cp -R "$CONTENT/MULTISAMPLE" "$SD/"   # MULTISAMPLE's instruments (Pi), if the set has them
   cp "$CONTENT/README.txt" "$SD/STARTER-CONTENT-README.txt"
   cp "$CONTENT/NOTICE.txt" "$SD/STARTER-CONTENT-NOTICE.txt"
 fi
@@ -199,5 +210,5 @@ addresses in the Pi 4 kernel: $(strings -a "$K4" | grep -xE '169\.254\.[0-9]+\.[
 addresses in the Pi 5 kernel: $(strings -a "$K5" | grep -xE '169\.254\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[0-9]+' | sort -u | tr '\n' ' ')
 EOF
 cat "$OUT/BUILD-INFO-pi.txt"
-( cd "$SD" && find . -type f -not -path './JUNO/*' -not -path './DX7/*' | sort | xargs ls -l | awk '{print $5, $9}' )
+( cd "$SD" && find . -type f -not -path './JUNO/*' -not -path './DX7/*' -not -path './MULTISAMPLE/*' | sort | xargs ls -l | awk '{print $5, $9}' )
 echo "card folder: $SD ($(du -sh "$SD" | cut -f1), $(find "$SD" -type f | wc -l | tr -d ' ') files); zip: $Z"

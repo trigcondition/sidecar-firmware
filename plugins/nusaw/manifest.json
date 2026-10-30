@@ -1,0 +1,29 @@
+{
+  "id": "nusaw.supersaw",
+  "version": "1.0.0",
+  "compatible_from": "1.0.0",
+  "name": "NUSAW",
+  "short": "NSAW",
+  "licence": "MIT (NuSaw DSP: Charles Vestal)",
+  "page2": "params",
+  "page2_title": "NUSAW MORE",
+  "max_voices": 8,
+  "pitch": "note",
+  "knobs": [
+    {"p": 1, "long": "Detune", "short": "DETN", "look": "dial", "text": "number", "default": 38},
+    {"p": 2, "long": "Mix", "short": "MIX", "look": "dial", "text": "number", "default": 89},
+    {"p": 3, "long": "Cutoff", "short": "CUT", "look": "dial", "text": "number", "default": 72},
+    {"p": 4, "long": "Resonance", "short": "RES", "look": "dial", "text": "number", "default": 13},
+    {"p": 5, "long": "Filter Env", "short": "ENV", "look": "dial", "text": "number", "default": 57},
+    {"p": 6, "long": "Attack", "short": "ATK", "look": "dial", "text": "number", "default": 23},
+    {"p": 7, "long": "Release", "short": "REL", "look": "dial", "text": "number", "default": 83},
+    {"p": 8, "long": "Sub Osc", "short": "SUB", "look": "dial", "text": "number", "default": 16},
+    {"p": 9, "long": "Tune", "short": "TUN", "look": "centred", "text": "bipolar", "default": 64},
+    {"p": 10, "long": "Decay", "short": "DEC", "look": "dial", "text": "number", "default": 64},
+    {"p": 11, "long": "Sustain", "short": "SUS", "look": "dial", "text": "number", "default": 102},
+    {"p": 12, "long": "Filt Decay", "short": "FDEC", "look": "dial", "text": "number", "default": 70},
+    {"p": 13, "long": "Filt Sustain", "short": "FSUS", "look": "dial", "text": "number", "default": 38},
+    {"p": 14, "long": "Velocity", "short": "VEL", "look": "dial", "text": "number", "default": 64},
+    {"p": 15, "long": "Level", "short": "LEV", "look": "fader", "text": "number", "default": 100}
+  ]
+}

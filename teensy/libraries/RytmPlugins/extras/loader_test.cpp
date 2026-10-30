@@ -38,7 +38,7 @@ static uint16_t imm16_of(const uint8_t *p) {
 static std::vector<uint8_t> tiny(uint32_t value) {
   std::vector<uint8_t> p(RMP_HEADER_BYTES + 72 + 16, 0);
   rmp_header h; memset(&h, 0, sizeof h);
-  h.magic = RMP_FILE_MAGIC; h.format = RMP_FORMAT; h.api = RMP_API;
+  h.magic = RMP_FILE_MAGIC; h.format = RMP_FORMAT_RMP1; h.api = RMP_API;
   strcpy(h.id, "rytm.tiny"); h.version = 1; h.compatible_from = 1;
   h.image_size = 72; h.bss_size = 4; h.entry_offset = 0; h.reloc_count = 2; h.manifest_size = 0;
   memcpy(p.data(), &h, sizeof h);
@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
   { CHECK(rmp_verify(pkg.data(), 10, &info) == RMP_ERR_SIZE); }
   { auto t = pkg; t[0] ^= 0xFF; CHECK(rmp_verify(t.data(), (uint32_t)t.size(), &info) == RMP_ERR_MAGIC); }
   { auto t = pkg; t[4] = 9; CHECK(rmp_verify(t.data(), (uint32_t)t.size(), &info) == RMP_ERR_FORMAT); }
-  // formats 1..3 load (they differ only in the manifest; the CRC covers the body, not the header); 0 and 4 do not
+  // formats 1..3 load (they differ only in the manifest; the CRC covers the body, not the header); 0 and 4 (RMPA only) do not
   { auto t = pkg; t[4] = 1; rmp_info i1; CHECK(rmp_verify(t.data(), (uint32_t)t.size(), &i1) == RMP_OK && i1.format == 1); }
   { auto t = pkg; t[4] = 2; rmp_info i2; CHECK(rmp_verify(t.data(), (uint32_t)t.size(), &i2) == RMP_OK && i2.format == 2); }
   { auto t = pkg; t[4] = 3; rmp_info i3; CHECK(rmp_verify(t.data(), (uint32_t)t.size(), &i3) == RMP_OK && i3.format == 3); }

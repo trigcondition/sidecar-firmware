@@ -1,0 +1,9 @@
+example/host_example
+bench/cortex-m7/host_m7_bench
+bench/cortex-m7/daisy_seed/build/
+bench/cortex-a76/build/
+test/m7emu/build/
+*.o
+*.raw.out
+.DS_Store
+bench/cortex-m7/out.txt

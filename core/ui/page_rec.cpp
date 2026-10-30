@@ -196,24 +196,24 @@ CORE_COLD void rec_draw(Canvas& c, int page, int npages, uint32_t ms) {
   if (p_shown) {
     uint32_t len = p.len_ms / 1000;
     if (p.error[0]) sniprintf(b, sizeof b, CORE_STR("ERR %.24s"), p.error);
-    else if (playing) sniprintf(b, sizeof b, CORE_STR("B STOP  D LEV %d  %lu:%02lu"), p.level, (unsigned long)(len / 60), (unsigned long)(len % 60));
-    else sniprintf(b, sizeof b, CORE_STR("B PLAY  C TAKE  D LEV %d"), p.level);
+    else if (playing) sniprintf(b, sizeof b, CORE_STR("B: STOP  D: LEV %d  %lu:%02lu"), p.level, (unsigned long)(len / 60), (unsigned long)(len % 60));
+    else sniprintf(b, sizeof b, CORE_STR("B: PLAY  C: TAKE  D: %d"), p.level);
   } else if (i.error[0] || (recent && p.error[0])) {   // the recorder's, or playback's (no take to play)
     sniprintf(b, sizeof b, CORE_STR("ERR %.24s"), i.error[0] ? i.error : p.error);
   } else if (r_stop_first_ms && ms - r_stop_first_ms < 1500) {
     strcpy(b, "STOP FIRST (CHANNELS)");
   } else if (rec) {
-    strcpy(b, "YES STOP");
+    strcpy(b, "YES: STOP");
   } else if (armed) {
-    strcpy(b, "PLAY: REC  YES NOW  A OFF");
+    strcpy(b, "PLAY:REC YES:NOW A:OFF");
   } else if (i.state == kRecFinishing) {
     strcpy(b, "SAVING...");
   } else {
     uint32_t left = i.need_kbps ? (uint32_t)((uint64_t)i.free_mb * 1024 / i.need_kbps) : 0;
-    if (p.state != kPlayNone) strcpy(b, "YES REC  A ARM  B PLAY");   // the card's time: top right
-    else if (left >= 3600) sniprintf(b, sizeof b, CORE_STR("YES REC  A ARM  %luH%02luM"), (unsigned long)(left / 3600), (unsigned long)(left / 60 % 60));
-    else if (left) sniprintf(b, sizeof b, CORE_STR("YES REC  A ARM  %luM"), (unsigned long)(left / 60));
-    else strcpy(b, "YES REC  A ARM");
+    if (p.state != kPlayNone) strcpy(b, "YES: REC  A: ARM  B: PLAY");   // the card's time: top right
+    else if (left >= 3600) sniprintf(b, sizeof b, CORE_STR("YES: REC  A: ARM  %luH%02luM"), (unsigned long)(left / 3600), (unsigned long)(left / 60 % 60));
+    else if (left) sniprintf(b, sizeof b, CORE_STR("YES: REC  A: ARM  %luM"), (unsigned long)(left / 60));
+    else strcpy(b, "YES: REC  A: ARM  NO: BACK");
   }
   footer(c, b);
 }

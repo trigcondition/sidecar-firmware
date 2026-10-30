@@ -12,13 +12,16 @@
 
 #include "platform.h"
 #include "console.h"
+#include "crumb.h"   // the crash breadcrumb: the last file call by path (2026-10-29)
 
 namespace {
 
 struct Impl {
   FIL fil;
+  FIL* uf;                // a file on a USB drive / the NVMe SSD: its FIL in a slot of the aligned block (fil_take)
   DIR dir;
   bool open, isdir;
+  bool rd_err;            // the last nextEntry stopped on f_readdir's error (not the folder's end)
   int mode;
   uint32_t index, next;   // the entry's place in its folder; openNext's place in a folder
   char path[260];         // the card's path, "/Samples/x.wav"
@@ -30,12 +33,64 @@ constexpr int kReopen = 4;
 
 FATFS s_FatFs;
 
-void full(char* out, size_t n, const char* path) {   // "SD:" + the card's path ("/" added if it has none)
+// A path on another volume names its drive: "USB:/SIDECAR/x.zip" (FatFs's volume IDs, docs/STORAGE.md). Card paths
+// never hold a ':' (fsweb::path_ok refuses one). Returns the drive's length with its colon ("USB:" 4), 0 a card path.
+int vol_len(const char* p) {
+  int i = 0;
+  while (i < 6 && ((p[i] >= 'A' && p[i] <= 'Z') || (p[i] >= '0' && p[i] <= '9'))) ++i;
+  return i > 0 && p[i] == ':' ? i + 1 : 0;
+}
+bool other_vol(const char* p) { int n = vol_len(p); return n && !(n == 3 && p[0] == 'S' && p[1] == 'D'); }
+
+void full(char* out, size_t n, const char* path) {   // "SD:" + the card's path ("/" added if it has none); a drive's as is
   size_t k = 0;
-  const char* pre = path[0] == '/' ? "SD:" : "SD:/";
+  int v = vol_len(path);
+  const char* pre = v ? "" : path[0] == '/' ? "SD:" : "SD:/";
   for (const char* p = pre; *p && k + 1 < n; ++p) out[k++] = *p;
-  for (const char* p = path; *p && k + 1 < n; ++p) out[k++] = *p;
+  for (const char* p = path; *p && k + 1 < n; ++p) {
+    out[k++] = *p;
+    if (v && p == path + v - 1 && p[1] != '/' && k + 1 < n) out[k++] = '/';   // "USB:" -> "USB:/"
+  }
   out[k] = 0;
+}
+
+// I/O on a USB drive (or the NVMe SSD) keeps the volume layer's rule (pi/engine/stor_vol.h stor::piece): a transfer
+// of at most 64 KB that never crosses a 64 KB boundary of its buffer, from a cache-aligned buffer - Circle's xHCI puts
+// a bulk transfer into one TRB. The caller's buffer can be anything, so the bytes pass through one 64 KB-aligned
+// bounce block (core 0 alone uses these volumes: one block is enough).
+// ... and FatFs moves every partial sector through the FIL's own sector buffer: a USB file's FIL sits in a 4 KB slot of
+// a 64 KB-aligned block (as stor_pi's bench FILs), so that buffer is cache-aligned and never crosses 64 KB either.
+constexpr int kFilSlots = 16;   // 16 x 4 KB: one 64 KB block (files open on the other volumes at once)
+static_assert(sizeof(FIL) <= 4096, "a FIL in a 4 KB slot");
+uint8_t* s_pFilBlock;
+uint32_t s_nFilUsed;            // bit k: slot k taken
+FIL* fil_take() {
+  if (!s_pFilBlock) {
+    uint8_t* p = (uint8_t*)CMemorySystem::HeapAllocate(2 * 65536, HEAP_DMA30);
+    s_pFilBlock = p ? (uint8_t*)(((uintptr)p + 0xFFFF) & ~(uintptr)0xFFFF) : 0;   // (never freed)
+    if (!s_pFilBlock) return 0;
+  }
+  for (int k = 0; k < kFilSlots; ++k)
+    if (!(s_nFilUsed >> k & 1)) {
+      s_nFilUsed |= 1u << k;
+      return (FIL*)(s_pFilBlock + 4096 * k);
+    }
+  return 0;
+}
+void fil_give(FIL* f) {
+  if (!f || !s_pFilBlock) return;
+  int k = (int)(((uint8_t*)f - s_pFilBlock) / 4096);
+  if (k >= 0 && k < kFilSlots) s_nFilUsed &= ~(1u << k);
+}
+inline FIL* FL(Impl& f) { return f.uf ? f.uf : &f.fil; }
+inline const FIL* FL(const Impl& f) { return f.uf ? f.uf : &f.fil; }
+uint8_t* s_pBounce;
+uint8_t* bounce() {
+  if (!s_pBounce) {
+    uint8_t* p = (uint8_t*)CMemorySystem::HeapAllocate(2 * 65536, HEAP_DMA30);
+    s_pBounce = p ? (uint8_t*)(((uintptr)p + 0xFFFF) & ~(uintptr)0xFFFF) : 0;   // (never freed)
+  }
+  return s_pBounce;
 }
 
 uint64_t ticks() {
@@ -230,6 +285,41 @@ uint32_t sample_ram_total() {
 // its largest bucket (512 KB): freeing and allocating the arena again would leak it.
 void* sample_ram_alloc(uint32_t bytes) { return malloc(bytes); }
 void sample_ram_free(void* p) { free(p); }
+// MULTISAMPLE's instruments: msampram=MB (default 512), from the high heap (above 1 GB: the Pi 4/5 with 2 GB or more)
+// less 64 MB, else the low heap less 192 MB. One block at boot (never freed: see sample_ram_alloc).
+uint64_t msamp_ram_total() {
+  uint64_t mb = CKernelOptions::Get()->GetAppOptionDecimal("msampram", 512);
+  uint64_t hi = CMemorySystem::Get()->GetHeapFreeSpace(HEAP_HIGH) >> 20;
+  uint64_t room = hi > 64 ? hi - 64 : 0;
+  if (!room) {
+    uint64_t lo = CMemorySystem::Get()->GetHeapFreeSpace(HEAP_LOW) >> 20;
+    room = lo > 192 ? lo - 192 : 0;
+  }
+  if (mb > room) mb = room;
+  return mb << 20;
+}
+void* msamp_ram_alloc(uint64_t bytes) { return CMemorySystem::HeapAllocate(bytes, HEAP_ANY); }
+// The pool RAM (core/pool/pcache.h): poolram=MB, default 1024 MB (a 2 / 4 GB board) or 3072 MB (8 GB), at most the
+// high heap's free space (else the low heap's) less 64 MB at the time it is taken (after the machines' own buffers).
+uint64_t pool_ram_budget() {
+  uint64_t total = CMemorySystem::Get()->GetMemSize() >> 20;
+  uint64_t def = total >= 6000 ? 3072 : 1024;
+  uint64_t mb = CKernelOptions::Get()->GetAppOptionDecimal("poolram", (unsigned)def);
+  uint64_t hi = CMemorySystem::Get()->GetHeapFreeSpace(HEAP_HIGH) >> 20;
+  uint64_t room = hi > 64 ? hi - 64 : 0;
+  if (!room) {
+    uint64_t lo = CMemorySystem::Get()->GetHeapFreeSpace(HEAP_LOW) >> 20;
+    room = lo > 192 ? lo - 192 : 0;
+  }
+  if (mb > room) mb = room;
+  return mb << 20;
+}
+uint64_t card_free_bytes() {   // f_getfree walks the FAT once (cached by FatFs after that)
+  DWORD nFree;
+  FATFS* pFs;
+  if (f_getfree("SD:", &nFree, &pFs) != FR_OK) return 0;
+  return (uint64_t)nFree * pFs->csize * 512;
+}
 
 // ---- files
 static Impl& I(unsigned char* p) { return *reinterpret_cast<Impl*>(p); }
@@ -242,12 +332,16 @@ File::File(const File& o) {
   *this = o;
 }
 
-static bool is_root(const char* path) { return !path[0] || !strcmp(path, "/"); }
+static bool is_root(const char* path) {   // the card's root, or a drive's ("USB:", "USB:/")
+  int v = vol_len(path);
+  return !path[v] || !strcmp(path + v, "/");
+}
 
 // isdir: 1 a folder, 0 a file (the caller has its FILINFO), -1 unknown (f_stat, which walks the path).
 static bool open_path(Impl& f, const char* path, int mode, uint32_t index, int isdir = -1) {
   char p[270];
   full(p, sizeof p, path);
+  crumb::Fs(mode == kRead ? "open r" : "open w", p);
   bool dir = isdir >= 0 ? isdir == 1 : is_root(path);
   if (isdir < 0 && !dir) {
     FILINFO fi;
@@ -262,7 +356,13 @@ static bool open_path(Impl& f, const char* path, int mode, uint32_t index, int i
            : mode == kAppend      ? (FA_WRITE | FA_OPEN_APPEND)
            : mode == kReadWrite   ? (FA_READ | FA_WRITE | FA_CREATE_ALWAYS)
                                   : (FA_READ | FA_WRITE | FA_OPEN_EXISTING);   // kReopen
-    if (f_open(&f.fil, p, m) != FR_OK) return false;
+    f.uf = other_vol(path) ? fil_take() : 0;
+    if (other_vol(path) && !f.uf) return false;   // (all slots in use)
+    if (f_open(FL(f), p, m) != FR_OK) {
+      fil_give(f.uf);
+      f.uf = 0;
+      return false;
+    }
     f.isdir = false;
   }
   f.open = true;
@@ -285,7 +385,7 @@ File& File::operator=(const File& o) {
   const Impl& s = I(o.impl_);
   if (!s.open) return *this;
   Impl& d = I(impl_);
-  if (!s.isdir && s.mode == kRead) {
+  if (!s.isdir && s.mode == kRead && !s.uf) {   // (a USB file's FIL is in its slot: opened again below)
     memcpy(&d, &s, sizeof(Impl));
     return *this;
   }
@@ -295,7 +395,7 @@ File& File::operator=(const File& o) {
       FILINFO fi;
       for (uint32_t k = 0; k < s.next && f_readdir(&d.dir, &fi) == FR_OK && fi.fname[0]; ++k) d.next++;
     } else {
-      f_lseek(&d.fil, f_tell(&s.fil));
+      f_lseek(FL(d), f_tell(FL(s)));
     }
   }
   return *this;
@@ -352,15 +452,33 @@ bool File::openNext(File* dir, int mode) {
   return false;
 }
 
-bool File::close() {
-  Impl& f = I(impl_);
-  if (!f.open) return false;
-  if (f.isdir) f_closedir(&f.dir);
-  else f_close(&f.fil);
-  f.open = false;
+bool File::nextEntry(char* name, size_t n, bool* dir, uint64_t* size, uint16_t* fat_date, uint16_t* fat_time) {
+  Impl& d = I(impl_);
+  d.rd_err = false;
+  if (!d.open || !d.isdir || !n) return false;
+  FILINFO fi;
+  if (f_readdir(&d.dir, &fi) != FR_OK) return d.rd_err = true, false;   // (nextFailed: never taken for the end)
+  if (!fi.fname[0]) return false;
+  d.next++;
+  size_t k = strlen(fi.fname) < n - 1 ? strlen(fi.fname) : n - 1;
+  memcpy(name, fi.fname, k);
+  name[k] = 0;
+  *dir = (fi.fattrib & AM_DIR) != 0;
+  *size = *dir ? 0 : (uint64_t)fi.fsize;
+  *fat_date = fi.fdate, *fat_time = fi.ftime;
   return true;
 }
 
+bool File::close() {   // false: nothing open, or FatFs's close failed (a write's last sync: data or entry not kept)
+  Impl& f = I(impl_);
+  if (!f.open) return false;
+  bool ok = f.isdir ? f_closedir(&f.dir) == FR_OK : f_close(FL(f)) == FR_OK;
+  if (f.uf) fil_give(f.uf), f.uf = 0;
+  f.open = false;
+  return ok;
+}
+
+bool File::nextFailed() const { return I(impl_).rd_err; }
 bool File::isOpen() const { return I(impl_).open; }
 bool File::isDir() const { return I(impl_).open && I(impl_).isdir; }
 uint32_t File::dirIndex() const { return I(impl_).index; }
@@ -377,14 +495,27 @@ size_t File::getName(char* out, size_t n) const {
 
 uint64_t File::fileSize() const {
   const Impl& f = I(impl_);
-  return f.open && !f.isdir ? f_size(&f.fil) : 0;
+  return f.open && !f.isdir ? f_size(FL(f)) : 0;
 }
 
 int File::read(void* buf, size_t n) {
   Impl& f = I(impl_);
   if (!f.open || f.isdir || (f.mode != kRead && f.mode != kReadWrite)) return -1;
   UINT got = 0;
-  return f_read(&f.fil, buf, (UINT)n, &got) == FR_OK ? (int)got : -1;
+  if (other_vol(f.path)) {   // in 64 KB pieces through the aligned block
+    uint8_t* b = bounce();
+    if (!b) return -1;
+    size_t d = 0;
+    while (d < n) {
+      UINT k = n - d < 65536 ? (UINT)(n - d) : 65536, r = 0;
+      if (f_read(FL(f), b, k, &r) != FR_OK) return d ? (int)d : -1;
+      memcpy((uint8_t*)buf + d, b, r);
+      d += r;
+      if (r < k) break;   // the file's end
+    }
+    return (int)d;
+  }
+  return f_read(FL(f), buf, (UINT)n, &got) == FR_OK ? (int)got : -1;
 }
 
 int File::read() {
@@ -395,10 +526,24 @@ int File::read() {
 size_t File::write(const void* buf, size_t n) {
   Impl& f = I(impl_);
   if (!f.open || f.isdir || f.mode == kRead) return 0;
-  if (f.mode == kAppend && f_lseek(&f.fil, f_size(&f.fil)) != FR_OK) return 0;   // as O_APPEND: always at the end
+  if (f.mode == kAppend && f_lseek(FL(f), f_size(FL(f))) != FR_OK) return 0;   // as O_APPEND: always at the end
   UINT put = 0;
-  if (f_write(&f.fil, buf, (UINT)n, &put) != FR_OK) return 0;
-  f_sync(&f.fil);
+  if (other_vol(f.path)) {   // in 64 KB pieces through the aligned block
+    uint8_t* b = bounce();
+    if (!b) return 0;
+    size_t d = 0;
+    while (d < n) {
+      UINT k = n - d < 65536 ? (UINT)(n - d) : 65536, w = 0;
+      memcpy(b, (const uint8_t*)buf + d, k);
+      if (f_write(FL(f), b, k, &w) != FR_OK) break;
+      d += w;
+      if (w < k) break;   // the volume is full
+    }
+    f_sync(FL(f));
+    return d;
+  }
+  if (f_write(FL(f), buf, (UINT)n, &put) != FR_OK) return 0;
+  f_sync(FL(f));
   return put;
 }
 
@@ -410,18 +555,18 @@ bool File::seekSet(uint64_t pos) {
     f.next = 0;
     return true;
   }
-  if (pos > f_size(&f.fil)) return false;
-  return f_lseek(&f.fil, (FSIZE_t)pos) == FR_OK;
+  if (pos > f_size(FL(f))) return false;
+  return f_lseek(FL(f), (FSIZE_t)pos) == FR_OK;
 }
 
 uint64_t File::curPosition() const {
   const Impl& f = I(impl_);
-  return f.open && !f.isdir ? f_tell(&f.fil) : 0;
+  return f.open && !f.isdir ? f_tell(FL(f)) : 0;
 }
 
 int File::available() const {
   const Impl& f = I(impl_);
-  return f.open && !f.isdir ? (int)(f_size(&f.fil) - f_tell(&f.fil)) : 0;
+  return f.open && !f.isdir ? (int)(f_size(FL(f)) - f_tell(FL(f))) : 0;
 }
 
 void File::rewind() {
@@ -431,7 +576,7 @@ void File::rewind() {
     f_rewinddir(&f.dir);
     f.next = 0;
   } else {
-    f_lseek(&f.fil, 0);
+    f_lseek(FL(f), 0);
   }
 }
 
@@ -454,12 +599,14 @@ bool Fs::begin() { return f_mount(&s_FatFs, "SD:", 1) == FR_OK; }
 bool Fs::mkdir(const char* path) {   // with its parents, as SdFat's mkdir
   char p[270];
   full(p, sizeof p, path);
-  for (char* c = p + 4;; ++c)   // after "SD:/"
+  crumb::Fs("mkdir", p);
+  int r = vol_len(p) + 1;   // after "SD:/" (or "USB:/")
+  for (char* c = p + r;; ++c)
     if (*c == '/' || !*c) {
       char keep = *c;
       *c = 0;
       FILINFO fi;
-      if (c > p + 4 && f_stat(p, &fi) != FR_OK && f_mkdir(p) != FR_OK) return false;
+      if (c > p + r && f_stat(p, &fi) != FR_OK && f_mkdir(p) != FR_OK) return false;
       if (!keep) return true;
       *c = keep;
     }
@@ -467,14 +614,17 @@ bool Fs::mkdir(const char* path) {   // with its parents, as SdFat's mkdir
 
 bool Fs::rename(const char* a, const char* b) {
   char pa[270], pb[270];
+  if (vol_len(a) != vol_len(b) || strncmp(a, b, vol_len(a))) return false;   // (FatFs renames within one volume only)
   full(pa, sizeof pa, a);
   full(pb, sizeof pb, b);
-  return f_rename(pa, pb + 3) == FR_OK;   // FatFs: the new name's drive is the old one's ("SD:" left off)
+  crumb::Fs("rename", pa);
+  return f_rename(pa, pb + vol_len(pb)) == FR_OK;   // FatFs: the new name's drive is the old one's ("SD:" left off)
 }
 
 bool Fs::remove(const char* path) {
   char p[270];
   full(p, sizeof p, path);
+  crumb::Fs("remove", p);
   return f_unlink(p) == FR_OK;
 }
 
@@ -482,8 +632,19 @@ bool Fs::exists(const char* path) {
   if (is_root(path)) return true;
   char p[270];
   full(p, sizeof p, path);
+  crumb::Fs("exists", p);
   FILINFO fi;
   return f_stat(p, &fi) == FR_OK;
+}
+
+int Fs::lookup(const char* path) {
+  if (is_root(path)) return 1;
+  char p[270];
+  full(p, sizeof p, path);
+  crumb::Fs("lookup", p);
+  FILINFO fi;
+  FRESULT r = f_stat(p, &fi);
+  return r == FR_OK ? 1 : r == FR_NO_FILE || r == FR_NO_PATH ? 0 : -1;
 }
 
 static void fnv(uint64_t* h, const void* d, size_t n) {

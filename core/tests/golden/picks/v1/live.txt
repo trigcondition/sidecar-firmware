@@ -1,0 +1,2 @@
+0 2 0 /Samples/Live/s0.wav
+3 7 1 /GRANULAR/pad.wav

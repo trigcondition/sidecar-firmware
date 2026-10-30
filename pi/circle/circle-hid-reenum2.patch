@@ -1,0 +1,494 @@
+diff -ruN a/include/circle/usb/usbdevice.h b/include/circle/usb/usbdevice.h
+--- a/include/circle/usb/usbdevice.h	2026-10-25 08:39:02
++++ b/include/circle/usb/usbdevice.h	2026-10-25 08:39:02
+@@ -61,6 +61,8 @@
+ 	// ReScanDevices (). Exactly one of the two is non-zero.
+ 	CUSBStandardHub *GetParentHub (void) const	{ return m_pHub; }
+ 	CUSBHCIRootPort *GetParentRootPort (void) const	{ return m_pRootPort; }
++	// circle-hid-reenum2.patch: and which of the hub's ports, 0-based, for the port power cycle
++	unsigned GetParentHubPortIndex (void) const	{ return m_nHubPortIndex; }
+ 
+ 	CString *GetName (TDeviceNameSelector Selector) const;	// string deleted by caller
+ 	CString *GetNames (void) const;				// string deleted by caller
+diff -ruN a/include/circle/usb/usbhiddevice.h b/include/circle/usb/usbhiddevice.h
+--- a/include/circle/usb/usbhiddevice.h	2026-10-25 08:39:02
++++ b/include/circle/usb/usbhiddevice.h	2026-10-25 08:39:02
+@@ -24,6 +24,7 @@
+ #include <circle/usb/usbendpoint.h>
+ #include <circle/usb/usbrequest.h>
+ #include <circle/usb/usbhostcontroller.h>
++#include <circle/usb/hidreenum.h>
+ #include <circle/types.h>
+ 
+ class CUSBHIDDevice : public CUSBFunction
+@@ -52,8 +53,15 @@
+ 		unsigned nState;		// endpoint state now: 0 off, 1 running, 2 halted, 3 stopped, 4 error
+ 		unsigned nPending;		// URBs queued on the endpoint
+ 		boolean  bGaveUp;		// 50 errors in a row: Poll() now retries once a second
+-		// circle-hid-reenum.patch: the escalation from the endpoint reset to a device re-enumeration
++		// circle-hid-reenum.patch: the escalation from the endpoint reset to a device re-enumeration.
++		// circle-hid-reenum2.patch added the rest: the first version stalled on hardware with "reenum 2" and
++		// no exhausted flag, and nothing in the stats said why. nGaveUpHeldMs is the clock the escalation
++		// waits on and nReEnumKey is the budget's identity, so a stall is now readable from one log line.
+ 		unsigned nReEnums;		// re-enumerations forced since boot
++		unsigned nReEnumTries;		// of them, spent on the device polled here
++		unsigned nReEnumMax;		// the budget per device
++		unsigned nGaveUpHeldMs;		// how long the given-up run has held; 0: no run in progress
++		unsigned nReEnumKey;		// the device's place in the USB tree; 0: unknown, never escalated
+ 		boolean  bReEnumExhausted;	// the budget is spent: no further re-enumeration is tried
+ 	};
+ 	void Poll (void);
+@@ -87,7 +95,8 @@
+ 	static void CompletionStub (CUSBRequest *pURB, void *pParam, void *pContext);
+ 
+ 	unsigned ReEnumKey (void) const;	// circle-hid-reenum.patch: see usbhiddevice.cpp
+-	boolean TryReEnumerate (void);		//	(deletes this object when it returns TRUE)
++						// circle-hid-reenum2.patch: the step comes from hidreenum::Decide()
++	boolean TryReEnumerate (hidreenum::Step Step);	// (deletes this object when it returns TRUE)
+ 
+ 	static void SendCompletionRoutine (CUSBRequest *pURB, void *pParam, void *pContext);
+ 
+@@ -106,16 +115,11 @@
+ 	volatile unsigned m_nReports, m_nErrors;
+ 	unsigned m_nResubmits, m_nResets, m_nFailed;
+ 
+-	// circle-hid-reenum.patch: written and read by Poll () only, never by the completion routine (IRQ)
+-	unsigned m_nGaveUpSinceHZ;	// first tick of the current given-up run, +1; 0: not given up
+-	unsigned m_nHealthySinceHZ;	// first tick the endpoint has been armed and error-free, +1; 0: it is not
+-
+-	// The re-enumeration budget, one device at a time, keyed on the device's place in the USB tree: that key
+-	// outlives a re-enumeration, this object does not. Poll () only, and Poll () runs on one core.
+-	static unsigned s_nReEnumKey;		// 0: nobody holds the budget
+-	static unsigned s_nReEnumTries;		// re-enumerations spent on s_nReEnumKey
+-	static unsigned s_nReEnums;		// re-enumerations since boot, for the diagnostics
+-	static boolean  s_bReEnumExhausted;	// s_nReEnumKey has spent its budget
++	// circle-hid-reenum.patch, policy in circle/hidreenum.h (pi/circle/hid_reenum.h, which build.sh copies into
++	// the tree; pi/engine/tests/test_hid_reenum.cpp replays the measured timeline against it). Written and read
++	// by Poll () only, never by the completion routine (IRQ), and Poll () runs on one core.
++	hidreenum::Hold m_Hold;			// the clocks, per device object: a re-enumeration starts them again
++	static hidreenum::Budget s_Budget;	// the budget, keyed on the place in the USB tree, which outlives us
+ };
+ 
+ #endif
+diff -ruN a/include/circle/usb/usbstandardhub.h b/include/circle/usb/usbstandardhub.h
+--- a/include/circle/usb/usbstandardhub.h	2026-10-25 08:39:02
++++ b/include/circle/usb/usbstandardhub.h	2026-10-25 08:39:02
+@@ -43,6 +43,14 @@
+ 
+ 	boolean DisablePort (unsigned nPortIndex);	// nPortIndex is 0-based
+ 
++	// circle-hid-reenum2.patch: for CUSBHIDDevice::Poll()'s last resort - dropping VBUS on one port, which is the
++	// part of a replug that removing the device cannot imitate. Logged at boot, see Initialize().
++	unsigned GetPowerSwitchMode (void) const;	// 0 ganged, 1 individual, 2 none (usbhub.h HUB_POWER_MODE)
++	// Powers the port off and waits nOffMs. The power is NOT switched back on here: the hub's power flag is
++	// cleared instead, so the ReScanDevices() the caller makes next powers every port again and takes the
++	// power-good delay before it resets the port and enumerates. Remove the device on the port first.
++	boolean PortPowerCycle (unsigned nPortIndex, unsigned nOffMs);
++
+ #if RASPPI >= 4
+ 	const TUSBHubInfo *GetHubInfo (void) const;
+ #endif
+diff -ruN a/lib/usb/usbhiddevice.cpp b/lib/usb/usbhiddevice.cpp
+--- a/lib/usb/usbhiddevice.cpp	2026-10-25 08:39:02
++++ b/lib/usb/usbhiddevice.cpp	2026-10-25 08:39:02
+@@ -42,42 +42,19 @@
+ static const unsigned ErrorDecayMs = 2000;
+ 
+ // circle-hid-reenum.patch: the escalation from the endpoint-level recovery above to a forced re-enumeration of the
+-// whole device.
++// whole device. When to do it, how often and how far to go is all in circle/hidreenum.h, which is a plain header so
++// that pi/engine/tests/test_hid_reenum.cpp can replay a measured timeline against it on the Mac. The reasoning
++// behind the thresholds is there too; the short version is that the endpoint reset provably cannot revive this panel
++// (4201 successful resets, endpoint state 2 for ever, not one report) while a replug does.
+ //
+-// Measured on the GeeekPi 7" case's touch screen (0416:c169) after its own OSD menu changed the touch rotation, and
+-// unchanged by a cold power cycle: 4201 endpoint resets and 4201 resubmits that all reported success, endpoint state
+-// 2 (halted) for ever, xHCI completion code 36 (split transaction error), and not one report delivered. Pulling the
+-// USB cable out and putting it back fixed it completely. So reset-from-halted is mechanically fine and still cannot
+-// revive the endpoint, while a fresh address and device context can - and that is what a re-enumeration gives.
+-//
+-// ReEnumAfterGaveUpMs: how long the loop must have been in its given-up state (m_nErrorCount at
+-// MaxConsecutiveErrors) before Poll () escalates. Errors come back as fast as the transfers complete, so the count
+-// reaches 50 within milliseconds and the loop then retries once a second: 10 s means 50 immediate errors plus about
+-// ten reset-and-resubmit cycles that each reported success and still produced no report. That is far past any
+-// transient (a bus glitch or a device hiccup is over in one or two retries) and past the hub's 510 ms power-good and
+-// 100 ms port-reset delays, so a device that is merely still coming up is never touched. It is short enough that the
+-// screen is back before whoever is poking at it has given up.
+-static const unsigned ReEnumAfterGaveUpMs = 10000;
++// How long VBUS stays off in the last two tries of the ladder. A replug is of the order of a second; 300 ms is long
++// enough for the panel's rails to sag and short enough to keep one main-loop pass well inside the 15 s watchdog -
++// the whole escalation is 300 ms off plus the hub's 510 ms power-good delay plus about 100 ms per port reset and the
++// descriptor traffic, so under 1.5 s. It can go to about 2 s before that gets uncomfortable.
++static const unsigned ReEnumPowerOffMs = 300;
+ 
+-// MaxReEnums: a replug fixes this in one go, so three re-enumerations that each fail to produce a working endpoint
+-// mean a broken device or cable, and more port resets will not help. The budget is then spent, the device is left to
+-// the endpoint-level loop, and the diagnostics say REENUM-EXHAUSTED. The tries are at least ReEnumAfterGaveUpMs
+-// apart by construction (each one has to earn its own MaxConsecutiveErrors run and its own silence), and a device
+-// that is simply unplugged is removed by Circle's own plug-and-play and never polled again, so it cannot spend the
+-// budget at all.
+-static const unsigned MaxReEnums = 3;
++hidreenum::Budget CUSBHIDDevice::s_Budget = {0, 0, 0, 0, false};
+ 
+-// ReEnumForgiveMs: the budget is handed back when the endpoint has been armed (state 1 with a request queued) and
+-// error-free for this long, which is a real recovery and not a device that re-halts on its first transfer. An idle
+-// touch screen sends no reports at all, so the health test cannot wait for one. 30 s is three times the escalation
+-// delay, so a device that keeps dying cannot refund itself faster than it spends.
+-static const unsigned ReEnumForgiveMs = 30000;
+-
+-unsigned CUSBHIDDevice::s_nReEnumKey = 0;
+-unsigned CUSBHIDDevice::s_nReEnumTries = 0;
+-unsigned CUSBHIDDevice::s_nReEnums = 0;
+-boolean CUSBHIDDevice::s_bReEnumExhausted = FALSE;
+-
+ CUSBHIDDevice::CUSBHIDDevice (CUSBFunction *pFunction, unsigned nMaxReportSize)
+ :	CUSBFunction (pFunction),
+ 	m_nMaxReportSize (nMaxReportSize),
+@@ -93,10 +70,10 @@
+ 	m_nErrors (0),
+ 	m_nResubmits (0),
+ 	m_nResets (0),
+-	m_nFailed (0),
+-	m_nGaveUpSinceHZ (0),
+-	m_nHealthySinceHZ (0)
++	m_nFailed (0)
+ {
++	memset (&m_Hold, 0, sizeof m_Hold);		// circle-hid-reenum.patch
++
+ 	if (m_nMaxReportSize > 0)
+ 	{
+ 		m_pReportBuffer = new u8[m_nMaxReportSize];
+@@ -352,7 +329,34 @@
+ 
+ 	CXHCIEndpoint *pXHCI = m_pReportEndpoint->GetXHCIEndpoint ();
+ 	unsigned nNowHZ = CTimer::Get ()->GetTicks ();
++	unsigned nState = pXHCI->GetEPState ();
+ 
++	// circle-hid-reenum.patch: the escalation, decided on every pass and before any early return below. The
++	// policy's clocks have to see every pass, and in particular the given-up clock must not depend on which
++	// branch of the endpoint recovery happens to run.
++	//
++	// circle-hid-reenum2.patch: it used to be decided down in the recovery's branches, and the branch that
++	// treats endpoint state 1 as "nothing is wrong" reset the clock. ResetFromHalted() plus the doorbell from
++	// the resubmit put a dead endpoint into state 1 for as long as the transfer is in flight, so that state was
++	// the recovery's own doing - and whenever the error took longer to come back than one main-loop pass, the
++	// clock was rewound and the escalation never reached its ten seconds. Measured on the real panel: the ladder
++	// stalled at two tries of three, errors past 150, and the exhausted flag never appeared. So the state is now
++	// only ever an input to "is the endpoint armed", never a reason to forget a run of errors.
++	hidreenum::Input In;
++	In.nowHZ = nNowHZ;
++	In.hz = HZ;
++	In.Key = ReEnumKey ();
++	In.Errors = m_nErrors;
++	In.bGaveUp = m_nErrorCount >= MaxConsecutiveErrors;
++	In.bArmed = nState == 1 && pXHCI->GetPendingURBs () > 0;
++
++	hidreenum::Step Step = hidreenum::Decide (&m_Hold, &s_Budget, In);
++	if (   Step != hidreenum::StepNone
++	    && TryReEnumerate (Step))
++	{
++		return;						// *this* has been deleted: touch nothing
++	}
++
+ 	if (!m_bRecover)
+ 	{
+ 		// not told by an error: look at the endpoint twice a second (a halt whose event never came)
+@@ -362,66 +366,18 @@
+ 		}
+ 		m_nLastCheckTicks = nNowHZ;
+ 
+-		unsigned nState = pXHCI->GetEPState ();
+ 		if (nState == 0 || nState == 1)
+ 		{
+-			// circle-hid-reenum.patch: nothing is stuck, so no escalation clock runs; and once the
+-			// endpoint has been armed and error-free for ReEnumForgiveMs the budget is handed back
+-			m_nGaveUpSinceHZ = 0;
+-
+-			if (   nState == 1
+-			    && m_nErrorCount == 0
+-			    && pXHCI->GetPendingURBs () > 0)
+-			{
+-				if (m_nHealthySinceHZ == 0)
+-				{
+-					m_nHealthySinceHZ = nNowHZ + 1;		// +1: 0 means "no clock"
+-				}
+-				else if (   nNowHZ + 1 - m_nHealthySinceHZ >= MSEC2HZ (ReEnumForgiveMs)
+-					 && s_nReEnumKey != 0
+-					 && s_nReEnumKey == ReEnumKey ())
+-				{
+-					s_nReEnumKey = 0;
+-					s_nReEnumTries = 0;
+-					s_bReEnumExhausted = FALSE;
+-				}
+-			}
+-			else
+-			{
+-				m_nHealthySinceHZ = 0;
+-			}
+-
+ 			return;
+ 		}
+ 		m_bRecover = TRUE;
+ 	}
+ 
+-	m_nHealthySinceHZ = 0;			// recovering, not healthy (circle-hid-reenum.patch)
+-
+-	if (m_nErrorCount >= MaxConsecutiveErrors)
++	if (   m_nErrorCount >= MaxConsecutiveErrors
++	    && nNowHZ - m_nLastRecoverTicks < HZ)
+ 	{
+-		if (m_nGaveUpSinceHZ == 0)
+-		{
+-			m_nGaveUpSinceHZ = nNowHZ + 1;		// the given-up run starts here (+1: 0 is "no clock")
+-		}
+-
+-		if (nNowHZ - m_nLastRecoverTicks < HZ)
+-		{
+-			return;					// slowed down, not given up
+-		}
+-
+-		// circle-hid-reenum.patch: the reset and resubmit below have been reporting success and achieving
+-		// nothing for ReEnumAfterGaveUpMs. Escalate to the software equivalent of a replug.
+-		if (   nNowHZ + 1 - m_nGaveUpSinceHZ >= MSEC2HZ (ReEnumAfterGaveUpMs)
+-		    && TryReEnumerate ())
+-		{
+-			return;					// *this* has been deleted: touch nothing
+-		}
++		return;						// slowed down, not given up
+ 	}
+-	else
+-	{
+-		m_nGaveUpSinceHZ = 0;
+-	}
+ 	m_nLastRecoverTicks = nNowHZ;
+ 
+ 	if (pXHCI->GetEPState () >= 2)				// halted, stopped or error
+@@ -475,61 +431,79 @@
+ }
+ 
+ // circle-hid-reenum.patch: the software replug. Called from Poll () only, which runs on the main loop: this resets a
+-// hub port, frees and allocates an xHCI slot and enumerates a device, none of which may happen in a completion
+-// routine (IRQ).
++// hub port, frees and allocates an xHCI slot, may drop VBUS and enumerates a device, none of which may happen in a
++// completion routine (IRQ).
+ //
+ // CUSBDevice::RemoveDevice () is what CUSBStandardHub runs when a device is unplugged: it disables the hub port,
+ // frees the xHCI slot and deletes the device with its functions. The parent's ReScanDevices () is what it runs when
+ // one is plugged in: it resets the port and enumerates whatever answers, with a new slot ID and a new device
+-// context. The two in a row are therefore the hot-plug path the host controller already takes, not a new one, and
+-// they are the least that gives the fresh address and context an endpoint reset provably cannot.
++// context. The two in a row are therefore the hot-plug path the host controller already takes, not a new one.
+ //
++// circle-hid-reenum2.patch: measured on the real panel, that pair does revive it - counters to zero, endpoint state
++// 1, a report pending, twice over, with no cable touched - but it re-halts five to ten seconds later every time,
++// and a cold power cycle of the Pi never helped either. So the last two tries of the ladder also drop VBUS on the
++// hub port, which is the one thing a replug does that removing the device cannot imitate.
++//
+ // The device owns this CUSBFunction, so RemoveDevice () deletes *this*. Everything needed afterwards is taken into
+-// locals or the statics above first, and no member of this object is read or written once RemoveDevice () has been
+-// called. Returns TRUE when the device was removed - the caller must then return at once.
+-boolean CUSBHIDDevice::TryReEnumerate (void)
++// locals or the budget first, and no member of this object is read or written once RemoveDevice () has been called.
++// Returns TRUE when the device was removed - the caller must then return at once.
++boolean CUSBHIDDevice::TryReEnumerate (hidreenum::Step Step)
+ {
+ #if RASPPI >= 4
+-	unsigned nKey = ReEnumKey ();
+-	if (nKey == 0)
++	CUSBDevice *pDevice = GetDevice ();
++	if (pDevice == 0)
+ 	{
+-		return FALSE;				// no stable identity: nothing to bound the budget with
++		return FALSE;
+ 	}
+ 
+-	if (nKey != s_nReEnumKey)
+-	{
+-		s_nReEnumKey = nKey;			// another device: it gets its own budget
+-		s_nReEnumTries = 0;
+-		s_bReEnumExhausted = FALSE;
+-	}
+-
+-	if (s_bReEnumExhausted)
+-	{
+-		return FALSE;				// given up for good; the endpoint-level loop carries on
+-	}
+-
+-	CUSBDevice *pDevice = GetDevice ();
+-	assert (pDevice != 0);
+ 	CUSBStandardHub *pHub = pDevice->GetParentHub ();	// the parent outlives us; one of the two is set
+ 	CUSBHCIRootPort *pRootPort = pDevice->GetParentRootPort ();
++	unsigned nPortIndex = pDevice->GetParentHubPortIndex ();
+ 	if (   pHub == 0
+ 	    && pRootPort == 0)
+ 	{
+-		return FALSE;				// nothing left that could enumerate it again
++		return FALSE;					// nothing left that could enumerate it again
+ 	}
+ 
+-	if (++s_nReEnumTries >= MaxReEnums)
++	// The power cycle needs a hub that switches power per port. Say so when it does not, rather than quietly
++	// repeating the plain re-enumeration and looking in the log as though something new was tried.
++	boolean bPowerCycle = Step == hidreenum::StepPowerCycle;
++	if (bPowerCycle)
+ 	{
+-		s_bReEnumExhausted = TRUE;		// this is the last try for this device
++		if (pHub == 0)
++		{
++			CLogger::Get ()->Write (FromUSBHID, LogWarning,
++						"No port power cycle: the device is on a root port");
++
++			bPowerCycle = FALSE;
++		}
++		else if (pHub->GetPowerSwitchMode () > HUB_POWER_MODE_INDIVIDUAL)
++		{
++			CLogger::Get ()->Write (FromUSBHID, LogWarning,
++				"No port power cycle: this hub has no logical power switching (see its boot line)");
++
++			bPowerCycle = FALSE;
++		}
+ 	}
+-	s_nReEnums++;
+ 
+ 	CLogger::Get ()->Write (FromUSBHID, LogWarning,
+-				"Report endpoint stays halted: re-enumerating the device (try %u of %u)",
+-				s_nReEnumTries, MaxReEnums);
++				"Report endpoint stays halted: re-enumerating the device%s (try %u of %u)",
++				bPowerCycle ? " with a port power cycle" : "",
++				s_Budget.Tries, (unsigned) hidreenum::MaxTries);
+ 
+-	pDevice->RemoveDevice ();			// deletes pDevice and *this*
++	// The removal goes first even for the power cycle: cutting VBUS first would make its CLEAR_FEATURE
++	// PORT_ENABLE fail, and RemoveDeviceAt () then refuses to delete the device, which would leave a stale
++	// object on a dead port.
++	pDevice->RemoveDevice ();				// deletes pDevice and *this*
+ 
++	if (   bPowerCycle
++	    && !pHub->PortPowerCycle (nPortIndex, ReEnumPowerOffMs))
++	{
++		CLogger::Get ()->Write (FromUSBHID, LogWarning, "Port power cycle failed");
++	}
++
++	// ReScanDevices () powers every port again (PortPowerCycle () cleared the hub's power flag, so this takes
++	// the power-good delay too), resets the port and enumerates whatever answers.
+ 	if (pHub != 0)
+ 	{
+ 		pHub->ReScanDevices ();
+@@ -541,13 +515,14 @@
+ 
+ 	return TRUE;
+ #else
++	(void) Step;
+ 	return FALSE;
+ #endif
+ }
+ 
+ unsigned CUSBHIDDevice::GetReEnumCount (void)
+ {
+-	return s_nReEnums;
++	return s_Budget.Total;
+ }
+ 
+ void CUSBHIDDevice::GetHIDStats (THIDStats *pStats)
+@@ -559,8 +534,12 @@
+ 	pStats->nResets = m_nResets;
+ 	pStats->nFailed = m_nFailed;
+ 	pStats->bGaveUp = m_nErrorCount >= MaxConsecutiveErrors;
+-	pStats->nReEnums = s_nReEnums;				// circle-hid-reenum.patch
+-	pStats->bReEnumExhausted = s_bReEnumExhausted;
++	pStats->nReEnums = s_Budget.Total;			// circle-hid-reenum.patch
++	pStats->nReEnumTries = s_Budget.Tries;
++	pStats->nReEnumMax = hidreenum::MaxTries;
++	pStats->nGaveUpHeldMs = hidreenum::HeldMs (m_Hold, CTimer::Get ()->GetTicks (), HZ);
++	pStats->nReEnumKey = ReEnumKey ();
++	pStats->bReEnumExhausted = s_Budget.Spent;
+ #if RASPPI >= 4
+ 	if (m_pReportEndpoint != 0 && m_pReportEndpoint->GetXHCIEndpoint () != 0)
+ 	{
+diff -ruN a/lib/usb/usbstandardhub.cpp b/lib/usb/usbstandardhub.cpp
+--- a/lib/usb/usbstandardhub.cpp	2026-10-25 08:39:02
++++ b/lib/usb/usbstandardhub.cpp	2026-10-25 08:39:02
+@@ -128,6 +128,27 @@
+ 		return FALSE;
+ 	}
+ 
++	// circle-hid-reenum2.patch: the hub's power switching and over-current modes at boot. CUSBHIDDevice::Poll ()
++	// can only drop VBUS on a port as its last resort if the hub switches power per port (or ganged), so this is
++	// how the panel's own hub is read off the log. bPwrOn2PwrGood is in 2 ms units; Circle's EnumeratePorts ()
++	// uses a flat 510 ms instead because the value many hubs report is too small.
++	{
++		unsigned nChar = m_pHubDesc->wHubCharacteristics;
++		static const char *pPowerMode[4] = {"ganged", "individual", "none", "none"};
++		static const char *pOverCurrent[4] = {"global", "per-port", "none", "none"};
++
++		CLogger::Get ()->Write (FromHub, LogNotice,
++			"%u port(s), characteristics 0x%04X (power switching %s, over-current %s%s), "
++			"bPwrOn2PwrGood %u (%u ms), bHubContrCurrent %u mA, removable 0x%02X, power mask 0x%02X",
++			m_nPorts, nChar, pPowerMode[nChar & 3], pOverCurrent[(nChar >> 3) & 3],
++			(nChar & (1 << 2)) != 0 ? ", compound device" : "",
++			(unsigned) m_pHubDesc->bPwrOn2PwrGood,
++			(unsigned) m_pHubDesc->bPwrOn2PwrGood * 2,
++			(unsigned) m_pHubDesc->bHubContrCurrent,
++			(unsigned) m_pHubDesc->DeviceRemoveable[0],
++			(unsigned) m_pHubDesc->PortPwrCtrlMask[0]);
++	}
++
+ #if RASPPI >= 4
+ 	m_pHubInfo = new TUSBHubInfo;
+ 	assert (m_pHubInfo != 0);
+@@ -228,6 +249,55 @@
+ 	}
+ 
+ 	m_bPortConfigured[nPortIndex] = FALSE;
++
++	return TRUE;
++}
++
++// circle-hid-reenum2.patch: the hub's logical power switching mode (usbhub.h): 0 ganged - a request for one port
++// may switch them all - 1 individual, 2 none at all. 2 also when there is no descriptor.
++unsigned CUSBStandardHub::GetPowerSwitchMode (void) const
++{
++	if (m_pHubDesc == 0)
++	{
++		return 2;
++	}
++
++	unsigned nMode = HUB_POWER_MODE (m_pHubDesc->wHubCharacteristics);
++
++	return nMode <= HUB_POWER_MODE_INDIVIDUAL ? nMode : 2;
++}
++
++// circle-hid-reenum2.patch: drop VBUS on one port for nOffMs, for a device whose report endpoint cannot be revived
++// any other way. The power is not switched back on here: the hub's power flag is cleared instead, so the
++// ReScanDevices () the caller makes next powers every port again and takes the power-good delay before it resets
++// the port and enumerates - the same order as a cold start. The device on the port must already have been removed;
++// this does not touch m_pDevice[]. With ganged switching the hub may well drop every port, so anything else on it
++// is re-enumerated by plug-and-play as if it had been replugged.
++boolean CUSBStandardHub::PortPowerCycle (unsigned nPortIndex, unsigned nOffMs)
++{
++	if (   nPortIndex >= m_nPorts
++	    || GetPowerSwitchMode () > HUB_POWER_MODE_INDIVIDUAL)
++	{
++		return FALSE;
++	}
++
++	if (GetHost ()->ControlMessage (GetEndpoint0 (),
++					REQUEST_OUT | REQUEST_CLASS | REQUEST_TO_OTHER,
++					CLEAR_FEATURE, PORT_POWER, nPortIndex+1, 0, 0) < 0)
++	{
++		CLogger::Get ()->Write (FromHub, LogError, "Cannot power off port %u", nPortIndex+1);
++
++		return FALSE;
++	}
++
++	CLogger::Get ()->Write (FromHub, LogNotice, "Port %u powered off for %u ms (%s switching)",
++				nPortIndex+1, nOffMs,
++				GetPowerSwitchMode () == HUB_POWER_MODE_INDIVIDUAL ? "individual" : "ganged");
++
++	m_bPowerIsOn = FALSE;			// EnumeratePorts () powers every port again, with its delay
++	m_bPortConfigured[nPortIndex] = FALSE;
++
++	CTimer::Get ()->MsDelay (nOffMs);
+ 
+ 	return TRUE;
+ }

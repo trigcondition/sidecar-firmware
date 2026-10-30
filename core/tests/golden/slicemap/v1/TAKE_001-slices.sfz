@@ -1,0 +1,6 @@
+// Sidecar sample TAKE_001: 4 slices (transients), 48 kHz; key 36 (C1) is the first
+<global> loop_mode=one_shot ampeg_attack=0.001 ampeg_release=0.02
+<region> sample=TAKE_001.wav key=36 pitch_keycenter=36 offset=0 end=11999
+<region> sample=TAKE_001.wav key=37 pitch_keycenter=37 offset=12000 end=24499
+<region> sample=TAKE_001.wav key=38 pitch_keycenter=38 offset=24500 end=35999
+<region> sample=TAKE_001.wav key=39 pitch_keycenter=39 offset=36000 end=47999

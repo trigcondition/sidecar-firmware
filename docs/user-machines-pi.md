@@ -154,7 +154,13 @@ core library, because `teensy/setup_core_lib.sh` leaves `core/user/` out.
 - **Scan** of `/Plugins`, one bounded step at a time (at most 8 KB read per step), on the control core between
   blocks. For each file it checks the header, the CRC, the entry table, the manifest, the target, whether the
   state fits (64 KB per voice) and whether the code fits.
-  - A duplicate id loads only its highest version; the other copies are listed with the reason.
+  - One id in several versions (bundles phase 4, docs/BUNDLES.md "Exactness"): every version is kept side by side
+    (`/Plugins/<id>-<a.b.c>.rmp` from a bundle's import, any file name otherwise). The **newest** is the id's
+    default: the only one in the Rytm's list and the one a fresh assignment takes; older ones are listed as
+    `"older": true`. A **slot plays the exact version its map names** (`U<n> <id> <a.b.c>`) when that one is
+    installed; else the newest, if the version wanted is in its compatible range (`compatible_from` .. its version);
+    else the slot is MISSING ("the slot wants X, installed Y"). The slot JSON says what it plays (`file`,
+    `play_ver`). The same id and version twice: the first copy loads, the other is listed as a duplicate.
   - Up to 32 packages go into the Rytm's installed list (1B 0x21). A name that repeats in its first 9 characters
     gets `~2`, as on the Teensy.
 - **Slots:**
@@ -169,6 +175,10 @@ core library, because `teensy/setup_core_lib.sh` leaves `core/user/` out.
   and every 5 s in any case.
 - **Voices:**
   - Plugin state lives in 64 KB per voice from the heap, not the built-in engines' scratch.
+  - seqx (E0): a package whose header opts in (`max_voices` > 1 in its manifest: RMP_HF_INSTANCES) plays a sequencer
+    poly track's notes on **instances**: 32 more states of 64 KB from the heap at boot (core/inst.h's pool), each the
+    slot's package on its own (`um::inst_*`: voice_init / voice_enter at its first note, voice_leave when the slot's
+    image changes; the voice's params as its own state gets them). Older packages stay mono (the voice's one state).
   - The sound tag is checked as on the Teensy: a trig whose tag is another machine's is silent until a matching
     trig.
   - Output is clipped and a NaN becomes 0.

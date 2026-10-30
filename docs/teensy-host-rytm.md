@@ -95,7 +95,7 @@ A stock Rytm, plugged in, with the Teensy on the host build:
 ```
 :notes=1          the Rytm's MIDI notes play the voices (channel N = voice N-1)
 :out=main         the voices on MAIN L/R (audible on a stock Rytm)
-:notemach=0:dd    optional: voice 0's machine (plaits juno daisy dsps grain dd fm)
+:notemach=0:fm    optional: voice 0's machine (plaits juno daisy dsps grain fm; dd, DIGIDRUM, removed 2026-10-29; the Teensy has no built-in MD)
 :out=tracks       back to the per-track channels (the mod firmware)
 :notes=0          notes off
 ```

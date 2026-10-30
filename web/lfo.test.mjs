@@ -48,7 +48,12 @@ assert.equal(lfoParams("V1", 1, "HRM")[1], "P2 HRM");
 assert.equal(lfoParams("V1", 1, "HRM").length, 16);
 assert.deepEqual(lfoParams("FX2", 0, "TIME"), ["P2 TIME", "P3", "P4", "P5"]);
 assert.deepEqual(lfoParams("BD", 0, "F.FRQ"), [], "no Rytm targets (1026)");
-assert.ok(!LFO_TARGETS.includes("BD") && LFO_TARGETS.at(-1) === "FX2");
+assert.ok(!LFO_TARGETS.includes("BD") && LFO_TARGETS.at(-1) === "O8" && LFO_TARGETS.indexOf("O1") === 22);
+assert.deepEqual(lfoParams("O3", 1, "PAN"), ["LEV", "PAN", "WID"], "the OUT route's targets (docs/STEREO.md)");
+// ins1112: an INSERT chain's 12 params - both slots, then the POST EQ after them
+assert.equal(lfoParams("I3", 0, "ACUT").length, 12);
+assert.equal(lfoParams("I3", 0, "ACUT")[0], "A P1 ACUT");
+assert.deepEqual(lfoParams("B1", 9, "QLPF").slice(8), ["EQ HPF", "EQ LPF QLPF", "EQ LOW", "EQ HIGH"]);
 
 // the mock device: settings kept, the JSON as the core's
 {

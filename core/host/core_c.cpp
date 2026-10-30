@@ -6,10 +6,24 @@
 #include <vector>
 
 #include "core.h"
+#include "poly.h"
+#include "inst.h"
+#include "seq/seq.h"
+#include "seq/rytm_dump.h"
+#include "song/song.h"
+#include "msamp/msamp.h"
+#include "msamp/sdtest.h"
+#include "nmach.h"
+#include "livein/livein.h"
 #include "fx/send_fx.h"
+#include "fx/insert.h"
+#include "fx/out.h"
 #include "um_host.h"
 #include "user/lists.h"
 #include "ui/extra.h"
+#include "bundle/bundle.h"
+#include "bundle/feed.h"
+#include "bundle/projects.h"
 
 namespace {
 std::vector<std::string> split(const char* joined, int count) {
@@ -143,6 +157,7 @@ void core_c_render(int16_t* out, int n) {
     int want = n < kRingFrames - core::kBlock ? n : kRingFrames - core::kBlock;
     while (g_n < want) {
       core::refill_neediest((uint32_t)(want - g_n) + 4 * core::kBlock);
+      core::seq::pre_block();   // the sequencer's notes due in this block (core/seq/seq.h)
       core::render_voices(g_ring, kRingFrames, (g_rd + g_n) % kRingFrames, 0, core::kVoices, g_mach);
       g_n += core::kBlock;
     }
@@ -213,6 +228,9 @@ void core_c_fake_time(int on, uint64_t us) { core::host_fake_time(on != 0, us); 
 void core_c_lfo_tick(uint32_t us) { core::lfo::tick(us); }
 void core_c_lfo_midi(int st, int d1, int d2) { core::lfo::midi_in((uint8_t)st, (uint8_t)d1, (uint8_t)d2); }
 int core_c_lfo_command(const char* p, char* out, int cap) { return core::lfo::command(p, out, cap) ? 1 : 0; }
+// rui1038: a console command for the GRANULAR / WAVETABLE / MULTISAMPLE machines and their library (nm::command:
+// "lib=gr:fill:B:/Folder", "gr=pick:V:E", ...): the e2e tests' bank set-ups
+int core_c_nm_command(const char* p, char* out, int cap) { return core::nm::command(p, out, cap) ? 1 : 0; }
 int core_c_lfo_json(char* out, int cap) { return core::lfo::json(out, cap); }
 void core_c_lfo_page(int sel, int design, int step) { core::ui::lfo_page_set(sel, design != 0, step, 0); }
 void core_c_lfo_stats(uint32_t* out) {
@@ -307,4 +325,109 @@ void core_c_fm_alg_render(int alg, uint8_t* fb) {   // 6-OP FM's algorithm diagr
   memcpy(fb, c.fb, core::ui::kBytes);
 }
 
+// Poly FM's chords (core/poly.h) for sim/tests/test_core_poly.py: expand into out (6 bytes), detect into r (root CHD INV
+// SPR VOI exact), the value texts
+int core_c_poly_expand(int root, int chd, int inv, int spr, int voi, uint8_t* out) {
+  return core::poly::expand(root, {chd, inv, spr, voi}, out);
+}
+void core_c_poly_detect(const uint8_t* notes, int n, int* r) {
+  core::poly::Detected d = core::poly::detect(notes, n);
+  r[0] = d.root, r[1] = d.c.chd, r[2] = d.c.inv, r[3] = d.c.spr, r[4] = d.c.voi, r[5] = d.exact;
+}
+int core_c_poly_text(int k, int v, char* out, int cap) {
+  char b[16];
+  const char* t = core::poly::value_text(k, v, b, sizeof b);
+  return snprintf(out, cap, "%s", t);
+}
+
+// Poly FM's live side (core/poly.h) for sim/poly_live.py: the Rytm's channel messages (its pads' notes), the tick
+// (a held trig's time, a live chord's window) and the console's "poly" line.
+void core_c_poly_midi(int st, int d1, int d2) {
+  core::poly::midi((uint8_t)st, (uint8_t)d1, (uint8_t)d2);   // (the sequencer through its note sink, as the Pi's bridge)
+}
+void core_c_poly_tick(void) {
+  core::poly::tick(core::now_ms());
+  core::seq::tick(core::now_ms());   // (rytm_dump's tick with it)
+  core::song::tick(core::now_ms());
+}
+int core_c_poly_command(const char* c, char* out, int cap) {
+  return core::poly::command(c, out, cap) || core::seq::command(c, out, cap) || core::rytm_dump::command(c, out, cap) ||
+         core::song::command(c, out, cap) || core::inst::command(c, out, cap) ? 1 : 0;
+}
+// The Sidecar sequencer (core/seq/seq.h) for sim/seq_sim.py and poly_live.py: its console, its LEDs (16 trig + 4 page,
+// palette), the render frames so far, the view set (track, page, held trig or -1, follow).
+int core_c_seq_command(const char* c, char* out, int cap) { return core::seq::command(c, out, cap) ? 1 : 0; }
+int core_c_seq_leds(uint8_t* out20) {
+  int on = core::seq::leds(out20) ? 1 : 0;
+  core::seq::page_leds(out20 + 16);
+  return on;
+}
+uint64_t core_c_seq_frames() { return core::seq::frames(); }
+void core_c_seq_view_set(int track, int page, int held, int follow) { core::seq::view_set(track, page, held, follow != 0); }
+void core_c_seq_latency(int frames) { core::seq::set_latency(frames); }
+int core_c_seq_pack(uint8_t* out, int cap) { return core::seq::pack(core::seq::edit_pattern(), out, cap); }
+// seq-p2: the Rytm -> host Overbridge frames (12 int32 channels each: MAIN L/R, the 8 voices, AUDIO IN L/R; arrived
+// just now) for the latency calibration, and the Rytm's MIDI bytes for its pattern dump (core/seq/rytm_dump.h).
+void core_c_seq_rytm_audio(const int32_t* frames12, int n) {
+  core::seq::cal_audio(frames12 + 2, n, 12, (int64_t)core::seq::frames());
+}
+int core_c_seq_cal_wanted(void) { return core::seq::cal_wanted() ? 1 : 0; }
+void core_c_rytm_byte(int b) {
+  core::rytm_dump::byte((uint8_t)b);
+  core::song::byte((uint8_t)b);   // SONG RECORD (core/song/song.h): the whole stream
+}
+// The last pattern dump's record (13101 B) into out: its pattern, -1 none; gen: the count that moves with each.
+int core_c_rytm_record(uint8_t* out, uint32_t* gen) {
+  int p = -1;
+  const uint8_t* r = core::rytm_dump::record(&p, gen);
+  if (!r) return -1;
+  memcpy(out, r, core::rytm_dump::kRecord);
+  return p;
+}
+
+// MULTISAMPLE (core/msamp/msamp.h) and the SD card test (msamp/sdtest.h) for sim/poly_live.py: the console's msamp /
+// sdtest commands (msamp=voice:V makes voice V play MULTISAMPLE), LIVE IN's (livein=...), the INSERT chains' (ins=...)
+// and the OUT route's (out=...), the answer in out; 0 not one of them.
+int core_c_msamp_command(const char* c, char* out, int cap) {
+  return core::msamp::command(c, out, cap) || core::nm::command(c, out, cap) || core::sdtest::command(c, false, out, cap) ||
+                 core::livein::command(c, out, cap) || core::ins::command(c, out, cap) || core::out::command(c, out, cap)
+             ? 1
+             : 0;
+}
+// LIVE IN (core/livein/livein.h) for sim/poly_live.py: the Rytm's frames (n x 12 int32, the device's channels: AUDIO IN
+// among them) into its ring, as the Pi's IN completion does; the output FIFO the link holds (the latency estimate)
+void core_c_livein_in(const int32_t* frames12, int n) { core::livein::in_block(frames12, n, 12); }
+void core_c_livein_fifo(int frames) { core::livein::set_fifo(frames); }
+
+// Project bundles (core/bundle) as the Pi's core 0 runs them, for sim/rui_link.py (the Rytm's PROJECT page end to
+// end): the job's environment (full rate, the Rytm's current project from core::project), then per call `passes`
+// rounds of the feed (the page's commands, the lists, the published status) and one bundle step; the control core's
+// project index save. Returns the job's phase.
+static void bundle_current(char* out, int cap) {
+  char p[24];
+  memcpy(p, (const char*)core::project, sizeof p);
+  p[23] = 0;
+  snprintf(out, cap, "%s", p);
+}
+void core_c_bundle_setup() {
+  core::bundle::Env e{};
+  e.current = bundle_current;
+  e.version = "mac";
+  e.board = "mac";
+  e.flush_ms = 0;
+  core::bundle::set_env(e);
+  core::bundle::feed::set_available(true);
+}
+int core_c_bundle_tick(int passes) {
+  for (int i = 0; i < passes; ++i) {
+    core::bundle::feed::tick();
+    core::bundle::step();
+    core::projects::save();
+  }
+  return core::bundle::status().phase;
+}
+int core_c_bundle_command(const char* c, char* out, int cap) { return core::bundle::feed::command(c, out, cap) ? 1 : 0; }
+const char* core_c_bundle_msg() { return core::bundle::status().msg; }
+
 }  // extern "C"
+

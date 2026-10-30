@@ -38,6 +38,15 @@ inline const uint8_t*& fm_user_bank() {
   return bank[fm_core()];
 }
 
+// With fm_user_bank: bit 0, which of the six-op engine's first two patches the one handed-over voice goes into
+// (fm_machine.h alternates them). The engine unloads only the voices on that patch, so a note ringing out on the
+// other keeps its patch: a PAT change does not cut it (teensy/setup_plaits_lib.sh). Bit 1: unload every voice (a
+// first load after Init / Leave / silence, so a note frozen in the engine meanwhile does not resume).
+inline int& fm_user_slot() {
+  static int slot[RYTM_RENDER_CORES] = {};
+  return slot[fm_core()];
+}
+
 class UserData {
  public:
   enum { SIZE = 0x1000 };

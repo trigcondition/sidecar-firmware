@@ -207,18 +207,23 @@ int main() {
   ri.state = kRecIdle, ri.free_mb = 12 * 1024 + 300, ri.total_mb = 30000, ri.need_kbps = 1152, ri.in_mask = 0x3 | 1 << 2;
   strcpy(ri.take, "take-0007");
   remote_rec(ri);
-  key(0x40), tick(30, false);   // SIDECAR -> SCOPE (the last) -> REC
+  // SIDECAR -> AUTO -> SAMPLE -> SCOPE -> REC (rui1051: POOL, shown with REC, is off the ring: UP + T13 opens it)
+  key(0x40), tick(30, false);
+  CHECK(remote_stats().page == 3 && remote_stats().voice == 4 && has_text("AUTO") && !has_text("POOL"));
+  key(0x40), tick(30, false);
+  CHECK(remote_stats().page == 3 && remote_stats().voice == 3 && has_text("SAMPLE") && has_text("YES: RECORD  NO: BACK"));
+  key(0x40), tick(30, false);
   CHECK(remote_stats().page == 3 && remote_stats().voice == 2);
   key(0x40), tick(30, false);
   CHECK(remote_stats().page == 3 && remote_stats().voice == 1 && tap_on() && mask_enc == 0x01);   // A (no player yet: the Mini)
-  CHECK(has_text("REC") && has_text("IDLE") && has_text("TAKE-0007") && has_text("12 GB") && has_text("YES REC  A ARM  3H06M"));
+  CHECK(has_text("REC") && has_text("IDLE") && has_text("TAKE-0007") && has_text("12 GB") && has_text("YES: REC  A: ARM  3H06M"));
   CHECK(remote_rec_take() == kRecNoRequest);
   key(0x44);   // YES: record
   CHECK(remote_rec_take() == kRecStart && remote_stats().page == 3);
   from_rytm(0x32, 0, 64 + 1, 0);   // A right: arm
   CHECK(remote_rec_take() == kRecArm);
   ri.state = kRecArmed, remote_rec(ri), tick(30, false);
-  CHECK(has_text("ARMED") && has_text("PLAY: REC  YES NOW  A OFF"));
+  CHECK(has_text("ARMED") && has_text("PLAY:REC YES:NOW A:OFF"));
   CHECK(!has_text("USB OFF"));
   ri.usb_paused = true, remote_rec(ri), tick(30, false);   // the Mini: USB audio paused for the take, in the card's place
   CHECK(has_text("USB OFF"));
@@ -237,17 +242,17 @@ int main() {
   PlayInput in;
   CHECK(!remote_play_take(&in));
   remote_play(pi), tick(30, false);
-  CHECK(has_text("IDLE") && has_text("YES REC  A ARM  B PLAY") && mask_enc == 0x0F);   // a player: A..D
+  CHECK(has_text("IDLE") && has_text("YES: REC  A: ARM  B: PLAY") && mask_enc == 0x0F);   // a player: A..D
   CHECK(!remote_play_take(&in));
   from_rytm(0x32, 1, 64 + 1, 0);   // B right: the next channel
   CHECK(remote_play_take(&in) && in.channel == 1 && !in.toggle && !in.take && !in.level);
   tick(30, false);
-  CHECK(has_text("PLAY") && has_text("TAKE-0007") && has_text("MASTER 1/3") && has_text("B PLAY  C TAKE  D LEV 100"));
+  CHECK(has_text("PLAY") && has_text("TAKE-0007") && has_text("MASTER 1/3") && has_text("B: PLAY  C: TAKE  D: 100"));
   key(0x71);                       // B pushed: play
   CHECK(remote_play_take(&in) && in.toggle == 1 && remote_stats().page == 3);
   pi.state = kPlayPlaying, pi.ch_i = 1, pi.pos_ms = 45000, strcpy(pi.channel, "BD");
   remote_play(pi), tick(30, false);
-  CHECK(has_text("PLAYING") && has_text("BD 2/3") && has_text("B STOP  D LEV 100  1:30"));
+  CHECK(has_text("PLAYING") && has_text("BD 2/3") && has_text("B: STOP  D: LEV 100  1:30"));
   int bar = 0;   // the progress bar: rows 27 / 28 filled to the playhead (half way)
   for (int x = 0; x < 128; ++x) bar += remote_frame()[(7 - 27 / 8) + 8 * x] >> (27 % 8) & 1;
   CHECK(bar >= 62 && bar <= 66);
@@ -276,7 +281,7 @@ int main() {
   key(0x44);                       // YES while armed: record now
   CHECK(remote_rec_take() == kRecStart);
   ri.state = kRecRecording, ri.secs = 3725, remote_rec(ri), tick(30, false);
-  CHECK(has_text("RECORDING") && has_text("YES STOP"));
+  CHECK(has_text("RECORDING") && has_text("YES: STOP"));
   int big = 0;   // the time as large digits: 1:02:05 across rows 12..25
   for (int x = 19; x < 90; ++x)
     for (int y = 12; y < 26; ++y) big += remote_frame()[(7 - y / 8) + 8 * x] >> (y % 8) & 1;
@@ -310,10 +315,10 @@ int main() {
   key(0x45), tick(30, false);   // NO: still back to SIDECAR (not the page's)
   CHECK(remote_stats().page == 0 && remote_rec_take() == kRecNoRequest);
   ri.state = kRecNone, remote_rec(ri);   // no recorder: the page is gone
-  key(0x40), key(0x40), tick(30, false);
-  CHECK(remote_stats().page == 3 && remote_stats().voice == 0);   // SCOPE, then LFO: no REC between
   key(0x40), tick(30, false);
-  CHECK(remote_stats().page == 1);       // then the last voice page
+  CHECK(remote_stats().page == 3 && remote_stats().voice == 2);   // SCOPE: no REC (nor AUTO / SAMPLE) now
+  key(0x40), tick(30, false);
+  CHECK(remote_stats().page == 1);       // then the last voice page (ux1027: the LFO page is off the ring)
   from_rytm(0x30, 0, 0, 3);   // the page closed: the tap off
   CHECK(!tap_on());
   printf("ALL UI LIVE TESTS PASS\n");

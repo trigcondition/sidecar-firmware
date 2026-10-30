@@ -71,7 +71,21 @@ struct UiView {
   struct { char name[12]; uint8_t state; } slot[kSlots];   // state: an rmp_slot_state
 };
 bool ui_view(UiView* out);
+// E0 (core/inst.h): a user machine's instances on voice vi. i: the instance's index in core::inst's pool (0..31),
+// each its own state of the package voice vi's slot plays (voice_init / voice_enter on its first note there,
+// voice_leave when the slot's image changes or inst_stop), the voice's params as the voice's own state gets them (its
+// preset's hold, the offsets). Only for a package that opts in (its header's RMP_HF_INSTANCES; core/inst.cpp asks
+// inst_decl first). Control core, but inst_render (a render core).
+bool inst_decl(int vi, uint32_t* header_flags, uint32_t* cpu_permille, uint32_t* state_bytes);   // false: no ready slot
+bool inst_note_on(int vi, int i, float note, float vel);   // false: not played (no ready slot, a sound-tag mismatch)
+void inst_note_off(int vi, int i);
+void inst_params(int vi);   // the voice's params changed: its instances take them
+void inst_stop(int vi);     // every instance of voice vi leaves its state
+void inst_render(int vi, int i, float* out);
 int installed();            // packages in the Rytm's list
 uint8_t store_gen();
+uint32_t code_epoch();      // bumped whenever plugin code is placed (any slot's load): any core may read it
 
+// 2026-10-27 (core/bundle/prjslot.h): the slot map's next writes under another project key (a SAVE AS copy placed)
+void rekey(const char* key);
 }  // namespace um

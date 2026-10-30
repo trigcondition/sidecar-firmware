@@ -42,7 +42,6 @@ import mido
 import numpy as np
 
 from daisyvoice import INPUTS as DAISY_INPUTS, MODELS as DAISY_MODELS, DaisyVoice
-from digidrumvoice import ENGINES as DD_ENGINES, NAMES as DD_NAMES, DigidrumVoice, default as dd_default
 from fmvoice import ROM_VOICES, FmVoice, rom_banks, rom_voice, voice_name
 from junovoice import JunoVoice, factory as juno_factory
 from plaitsvoice import Voice
@@ -171,11 +170,9 @@ class Host:
         # SAMPLE) by sample word: 17 TUN 18 FIN 19 SMP (pool slot) 20 FLD (unused; MOD with --psram) 21 STA
         # 22 END 23 LOP 24 LEV, as the Rytm's own sample page.
         self.is_dsps = [False] * 8
-        # DIGIDRUM (rytm-mods 0021, flag 0x40): soejrd/digidrum's TRX/EFM machines.
-        # SRC: ENG (11 zones, protocol.eng_zone) and controls 1..7, control 8 at the engine's
-        # default; P9..P16 the sound's own sample page (its sample layer plays)
-        self.dd = [DigidrumVoice() for _ in range(8)]
-        self.is_dd = [False] * 8
+        # 0x40: DIGIDRUM until 2026-10-29, the built-in MD since (core/md/md.h, on the C++ core only):
+        # this Python host has no MD, a voice reported with it is silent
+        self.is_off = [False] * 8
         # JUNO (rytm-mods 0021, flag 0x08): a Juno-106 voice (juno/juno_voice.h);
         # P1..P8 PAT CUT RES ENV ATK DEC REL LEN, the note the trig's
         self.juno = [JunoVoice() for _ in range(8)]
@@ -248,8 +245,6 @@ class Host:
     def voice(self, v):
         if self.is_fm[v]:
             return self.fm[v]
-        if self.is_dd[v]:
-            return self.dd[v]
         if self.is_juno[v]:
             return self.juno[v]
         return self.daisy[v] if self.is_daisy[v] else self.voices[v]
@@ -257,8 +252,8 @@ class Host:
     def name(self, v):
         if self.is_fm[v]:
             return f"6-OP FM {self.fm[v].name}"
-        if self.is_dd[v]:
-            return f"DIGIDRUM {DD_NAMES[self.dd[v].engine]}"
+        if self.is_off[v]:
+            return "MD (not in this Python host: silent)"
         if self.is_juno[v]:
             return f"JUNO {self.juno[v].name}"
         if self.is_daisy[v]:
@@ -276,10 +271,7 @@ class Host:
         if self.is_juno[v]:
             self.juno[v].knobs(p[:8])
             return
-        if self.is_dd[v]:
-            dv = self.dd[v]
-            dv.engine = eng_zone(p[0], DD_ENGINES)
-            dv.control = [int(x) for x in p[1:8]] + [dd_default(dv.engine, 7)]
+        if self.is_off[v]:
             return
         if self.is_daisy[v]:
             # ENG STR BRI DMP INP EXC TUN LEV; ENG in three zones of 0..127
@@ -389,7 +381,7 @@ class Host:
         """The PLAITS/DAISYSP machines' report: 0x04 voice note velocity P1..P16
         (a trig with the parameters it plays with), 0x03 voice P1..P16 (they
         changed). The machine is the voice byte & 0x78 (protocol.machine:
-        0x10 DAISYSP, 0x20 DSP SAMPLE, 0x40 DIGIDRUM, 0x08 JUNO, 0x48 6-OP FM,
+        0x10 DAISYSP, 0x20 DSP SAMPLE, 0x08 JUNO, 0x48 6-OP FM, 0x40 MD (silent here),
         else PLAITS). Each P is two bytes, value then fraction (1/128 steps)."""
         # 8 parameters (older 0021) or 16 (with page 2)
         if cmd == 0x04 and len(d) >= 19:
@@ -399,7 +391,7 @@ class Host:
         else:
             return
         mach = machine(d[0])
-        dd, juno, fm = mach == DIGIDRUM, mach == JUNO, mach == FM
+        off, juno, fm = mach == DIGIDRUM, mach == JUNO, mach == FM
         daisy = mach in (DAISYSP, DSP_SAMPLE)
         dsps = mach == DSP_SAMPLE
         npar = 16 if len(raw) >= 32 else 8
@@ -411,7 +403,7 @@ class Host:
             was_juno, was_fm = self.is_juno[v], self.is_fm[v]
             self.is_daisy[v] = daisy       # only the voice's current engine renders
             self.is_dsps[v] = dsps
-            self.is_dd[v] = dd
+            self.is_off[v] = off
             self.is_juno[v] = juno
             self.is_fm[v] = fm
             self.params[v][:len(p)] = list(p)
@@ -438,11 +430,9 @@ class Host:
                     self.live[v] = True
                     print(f"trig (sysex) voice {v} note {note} vel {vel} {self.name(v)}")
                     return
-                if dd:
-                    # no note: the engine's own PTCH; the voice's AMP sets the level
-                    self.dd[v].trigger(None, max(vel, 1) / 127)
-                    self.live[v] = True
-                    print(f"trig (sysex) voice {v} vel {vel} {self.name(v)}")
+                if off:
+                    self.live[v] = False
+                    print(f"trig (sysex) voice {v}: {self.name(v)}")
                     return
                 if daisy:
                     # TUN semitones; P9..P16 are the sound's own sample page
@@ -841,7 +831,7 @@ class Host:
                     continue
                 if self.is_dsps[v]:
                     o = self.render_dsps(v, n, vin[:, VOICE_OUT_IDX[v]])
-                elif self.is_dd[v] or self.is_juno[v] or self.is_fm[v]:
+                elif self.is_juno[v] or self.is_fm[v]:
                     o = self.voice(v).render(n)
                 elif self.is_daisy[v]:
                     d = self.daisy[v]

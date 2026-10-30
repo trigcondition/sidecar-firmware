@@ -15,6 +15,7 @@
 #include "ui/extra.h"
 #include "ui/remote.h"
 #include "ui/widgets.h"
+#include "voice_name.h"
 #include "voices.h"
 
 namespace core {
@@ -24,7 +25,7 @@ namespace ui {
 CORE_COLD const char* voice_label(int vi, int k) {
   const V& x = v[vi & 7];
   int m = x.user >= 0 ? 0x50 + 8 * x.user : x.fm ? kFm : x.juno ? kJuno : x.grain ? kGrainMachine : x.dsps ? kDspSample : x.daisy ? kDaisy
-                                                                          : x.dd ? kDigidrum : kPlaits;
+                                                                          : x.md ? kMd : kPlaits;
   const Page* p = page_for_voice(m, vi & 7);
   if (!p) return nullptr;
   for (int e = 0; e < 8; ++e)
@@ -58,7 +59,7 @@ CORE_COLD void main_draw(Canvas& c, int page, int npages, const lfo::Settings& s
   char t[12], right[14], pn[8];
   sniprintf(t, sizeof t, CORE_STR("LFO %d"), lp.sel + 1);
   lfo::param_name(s.target, s.param, pn, sizeof pn);
-  if (s.target) sniprintf(right, sizeof right, CORE_STR("%s %s"), lfo::target_name(s.target), pn);
+  if (s.target) sniprintf(right, sizeof right, CORE_STR("%s %s"), lfo::target_label(s.target), pn);
   else strcpy(right, "OFF");
   header(c, t, page, npages, right);
   // the wave over one cycle, the centre dotted, the dot at the phase
@@ -77,7 +78,7 @@ CORE_COLD void main_draw(Canvas& c, int page, int npages, const lfo::Settings& s
   static UI_ROM const char kLab[8][5] = {"LFO", "TGT", "PAR", "DEP", "WAVE", "RATE", "SYNC", "TRIG"};
   char val[8][8];
   sniprintf(val[0], 8, CORE_STR("%d/%d"), lp.sel + 1, lfo::kLfos);
-  sniprintf(val[1], 8, "%s", lfo::target_name(s.target));
+  sniprintf(val[1], 8, "%s", lfo::target_label(s.target));
   sniprintf(val[2], 8, "%s", s.target ? pn : "-");
   sniprintf(val[3], 8, CORE_STR("%+d"), s.depth);
   sniprintf(val[4], 8, "%s", lfo::wave_name(s.wave));
@@ -95,7 +96,7 @@ CORE_COLD void main_draw(Canvas& c, int page, int npages, const lfo::Settings& s
     sniprintf(b, sizeof b, CORE_STR("L%d DEPTH:%+d"), lp.sel + 1, s.depth);
     footer(c, b, s.depth + 64, true);
   } else {
-    footer(c, "YES: DESIGN THE WAVE");
+    footer(c, "YES: DESIGN  NO: BACK");
   }
 }
 
@@ -133,7 +134,7 @@ CORE_COLD void design_draw(Canvas& c, int page, int npages, const lfo::Settings&
   } else if (s.wave != lfo::kDesign) {
     footer(c, "WAVE DESIGN TO HEAR IT");
   } else {
-    footer(c, "T1..16 STEP  YES/NO BACK");
+    footer(c, "T1-16: STEP  NO: BACK");
   }
 }
 
@@ -185,6 +186,10 @@ CORE_COLD bool lfo_key(int code) {
     lp.design = !lp.design, lp.touched = -1;
     return true;
   }
+  if (code == 0x40 || code == 0x41) {   // ux1027: LEFT / RIGHT the LFO before / after (the design view: the step), as A
+    lfo_enc(0, code == 0x41 ? 1 : -1, false);
+    return true;
+  }
   if (!lp.design) return false;
   if (code == 0x45) {   // NO: back to the main view (not SIDECAR)
     lp.design = false, lp.touched = -1;
@@ -202,7 +207,10 @@ CORE_COLD uint16_t lfo_trigs() { return lp.design ? 0xFFFF : 0; }
 
 }  // namespace
 
-UI_ROM const ExtraPage kLfoPage = {"LFO", nullptr, lfo_draw, lfo_enc, lfo_key, 0xFF, false, lfo_encs, lfo_trigs};
+// ux1027: off the LEFT / RIGHT ring - UP + LFO's page (and the SIDECAR MENU's row) replaces the Rytm's screen
+UI_ROM const ExtraPage kLfoPage = {"LFO", nullptr, lfo_draw, lfo_enc, lfo_key, 0xFF, false, lfo_encs, lfo_trigs, nullptr, true};
+
+CORE_COLD void lfo_page_reset() { lp.design = false, lp.touched = -1; }
 
 #if CORE_UI_TOOLS
 void lfo_page_set(int sel, bool design, int step, uint32_t ms) {   // tests and the renderer

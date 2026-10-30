@@ -33,6 +33,8 @@
 #include <circle/interrupt.h>
 #include <circle/logger.h>
 #include <circle/types.h>
+inline boolean (*g_pSidecarKeysTap) (const u8 *pPacket) = 0;	// (no gadget: never called)
+
 class CSidecarGadget
 {
 public:
@@ -48,6 +50,7 @@ public:
 	void FromEngine (const s32 (*)[12], unsigned)	{}
 	void ToRytm (s32 (*)[12], const s16 (*)[8], unsigned, boolean) {}
 	void FromRytmMIDI (const u8 *)			{}
+	void MIDIToComputer (u32)			{}
 	boolean ForRytm (u32 *)				{ return FALSE; }
 	boolean ForRytmInSysEx (void) const		{ return FALSE; }
 	void RytmMIDIConnected (boolean)		{}
@@ -62,6 +65,7 @@ public:
 
 #include "midi_filter.h"
 #include "spsc.h"
+#include "tohost_q.h"
 
 #if __has_include("hosted/sidecar_config.h")
 #include "hosted/sidecar_config.h"			// build.sh: SIDECAR_CH_IN=20 pi/engine/build.sh
@@ -137,6 +141,7 @@ public:
 	void FromEngine (const s32 (*pFrames)[12], unsigned nFrames);	// task: the self-test's output as the stand-in IN
 	void ToRytm (s32 (*pFrames)[12], const s16 (*pVoices)[8], unsigned nFrames, boolean bTask);
 	void FromRytmMIDI (const u8 *pPacket);		// xHCI IRQ: one event packet from the Rytm
+	void MIDIToComputer (u32 nPacket);		// core 0's loop: one event packet of the engine's own (the auto-sampler's notes)
 	boolean ForRytm (u32 *pPacket);			// core 0's loop: the next packet for the Rytm
 	boolean ForRytmInSysEx (void) const		{ return m_bToRytmSysEx; }
 	void RytmMIDIConnected (boolean bOn)		{ m_bRytmMIDI = bOn; }
@@ -160,6 +165,7 @@ private:
 	void MIDIFromHost (const u8 *pBuffer, size_t nLength);
 	unsigned MIDIForHost (u8 *pBuffer, unsigned nMax);
 	void ToHost (const u8 *pPacket);		// one packet into the computer's queue (IRQs masked)
+	void HostUp (boolean bUp);			// the MIDI IN endpoint (de)activated (gadget IRQ), or torn down (OnSuspend)
 	friend class CSidecarIsoEP;
 	friend class CSidecarMIDIEP;
 
@@ -212,8 +218,8 @@ private:
 	// MIDI
 	MidiFilter m_ToRytmFilter, m_ToHostFilter;
 	Spsc<u32, MIDIQueue> m_ToRytm;			// producer: the gadget IRQ; consumer: core 0's loop
-	u32 m_ToHostQ[MIDIQueue];			// producers: IRQs and the loop (IRQs masked); consumer: the IRQ
-	unsigned m_nToHostHead, m_nToHostTail;
+	ToHostQueue<MIDIQueue> m_ToHost;		// producers: IRQs and the loop (IRQs masked); consumer: the IRQ. Up only while the
+							// computer has the MIDI IN endpoint configured (tohost_q.h): none there, nothing queued
 	boolean m_bToRytmSysEx;
 
 	struct TStats
@@ -229,6 +235,10 @@ private:
 	u64 m_nLastTicks, m_nLastStamp;
 	u8 m_StringBuffer[80];
 };
+
+// The computer's MIDI for the Rytm passes this tap first (gadget IRQ, one event packet): TRUE when it took the packet
+// (kernel.cpp: the notes for the Pi's own keyboard path, core/keys.h), else it goes to the Rytm as before. 0: none.
+extern boolean (*g_pSidecarKeysTap) (const u8 *pPacket);
 
 #endif	// SIDECAR_NO_GADGET
 

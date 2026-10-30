@@ -1,0 +1,15 @@
+plugins/vox - notices for the VOX package (vox.trombone, vox.a64.rmp)
+
+VOX's DSP is Pink Trombone's (the Glottis and Tract objects and the tongue / constriction shaping of TractUI), ported
+to C for one voice a state and adapted for the Sidecar (vox.c's header lists the changes: knobs for the touches, an
+envelope for the glottis's intensity, the note as the pitch, 32-bit floats, recurrences for the LF waveform, a
+release to exact silence).
+  Taken from:  https://dood.al/pinktrombone/  (index.html, "Pink Trombone, version 1.1, March 2017, by Neil Thapen";
+               fetched 2026-10-30, SHA-256 94f92caa426e9e7bd928ab82c7d0d75d297e1090411867f62dd09081f4e1cec2;
+               the original page has no repository commit)
+  Licence:     MIT, Copyright 2017 Neil Thapen (LICENSE.pinktrombone: the licence text from index.html's header
+               comment, unchanged but for trailing spaces)
+No upstream file is in this repository or the package: vox.c is a rewrite of the DSP in C.
+
+The adaptation and the glue (vox.c, manifest.json, the Makefile, tests/): MIT, Copyright 2026 trigcondition and
+contributors (LICENSE). The package links sdk/rmp/shim (MIT).

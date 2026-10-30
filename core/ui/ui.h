@@ -82,6 +82,13 @@ class Canvas {
   // the slot empty. diff_text: the slots that differ from `other` as a bit mask, how many.
   TextItem txt[kTextSlots];
   void put_text(int slot, const RFont& f, int x, int y, const char* s, uint8_t flags = kAlignLeft);
+#if CORE_UI_TOOLS
+  // The text-fit check (UX review R1; core/tests/check.h installs it): called for every item put_text cuts (more
+  // characters than fit at f's widest advance) or that runs past the bottom row, with the whole string.
+  static void (*fit_report)(const char* s, int need, int room);
+  // Items whose boxes (at the narrowest advance, 4 px) overlap each other: reported as "A / B" (remote.cpp, each frame sent).
+  void check_overlap() const;
+#endif
   void clear_text(int from = 0, int n = kTextSlots);
   int diff_text(const Canvas& other, uint64_t* mask) const;
 

@@ -1,0 +1,5 @@
+screensaver=10
+brightness=80
+touchtest=0
+uistyle=oled
+res=auto

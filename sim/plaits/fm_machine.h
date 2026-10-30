@@ -19,8 +19,13 @@
 // Loading a voice reloads the engine's bank (32 copies of the voice through
 // user_data.h's fm_user_bank; on the Teensy, RYTM_FM_SINGLE_PATCH, one copy
 // and the engine unpacks only it - teensy/setup_plaits_lib.sh): the next
-// block is silent while the engine sets the voice up (Plaits' own 0.5 ms
-// blank on a patch change).
+// block of the new note is silent while the engine sets the voice up
+// (Plaits' own 0.5 ms blank on a patch change). The voice alternates between
+// the engine's patches 0 and 1, so the previous note rings out on its own
+// patch (the engine's other voice) instead of being cut: no click on a PAT
+// p-lock (builds with teensy/setup_plaits_lib.sh's patched six-op engine; the
+// simulator's unpatched vendor build still cuts it). The first load after Init,
+// Leave or a silent stretch (an empty slot) unloads both, as stock Plaits.
 #pragma once
 #include <math.h>
 #include <string.h>
@@ -57,6 +62,9 @@ class FmMachine {
     lpg_wait_ = 0;
     lpg_.Init();
     lpgate_.Init();
+    slot_ = 0;
+    played_ = noted_ = false;
+    fresh_ = true;
   }
 
   // The DX7 voice to play (128 packed bytes, as in a 32-voice bank), or
@@ -84,6 +92,7 @@ class FmMachine {
     // sees an edge
     regap_ = gate_ || released_;
     gate_ = true;
+    noted_ = true;   // Render: a note on the patch loaded for it (played_)
     note_ = note;
     velocity_ = velocity < 0.0f ? 0.0f : velocity > 1.0f ? 1.0f : velocity;
     held_ = 0;
@@ -104,6 +113,7 @@ class FmMachine {
     mod->level_patched = false;
     reload_ = true;
     gate_ = false;
+    fresh_ = true;
   }
 
   // n samples (any n) into out, -1..1 before LEV. stage: kStageBytes of
@@ -114,13 +124,16 @@ class FmMachine {
     released_ = false;   // this render sees the gate as it is now
     if (!has_) {
       memset(out, 0, n * sizeof(float));
+      fresh_ = true;   // the engine's voices froze mid-note: the next load unloads them all
       return;
     }
     const int kB = (int)plaits::kBlockSize;
     for (int done = 0; done < n;) {
       int size = n - done < kB ? n - done : kB;
       patch->engine = kEngine;
-      patch->harmonics = 0.0f;   // patch 0 of the reloaded bank (all 32 are this voice)
+      // the patch the voice is in: 0 or 1 (slot_; with 32 copies, both are this voice) - 1.5 / 32 / 1.02 is patch 1
+      // to the engine's quantizer, from either side
+      patch->harmonics = slot_ ? 1.5f / (32.0f * 1.02f) : 0.0f;
       patch->timbre = p_[1] / 128.0f;
       patch->morph = p_[2] / 128.0f;
       patch->decay = p_[3] / 127.0f;
@@ -140,10 +153,18 @@ class FmMachine {
       }
       bool reload = reload_;
       if (reload) {
+        // the other patch, once a note has played this one: that note rings out on it while the new one starts
+        if (played_) slot_ ^= 1, played_ = false;
+        patch->harmonics = slot_ ? 1.5f / (32.0f * 1.02f) : 0.0f;
         for (int i = 0; i < kCopies; ++i) memcpy(stage + i * kVoiceBytes, v_, kVoiceBytes);
         plaits::fm_user_bank() = stage;
+        // value 2 (bit 1): unload every engine voice - the first load after Init / Leave / silence (a note frozen in the
+        // engine since must not resume), as stock Plaits does on every load
+        plaits::fm_user_slot() = slot_ | (fresh_ ? 2 : 0);
+        fresh_ = false;
         voice->ReloadUserData();
       }
+      if (noted_) played_ = true, noted_ = false;   // a note on this patch (a NoteOn, not a held gate)
       plaits::Voice::Frame f[plaits::kMaxBlockSize];
       voice->Render(*patch, *mod, f, size);
       if (reload) {
@@ -174,6 +195,10 @@ class FmMachine {
   uint8_t v_[kVoiceBytes];
   float p_[8];
   bool has_, gate_, regap_, reload_;
+  int slot_ = 0;          // the engine patch (0 / 1) the voice was last loaded into
+  bool played_ = false;   // a note played on slot_ since (its voice would be cut by a reload into slot_)
+  bool noted_ = false;    // a NoteOn the render has not seen yet
+  bool fresh_ = true;     // the next load unloads every engine voice (after Init, Leave, a silent stretch)
   bool released_;   // a NoteOff since the last render
   float note_, velocity_;
   uint32_t held_, gate_len_;

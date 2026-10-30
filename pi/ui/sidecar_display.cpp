@@ -4,10 +4,13 @@
 // the firmware's DSI display preferred and its touch (CRPiTouchScreen) as a second touch source; on the Pi 5 the DSI
 // display driven by Circle's addon/rp1dsi instead (docs/pi-display.md, docs/pi5.md).
 #include "sidecar_display.h"
+#include "sidecar_seqed.h"		// the second finger: the SEQ page's pinch
 #include "sidecar_splash.h"
+#include "sidecar_dot.h"		// the OLED theme's dot expansion (Flush)
 #include "lvgl.h"
 #include <circle/bcmpropertytags.h>
 #include <circle/devicenameservice.h>
+#include <circle/synchronize.h>
 #include <circle/input/mouse.h>
 #if RASPPI >= 5
 #include <rp1dsi/rpitouchscreen.h>		// the Pi 5's DSI display and its touch (Circle's addon/rp1dsi, GPL-3.0)
@@ -46,6 +49,12 @@ typedef TSidecarDisplayHooks H;
 CSidecarDisplay::CSidecarDisplay (unsigned nWidth, unsigned nHeight)
 :	m_nReqWidth (nWidth),
 	m_nReqHeight (nHeight),
+	m_nUiReqW (0),
+	m_nUiReqH (0),
+	m_nEdidW (0),
+	m_nEdidH (0),
+	m_nOffX (0),
+	m_nOffY (0),
 	m_pFB (0),
 	m_pOut (0),
 	m_nDisplay (0),
@@ -63,6 +72,7 @@ CSidecarDisplay::CSidecarDisplay (unsigned nWidth, unsigned nHeight)
 	m_pScaleBuf (0),
 	m_pSplash (0),
 	m_pBuffer (0),
+	m_pDotBuf (0),
 	m_nLastUpdate (0),
 	m_nMaxUs (0),
 	m_pTouch (0),
@@ -73,14 +83,26 @@ CSidecarDisplay::CSidecarDisplay (unsigned nWidth, unsigned nHeight)
 	m_pSource (0),
 	m_pCalibration (0),
 	m_nRawMax (0),
+	m_nLogMaxX (0),
+	m_nLogMaxY (0),
+	m_bTouchCal (FALSE),
+	m_TouchCal (),
+	m_nDownSeq (0),
+	m_nReadDownSeq (0),
+	m_nShownDownSeq (0),
+	m_bLoggedDown (FALSE),
+	m_nUsbContacts (0),
 	m_nPointer (0),
 	m_nRaw (0),
 	m_nTouchSeq (0),
 	m_nEvents (0),
+	m_nPointer2 (0),
+	m_nTouchSeq2 (0),
 	m_nDiagEvents (0),
 	m_nDiagReports (0),
 	m_nDiagResets (0),
 	m_nShownSeq (0),
+	m_nShownSeq2 (0),
 	m_nSaverMin (60),
 	m_nLastActive (0),
 	m_bBlank (FALSE),
@@ -175,19 +197,111 @@ boolean CSidecarDisplay::OpenFrameBuffer (void)
 	m_pFB = new CBcmFrameBuffer (m_nReqWidth, m_nReqHeight, 16, 0, 0, m_nDisplay);
 	m_bFrameBuffer = m_pFB->Initialize ();
 	m_pOut = m_pFB;
-	if (m_bFrameBuffer)
-	{
-		m_nFbWidth = m_nWidth = m_pFB->GetWidth ();
-		m_nFbHeight = m_nHeight = m_pFB->GetHeight ();
-#if RASPPI >= 5
-		ScaleSetup (nUiWidth, nUiHeight);
-#endif
-	}
 	LOGNOTE ("firmware %u display(s):%s%s -> frame buffer on %u %ux%u%s", nDisplays, (const char *) List,
 		 bIdAnswered ? "" : " (display id not answered)", m_nDisplay,
 		 m_bFrameBuffer ? m_pFB->GetWidth () : 0, m_bFrameBuffer ? m_pFB->GetHeight () : 0,
 		 m_bFrameBuffer ? "" : " FAILED");
+	if (m_bFrameBuffer)
+	{
+		m_nFbWidth = m_nWidth = m_pFB->GetWidth ();
+		m_nFbHeight = m_nHeight = m_pFB->GetHeight ();
+		if (!(m_bDsiSeen && bPreferDsi)) ReadEdid ();	// on HDMI (not the DSI display)
+#if RASPPI >= 5
+		ScaleSetup (nUiWidth, nUiHeight);
+#endif
+	}
 	return m_bFrameBuffer;
+}
+
+// The HDMI display's EDID (the firmware's "get EDID block" property, block 0: HDMI0's): its first detailed timing is
+// the preferred mode, the monitor name descriptor its name. Logged: "display: EDID: <name> preferred 1024x600 (60 Hz)"
+// (a 1024x600 panel such as the GeeekPi EP-0194 should say so; docs/pi-display.md). Pi 5: the firmware's answer is
+// *inferred* (the same property; not yet seen on hardware).
+void CSidecarDisplay::ReadEdid (void)
+{
+	CBcmPropertyTags Tags;
+	TPropertyTagEDIDBlock Edid;
+	Edid.nBlockNumber = EDID_FIRST_BLOCK;
+	if (!Tags.GetTag (PROPTAG_GET_EDID_BLOCK, &Edid, sizeof Edid, 4) || Edid.nStatus != EDID_STATUS_SUCCESS
+	    || Edid.Block[0] != 0x00 || Edid.Block[1] != 0xFF || Edid.Block[7] != 0x00)
+	{
+		LOGNOTE ("EDID: not available (forced hotplug without a display, or the firmware did not answer)");
+		return;
+	}
+	const u8 *b = Edid.Block;
+	char Name[14] = "";
+	for (unsigned d = 72; d <= 108; d += 18)		// the descriptors after the first: 0xFC is the monitor name
+		if (b[d] == 0 && b[d + 1] == 0 && b[d + 3] == 0xFC)
+		{
+			unsigned n = 0;
+			for (; n < 13 && b[d + 5 + n] != 0x0A && b[d + 5 + n] >= 0x20 && b[d + 5 + n] < 0x7F; n++) Name[n] = (char) b[d + 5 + n];
+			while (n > 0 && Name[n - 1] == ' ') n--;
+			Name[n] = 0;
+		}
+	unsigned nClock = b[54] | b[55] << 8;			// the first detailed timing: 10 kHz units, 0: none
+	if (nClock == 0)
+	{
+		LOGNOTE ("EDID: %s, no detailed timing", Name[0] ? Name : "(no name)");
+		return;
+	}
+	unsigned W = b[56] | (b[58] & 0xF0) << 4, H = b[59] | (b[61] & 0xF0) << 4;
+	unsigned HT = W + (b[57] | (b[58] & 0x0F) << 8), VT = H + (b[60] | (b[61] & 0x0F) << 8);
+	unsigned nHz = HT && VT ? (unsigned) ((u64) nClock * 10000 / (HT * VT)) : 0;
+	m_nEdidW = W;
+	m_nEdidH = H;
+	LOGNOTE ("EDID: %s preferred %ux%u (%u Hz)%s", Name[0] ? Name : "(no name)", W, H, nHz,
+		 W == m_nFbWidth && H == m_nFbHeight ? ", the frame buffer's size"
+		 : W == 1024 && H == 600 ? ": for 1024x600 set config.txt hdmi_cvt=1024 600 60 6 0 0 0 (docs/pi-display.md)" : "");
+}
+
+// The UI's size and its place in the frame buffer: res= (SetUiSize) if it fits, else the frame buffer's size when it is
+// 800x480 or 1024x600 (the two layouts, sidecar_theme.h), else 800x480 centred 1:1 with black borders (no scaling: no
+// blur). Pi 5 on scaled HDMI: ScaleSetup chose already (res= redoes it). A frame buffer smaller than 800x480: its own size.
+void CSidecarDisplay::ChooseUi (void)
+{
+	const unsigned FW = m_nFbWidth, FH = m_nFbHeight;
+	unsigned W = m_nUiReqW, H = m_nUiReqH;
+	const boolean bReq = W != 0 && H != 0;
+#if RASPPI >= 5
+	if (m_bScaled || (m_pOut == m_pFB && (FW > 1024 || FH > 600)))	// through the scaler: its choice, or res=
+	{
+		if (bReq && (W != m_nWidth || H != m_nHeight)) ScaleSetup (W, H);
+		return;
+	}
+#endif
+	if (bReq && (W > FW || H > FH))
+	{
+		LOGWARN ("res=%ux%u does not fit the frame buffer's %ux%u: automatic", W, H, FW, FH);
+		W = H = 0;
+	}
+	if (W == 0 || H == 0)
+	{
+		const boolean bExact = (FW == 800 && FH == 480) || (FW == 1024 && FH == 600);
+		W = bExact || FW < 800 || FH < 480 ? FW : 800;
+		H = bExact || FW < 800 || FH < 480 ? FH : 480;
+	}
+	m_nWidth = W;
+	m_nHeight = H;
+	m_nOffX = (FW - W) / 2;
+	m_nOffY = (FH - H) / 2;
+	if (m_nOffX || m_nOffY)
+	{
+		CDisplay::TArea All = {0, FW - 1, 0, FH - 1};	// the borders black once (the boot screen filled the frame buffer)
+		u16 *pRow = new (HEAP_DMA30) u16[FW * 16];		// as the draw buffers: SetArea may DMA from it
+		if (pRow)
+		{
+			memset (pRow, 0, FW * 16 * sizeof (u16));
+			for (unsigned y = 0; y < FH; y += 16)
+			{
+				All.y1 = y;
+				All.y2 = (y + 16 < FH ? y + 16 : FH) - 1;
+				m_pOut->SetArea (All, pRow);
+			}
+			delete [] pRow;
+		}
+	}
+	LOGNOTE ("UI %ux%u%s on the frame buffer's %ux%u%s (res=800x480|1024x600 in /.rytm/display.txt or cmdline.txt)", W, H,
+		 m_nOffX || m_nOffY ? " centred" : "", FW, FH, bReq ? ", res= given" : "");
 }
 
 // UI pixels (rArea in the UI's coordinates, pPixels its rows, the area's width each) to the frame buffer: as they are,
@@ -199,6 +313,12 @@ void CSidecarDisplay::Put (const CDisplay::TArea &rArea, const u16 *pPixels)
 {
 	if (!m_bScaled)
 	{
+		if (m_nOffX || m_nOffY)				// centred: moved to the UI's place
+		{
+			CDisplay::TArea A = {rArea.x1 + m_nOffX, rArea.x2 + m_nOffX, rArea.y1 + m_nOffY, rArea.y2 + m_nOffY};
+			m_pOut->SetArea (A, pPixels);
+			return;
+		}
 		m_pOut->SetArea (rArea, pPixels);
 		return;
 	}
@@ -353,22 +473,27 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 	return FALSE;
 }
 
-// The UI's size on the Pi 5: cmdline.txt's width= and height= if both are given, else 800x480 (the size the UI is
-// laid out for) when the frame buffer is bigger than 1024x600, else the frame buffer's. Never bigger than the frame
-// buffer (no downscaling); equal to it: no scaling.
+// The UI's size on the Pi 5: cmdline.txt's width= and height= if both are given (or res=, ChooseUi calls it again), else
+// when the frame buffer is bigger than 1024x600 the layout the panel suits: 1024x600 if the HDMI display's EDID prefers
+// 1024x600 (ReadEdid), else 800x480; else the frame buffer's. Never bigger than the frame buffer (no downscaling); equal
+// to it: no scaling. Called again: the scaler redone (its buffers kept).
 void CSidecarDisplay::ScaleSetup (unsigned nWidth, unsigned nHeight)
 {
 	const unsigned FW = m_nFbWidth, FH = m_nFbHeight;
-	if (nWidth == 0 || nHeight == 0)
+	if (nWidth == 0 || nHeight == 0)			// a 1024x600 panel (its EDID) gets the 1024x600 layout
 	{
-		nWidth = FW > 1024 || FH > 600 ? 800 : FW;
-		nHeight = FW > 1024 || FH > 600 ? 480 : FH;
+		boolean bBig = FW > 1024 || FH > 600, b1024 = m_nEdidW == 1024 && m_nEdidH == 600;
+		nWidth = bBig ? (b1024 ? 1024 : 800) : FW;
+		nHeight = bBig ? (b1024 ? 600 : 480) : FH;
 	}
 	if (nWidth > FW) nWidth = FW;
 	if (nHeight > FH) nHeight = FH;
+	m_nWidth = FW;						// unscaled until the scaler is set up again
+	m_nHeight = FH;
+	m_bScaled = FALSE;
 	if (nWidth < 320 || nHeight < 240 || (nWidth == FW && nHeight == FH)) return;
-	m_pXMap = new u16[FW];
-	m_pScaleBuf = new (HEAP_DMA30) u16[FW * ScaleRows];
+	if (!m_pXMap) m_pXMap = new u16[FW];
+	if (!m_pScaleBuf) m_pScaleBuf = new (HEAP_DMA30) u16[FW * ScaleRows];
 	if (!m_pXMap || !m_pScaleBuf)
 	{
 		LOGWARN ("no memory for the scaler: the UI at %ux%u", FW, FH);
@@ -378,7 +503,7 @@ void CSidecarDisplay::ScaleSetup (unsigned nWidth, unsigned nHeight)
 	m_nWidth = nWidth;
 	m_nHeight = nHeight;
 	m_bScaled = TRUE;
-	LOGNOTE ("UI %ux%u scaled to the frame buffer's %ux%u (x %u.%02u, y %u.%02u; width=/height= in cmdline.txt set the UI's size)",
+	LOGNOTE ("UI %ux%u scaled to the frame buffer's %ux%u (x %u.%02u, y %u.%02u; res=800x480|1024x600 sets the UI's size)",
 		 nWidth, nHeight, FW, FH, FW / nWidth, FW * 100 / nWidth % 100, FH / nHeight, FH * 100 / nHeight % 100);
 }
 #endif
@@ -424,14 +549,17 @@ boolean CSidecarDisplay::Initialize (void)
 	}
 	delete [] m_pSplash;					// LVGL's screen replaces it
 	m_pSplash = 0;
+	ChooseUi ();
 
 	lv_init ();
 	lv_tick_set_cb (H::Tick);
 	lv_log_register_print_cb (H::Log);
 
-	const unsigned nPixels = m_nWidth * 48;			// a 48-line band: 77 KB at 800 wide
+	const unsigned nPixels = m_nWidth * 48;			// a 48-line band: 77 KB at 800 wide, 98 KB at 1024
 	m_pBuffer = new (HEAP_DMA30) u16[nPixels];
 	if (!m_pBuffer) return FALSE;
+	m_pDotBuf = new (HEAP_DMA30) u16[m_nWidth * DotRows * SIDECAR_DOT];	// 51 KB at 800 wide, 66 KB at 1024
+	if (!m_pDotBuf) return FALSE;
 
 	lv_display_t *pDisplay = lv_display_create (m_nWidth, m_nHeight);
 	lv_display_set_flush_cb (pDisplay, H::Flush);
@@ -445,6 +573,17 @@ boolean CSidecarDisplay::Initialize (void)
 	if (pCal && pCal[0] < pCal[1] && pCal[2] < pCal[3]) m_pCalibration = pCal;
 
 	sidecar_ui_create ();
+	int ox, oy;						// the layout centred in a bigger UI (width=/height=): its border black
+	sidecar_ui_origin (&ox, &oy);
+	if (ox || oy)
+	{
+		memset (m_pBuffer, 0, m_nWidth * 40 * sizeof (u16));
+		for (unsigned y = 0; y < m_nHeight; y += 40)
+		{
+			CDisplay::TArea A = {0, m_nWidth - 1, y, (y + 40 < m_nHeight ? y + 40 : m_nHeight) - 1};
+			Put (A, m_pBuffer);
+		}
+	}
 	m_bOn = TRUE;
 	Activity ();
 	LOGNOTE ("%ux%u, LVGL %d.%d", m_nWidth, m_nHeight, LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR);
@@ -510,18 +649,25 @@ const char *CSidecarDisplay::GetInput (void) const
 void CSidecarDisplay::BindInput (void)
 {
 	CDeviceNameService *pNames = CDeviceNameService::Get ();
+	CUSBTouchScreenDevice *pBest = CUSBTouchScreenDevice::Get ();	// the USB touch with the most contacts
+	CDevice *pPreferred = pBest ? pBest->GetTouchDevice () : 0;		// (a panel's digitizer over its pointer)
 	for (unsigned i = 1; i <= 8 && !m_pTouch; i++)
 	{
 		CString Name;
 		Name.Format ("touch%u", i);
 		CTouchScreenDevice *pTouch = (CTouchScreenDevice *) pNames->GetDevice (Name, FALSE);
-		if (pTouch && (CDevice *) pTouch != m_pDsiTouch)
+		if (pTouch && (CDevice *) pTouch != m_pDsiTouch && (!pPreferred || (CDevice *) pTouch == pPreferred))
 		{
 			pTouch->Setup (m_pOut);		// no SetCalibration: raw values (Map scales them)
 			pTouch->RegisterEventHandler (H::TouchHandler);
 			pTouch->RegisterRemovedHandler (H::TouchRemoved, this);
 			m_pTouch = pTouch;
-			LOGNOTE ("touch screen bound (%s)", (const char *) Name);
+			CUSBTouchScreenDevice *pUSB = CUSBTouchScreenDevice::Get ();	// its raw range (circle-touch.patch)
+			if (!pUSB || !pUSB->GetLogicalMax (&m_nLogMaxX, &m_nLogMaxY)) m_nLogMaxX = m_nLogMaxY = 0;
+			m_nUsbContacts = pUSB ? pUSB->GetMaxContacts () : 0;
+			LOGNOTE ("touch screen bound (%s), raw range %s%u x %u, %s", (const char *) Name,
+				 m_nLogMaxX ? "0.." : "auto ", m_nLogMaxX, m_nLogMaxY,
+				 m_nUsbContacts == 1 ? "single touch" : "multi-touch");
 		}
 	}
 #if RASPPI >= 5
@@ -605,11 +751,22 @@ void CSidecarDisplay::Update (boolean bPlugAndPlayUpdated)
 	if (nNow - m_nLastUpdate < 10 * CLOCKHZ / 1000) return;
 	m_nLastUpdate = nNow;
 
+	// The USB touch screen's recovery first: Poll resets and resubmits a halted report endpoint, and when that has
+	// been getting nowhere it re-enumerates the whole device (main loop: it issues xHCI commands). A re-enumeration
+	// deletes the panel's touchN device - Circle's removed handler clears m_pTouch - and makes a new one, so re-bind
+	// before anything is polled through the old pointers. GetReEnumCount is the signal to use: the new device can
+	// land on the freed object's address, so comparing the CUSBTouchScreenDevice pointers would not see it.
+	CUSBTouchScreenDevice *pUSBTouch = CUSBTouchScreenDevice::Get ();
+	if (pUSBTouch)
+	{
+		unsigned nReEnums = CUSBHIDDevice::GetReEnumCount ();
+		pUSBTouch->Poll ();			// pUSBTouch and m_pTouch may both be gone when this returns
+		if (CUSBHIDDevice::GetReEnumCount () != nReEnums) BindInput ();	// the new panel's touchN, or none
+	}
+
 	if (m_pMouse) ((CMouseDevice *) m_pMouse)->UpdateCursor ();	// polls the mouse (cursor off)
 	if (m_pTouch) ((CTouchScreenDevice *) m_pTouch)->Update ();
 	if (m_pDsiTouch) ((CTouchScreenDevice *) m_pDsiTouch)->Update ();	// reads the firmware's touch buffer
-	CUSBTouchScreenDevice *pUSBTouch = CUSBTouchScreenDevice::Get ();
-	if (pUSBTouch) pUSBTouch->Poll ();		// resets and resubmits a halted report endpoint (main loop: xHCI commands)
 
 	u32 nSeq = m_nTouchSeq;
 	boolean bDown = (m_nPointer >> 31) != 0;
@@ -617,14 +774,16 @@ void CSidecarDisplay::Update (boolean bPlugAndPlayUpdated)
 	if (nSeq != m_nShownSeq) Activity ();
 	if (m_bBlank)
 	{
-		if (nSeq != m_nShownSeq && bDown)
+		if (nSeq != m_nShownSeq && (bDown || m_nDownSeq != m_nShownDownSeq))	// (a tap shorter than an update too)
 		{
 			m_bSwallow = TRUE;			// this press only wakes the screen
+			m_nShownDownSeq = m_nDownSeq;
 			Blank (FALSE);
 		}
 		else
 		{
 			m_nShownSeq = nSeq;
+			m_nShownDownSeq = m_nDownSeq;
 			return;					// black: LVGL not run
 		}
 	}
@@ -637,7 +796,20 @@ void CSidecarDisplay::Update (boolean bPlugAndPlayUpdated)
 	if (nSeq != m_nShownSeq)
 	{
 		m_nShownSeq = nSeq;
-		u32 p = m_nPointer, r = m_nRaw;
+		u32 p = m_nPointer, r = m_nRaw, nDown = m_nDownSeq;
+		boolean bNowDown = (p >> 31) != 0;
+		if (!bNowDown && nDown != m_nShownDownSeq)		// a tap shorter than one update: its press shown first
+		{
+			sidecar_ui_touch (1, r & 0xFFFF, r >> 16, p & 0x7FFF, (p >> 16) & 0x7FFF);
+			if (!m_bLoggedDown) LOGNOTE ("touch: down raw %u,%u -> %u,%u", r & 0xFFFF, r >> 16, p & 0x7FFF, (p >> 16) & 0x7FFF);
+			m_bLoggedDown = TRUE;
+		}
+		m_nShownDownSeq = nDown;
+		if (bNowDown != m_bLoggedDown)			// the raw values of each press and release in the log
+		{
+			m_bLoggedDown = bNowDown;
+			LOGNOTE ("touch: %s raw %u,%u -> %u,%u", bNowDown ? "down" : "up", r & 0xFFFF, r >> 16, p & 0x7FFF, (p >> 16) & 0x7FFF);
+		}
 		sidecar_ui_touch (p >> 31, r & 0xFFFF, r >> 16, p & 0x7FFF, (p >> 16) & 0x7FFF);
 	}
 	if (m_bStatusNew)
@@ -645,9 +817,46 @@ void CSidecarDisplay::Update (boolean bPlugAndPlayUpdated)
 		m_bStatusNew = FALSE;
 		sidecar_ui_status (&m_Status);
 	}
+	u32 nSeq2 = m_nTouchSeq2;
+	if (nSeq2 != m_nShownSeq2)				// the second finger (pinch on the SEQ page)
+	{
+		m_nShownSeq2 = nSeq2;
+		u32 q = m_nPointer2;
+		int x2 = (int) (q & 0x7FFF), y2 = (int) ((q >> 16) & 0x7FFF);
+		sidecar_ui_to_ui (&x2, &y2);
+		sidecar_seqed_touch2 ((q >> 31) && (m_nPointer >> 31), x2, y2);
+	}
 	lv_timer_handler ();
 	unsigned nUs = CTimer::GetClockTicks () - nNow;
 	if (nUs > m_nMaxUs) m_nMaxUs = nUs;
+}
+
+void CSidecarDisplay::SetTouchCal (const touch_cal_t *pCal)
+{
+	m_bTouchCal = FALSE;					// (Map on core 0 reads it: off while it changes)
+	if (pCal == 0)
+	{
+		LOGNOTE ("touch: calibration off (%s)", m_pCalibration ? "cmdline touchscreen=" : "the device's range");
+		return;
+	}
+	m_TouchCal = *pCal;
+	DataMemBarrier ();
+	m_bTouchCal = TRUE;
+	LOGNOTE ("touch: calibration x %d..%d, y %d..%d%s", pCal->x0, pCal->x1, pCal->y0, pCal->y1, pCal->swap ? ", axes swapped" : "");
+}
+
+// The bound input's contacts: 0 none, 1 single touch (an absolute-pointer USB panel such as the GeeekPi 0416:c169, or a
+// mouse: no pinch, the UI may offer double-tap / a zoom slider instead), 2+ multi-touch (USB digitizer, DSI FT5x06)
+unsigned CSidecarDisplay::GetTouchContacts (void) const
+{
+	if (m_pTouch) return m_nUsbContacts ? m_nUsbContacts : 1;
+	if (m_pDsiTouch) return 10;
+	return m_pMouse ? 1 : 0;
+}
+
+extern "C" unsigned sidecar_touch_contacts (void)
+{
+	return CSidecarDisplay::TouchContacts ();
 }
 
 const char *CSidecarDisplay::TakeTouchDiag (void)
@@ -661,10 +870,12 @@ const char *CSidecarDisplay::TakeTouchDiag (void)
 	u32 nEvents = m_nEvents, p = m_nPointer, r = m_nRaw;
 	CString Text;
 	Text.Format (" | touch: ev +%u rep +%u raw %u,%u %s | hid err %u (xhci %u, last code %u) resub %u reset %u (+%u) fail %u "
-		     "ep state %u pend %u ignored %u%s",
+		     "ep state %u pend %u ignored %u reenum %u (try %u/%u held %ums key %X)%s%s",
 		     nEvents - m_nDiagEvents, S.nReports - m_nDiagReports, r & 0xFFFF, r >> 16, (p >> 31) ? "DOWN" : "up",
 		     S.nErrors, S.nXhciErrors, S.nLastCode, S.nResubmits, S.nResets, S.nResets - m_nDiagResets, S.nFailed,
-		     S.nState, S.nPending, pUSB->GetIgnored (), S.bGaveUp ? " GAVE-UP" : "");
+		     S.nState, S.nPending, pUSB->GetIgnored (), S.nReEnums,
+		     S.nReEnumTries, S.nReEnumMax, S.nGaveUpHeldMs, S.nReEnumKey,
+		     S.bReEnumExhausted ? " REENUM-EXHAUSTED" : "", S.bGaveUp ? " GAVE-UP" : "");
 	m_nDiagEvents = nEvents;
 	m_nDiagReports = S.nReports;
 	m_nDiagResets = S.nResets;
@@ -686,23 +897,69 @@ void CSidecarDisplay::SetStatus (const sidecar_ui_status_t &rStatus)
 	m_bStatusNew = TRUE;
 }
 
+// LVGL's pixels to the screen. The OLED theme draws at half the size (sidecar_ui_dot): each dot becomes a 2x2 cell, the
+// dot and its dimmer grid lines (sidecar_dot_expand, DotRows UI rows at a time), the pattern colours their checkerboards, the brightness
+// applied; then Put as before (the Pi 5's scaler on top)
 void H::Flush (lv_display_t *pDisplay, const lv_area_t *pArea, u8 *pBuffer)
 {
-	CDisplay::TArea Area;
-	Area.x1 = pArea->x1;
-	Area.x2 = pArea->x2;
-	Area.y1 = pArea->y1;
-	Area.y2 = pArea->y2;
-	CSidecarDisplay::s_pThis->Put (Area, (const u16 *) pBuffer);		// no completion routine: DMA and wait
+	CSidecarDisplay *p = CSidecarDisplay::s_pThis;
+	const int nDot = sidecar_ui_dot ();
+	if (nDot == 1 || !p->m_pDotBuf)
+	{
+		int ox, oy;					// 0, unless LVGL's display is bigger than the layout (width=/height=)
+		sidecar_ui_origin (&ox, &oy);
+		CDisplay::TArea Area;
+		Area.x1 = pArea->x1 + ox;
+		Area.x2 = pArea->x2 + ox;
+		Area.y1 = pArea->y1 + oy;
+		Area.y2 = pArea->y2 + oy;
+		p->Put (Area, (const u16 *) pBuffer);		// no completion routine: DMA and wait
+		lv_display_flush_ready (pDisplay);
+		return;
+	}
+	int ox, oy;
+	sidecar_ui_origin (&ox, &oy);
+	const int aw = pArea->x2 - pArea->x1 + 1, ah = pArea->y2 - pArea->y1 + 1, nBright = sidecar_ui_bright ();
+	const u16 *pIn = (const u16 *) pBuffer;
+	if (pArea->x1 == 0 && pArea->y1 == 0 && ox > 0 && ox <= 2)	// a full redraw: the columns beside the dot grid black
+	{
+		memset (p->m_pDotBuf, 0, 2 * 120 * sizeof (u16));
+		for (unsigned y = 0; y < p->m_nHeight; y += 120)
+		{
+			unsigned h = p->m_nHeight - y < 120 ? p->m_nHeight - y : 120;
+			CDisplay::TArea L = {0, (unsigned) ox - 1, y, y + h - 1};
+			CDisplay::TArea R = {p->m_nWidth - (unsigned) ox, p->m_nWidth - 1, y, y + h - 1};
+			p->Put (L, p->m_pDotBuf);
+			p->Put (R, p->m_pDotBuf);
+		}
+	}
+	for (int y0 = 0; y0 < ah; y0 += (int) CSidecarDisplay::DotRows)
+	{
+		int n = ah - y0 < (int) CSidecarDisplay::DotRows ? ah - y0 : (int) CSidecarDisplay::DotRows;
+		sidecar_dot_expand (pIn + y0 * aw, pArea->x1, pArea->y1 + y0, aw, n, aw, p->m_pDotBuf, aw * nDot, 0, nBright);
+		CDisplay::TArea Area;
+		Area.x1 = ox + pArea->x1 * nDot;
+		Area.x2 = Area.x1 + aw * nDot - 1;
+		Area.y1 = oy + (pArea->y1 + y0) * nDot;
+		Area.y2 = Area.y1 + n * nDot - 1;
+		p->Put (Area, p->m_pDotBuf);
+	}
 	lv_display_flush_ready (pDisplay);
 }
 
 void H::PointerRead (lv_indev_t *pIndev, lv_indev_data_t *pData)
 {
-	u32 p = CSidecarDisplay::s_pThis->m_nPointer;
-	pData->state = (p >> 31) && !CSidecarDisplay::s_pThis->m_bSwallow ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-	pData->point.x = p & 0x7FFF;
-	pData->point.y = (p >> 16) & 0x7FFF;
+	CSidecarDisplay *pThis = CSidecarDisplay::s_pThis;
+	u32 p = pThis->m_nPointer;
+	u32 nDown = pThis->m_nDownSeq;
+	boolean bPressed = (p >> 31) != 0;
+	if (!bPressed && nDown != pThis->m_nReadDownSeq) bPressed = TRUE;	// a tap down and up between two reads:
+	pThis->m_nReadDownSeq = nDown;					// shown pressed once, released at the next read
+	pData->state = bPressed && !pThis->m_bSwallow ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+	int x = (int) (p & 0x7FFF), y = (int) ((p >> 16) & 0x7FFF);
+	sidecar_ui_to_ui (&x, &y);					// screen -> the theme's UI pixels (OLED: dots)
+	pData->point.x = x;
+	pData->point.y = y;
 }
 
 void H::Log (lv_log_level_t Level, const char *pMsg)
@@ -715,23 +972,35 @@ u32 H::Tick (void)
 	return (u32) (CTimer::GetClockTicks64 () / (CLOCKHZ / 1000));
 }
 
-// raw -> screen: touchscreen= from cmdline.txt, else raw = pixels until a value is out of the screen, then a 12-bit
-// (0-4095) or 15-bit (0-32767) range, the usual HID digitizer ranges
+// raw -> screen: touchscreen= from cmdline.txt, else the USB touch screen's logical X/Y maxima from its report
+// descriptor, else raw = pixels until a value is out of the screen, then a 12-bit (0-4095) or 15-bit (0-32767) range
+// The touch panel covers the whole screen: raw -> the frame buffer's pixels (the UI's when scaled), then the centred UI's
+// place taken off (Pi 4, a frame buffer of another size: touches on the black border land on the UI's edge).
 void CSidecarDisplay::Map (unsigned nRawX, unsigned nRawY, int *pX, int *pY)
 {
-	unsigned x0 = 0, x1 = m_nWidth - 1, y0 = 0, y1 = m_nHeight - 1;
+	if (m_bTouchCal)					// Settings > Display > Calibrate: straight to the UI's pixels
+	{
+		touch_cal_map (&m_TouchCal, nRawX, nRawY, (int) m_nWidth, (int) m_nHeight, pX, pY);
+		return;
+	}
+	const unsigned SW = m_bScaled ? m_nWidth : m_nFbWidth, SH = m_bScaled ? m_nHeight : m_nFbHeight;
+	unsigned x0 = 0, x1 = SW - 1, y0 = 0, y1 = SH - 1;
 	if (m_pCalibration)
 	{
 		x0 = m_pCalibration[0]; x1 = m_pCalibration[1]; y0 = m_pCalibration[2]; y1 = m_pCalibration[3];
 	}
+	else if (m_nLogMaxX && m_nLogMaxY)			// the descriptor's logical maxima
+	{
+		x1 = m_nLogMaxX; y1 = m_nLogMaxY;
+	}
 	else
 	{
-		if (m_nRawMax < 32767 && (nRawX >= m_nWidth || nRawY >= m_nHeight))
+		if (m_nRawMax < 32767 && (nRawX >= SW || nRawY >= SH))
 			m_nRawMax = (nRawX > 4095 || nRawY > 4095) ? 32767 : 4095;
 		if (m_nRawMax) x1 = y1 = m_nRawMax;
 	}
-	int x = (int) ((long) ((int) nRawX - (int) x0) * (m_nWidth - 1) / (x1 - x0));
-	int y = (int) ((long) ((int) nRawY - (int) y0) * (m_nHeight - 1) / (y1 - y0));
+	int x = (int) ((long) ((int) nRawX - (int) x0) * (SW - 1) / (x1 - x0)) - (int) m_nOffX;
+	int y = (int) ((long) ((int) nRawY - (int) y0) * (SH - 1) / (y1 - y0)) - (int) m_nOffY;
 	*pX = x < 0 ? 0 : x >= (int) m_nWidth ? m_nWidth - 1 : x;
 	*pY = y < 0 ? 0 : y >= (int) m_nHeight ? m_nHeight - 1 : y;
 }
@@ -740,6 +1009,14 @@ void H::TouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, uns
 {
 	CSidecarDisplay *p = CSidecarDisplay::s_pThis;
 	p->m_nEvents = p->m_nEvents + 1;
+	if (nID == 1)							// a second finger: the SEQ page's pinch
+	{
+		int x = 0, y = 0;
+		if (Event != TouchScreenEventFingerUp) p->Map (nPosX, nPosY, &x, &y);
+		p->m_nPointer2 = (Event == TouchScreenEventFingerUp ? 0 : 1u << 31) | (u32) y << 16 | (u32) x;
+		p->m_nTouchSeq2 = p->m_nTouchSeq2 + 1;
+		return;
+	}
 	if (nID != 0) return;						// the first finger only
 	u32 nOld = p->m_nPointer;
 	if (Event == TouchScreenEventFingerUp)
@@ -752,6 +1029,7 @@ void H::TouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, uns
 		p->Map (nPosX, nPosY, &x, &y);
 		p->m_nRaw = (nPosY & 0xFFFF) << 16 | (nPosX & 0xFFFF);
 		p->m_nPointer = 1u << 31 | (u32) y << 16 | (u32) x;
+		if (Event == TouchScreenEventFingerDown) p->m_nDownSeq = p->m_nDownSeq + 1;
 	}
 	p->m_nTouchSeq = p->m_nTouchSeq + 1;
 }
@@ -762,8 +1040,14 @@ void H::DsiTouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, 
 	CSidecarDisplay *p = CSidecarDisplay::s_pThis;
 	if (p->m_pTouch) return;
 	p->m_nEvents = p->m_nEvents + 1;
-	if (nID != 0) return;						// the first finger only
+	if (nID > 1) return;						// two fingers (the second: the SEQ page's pinch)
 	u32 nOld = p->m_nPointer;
+	if (Event == TouchScreenEventFingerUp && nID == 1)
+	{
+		p->m_nPointer2 = 0;
+		p->m_nTouchSeq2 = p->m_nTouchSeq2 + 1;
+		return;
+	}
 	if (Event == TouchScreenEventFingerUp)
 	{
 		p->m_nPointer = nOld & 0x7FFF7FFF;
@@ -771,15 +1055,23 @@ void H::DsiTouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, 
 	else
 	{
 #if RASPPI >= 5
-		const unsigned PW = p->m_nWidth, PH = p->m_nHeight;	// rp1dsi: the panel's pixels, the UI's size
+		const unsigned PW = p->m_nFbWidth, PH = p->m_nFbHeight;	// rp1dsi: the panel's pixels
 #else
 		const unsigned PW = 800, PH = 480;			// the firmware's touch buffer
 #endif
 		unsigned x = nPosX < PW ? nPosX : PW - 1, y = nPosY < PH ? nPosY : PH - 1;
 		if (p->m_nDsiInvert & 1) x = PW - 1 - x;
 		if (p->m_nDsiInvert & 2) y = PH - 1 - y;
-		x = x * p->m_nWidth / PW;
-		y = y * p->m_nHeight / PH;
+		const unsigned SW = p->m_bScaled ? p->m_nWidth : p->m_nFbWidth, SH = p->m_bScaled ? p->m_nHeight : p->m_nFbHeight;
+		int sx = (int) (x * SW / PW) - (int) p->m_nOffX, sy = (int) (y * SH / PH) - (int) p->m_nOffY;
+		x = sx < 0 ? 0 : sx >= (int) p->m_nWidth ? p->m_nWidth - 1 : (unsigned) sx;
+		y = sy < 0 ? 0 : sy >= (int) p->m_nHeight ? p->m_nHeight - 1 : (unsigned) sy;
+		if (nID == 1)
+		{
+			p->m_nPointer2 = 1u << 31 | (u32) y << 16 | (u32) x;
+			p->m_nTouchSeq2 = p->m_nTouchSeq2 + 1;
+			return;
+		}
 		p->m_nRaw = (nPosY & 0xFFFF) << 16 | (nPosX & 0xFFFF);
 		p->m_nPointer = 1u << 31 | (u32) y << 16 | (u32) x;
 	}
@@ -798,6 +1090,13 @@ void H::MouseHandler (TMouseEvent Event, unsigned nButtons, unsigned nPosX, unsi
 	{
 		nPosX = nPosX * p->m_nWidth / p->m_nFbWidth;
 		nPosY = nPosY * p->m_nHeight / p->m_nFbHeight;
+	}
+	else								// centred: the UI's place taken off
+	{
+		nPosX = nPosX < p->m_nOffX ? 0 : nPosX - p->m_nOffX;
+		nPosY = nPosY < p->m_nOffY ? 0 : nPosY - p->m_nOffY;
+		if (nPosX >= p->m_nWidth) nPosX = p->m_nWidth - 1;
+		if (nPosY >= p->m_nHeight) nPosY = p->m_nHeight - 1;
 	}
 	p->m_nPointer = nDown | (nPosY & 0x7FFF) << 16 | (nPosX & 0x7FFF);
 	p->m_nTouchSeq = p->m_nTouchSeq + 1;

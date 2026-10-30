@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "check.h"
+#include "timing.h"
 #include "engine.h"
 #include "fx/send_fx.h"
 
@@ -242,7 +243,8 @@ int main() {
   link(msg({0x10, 'D', 'E', 'M', 'O', ' ', '1'}));
   CHECK(user[1].tag == 0x1a2b && strcmp(user[1].name, "DUSTY") == 0 && user[0].tag == 0);
   CHECK(count(0x21) == 2 && count(0x22) == 2);
-  CHECK(count(0x24) == 8);   // CHORUS COMB CRUSH RINGMOD HALO RINGS CLOUDSEED STUTTER: one 24 each, after the 21, before the 22s
+  CHECK(count(0x24) == 8);   // 9 labelled TYPEs (CHORUS COMB SPACE RINGS CLOUDSEED STUTTER CRUSH RINGMOD HALO), the Rytm keeps 8:
+  // the slots' TYPEs first (both OFF here), then by id: HALO (18) left out; one 24 each, after the 21, before the 22s
   {
     int first24 = -1, last24 = -1, first22 = -1, first21 = -1;
     for (int i = 0; i < (int)g_out.size(); ++i) {
@@ -264,18 +266,19 @@ int main() {
     CHECK(sysex_labels(m, kOff) == 0 && sysex_labels(m, 7) == 0 && sysex_labels(m, 65) == 0);   // none: not played
     CHECK(labels(kChorus) && labels(kChorus)->nzones == 0 && !labels(3));
   }
-  {   // F0 7D 52 54 21 01 <replace> <total> {<id> <13>} F7, 8 a message: OFF CHORUS COMB RINGS CLOUDSEED STUTTER
-      // CRUSH RINGMOD, then HALO DUSTY(65)
+  {   // F0 7D 52 54 21 01 <replace> <total> {<id> <13>} F7, 8 a message: OFF CHORUS COMB SPACE RINGS CLOUDSEED
+      // STUTTER CRUSH, then RINGMOD HALO DUSTY(65)
     std::vector<std::vector<uint8_t>> nm;
     for (auto& m : g_out)
       if (m[4] == 0x21) nm.push_back(m);
     CHECK(nm.size() == 2);
-    const uint8_t want[10] = {0, 1, 2, 6, 8, 15, 16, 17, 18, 65};
-    const char* names[10] = {"OFF", "CHORUS", "COMB", "RINGS", "CLOUDSEED", "STUTTER", "CRUSH", "RINGMOD", "HALO", "DUSTY"};
+    const uint8_t want[11] = {0, 1, 2, 5, 6, 8, 15, 16, 17, 18, 65};
+    const char* names[11] = {"OFF", "CHORUS", "COMB", "SPACE", "RINGS", "CLOUDSEED", "STUTTER", "CRUSH", "RINGMOD", "HALO",
+                             "DUSTY"};
     if (nm.size() == 2) {
-      CHECK(nm[0][6] == 1 && nm[0][7] == 10 && nm[0].size() == 9 + 8 * 14);
-      CHECK(nm[1][6] == 0 && nm[1][7] == 10 && nm[1].size() == 9 + 2 * 14);
-      for (int e = 0; e < 10; ++e) {
+      CHECK(nm[0][6] == 1 && nm[0][7] == 11 && nm[0].size() == 9 + 8 * 14);
+      CHECK(nm[1][6] == 0 && nm[1][7] == 11 && nm[1].size() == 9 + 3 * 14);
+      for (int e = 0; e < 11; ++e) {
         const std::vector<uint8_t>& m = nm[e / 8];
         int o = 8 + (e % 8) * 14;
         CHECK(m[o] == want[e] && memcmp(&m[o + 1], names[e], strlen(names[e])) == 0 && m[o + 1 + strlen(names[e])] == 0);
@@ -296,6 +299,37 @@ int main() {
   CHECK(count(0x22) == 0 && control.send[0][1] == 2);
   link(msg({0x23, 1}));
   CHECK(count(0x21) == 2 && count(0x22) == 2 && count(0x24) == 8);
+  {   // FX 1 to HALO, whose labels did not fit the Rytm's 8 tables: the list and the labels again, HALO's first
+    for (auto& m : g_out) CHECK(m[4] != 0x24 || m[6] != kHalo);
+    g_out.clear();
+    link(msg({0x20, 1, 12, 0, 0, kHalo, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    CHECK(count(0x21) == 2 && count(0x24) == 8 && count(0x22) == 2);
+    int first24 = -1;
+    for (int i = 0; i < (int)g_out.size() && first24 < 0; ++i)
+      if (g_out[i][4] == 0x24) first24 = i;
+    CHECK(first24 >= 0 && g_out[first24][6] == kHalo);
+    g_out.clear();
+    link(msg({0x20, 1, 12, 0, 0, kHalo, 5, 0, 0, 0, 0, 0, 0, 0, 0}));   // HALO stays (P1 moved): nothing again
+    CHECK(count(0x21) == 0 && count(0x24) == 0);
+    link(msg({0x20, 1, 12, 0, 0, kTape, 0, 0, 0, 0, 0, 0, 0, 0, 0}));   // to SPACE: sent this time, a 22 only
+    CHECK(count(0x21) == 0 && count(0x24) == 0 && count(0x22) == 1);
+    link(msg({0x20, 1, 12, 0, 0, 65, 0, 0, 0, 0, 0, 0, 0, 0, 0}));     // back as before
+  }
+  {   // fix1049: a rui1049 Rytm (its hello's caps bit 1) keeps 16 label tables: all 9 labelled TYPEs go, HALO too; an
+      // older hello (caps 1) the 8 again
+    g_out.clear();
+    link(msg({0x35, 1, 0, 100, 3}));   // the hello itself: the labels again at once, the 16 tables filled
+    CHECK(count(0x24) == 9);
+    g_out.clear();
+    link(msg({0x23, 1}));
+    bool halo = false;
+    for (auto& m : g_out) halo = halo || (m[4] == 0x24 && m[6] == kHalo);
+    CHECK(count(0x24) == 9 && halo);
+    link(msg({0x35, 1, 0, 100, 1}));
+    g_out.clear();
+    link(msg({0x23, 1}));
+    CHECK(count(0x24) == 8);
+  }
   command("sendfxout=fx", r, sizeof r);
   CHECK(idle_save() && !card_dirty);
   {
@@ -714,17 +748,19 @@ int main() {
           for (int s2 = 0; s2 < kStems; ++s2) st[j][s2] = 0.01f * (float)(((b * 12 + j) * 7 + s2 * 3) % 11 - 5);
         fx.Process(st, 12, o, control);
       }
-      auto t0 = std::chrono::steady_clock::now();
-      for (int b = 0; b < blocks; ++b) {
-        for (int j = 0; j < 12; ++j)
-          for (int s2 = 0; s2 < kStems; ++s2) st[j][s2] = 0.01f * (float)(((b * 12 + j) * 7 + s2 * 3) % 11 - 5);
-        fx.Process(st, 12, o, control);
-        acc += o[5][1];
-      }
-      double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / blocks;
-      printf("test_send_fx: CPU %-36s %6.0f ns a 12-frame block (Mac %.2f %%; Pi 4 est. %.1f us, %.1f %% of a core) [%g]\n",
-             cs.name, us * 1000, 100 * us / kBlockUs, us * kPiRatio, 100 * us * kPiRatio / kBlockUs, acc * 0);
-      CHECK(us < 50.0);
+      CHECK(timing_retry(cs.name, [&] {   // (wall-clock: up to 3 tries - tests/timing.h)
+        auto t0 = std::chrono::steady_clock::now();
+        for (int b = 0; b < blocks; ++b) {
+          for (int j = 0; j < 12; ++j)
+            for (int s2 = 0; s2 < kStems; ++s2) st[j][s2] = 0.01f * (float)(((b * 12 + j) * 7 + s2 * 3) % 11 - 5);
+          fx.Process(st, 12, o, control);
+          acc += o[5][1];
+        }
+        double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / blocks;
+        printf("test_send_fx: CPU %-36s %6.0f ns a 12-frame block (Mac %.2f %%; Pi 4 est. %.1f us, %.1f %% of a core) [%g]\n",
+               cs.name, us * 1000, 100 * us / kBlockUs, us * kPiRatio, 100 * us * kPiRatio / kBlockUs, acc * 0);
+        return us < 50.0;
+      }));
     }
   }
   {   // a p-lock on every block (P2..P5 of CLOUDSEED moving): the reconfiguration's cost a block
@@ -735,15 +771,17 @@ int main() {
     float st[12][kStems] = {}, o[12][2];
     st[0][0] = 0.1f;
     for (int b = 0; b < 200; ++b) fx_u->Process(st, 12, o, control);
-    auto t0 = std::chrono::steady_clock::now();
-    for (int b = 0; b < 4000; ++b) {
-      if (b % 4 == 0) control.knob[0][2] = (uint8_t)(96 | (b * 7 & 31));   // size within AMBIENCE
-      else control.knob[0][3 + b % 3] = (uint8_t)(b * 37 % 128);
-      fx_u->Process(st, 12, o, control);
-    }
-    double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / 4000;
-    printf("test_send_fx: CPU cloudseed ambience, a knob moved every block: %.0f ns a block\n", us * 1000);
-    CHECK(us < 50.0);
+    CHECK(timing_retry("cloudseed, a knob moved every block", [&] {   // (wall-clock: up to 3 tries - tests/timing.h)
+      auto t0 = std::chrono::steady_clock::now();
+      for (int b = 0; b < 4000; ++b) {
+        if (b % 4 == 0) control.knob[0][2] = (uint8_t)(96 | (b * 7 & 31));   // size within AMBIENCE
+        else control.knob[0][3 + b % 3] = (uint8_t)(b * 37 % 128);
+        fx_u->Process(st, 12, o, control);
+      }
+      double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / 4000;
+      printf("test_send_fx: CPU cloudseed ambience, a knob moved every block: %.0f ns a block\n", us * 1000);
+      return us < 50.0;
+    }));
   }
   {   // CC 120 (All Sound Off): a burst of 13 during a CLOUDSEED tail: one request, silence within 10 ms, no step, the
       // TYPE and params kept, the next input sounds

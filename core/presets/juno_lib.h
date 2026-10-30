@@ -21,6 +21,7 @@
 //                               name; an empty line an empty slot
 #pragma once
 #include "../platform.h"
+#include "../project_key.h"
 
 #ifdef FLASHMEM   // the Teensy's: run from flash, a section per function (inline
                   // functions in one shared section would conflict)
@@ -189,6 +190,8 @@ class Lib {
   int listed() const { return nlist_; }
   const Patch& slot(int i) const { return list_[i]; }
 
+  // 2026-10-27 (core/bundle/prjslot.h): the list's next writes under another project key (a SAVE AS copy placed)
+  void rekey(const char* project) { project_file(project); }
   JLIB_FLASH(load_list) void load_list(const char* project) {
     project_file(project);
     nlist_ = 0;
@@ -396,17 +399,9 @@ class Lib {
 
  private:
   void project_file(const char* project) {
-    char n[24];
-    int k = 0;
-    for (const char* c = project; *c && k < 23; ++c) {
-      char x = *c;
-      bool ok = (x >= 'A' && x <= 'Z') || (x >= 'a' && x <= 'z') || (x >= '0' && x <= '9') ||
-                x == '-' || x == '_' || x == ' ' || x == '.';
-      n[k++] = ok ? x : '_';
-    }
-    while (k && (n[k - 1] == ' ' || n[k - 1] == '.')) --k;
-    n[k] = 0;
-    sniprintf(file_, sizeof file_, "/.rytm/juno/%s.txt", k ? n : "_default");
+    char n[core::kKeyMax];
+    core::project_key(project, n, sizeof n);
+    sniprintf(file_, sizeof file_, "/.rytm/juno/%s.txt", n);
   }
 
   static void copy_name(char* d, const char* n, int cap) {   // printable ASCII (the list file's tab and line safe)

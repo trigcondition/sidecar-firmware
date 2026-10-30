@@ -29,6 +29,21 @@ P1..P16 (the emulated Rytm's kit has no Sidecar machine on it); with it the card
 RUI_SAMPLES=1: the card with those samples, no voice forced (the real path: the Rytm's reports decide).
 RUI_FRESH=1: no voice reported at the start (the core shows a voice's page only once the Rytm reported its machine;
 otherwise voice 1 is reported on PLAITS first, the emulated kit's tracks being analog ones that never report).
+RUI_RENDER=1: the voices rendered for the frames the emulator asks for ("N"; sent when the hello takes voices, else
+discarded): a machine's time runs with the emulated audio clock (CHOP's LAZY playhead, rui_e2e choplazy).
+RUI_NM="pool=smp:fill:B:/Banks;browse=gr:cd:/E2E": console commands of the pools / the browser at the start and after
+the Rytm names its project, each one's steps done before the next. RUI_NO_SRCVIEW=1: the Rytm's 29 (SRC view on / off)
+never reaches the core, so the Rytm's own stock SRC page (its knob texts, cu_text) stays on the panel.
+RUI_EMU_CLOCK=1: the core's clock is the emulated one (core_c_fake_time, as RUI_LFO does): its timers (a note's 2 s)
+in emulated time, not the Mac's (the emulator runs faster than real time).
+RUI_SEQ_CMDS="S:cmd;S:cmd..": the sequencer's console commands (core_c_seq_command, seq=...) at emulated second S each,
+logged as {"seqcmd": cmd, "out": reply}; with RUI_SEQ_TICK every 2E the core sends is logged as {"tx": "2e", "body": [..]}
+(the seq tracks the Rytm captures) and every 2D from the Rytm as {"rx": "2d", "body": [..]}; at the end {"seq": status}.
+RUI_SEQ_IDLE=1 (with RUI_SEQ_TICK): 4 idle passes (core_c_idle: the project's store fill, the sequencer's prefetch and
+saves) every link tick too.
+RUI_SEQ_TICK=1: the sequencer's tick (core_c_poly_tick: seq, rytm_dump, song) every link tick, as the Pi's control loop
+(the Rytm's transport reaches rytm_dump::is_playing: the pools' "PLAYING" guard).
+DSP SAMPLE's 14 table from the core is logged as {"tx": "0x14", "replace": r, "rows": [[slot, folder, file, name]..]}.
 RUI_DBG_SX=1: every SysEx from the Rytm logged ({"sx": first 12 bytes as hex}); a voice report whose voice byte
 changed is always logged as {"rx": "voice", "cmd": 3|4, "voice": v, "machine": flags}.
 RUI_REC=1: a model of the Pi's recorder behind the REC page (core/ui/extra.h RecInfo): the page's requests taken every
@@ -72,8 +87,30 @@ class Host:
             import shutil
             src = card_with_samples()
             shutil.copytree(os.path.join(src, "Samples"), os.path.join(card, "Samples"), dirs_exist_ok=True)
+        self.bundle = os.environ.get("RUI_BUNDLE") == "1"
+        if self.bundle:   # bundles phase 3 (the Rytm's PROJECT page): two projects with samples on the core's card
+            import struct as _st
+            def put(path, data):
+                full = os.path.join(card, path.lstrip("/"))
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                with open(full, "wb" if isinstance(data, bytes) else "w") as f:
+                    f.write(data)
+            def wav(n, k):
+                pcm = bytes((i * k) & 0xFF for i in range(2 * n))
+                return (b"RIFF" + _st.pack("<I", 36 + len(pcm)) + b"WAVEfmt " + _st.pack("<IHHIIHH", 16, 1, 1, 48000, 96000, 2, 16) +
+                        b"data" + _st.pack("<I", len(pcm)) + pcm)
+            put("/Samples/Live/loop.wav", wav(60000, 7))
+            put("/Samples/Live/hit.wav", wav(9000, 3))
+            put("/.rytm/pools/LIVE SET.txt", "Live/loop.wav\nLive/hit.wav\n")
+            put("/.rytm/seq/LIVE SET/p001.sqp", b"SQP1\x03" + b"\x11" * 59)
+            put("/.rytm/pools/JAM 1021.txt", "Live/hit.wav\n")
         self.core = CoreEngine(card)
         lib = self.lib = self.core.lib
+        if self.bundle:
+            lib.core_c_bundle_setup()
+            lib.core_c_bundle_tick.argtypes = [ctypes.c_int]
+            lib.core_c_bundle_msg.restype = ctypes.c_char_p
+            self.bundle_phase = -1
         lib.core_c_rui_tick.argtypes = [ctypes.c_uint32]
         lib.core_c_rui_frame.argtypes = [ctypes.c_char_p]
         lib.core_c_rui_stats.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_int]
@@ -134,6 +171,22 @@ class Host:
         lib.core_c_lfo_json.argtypes = [ctypes.c_char_p, ctypes.c_int]
         lib.core_c_sendfx_clock.argtypes = [ctypes.c_int, ctypes.c_int]
         self.lfo = os.environ.get("RUI_LFO")
+        # rui1038: RUI_NM="pool=smp:fill:B:/Banks;..." console commands of the pools / browser (core_c_nm_command: pool=, browse=) at the
+        # start and after the Rytm names its project (the pools are the project's)
+        lib.core_c_nm_command.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        self.nm_cmds = os.environ.get("RUI_NM")
+        self.render_on = os.environ.get("RUI_RENDER") == "1"   # rui1051: CHOP's LAZY playhead needs the voices rendered
+        self.no_view = os.environ.get("RUI_NO_SRCVIEW") == "1"
+        self.seq_tick = os.environ.get("RUI_SEQ_TICK") == "1"
+        self.seq_idle = os.environ.get("RUI_SEQ_IDLE") == "1"
+        lib.core_c_seq_command.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        self.seq_cmds = sorted((float(x.split(":", 1)[0]), x.split(":", 1)[1])
+                               for x in os.environ.get("RUI_SEQ_CMDS", "").split(";") if ":" in x)
+        self.emu_clock = os.environ.get("RUI_EMU_CLOCK") == "1"
+        if self.emu_clock:
+            lib.core_c_fake_time(1, 1_000_000)
+        if self.nm_cmds:
+            self.nm_setup()
         if self.lfo:
             lib.core_c_fake_time(1, 1_000_000)
             rb = ctypes.create_string_buffer(200)
@@ -159,6 +212,19 @@ class Host:
     def params(self):
         return [[int(self.lib.core_c_voice_param(v, k)) for k in range(16)] for v in range(8)]
 
+    def nm_setup(self):
+        rb = ctypes.create_string_buffer(300)
+        for _ in range(200):   # the pools read first (srclib's steps)
+            self.lib.core_c_idle(10)
+        for c in self.nm_cmds.split(";"):
+            self.lib.core_c_nm_command(c.encode(), rb, 300)
+            if hasattr(self, "frames"):   # (at __init__ the log is not open yet)
+                self.note(nm=c, out=rb.value.decode(errors="replace"))
+            else:
+                print(f"rui_link: {c}: {rb.value.decode(errors='replace')}", flush=True)
+            for _ in range(200):   # each command's steps done before the next (a fill's listing, then browse=..:cd)
+                self.lib.core_c_idle(10)
+
     def take(self):
         """The core's SysEx since the last call: logged (remote UI ones decoded), queued for the Rytm."""
         buf = (ctypes.c_uint8 * 4096)()
@@ -176,6 +242,8 @@ class Host:
             if not r:
                 continue
             cmd, body = r
+            if cmd == 0x2E and self.seq_tick:
+                self.note(tx="2e", body=list(body))
             if cmd == P.RUI_RECT:
                 rects.append(list(body[2:6]))
             elif cmd == P.RUI_TEXT:
@@ -202,12 +270,17 @@ class Host:
             elif cmd == P.RUI_MASK:
                 mk = P.decode_rui_mask(body)
                 self.note(tx="mask", encs=sorted(mk[0]) if mk else None, keys=sorted(mk[1]) if mk else None)
-            elif P.RUI_FIRST <= cmd <= P.RUI_LAST:
+            elif P.RUI_FIRST <= cmd <= P.RUI_LAST or cmd in (P.RUI_NAMES, P.RUI_WRITE, P.RUI_BANK_LIST):   # (rui1038: 47 / 48; rui1040: 4A)
                 self.note(tx=f"{cmd:#x}", body=list(body))
+            elif cmd == P.POOL_TABLE:   # DSP SAMPLE's 14 table (the pools: bank A of SAMPLES)
+                rep, rows = P.decode_pool_table(body)
+                self.note(tx="0x14", replace=rep, rows=[list(x) for x in rows])
 
     def from_rytm(self, msg):
         r = P.parse(msg)
         before = None
+        if r and r[0] == P.RUI_BANK_LIST:   # rui1038: the bank list opened / closed on the Rytm
+            self.note(rx="banklist", **(P.decode_bank_list(r[1]) or {"raw": msg.hex()}))
         if r and (P.RUI_FIRST <= r[0] <= P.RUI_LAST or r[0] in (P.RUI_SRC_VIEW, P.RUI_SRC_VALS, P.RUI_SRC_DIAG)):
             m = P.decode_rui(r[0], r[1])
             kind = {P.RUI_MODE: "mode", P.RUI_KEY: "key", P.RUI_ENC: "enc", P.RUI_MACHINES: "machines",
@@ -215,6 +288,8 @@ class Host:
             self.note(rx=kind, **(m or {"raw": msg.hex()}))
             if r[0] == P.RUI_ENC:
                 before = self.params()
+        if r and r[0] == 0x2D and self.seq_tick:
+            self.note(rx="2d", body=list(r[1]))
         if os.environ.get("RUI_DBG_SX"):
             self.note(sx=msg[:12].hex())
         if r and r[0] in (0x03, 0x04) and r[1]:   # a voice report: its voice byte (the machine the Rytm's track plays)
@@ -222,7 +297,8 @@ class Host:
             if self.vb_seen.get(vb & 7) != vb:
                 self.vb_seen[vb & 7] = vb
                 self.note(rx="voice", cmd=r[0], voice=vb & 7, machine=vb & 0x78)
-        self.core.report(msg)
+        if not (self.no_view and r and r[0] == P.RUI_SRC_VIEW):   # RUI_NO_SRCVIEW: the core never hears 29 (no view)
+            self.core.report(msg)
         # 1025+ (the Rytm's 33 decides the voice pages): the emulated kit's analog BD stands in for the track the link
         # puts on voice 1 (PLAITS, or RUI_VOICE1's machine) - a 33 naming track 1 analog (7F) is followed by one naming
         # it on that machine; a Sidecar machine the Rytm names (the SRC list) is left as it is
@@ -238,6 +314,10 @@ class Host:
             rb = ctypes.create_string_buffer(200)
             for c in self.lfo.split(";"):
                 self.lib.core_c_lfo_command(c.encode(), rb, 200)
+        if self.nm_cmds and r and r[0] == 0x10 and bytes(r[1]) != getattr(self, "nm_project", None):
+            self.nm_project = bytes(r[1])   # rui1038: the Rytm's project: its pools read again - our set-up again (only
+            self.nm_setup()                 # when it names another: it sends 0x10 again after kit writes, and a set-up
+                                            # mid-run would move the browser the test is in)
         if self.samples and r and r[0] == 0x10:   # the Rytm's project: its pool replaces ours - the samples again
             for slot, f in ((1, 0), (2, 1)):
                 self.core.report(P.pool_assign(slot, 1, f))
@@ -321,14 +401,32 @@ class Host:
             self.rec_push()
 
     def tick(self):
+        if self.bundle:   # core 0's loop: the feed and a bundle step (a few a block: the emulator runs fast)
+            ph = self.lib.core_c_bundle_tick(4)
+            if ph != self.bundle_phase:
+                self.bundle_phase = ph
+                self.note(bundle=ph, msg=self.lib.core_c_bundle_msg().decode(errors="replace"))
         if self.rec:
             self.rec_tick()
-        if self.lfo:
+        if self.lfo or self.emu_clock:
             us = 1_000_000 + self.frames * 1_000_000 // SR
             self.lib.core_c_fake_time(1, us)
-            self.lib.core_c_lfo_tick(ctypes.c_uint32(us & 0xFFFFFFFF))
+            if self.lfo:
+                self.lib.core_c_lfo_tick(ctypes.c_uint32(us & 0xFFFFFFFF))
+        while self.seq_cmds and self.seq_cmds[0][0] <= self.t():
+            c = self.seq_cmds.pop(0)[1]
+            self.note(seqcmd=c, out=self.seq_command(c))
+        if self.seq_tick:   # the Pi's control loop runs the sequencer's tick too (rytm_dump's transport: the pools' P3)
+            self.lib.core_c_poly_tick()
+            if self.seq_idle:   # and its idle passes (the project's store fills, the prefetch, the saves)
+                self.lib.core_c_idle(4)
         self.lib.core_c_rui_tick(ctypes.c_uint32(self.frames * 1000 // SR))
         self.take()
+
+    def seq_command(self, c):
+        b = ctypes.create_string_buffer(1000)
+        self.lib.core_c_seq_command(c.encode(), b, 1000)
+        return b.value.decode(errors="replace")
 
     def lfo_json(self):
         b = ctypes.create_string_buffer(4096)
@@ -379,8 +477,12 @@ def serve(h, link, secs, stop_at, hello=HELLO_MIDI | HELLO_NO_R | HELLO_VOICES):
             if k == b"N" and len(buf) >= 5:
                 n = struct.unpack("<I", buf[1:5])[0]
                 buf = buf[5:]
+                ob = None
+                if h.render_on:   # RUI_RENDER: the voices rendered for the frames the emulator asks for
+                    ob = (ctypes.c_int16 * (8 * n))()
+                    h.lib.core_c_render(ob, n)
                 if hello & HELLO_VOICES:   # (the voices' frames; without the flag the emulator takes none)
-                    s.sendall(b"a" + struct.pack("<I", n) + bytes(16 * n))
+                    s.sendall(b"a" + struct.pack("<I", n) + (bytes(ob) if ob is not None else bytes(16 * n)))
                 h.tap(n)
                 h.frames += n
                 h.tick()
@@ -458,6 +560,8 @@ def main():
         serve(h, a.link, a.secs, a.stop_at)
     finally:
         h.note(lfo=h.lfo_json())
+        if h.seq_tick:
+            h.note(seq=h.seq_command("seq"))
         h.note(stats=h.stats())
         print("rui_link:", h.stats(), flush=True)
 

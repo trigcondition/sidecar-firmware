@@ -189,6 +189,7 @@ void CSidecarMIDIEP::OnActivate (void)
 {
 	m_bActive = TRUE;
 	m_bBusy = FALSE;
+	if (GetDirection () == DirectionIn) m_pSidecar->HostUp (TRUE);	// the computer configured us: the queue starts empty
 	if (GetDirection () == DirectionOut) BeginTransfer (TransferDataOut, m_Buffer, BufSize);
 	else Kick ();
 }
@@ -197,6 +198,7 @@ void CSidecarMIDIEP::OnDeactivate (void)
 {
 	m_bActive = FALSE;
 	m_bBusy = FALSE;
+	if (GetDirection () == DirectionIn) m_pSidecar->HostUp (FALSE);	// reset or deconfigured: idle again
 	CancelTransfer ();
 }
 
@@ -235,7 +237,7 @@ CSidecarGadget::CSidecarGadget (CInterruptSystem *pInterrupt)
 	m_nLoopHead (0), m_nLoopTail (0), m_bLoopPriming (TRUE),
 	m_bWinStarted (FALSE), m_bWinRytm (FALSE), m_nWinUFrames (0), m_nLastFrameNo (0), m_nWinQ16 (0),
 	m_nFbBase (6 << 16),
-	m_ToRytmFilter (true), m_ToHostFilter (false), m_nToHostHead (0), m_nToHostTail (0), m_bToRytmSysEx (FALSE),
+	m_ToRytmFilter (true), m_ToHostFilter (false), m_bToRytmSysEx (FALSE),
 	m_nLastIRQs (0), m_nLastTicks (0), m_nLastStamp (0)
 {
 	s_pThis = this;
@@ -288,6 +290,9 @@ void CSidecarGadget::AddEndpoints (void)
 
 void CSidecarGadget::OnSuspend (void)
 {
+	EnterCritical ();				// task level (UpdatePlugAndPlay): the endpoints go, so does the computer
+	HostUp (FALSE);
+	LeaveCritical ();
 	for (unsigned i = 1; i < 4; i++)
 	{
 		delete m_pIso[i];
@@ -636,33 +641,38 @@ unsigned CSidecarGadget::Feedback (unsigned nFrame)
 
 void CSidecarGadget::ToHost (const u8 *p)
 {
-	if (m_nToHostHead - m_nToHostTail >= MIDIQueue) { m_Stats.nMidiFull++; return; }
-	u32 w;
-	memcpy (&w, p, 4);
-	m_ToHostQ[m_nToHostHead % MIDIQueue] = w;
-	m_nToHostHead++;
-	m_Stats.nMidiToHost++;
+	switch (m_ToHost.Push (p))
+	{
+	case ToHostQueue<MIDIQueue>::kQueued:	m_Stats.nMidiToHost++; break;
+	case ToHostQueue<MIDIQueue>::kFull:	m_Stats.nMidiFull++; break;	// a computer is there and not reading
+	default:				break;				// no computer: not queued, not counted
+	}
+}
+
+// the computer configured (or lost) the MIDI IN endpoint: IRQ level, or OnSuspend's task level with IRQs masked.
+// Up empties the queue (no backlog of old messages for a new computer), Down too (and back to idle)
+void CSidecarGadget::HostUp (boolean bUp)
+{
+	if (bUp) m_ToHost.Up ();
+	else m_ToHost.Down ();
 }
 
 unsigned CSidecarGadget::MIDIForHost (u8 *pBuffer, unsigned nMax)
 {
-	unsigned n = 0;
-	while (n + 4 <= nMax && m_nToHostTail != m_nToHostHead)
-	{
-		memcpy (pBuffer + n, &m_ToHostQ[m_nToHostTail % MIDIQueue], 4);
-		m_nToHostTail++;
-		n += 4;
-	}
-	return n;
+	return m_ToHost.Pop (pBuffer, nMax);
 }
 
-// the computer's packets (gadget IRQ) -> the Rytm-bound filter -> the queue core 0's loop sends from
+boolean (*g_pSidecarKeysTap) (const u8 *pPacket) = 0;
+
+// the computer's packets (gadget IRQ) -> the keys tap (its notes) -> the Rytm-bound filter -> the queue core 0's loop
+// sends from
 void CSidecarGadget::MIDIFromHost (const u8 *pBuffer, size_t nLength)
 {
 	for (size_t i = 0; i + 4 <= nLength; i += 4)
 	{
 		if (pBuffer[i] == 0) continue;				// padding
 		m_Stats.nMidiFromHost++;
+		if (g_pSidecarKeysTap != 0 && (*g_pSidecarKeysTap) (pBuffer + i)) continue;
 		m_ToRytmFilter.Feed (pBuffer + i, [this] (const u8 *p)
 		{
 			u32 w;
@@ -675,8 +685,19 @@ void CSidecarGadget::MIDIFromHost (const u8 *pBuffer, size_t nLength)
 // the Rytm's packets (xHCI IRQ, or the fake loop with IRQs masked) -> the computer-bound filter -> the IN queue
 void CSidecarGadget::FromRytmMIDI (const u8 *pPacket)
 {
+	if (!m_ToHost.IsUp () && !m_ToHostFilter.InSysEx ()) return;	// no computer: nothing to filter, queue or kick
 	m_ToHostFilter.Feed (pPacket, [this] (const u8 *p) { ToHost (p); });
 	if (m_pMIDIIn) m_pMIDIIn->Kick ();
+}
+
+void CSidecarGadget::MIDIToComputer (u32 nPacket)
+{
+	if (!m_ToHost.IsUp ()) return;			// no computer (a plain read: the flag only changes at IRQ level)
+	u8 p[4];
+	memcpy (p, &nPacket, 4);
+	EnterCritical ();				// the queue's other producer is the xHCI IRQ (FromRytmMIDI)
+	ToHost (p);
+	LeaveCritical ();
 }
 
 boolean CSidecarGadget::ForRytm (u32 *pPacket)
@@ -760,7 +781,7 @@ void CSidecarGadget::LogStats (CLogger *pLogger)
 	pLogger->Write (From, LogNotice,
 		"%s alt %u/%u mac %s pk %u | out %u pkts (11/12/13 %u/%u/%u) bad %u over %u under %u ring %u..%u | "
 		"in %u pkts (11/12/13 %u/%u/%u) ring %u..%u under %u over %u vunder %u | fb %u.%03u | late %u/%u/%u incompl %u/%u/%u | "
-		"midi from %u to-mac %u to-rytm %u full %u norytm %u drop %u/%u | irq %u/s %u.%02u %% gap max %u us handler max %u us >300us %u, last late %u ms ago",
+		"midi from %u to-mac %u to-rytm %u full %u norytm %u drop %u/%u mac-midi %s (up %u) | irq %u/s %u.%02u %% gap max %u us handler max %u us >300us %u, last late %u ms ago",
 		m_bTest ? "test" : bSource ? (m_bSrcRytm ? "rytm" : "standin") : "timer", m_uchOutAlt, m_uchInAlt,
 		m_bMac ? "on" : "off", s.nMacPeak,
 		s.nOutPkts, s.nOutHist[0], s.nOutHist[1], s.nOutHist[2], s.nOutBad, s.nOutOver, s.nOutUnder,
@@ -772,6 +793,7 @@ void CSidecarGadget::LogStats (CLogger *pLogger)
 		m_pIso[EPOut] ? m_pIso[EPOut]->Incomplete () : 0, m_pIso[EPFeedback] ? m_pIso[EPFeedback]->Incomplete () : 0,
 		m_pIso[EPIn] ? m_pIso[EPIn]->Incomplete () : 0,
 		s.nMidiFromHost, s.nMidiToHost, s.nMidiToRytm, s.nMidiFull, s.nMidiNoRytm,
-		m_ToRytmFilter.DroppedMessages (), m_ToHostFilter.DroppedMessages (), nRate, nPpm / 10000, nPpm / 100 % 100,
+		m_ToRytmFilter.DroppedMessages (), m_ToHostFilter.DroppedMessages (),
+		m_ToHost.IsUp () ? "up" : "none", m_ToHost.Ups (), nRate, nPpm / 10000, nPpm / 100 % 100,
 		(unsigned) (nMaxGap * 1000000 / m_nCntFrq), (unsigned) (nMaxHandler * 1000000 / m_nCntFrq), nLong, nLateAgo);
 }

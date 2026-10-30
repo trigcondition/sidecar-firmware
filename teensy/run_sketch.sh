@@ -14,7 +14,6 @@ D=$(cd "$(dirname "$0")" && pwd)
 CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
 "$D/setup_plaits_lib.sh" --if-stale   # remade when missing or when fm_machine.h / the user_data.h shim changed
 [ -d "$D/libraries/DaisySP" ] || "$D/setup_daisysp_lib.sh"
-[ -d "$D/libraries/Digidrum" ] || "$D/setup_digidrum_lib.sh"
 "$D/setup_juno_lib.sh" >/dev/null   # always: the voice lives in sim/juno
 "$D/setup_sampler_lib.sh" >/dev/null   # always: the playback modes live in sim/sampler
 "$D/setup_core_lib.sh" >/dev/null   # always: the engine core lives in core/ (with teensy/platform/)

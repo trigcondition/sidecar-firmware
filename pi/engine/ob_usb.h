@@ -149,6 +149,7 @@ public:
 
 #include "transport.h"
 #include <circle/usb/usbmidi.h>
+#include "usbmidi_merge.h"
 
 // The Rytm over USB (OVERBRIDGE mode) as the engine's host. The engine's SysEx for the Rytm (the host-link replies:
 // 1D slots, 1A EMPTY, 0E listings, 14 pool, 16/17 names, 15 JUNO sliders) goes out on the Rytm's USB MIDI OUT
@@ -163,22 +164,20 @@ public:
 	void Poll (void) override;
 	void Stop (void) override			{ CObUsb::Stop (); }
 	void LogStats (CLogger *pLogger) override	{ CObUsb::LogAllStats (pLogger); }
-	unsigned MIDIOutDropped (void) const override	{ return m_nDropped; }
+	unsigned MIDIOutDropped (void) const override	{ return m_Merge.dropped (); }
 
 	void SetMIDI (CUSBMIDIDevice *pMIDI);		// core 0's loop, before Poll: umidi1 or 0
 	void SetSend (boolean bSend)			{ m_bSend = bSend; }
-	unsigned MIDIOutBytes (void) const		{ return m_nSent; }
-	unsigned MIDIOutMessages (void) const		{ return m_nMsgs; }
-	unsigned MIDIOutFailed (void) const		{ return m_nFailed; }
-	unsigned MacMIDIFailed (void) const		{ return m_nMacFailed; }	// the computer's, for the Rytm
+	unsigned MIDIOutBytes (void) const		{ return m_Merge.sent (); }
+	unsigned MIDIOutMessages (void) const		{ return m_Merge.msgs (); }
+	unsigned MIDIOutFailed (void) const		{ return m_Merge.failures (); }
+	unsigned MacMIDIFailed (void) const		{ return m_Merge.mac_failed (); }	// the computer's, for the Rytm
 
 private:
-	static const unsigned ChunkBytes = 512;		// one bulk transfer: the endpoint's max packet (high speed)
-	static const unsigned PollBudget = 4096;	// engine bytes a Poll sends at most (the rest next loop)
+	// the order, the pacing and the failure rule: usbmidi_merge.h (portable, Mac-tested); Poll is its Circle side
+	UsbMidiMerge m_Merge;
 	CUSBMIDIDevice *m_pMIDI = 0;
-	unsigned m_nMacFailed = 0;
-	boolean m_bSend = TRUE, m_bFailed = FALSE;
-	unsigned m_nDropped = 0, m_nSent = 0, m_nMsgs = 0, m_nFailed = 0;
+	boolean m_bSend = TRUE;
 };
 
 #endif

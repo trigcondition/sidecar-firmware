@@ -27,7 +27,8 @@ sim/protocol.py; 0x03 floods at the Rytm's rate, every 16 blocks a voice):
   a2  as a, PAT from the STRESS FM list (card banks)
   b   8 x JUNO chords, held, note-offs; PAT changes by 0x03 (15 back)
   c   8 x DSP SAMPLE streaming pool slots 1..8, retriggered every 16th
-  d   mixed: 2 FM, 2 JUNO, 2 DSP SAMPLE, PLAITS (MODAL), DIGIDRUM; 16ths at
+  d   mixed: 2 FM, 2 JUNO, 2 DSP SAMPLE, 2 PLAITS (MODAL; DIGIDRUM's voice
+      until its removal, 2026-10-29); 16ths at
       150 BPM, knob sweeps on every voice
   e   worst case: 8 x FM with a voice load on every voice on the same block,
       plus knob floods
@@ -66,7 +67,7 @@ from rmp_install import assign_frame   # noqa: E402  (the 'U' frame; one copy of
 
 HDR = [0xF0, 0x7D, 0x52, 0x54]
 RATE, BLOCK, TARGET, CHUNK = 48000, 32, 512, 1024
-FM, JUNO, DSPS, PLAITS, DAISY, DD = 0x48, 0x08, 0x20, 0x00, 0x10, 0x40
+FM, JUNO, DSPS, PLAITS, DAISY = 0x48, 0x08, 0x20, 0x00, 0x10
 
 
 def pbytes(ps):
@@ -305,7 +306,7 @@ def run_events(link, events, secs, label):
         m = re.match(r"load user ([\d.]+) % \(machine plugins\), longest render (\d+) cycles \(limit (\d+)\)", txt)
         if m:
             user_lines.append((t - t0, float(m.group(1)), int(m.group(2)), int(m.group(3))))
-        m = re.match(r"load fm ([\d.]+) juno ([\d.]+) dsps ([\d.]+) daisy ([\d.]+) dd ([\d.]+) plaits ([\d.]+) %; "
+        m = re.match(r"load fm ([\d.]+) juno ([\d.]+) dsps ([\d.]+) daisy ([\d.]+)(?: dd ([\d.]+))? plaits ([\d.]+) %; "
                      r"max request (\d+) us, max report (\d+) us, refills (\d+) \((\d+) KB, max (\d+) us\)"
                      r"(?:, max loop (\d+) us)?(?:, max trig wait (\d+) us)?", txt)
         if m and t - t0 > 2.2 and t <= t_end + 0.1:
@@ -397,10 +398,6 @@ def plaits_ps(tim=64.0, eng=124):
     return [eng, 64, tim, 64, 64, 64, 64, 100, 64, 64, 0, 0, 0, 120, 0, 100]
 
 
-def dd_ps(c=64.0):
-    return [20, c, 64, 64, 64, 64, 64, 64]
-
-
 def knob_flood(voices, secs, start=0.0):
     """0x03 every 16 Rytm blocks a voice (staggered), the given parameter
     sweeping: voices [(vb, fn(x) -> ps)]."""
@@ -480,8 +477,8 @@ def sc_dsps_plock(secs):
 def sc_mixed(secs):
     ev = []
     st = step_len(150)
-    kinds = [FM, FM, JUNO, JUNO, DSPS, DSPS, PLAITS, DD]
-    ps = {FM: fm_ps, JUNO: juno_ps, DSPS: None, PLAITS: plaits_ps, DD: dd_ps}
+    kinds = [FM, FM, JUNO, JUNO, DSPS, DSPS, PLAITS, PLAITS]
+    ps = {FM: fm_ps, JUNO: juno_ps, DSPS: None, PLAITS: plaits_ps}
     for v in range(8):
         if kinds[v] == DSPS:
             ev.append((0.05, params(DSPS | v, dsps_ps(v - 3))))
@@ -511,10 +508,8 @@ def sc_mixed(secs):
             fl.append((m | v, lambda x: juno_ps(0, x)))
         elif m == DSPS:
             fl.append((m | v, lambda x, v=v: dsps_ps(v - 3, x)))
-        elif m == PLAITS:
-            fl.append((m | v, plaits_ps))
         else:
-            fl.append((m | v, dd_ps))
+            fl.append((m | v, plaits_ps))
     ev += knob_flood(fl, secs, 0.25)
     return ev
 
@@ -707,12 +702,11 @@ SCENARIOS = {
     "cm": ("8 x DSP SAMPLE streams, MODAL, MIX 64", lambda s: sc_dsps(s, eng=0)),
     "f": ("8 x DAISYSP MODAL, 16ths", lambda s: sc_same(s, DAISY, daisy_ps)),
     "g": ("8 x PLAITS MODAL, 16ths", lambda s: sc_same(s, PLAITS, plaits_ps)),
-    "h": ("8 x DIGIDRUM, 16ths", lambda s: sc_same(s, DD, dd_ps)),
     "pw": ("8 x PLAITS WAVETABLE, 16ths", lambda s: sc_same(s, PLAITS, lambda: plaits_ps(eng=plaits_eng("WAVETABLE")))),
     "pc": ("8 x PLAITS CHORDS, 16ths", lambda s: sc_same(s, PLAITS, lambda: plaits_ps(eng=plaits_eng("CHORDS")))),
     "pt": ("8 x PLAITS WAVE TERRAIN, 16ths", lambda s: sc_same(s, PLAITS, lambda: plaits_ps(eng=plaits_eng("WAVE TERRAIN")))),
     "ps": ("8 x PLAITS SPEECH, 16ths", lambda s: sc_same(s, PLAITS, lambda: plaits_ps(eng=plaits_eng("SPEECH")))),
-    "d": ("mixed 2 FM 2 JUNO 2 DSPS PL DD, 150 BPM, knobs", sc_mixed),
+    "d": ("mixed 2 FM 2 JUNO 2 DSPS 2 PL, 150 BPM, knobs", sc_mixed),
     "dl": ("d while browsing TEENSY (0D) and switching projects", sc_browse),
     "e": ("worst: 8 FM loads on one block, knobs", lambda s: sc_worst(s, False)),
     "e2": ("worst mixed: 4 FM loads 2 JUNO 2 DSPS, knobs", lambda s: sc_worst(s, True)),
@@ -774,7 +768,7 @@ def table(rows):
               f"{r['max_req_us'] / 1000:.1f} ms | {r['max_rep_us'] / 1000:.1f} ms | {r['max_loop_us'] / 1000:.1f} ms | "
               f"{r['max_trig_wait_us'] / 1000:.1f} ms | "
               f"{r['refill_kbs']:.0f} | {r['user']:.1f} % |")
-    print("\nper machine (render %, worst 2 s window): fm juno dsps daisy dd plaits")
+    print("\nper machine (render %, worst 2 s window): fm juno dsps daisy dd plaits (dd: older builds)")
     for r in rows:
         print(f"  {r['label']:3s} " + " ".join(f"{x:5.1f}" for x in r["mach"]))
 

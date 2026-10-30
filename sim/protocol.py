@@ -57,11 +57,11 @@ implemented 2026-10-08, P1..P8 only):
   track plays DAISYSP (machine 51), 0x20 for DSP SAMPLE (machine 45: P1..P8 ENG
   STR BRI DMP MIX FB TUN LEV; P9..P16 its SD SAMPLE page by word: 17 TUN 18 FIN
   19 SMP 20 FLD 21 STA 22 END 23 LOP 24 LEV, a file on the host's card ringing
-  the resonator), 0x40 for DIGIDRUM (soejrd/digidrum's TRX/EFM machines,
-  sim/digidrum/dd_voice.h: P1 ENG in 11 zones (DIGIDRUM_ENGINES), P2..P8 the engine's controls
-  1..7, control 8 at the engine's default, P9..P16 the sound's own sample page
-  - its sample layer plays under the drum; the engine's PTCH sets the pitch,
-  the note is not used, the voice's AMP the level), 0x08 for JUNO (a Juno-106 voice,
+  the resonator), 0x40 for MD (since 2026-10-29, the built-in mdkit drums, core/md/md.h; the interface:
+  docs/MD-BUILTIN.md): with the sound tag MD_LAYOUT_TAG (0x224D) P1..P8 the TYPE's
+  controls, P9 ENGINE (FM PI TRX), P10 TYPE, P11 LEV; without it DIGIDRUM's old page
+  (soejrd/digidrum's TRX/EFM machines until 2026-10-29: P1 ENG in 11 zones, P2..P8 its
+  controls, P9..P16 the Rytm's sample page), which the host maps onto MD), 0x08 for JUNO (a Juno-106 voice,
   sim/juno/juno_voice.h: P1..P8 PAT CUT RES ENV ATK DEC REL LEN - PAT the
   factory patch 0..127, CUT..REL the patch's VCF FREQ, RES, ENV, A, D, R
   sliders as absolute values 0..127 (2026-10-09; before: offsets, 64 = the
@@ -71,7 +71,8 @@ implemented 2026-10-08, P1..P8 only):
   added with LOAD TO PROJ - PAT steps through it instead of the factory
   patches: slot min(PAT, total - 1)), 0x48 for 6-OP FM (machine 40,
   2026-10-09: Plaits' six-op FM engine playing DX7 voices, sim/plaits/
-  fm_machine.h: P1..P8 PAT TIM MOR DEC LPG TUN LEV LEN, P9..P16 unused - PAT
+  fm_machine.h: P1..P8 PAT TIM MOR DEC LPG TUN LEV LEN, P9..P12 unused,
+  P13..P16 CHD INV SPR VOI on the Pi (core/poly.h, chord_expand below) - PAT
   the voice, entry min(PAT, total - 1) of the effective FM list (below),
   taken at a trig (a p-locked PAT too) or when the voice becomes FM: a 0x03's
   PAT waits for the next trig, as loading a voice cuts the sounding note; TIM
@@ -301,8 +302,8 @@ Sidecar send FX (2026-10-16, rytm-mods 0025-sendfx-report; docs/superpowers/spec
     (B). A lo half is a lock's fine slot: a coarse-only lock leaves it 0. (Mapping
     proposed by the M2 Sidecar side; the M4 page layout to confirm.)
     TYPE ids (stable, SENDFX_TYPES): 0 off; 1..63 built in, no tag (1 CHORUS,
-    2 COMB, 16 CRUSH, 17 RINGMOD, 18 HALO in every build, the Teensy too; 6 RINGS,
-    8 CLOUDSEED, 15 STUTTER on the Pi; the rest reserved for planned effects - a Sidecar without one
+    2 COMB, 16 CRUSH, 17 RINGMOD, 18 HALO in every build, the Teensy too; 5 SPACE,
+    6 RINGS, 8 CLOUDSEED, 15 STUTTER on the Pi; the rest reserved for planned effects - a Sidecar without one
     plays silence and reports it MISSING); 64..67 the user-FX slots UFX1..UFX4,
     as the user machines' U1..U5: the project's slot map on the Sidecar card
     (/.rytm/fxslots/<project>.txt: line n = "<tag 4 hex> <name>" or empty) says
@@ -358,7 +359,35 @@ IN L/R source (2026-10-18, rytm-mods 0030-fx-in; docs/recorder-mini.md, "IN L/R"
                 Rytm's USB port comes up (it resets itself to off on a disconnect: the cue to send 26 01 again).
                 An older Rytm (no 0030) never answers: the host shows "not supported by this Rytm build".
                 No version byte. Never send channels 10 / 11 back into the Rytm through Overbridge (feedback).
+
+Project slot reports (2026-10-27, rytm-mods rui1052 0026-remote-ui; core/bundle/prjslot.h,
+docs/superpowers/specs/2026-10-27-project-slot-keys-design.md). Rytm -> host only, F0 7D 52 54 4B 01 <op> ... F7;
+slots 1-based in two 7-bit bytes (n >> 7, n & 0x7F), 0 = none. The hello's (35) caps bit 2 says the Rytm sends them.
+
+    4B 01 00 <slot hi lo> <name>       ACTIVE: the active slot and its name (on a change, after each hello, every 5 s)
+    4B 01 01 <from hi lo> <to hi lo>   SAVE (from == to: a save of the active project; else SAVE AS / SAVE TO)
+    4B 01 02 <src hi lo> <dst hi lo>   PASTE (src: the slot COPY took, 0 unknown)
+    4B 01 03 / 04 / 05 <0 0> <slot>    CLEAR (also INIT NEW, FUNC + PLAY) / DELETE / RENAME
+    4B 01 06 <n hi lo> <0 0>           LOST: n events dropped
+    4B 01 07 <0 0> <slot>              WRITE: a slot written by a path not followed (logged)
+    4B 01 08 <first hi lo> <n> {<occ> <name 15>} x n   LIST (rui1052b): all 128 slots, 8 a message, after each hello's
+                                       ACTIVE and after a LOST; each list sent twice (rui1052c): the host acts only on
+                                       two identical whole lists in a row (all 16, END count = occupied, > 0)
+    4B 01 09 <count hi lo> <0 0>       LIST END (0x3fff: the Rytm could not read its table: no list)
+    4B 01 0A <0 0> <slot>              LOAD: LOAD PROJECT only (rui1052c: the setter called from 0x400b405a; the same
+                                       slot again too; never from the saves or CREATE NEW)
+4B 0B..3F are reserved for projects.
+4C: the kit reports (rytm-mods rui1052d; core/bundle/kits.h), 4C 01 <op> <kit hi lo> <src hi lo> (kits 1-based):
+    01 SAVE <kit> <src>   SAVE KIT / YES + KIT (src the active kit before; SAVE KIT to another kit makes it active)
+    02 RELOAD <kit>       RELOAD KIT / NO + KIT
+    03 RESTORE <kit>      the kept-aside copy back (rytm-mods 0010's EDITS RESTORED; no rui build sends it: 0010 and
+                          0021 exclude each other)
+    04 RELOAD ALL <kit>   the KIT menu's RELOAD set to ALL
+4D 01 <dropped hi lo> <over hi lo>: rui1052d (round 6) - key presses 0026 dropped (each with its release, its queue
+    full) and its waits past a stock dump run out (2 s with the flag never clear); on a change, at most once a second.
+0x4E is the next free id.
 """
+PRJ = 0x4B   # the project slot reports (above)
 
 HDR = bytes([0xF0, 0x7D, 0x52, 0x54])
 AUDIO, TRIG, PARAMS, TRIG_PARAMS = 0x01, 0x02, 0x03, 0x04
@@ -371,12 +400,9 @@ FM_NAMES, FM_ASK = 0x17, 0x18
 # PLAITS N = 17, zone -> Plaits model PLAITS_MODELS[zone]: VA VCF, PHASE DIST,
 # WAVE TERRAIN, STRING MACH, CHIPTUNE, VA, WAVESHAPE, 2-OP FM, GRANULAR,
 # HARMONIC, WAVETABLE, CHORDS, SPEECH, SWARM, PARTICLE, STRING, MODAL (no 6-OP
-# FM 1-3: the 6-OP FM machine; no NOISE; no drums: DIGIDRUM). DIGIDRUM N = 11:
-# EFM-BD EFM-SD EFM-XT EFM-CP EFM-RS EFM-CB EFM-HH EFM-CY TRX-RS TRX-CB TRX-CL.
+# FM 1-3: the 6-OP FM machine; no NOISE; no drums: DIGIDRUM's then, the MD user machine's now).
 # DAISYSP and DSP SAMPLE N = 3: MODAL STRING RESON.
 PLAITS_MODELS = (0, 1, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20)
-DIGIDRUM_ENGINES = ("EFM-BD", "EFM-SD", "EFM-XT", "EFM-CP", "EFM-RS", "EFM-CB", "EFM-HH", "EFM-CY",
-                    "TRX-RS", "TRX-CB", "TRX-CL")
 DAISY_MODELS = ("MODAL", "STRING", "RESON")
 
 
@@ -388,7 +414,8 @@ def eng_zone(value, n):
 
 # the machine: voice byte & MACHINE_MASK, matched exactly
 MACHINE_MASK = 0x78
-PLAITS, JUNO, DAISYSP, DSP_SAMPLE, DIGIDRUM, FM = 0x00, 0x08, 0x10, 0x20, 0x40, 0x48
+PLAITS, JUNO, DAISYSP, DSP_SAMPLE, DIGIDRUM, FM = 0x00, 0x08, 0x10, 0x20, 0x40, 0x48   # 0x40: MD now (DIGIDRUM's old flag)
+MD, MD_LAYOUT_TAG = 0x40, 0x224D   # docs/MD-BUILTIN.md
 USER_SLOTS = (0x50, 0x58, 0x60, 0x68, 0x70)   # U1..U5: machine plugins (teensy/voiceloop, RYTM_PLUGINS)
 JUNO_KNOB_BYTES = (5, 6, 7, 11, 12, 14)   # CUT RES ENV ATK DEC REL in a patch's 18
 BLOCK = 32
@@ -734,12 +761,15 @@ FX_TRACK = 12
 TAG_TRACK = 13
 SENDFX_NAMES, SENDFX_STATE, SENDFX_ASK = 0x21, 0x22, 0x23
 # stable TYPE ids (core/fx/send_fx.cpp kBuiltins); BUILT = the ones this release plays
-SENDFX_TYPES = {0: "OFF", 1: "CHORUS", 2: "COMB", 3: "DELAY", 4: "PINGPONG", 5: "TAPE DLY", 6: "RINGS",
+SENDFX_TYPES = {0: "OFF", 1: "CHORUS", 2: "COMB", 3: "DELAY", 4: "PINGPONG", 5: "SPACE", 6: "RINGS",
                 7: "S4 RESO", 8: "CLOUDSEED", 9: "PLASMA", 10: "PLATE", 11: "HALL", 12: "SHIMMER",
                 13: "FLANGER", 14: "PHASER", 15: "STUTTER", 16: "CRUSH", 17: "RINGMOD",
                 18: "HALO"}
-SENDFX_BUILT = (1, 2, 16, 17, 18, 6, 8, 15)   # 1, 2, 16, 17, 18 everywhere (the Teensy's small set); 6, 8, 15 the Pi
+SENDFX_BUILT = (1, 2, 16, 17, 18, 5, 6, 8, 15)   # 1, 2, 16, 17, 18 everywhere (the Teensy's small set); 5, 6, 8, 15 the Pi
 SENDFX_BUILT_TEENSY = (1, 2, 16, 17, 18)       # (and the Mac): a Teensy build reports them MISSING
+# fx-ins (core/fx/insert.h, docs/INSERT-FX.md): the INSERT slots' TYPE ids (stable: the card's files name them), the
+# seq p-lock params 24..31 lock the track's voice's INSERT A / B P1..P4 (core/seq/seq.h kLockIns; SEQ_LOCK_INS below)
+INSERT_TYPES = {0: "OFF", 1: "FILTER", 2: "CRUSH", 3: "DRIVE", 4: "EQ", 5: "COMP", 6: "DELAY", 7: "TREMOLO", 8: "RINGMOD", 9: "AMP"}
 SENDFX_STUTTER = 15   # a master insert, not a send (core/fx/stutter_fx.h): one FX slot at a time, a second MISSING
 SENDFX_USER_FIRST, SENDFX_USER_SLOTS = 64, 4
 # track 12 pairs (words 0, 29, 38, 39, 40, 41) -> FX k's [TYPE, P1..P5] as (pair, half 0 hi / 1 lo)
@@ -821,6 +851,11 @@ SENDFX_LABEL_SETS = {
     16: (("RATE", "BITS", "DRV", "TONE"), []),
     17: (("FREQ", "SPRD", "SHPE", "LFO"), []),
     18: (("DCY", "MOD", "TONE", "SHIM"), [(0, 127, 0, 0, "FRZ", 0)]),   # HALO: DECAY 127 = FREEZE
+    5: (("TIME", "RPT", "MODE", "AGE"), [(0, 64, 0, 0, "1/16", 0), (0, 80, 0, 0, "1/8T", 0), (0, 96, 0, 0, "1/8", 0),
+                                         (0, 112, 0, 0, "1/8D", 0), (2, 0, 0, 0, "H1", 1), (2, 16, 0, 0, "H2", 1),
+                                         (2, 32, 0, 0, "H3", 1), (2, 48, 0, 0, "H1+2", 1), (2, 64, 0, 0, "H2+3", 1),
+                                         (2, 80, 0, 0, "H123", 1), (2, 96, 0, 0, "H23+S", 1),
+                                         (2, 112, 0, 0, "H123S", 1)]),   # SPACE: TIME's note values, MODE stepped
     6: (("PTCH", "MODL", "BRIT", "DCY"), [(1, 0, 0, 1, "MODAL", 0), (1, 32, 0, 1, "MONO", 0),
                                           (1, 64, 0, 1, "STRNG", 0), (1, 96, 0, 1, "CHORD", 0)]),
     8: (("CHAR", "DCY", "DAMP", "MOD"), [(0, 0, 0, 1, "ROOM", 0), (0, 32, 0, 1, "HALL", 0), (0, 64, 0, 1, "PLATE", 0),
@@ -945,7 +980,7 @@ RUI_SRC_DIAG = 0x2B
 #    any 37 (an older host) every key and encoder is caught but the transport; the page leaving by the timeout forgets it.
 # 35 <uptime >> 7> <uptime & 0x7F> <caps>  1023 (Rytm -> host): hello, 0.5 s after the Rytm's USB port came up (again
 #    1 s and 2 s later while no valid host message came); uptime in 50 ms ticks since 0026 started (saturated at
-#    16383); caps bit 0: 36 understood
+#    16383); caps bit 0: 36 understood, bit 1 (rui1049): the Rytm keeps 16 send FX label tables (0x24), else 8
 # 36 <ticks 0..127>  1023 (host -> Rytm): show the last committed frame as a splash for ticks x 50 ms with the page
 #    closed (0: end it). Every key and knob stays the Rytm's (none reaches the host); transport and pads play under it,
 #    a navigation key (LEFT RIGHT UP DOWN YES NO) only ends it, any other key or a turn ends it and reaches the Rytm;
@@ -1042,7 +1077,10 @@ def decode_rui(cmd, payload):
     if not payload or payload[0] != PROTO_VER:
         return None
     b = payload[1:]
-    if cmd == RUI_MODE and len(b) == 3:   # page: 0 the default (SIDECAR), 1 the LFO page (rui1026's TRK + LFO)
+    # page: 0 the default (SIDECAR), 1 the LFO page (rui1026's TRK + LFO), 2 INSERT (TRK / UP + FX), 3 its OUT view (UP +
+    # AMP, rui1047), 0x10 + t the SEQ page of track t (rui1037's TRK + TRIG, rui1036's FUNC + LFO; the host asks to make t a
+    # seq track when it is none), 0x20 + t POLY CONFIG of track t (rui1048: the track menu's item)
+    if cmd == RUI_MODE and len(b) == 3:
         return dict(page=b[0], on=b[1], reason=RUI_REASONS[b[2]] if b[2] < len(RUI_REASONS) else b[2])
     if cmd == RUI_KEY and len(b) == 3:
         return dict(key=b[0] << 7 | b[1], down=b[2])
@@ -1113,6 +1151,76 @@ def decode_slot_prints(payload):
     return dict(seq=payload[1], flags=payload[2], entries=ents)
 
 
+# ---- Poly FM (2026-10-19, rytm-teensy core/poly.h; docs/POLYPHONY.md section 6) ----
+# The 6-OP FM machine's page 2 (SMPL) P13..P16 = sound words 21..24: CHD INV SPR VOI, each its 7-bit value as a direct
+# index; beyond the range the first entry (an old sound's stock STA END LOP LEV, 0 120 0 100: OFF 0 0 AUTO).
+CHORD_NAMES = ("OFF", "MAJ", "MIN", "SUS2", "SUS4", "7", "MAJ7", "MIN7", "DIM", "AUG", "6", "MIN6", "9", "ADD9", "MIN9", "5")
+CHORD_INTERVALS = ((0,), (0, 4, 7), (0, 3, 7), (0, 2, 7), (0, 5, 7), (0, 4, 7, 10), (0, 4, 7, 11), (0, 3, 7, 10),
+                   (0, 3, 6), (0, 4, 8), (0, 4, 7, 9), (0, 3, 7, 9), (0, 4, 7, 10, 14), (0, 4, 7, 14), (0, 3, 7, 10, 14),
+                   (0, 7))
+CHORD_INVS, CHORD_SPRS, CHORD_VOI_MAX = 4, 3, 6
+# 28 (its own id: 0x30..0x3F are all 0026's): host -> Rytm 28 01 <track> <root> <CHD> <INV> <SPR> <VOI> (13 bytes, any
+# other length refused) the live-recorded step's NOTE and chord locks; Rytm -> host 28 02 <track> <step | 7F> <status>
+# (rytm-mods poly-chord)
+CHORD = 0x28
+CHORD_WRITE, CHORD_REPLY = 0x01, 0x02
+CHORD_STATUS = ("ok", "no recent step", "lock slots full", "not recording / not a Sidecar track")
+
+
+def chord_params(p):
+    """P1..P16 (P13..P16 at p[12..15]) -> (chd, inv, spr, voi), each read as core/poly.cpp chord_of does."""
+    def ix(x, n):
+        v = int(x)
+        return v if 0 <= v < n else 0
+    return ix(p[12], len(CHORD_NAMES)), ix(p[13], CHORD_INVS), ix(p[14], CHORD_SPRS), ix(p[15], CHORD_VOI_MAX + 1)
+
+
+def chord_expand(root, chd, inv=0, spr=0, voi=0):
+    """The notes core/poly.cpp plays for a trig's note `root` (ascending, distinct, in 0..127)."""
+    if chd == 0:
+        return [root] if 0 <= root <= 127 else []
+    iv = CHORD_INTERVALS[chd]
+    n = len(iv)
+    b = sorted(set(x + (12 if i < inv % n else 0) for i, x in enumerate(iv)))
+    m = voi if 1 <= voi <= CHORD_VOI_MAX else n
+    t = sorted(set(b[k % n] + 12 * (k // n) for k in range(m)))
+    m = len(t)
+    t = sorted(set(x + 12 * ((k * (spr + 1)) // m) for k, x in enumerate(t)))
+    return [root + x for x in t if 0 <= root + x <= 127]
+
+
+def chord_value_text(k, v):
+    """The Rytm's value text for chord param k (0 CHD, 1 INV, 2 SPR, 3 VOI) at 7-bit value v."""
+    if k == 0:
+        return CHORD_NAMES[v] if 0 <= v < len(CHORD_NAMES) else "OFF"
+    if k == 1:
+        return "INV%d" % (v if 0 <= v < CHORD_INVS else 0)
+    if k == 2:
+        return "SPR%d" % (v if 0 <= v < CHORD_SPRS else 0)
+    n = v if 0 <= v <= CHORD_VOI_MAX else 0
+    return "AUTO" if n == 0 else str(n)
+
+
+def chord_write(track, root, chd, inv, spr, voi) -> bytes:
+    """28 01: the step just live-recorded on track (0..11) gets NOTE root and the CHD INV SPR VOI locks."""
+    return bytes(HDR) + bytes([CHORD, CHORD_WRITE] + [x & 0x7F for x in (track, root, chd, inv, spr, voi)]) + b"\xf7"
+
+
+def chord_reply(track, step, status) -> bytes:
+    """28 02 (Rytm -> host): step 0..63 or 0x7F (none), status CHORD_STATUS's index."""
+    return bytes(HDR) + bytes([CHORD, CHORD_REPLY, track & 0x7F, step & 0x7F, status & 0x7F]) + b"\xf7"
+
+
+def decode_chord(payload):
+    """28's payload (after the id) -> ("write", track, root, chd, inv, spr, voi) / ("reply", track, step, status);
+    None if malformed."""
+    if len(payload) == 7 and payload[0] == CHORD_WRITE:
+        return ("write",) + tuple(payload[1:])
+    if len(payload) == 4 and payload[0] == CHORD_REPLY:
+        return ("reply",) + tuple(payload[1:])
+    return None
+
+
 # ---- IN L/R source (2026-10-18): 26 / 27, no version byte (rytm-mods 0030-fx-in), see the docstring ----
 FXIN, FXIN_STATE = 0x26, 0x27
 FXIN_INPUTS, FXIN_FX, FXIN_ASK = 0, 1, 0x7F
@@ -1139,3 +1247,615 @@ def decode_fxin(payload):
 def decode_fxin_state(payload):
     """27's payload -> True (FX return on IN L/R) / False, else None."""
     return bool(payload[0]) if len(payload) == 1 and payload[0] in (0, 1) else None
+
+
+# ---- The Sidecar sequencer (2026-10-20, docs/SEQUENCER.md; rytm-mods 0026 "seq", host core/seq/seq.h) ----
+# The Rytm stays transport master; the host sequences its own poly notes on the Rytm tracks it marks (2E) and follows
+# the Rytm's step clock. Every message F0 7D 52 54 <cmd> <ver 1> <body> F7. blk4: the Rytm's audio block counter
+# (0x419ca2ac, 1500/s = 32 frames at 48 kHz), its low 28 bits as 4 x 7 bits, most significant first.
+#   Rytm -> host  2C 01 <blk4> <n> {<track> <step> <len> <speed>} x n
+#                 step ticks in this audio block, one per track per step that fires (trig_fire 0x4009a9bc, trig or not,
+#                 step 0 at PLAY too): track 0..11 (only tracks in the 2E mask or its clock mask; no master tick: the
+#                 master counter runs a 24-PPQN tick ahead [measured, seqmod]); step 0..63 the Rytm track's own step firing now (a 2x track
+#                 sends two per 1x step); len 1..64 the track's length (+0x2c5); speed 0..6 = 2x 3/2x 1x 3/4x 1/2x
+#                 1/4x 1/8x (SEQ_SPEEDS). A full queue on the Rytm drops ticks and counts them (2D 09).
+#                 2D 01 <kind> <args>   state and events:
+#                    01 TRANSPORT <state 0 stop / 1 play / 2 pause> <blk4>   (play after pause = continue)
+#                    02 PATTERN <now 0..127> <next 0..127 | 7F>   next: the pattern after this one (0x412f3e91; 7F the
+#                                                       same as now), on every change (polled at 20 Hz) and in each resync
+#                    03 SWITCH <from> <to> <blk4>       the moment (0x4009bb2a); the new pattern's step-0 ticks follow
+#                    05 MUTES <mask lo7> <mask hi6>     bit t = track t
+#                    06 REC <live 0/1> <grid 0/1>
+#                    07 TEMPO <t2 t1 t0>                bpm x 120 as 21 bits, 3 x 7, most significant first
+#                    08 SEQMODE <on 0/1> <track 0..11 | 7F>   on = the current track is in the mask and GRID REC is on:
+#                                                       T1..T16 (0x00..0x0F) and PAGE (0x84) come as 31 (press and
+#                                                       release) with the page closed, A..H as 32 while a caught trig
+#                                                       is held; the host opens its SEQ page (3A 0 1) meanwhile
+#                    09 POS <blk4> <playing 0/1/2> <master step & 7F> <dropped ticks 0..127, saturated>   once a second
+#                                                       while playing, and in each resync (master step: display only)
+#                    04 SCALE <track 0..11 | 7F the pattern> <len lo7> <len hi7> <speed 0..6> <mode> [<chg lo7> <chg hi7>]
+#                                                       (seq-p2 / rytm-mods 1033) the working pattern's lengths and speeds,
+#                                                       polled at 20 Hz: on a change and in each resync (13 of them); a
+#                                                       track's len is its own (+0x2c5), the pattern's its master length;
+#                                                       mode 1 = per-track lengths (then a queued pattern starts at a
+#                                                       multiple of chg [code]); chg only on the pattern's
+#                    0A EDIT <op> <pattern> <track | 7F> <ok 0/1> <src 0 stock / 1 seq mode> <a0> <a1> <a2>   (1033) a
+#                                                       stock edit function ran (src 0: op after it returned, ok its result)
+#                                                       or seq mode's own gesture (src 1: a host-held trig / PAGE + FUNC +
+#                                                       RECORD / STOP / PLAY, caught); a = a0 | a1 << 7 | a2 << 14: the
+#                                                       undo's kind (1 clear, 2 paste), the held trig mask (src 1), else 0.
+#                                                       ops SEQ_EDIT_OPS: copy / paste / clear / undo x pattern / track /
+#                                                       page, trigs copy / paste / clear; pattern = the working pattern
+#                    0B DIRTY <pattern>                 (1033) the working pattern's bytes changed (a rolling checksum,
+#                                                       about 1 s; at most every 200 ms): refetch its dump
+#                    0C FILL <held 0/1>                 (1033) the FILL key
+#                    0D SOLO <mask lo7> <mask hi6>      (1049) the soloed tracks, bit t = track t (0x407c23c5, BE word),
+#                                                       polled as 05 and in each resync after it; none soloed: 00 00. The
+#                                                       host silences the tracks not soloed as it does the muted ones; an
+#                                                       older host ignores 0D, an older Rytm never sends it
+#   host -> Rytm  2E 01 <mask lo7: tracks 0..6> <mask hi5: tracks 7..11> <flags> [<clock lo7> <clock hi5>]
+#                 the tracks the Sidecar sequences (their trig keys / LEDs in seq mode, live record writes no stock trig
+#                 on them; pads still send notes) and optionally clock-only tracks (ticked in 2C, nothing else); hi bytes
+#                 above 0x1F refused. flags bit 1: resync now (2D 08 01 02 05 06 07 09 at once), bit 0 reserved (0).
+#                 Any 2E (mask 0 too) turns the reports on; the first after a hello gets a full resync. The Rytm forgets
+#                 it at its hello (35) and when the port drops: sent again after each 35.
+#                 (1033) 2E may carry <pin lo7> <pin hi5> after the clock bytes (7 bytes): more tracks whose voices are
+#                 pinned (the analog pin: amp held open, filter envelope 0, VCA at velocity 127: the host's poly
+#                 tracks); every seq track is pinned unless flags bit 2. Older builds take 3 / 5 bytes only.
+#                 46 01 <silent lo7> <silent hi5>   (1033) the pinned tracks on which nothing of the host's sounds: their
+#                 VCA closes (stock's decay) until a 46 without them (one start, then held again)
+#                 2F 01 <p1> <p2> <p3> <p4>   the 4 PAGE LEDs, page 1..4 (panel LEDs 43 42 41 40), palette 0..111 as
+#                 34's, 7F stock's; honoured while seq mode is on or the remote page is open; only a 2F / 34 sent after
+#                 the host took the LEDs counts, seq mode keeps them across 3A open / close. The trig LEDs: 34.
+SEQ_TICK, SEQ_STATE, SEQ_MASK, SEQ_PAGE_LEDS = 0x2C, 0x2D, 0x2E, 0x2F
+SEQ_TRANSPORT, SEQ_PATTERN, SEQ_SWITCH, SEQ_MUTES, SEQ_REC, SEQ_TEMPO, SEQ_SEQMODE, SEQ_POS = 1, 2, 3, 5, 6, 7, 8, 9
+SEQ_SCALE, SEQ_EDIT, SEQ_DIRTY, SEQ_FILL, SEQ_SOLO = 4, 0x0A, 0x0B, 0x0C, 0x0D
+SEQ_SILENT = 0x46
+SEQ_FLAG_NO_PIN = 4
+SEQ_EDIT_OPS = {1: "COPY PAT", 2: "PASTE PAT", 3: "CLEAR PAT", 4: "UNDO PAT", 5: "COPY TRK", 6: "PASTE TRK",
+                7: "CLEAR TRK", 8: "UNDO TRK", 9: "COPY PAGE", 10: "PASTE PAGE", 11: "CLEAR PAGE", 12: "UNDO PAGE",
+                13: "COPY TRIGS", 14: "PASTE TRIGS", 15: "CLEAR TRIGS",
+                16: "RELOAD PAT", 17: "SAVE PAT", 18: "RELOAD TRK", 19: "SAVE TRK"}   # 1042 (rytm-mods 0026)
+SEQ_STOP, SEQ_PLAY, SEQ_PAUSE = 0, 1, 2
+SEQ_NONE = 0x7F
+SEQ_FLAG_RESYNC = 2
+SEQ_SPEEDS = (2.0, 1.5, 1.0, 0.75, 0.5, 0.25, 0.125)   # the Rytm's speed index -> steps per 1x step
+SEQ_BLOCK_FRAMES = 32   # blk4 counts 32-frame audio blocks
+SEQ_SUB = 96            # the host's sub-step unit (lengths, micro timing): 1/96 of a step
+
+
+def blk4(b):
+    b &= (1 << 28) - 1
+    return [(b >> 21) & 0x7F, (b >> 14) & 0x7F, (b >> 7) & 0x7F, b & 0x7F]
+
+
+def unblk4(p):
+    return p[0] << 21 | p[1] << 14 | p[2] << 7 | p[3]
+
+
+def seq_tick(blk, ticks) -> bytes:
+    """2C: ticks = [(track, step, len, speed), ...] fired in audio block blk."""
+    body = blk4(blk) + [len(ticks)]
+    for t, s, ln, sp in ticks:
+        body += [t & 0x7F, s & 0x7F, ln & 0x7F, sp & 0x7F]
+    return _msg(SEQ_TICK, body)
+
+
+def seq_transport(state, blk) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_TRANSPORT, state] + blk4(blk))
+
+
+def seq_pattern(now, nxt=SEQ_NONE) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_PATTERN, now & 0x7F, nxt & 0x7F])
+
+
+def seq_switch(frm, to, blk) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_SWITCH, frm & 0x7F, to & 0x7F] + blk4(blk))
+
+
+def seq_mutes(mask) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_MUTES, mask & 0x7F, (mask >> 7) & 0x3F])
+
+
+def seq_solo(mask) -> bytes:   # 1049
+    return _msg(SEQ_STATE, [SEQ_SOLO, mask & 0x7F, (mask >> 7) & 0x3F])
+
+
+def seq_rec(live, grid) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_REC, 1 if live else 0, 1 if grid else 0])
+
+
+def seq_tempo(bpm) -> bytes:
+    t = int(round(bpm * 120)) & ((1 << 21) - 1)
+    return _msg(SEQ_STATE, [SEQ_TEMPO, t >> 14, (t >> 7) & 0x7F, t & 0x7F])
+
+
+def seq_seqmode(on, track=SEQ_NONE) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_SEQMODE, 1 if on else 0, track & 0x7F])
+
+
+def seq_pos(blk, playing, master_step, dropped=0) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_POS] + blk4(blk) + [playing, master_step & 0x7F, min(dropped, 127)])
+
+
+def seq_mask(mask, flags=0, clock=None, pin=None) -> bytes:
+    """2E (host -> Rytm): mask bit t = track t (0..11); clock: the clock-only tracks (None: not sent); pin: more pinned
+    tracks (1033; None: not sent, the 3 / 5-byte form older builds take)."""
+    body = [mask & 0x7F, (mask >> 7) & 0x1F, flags & 0x7E]
+    if clock is not None or pin is not None:
+        c = clock or 0
+        body += [c & 0x7F, (c >> 7) & 0x1F]
+    if pin is not None:
+        body += [pin & 0x7F, (pin >> 7) & 0x1F]
+    return _msg(SEQ_MASK, body)
+
+
+def seq_silent(mask) -> bytes:
+    """46 (host -> Rytm, 1033): the pinned tracks with nothing sounding (their VCA closed)."""
+    return _msg(SEQ_SILENT, [mask & 0x7F, (mask >> 7) & 0x1F])
+
+
+def seq_scale(track, length, speed, mode, chg=None) -> bytes:
+    """2D 04 (Rytm -> host): track 0..11 or SEQ_NONE (the pattern, with chg)."""
+    body = [SEQ_SCALE, track & 0x7F, length & 0x7F, (length >> 7) & 0x7F, speed & 0x7F, mode & 0x7F]
+    if track == SEQ_NONE:
+        c = chg or 0
+        body += [c & 0x7F, (c >> 7) & 0x7F]
+    return _msg(SEQ_STATE, body)
+
+
+def seq_edit(op, pattern, track=SEQ_NONE, ok=1, src=0, arg=0) -> bytes:
+    """2D 0A (Rytm -> host): an edit (SEQ_EDIT_OPS)."""
+    return _msg(SEQ_STATE, [SEQ_EDIT, op, pattern & 0x7F, track & 0x7F, 1 if ok else 0, src & 1, arg & 0x7F,
+                            (arg >> 7) & 0x7F, (arg >> 14) & 0x7F])
+
+
+def seq_dirty(pattern) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_DIRTY, pattern & 0x7F])
+
+
+def seq_fill(held) -> bytes:
+    return _msg(SEQ_STATE, [SEQ_FILL, 1 if held else 0])
+
+
+def seq_page_leds(c) -> bytes:
+    """2F (host -> Rytm): the 4 PAGE LEDs (palette 0..111, SEQ_NONE = stock's)."""
+    return _msg(SEQ_PAGE_LEDS, [x & 0x7F for x in c[:4]])
+
+
+def decode_seq(cmd, payload):
+    """A 2C / 2D / 2E / 2F payload (after the id) -> dict; None if malformed (core/seq/seq.cpp takes the same)."""
+    if not payload or payload[0] != PROTO_VER:
+        return None
+    b = payload[1:]
+    if cmd == SEQ_TICK:
+        if len(b) < 5 or len(b) != 5 + 4 * b[4] or b[4] < 1:
+            return None
+        ticks = [tuple(b[5 + 4 * i:9 + 4 * i]) for i in range(b[4])]
+        if any(t[0] > 11 or t[3] > 6 for t in ticks):
+            return None
+        return dict(kind="tick", blk=unblk4(b), ticks=ticks)
+    if cmd == SEQ_STATE and b:
+        k, a = b[0], b[1:]
+        if k == SEQ_TRANSPORT and len(a) == 5 and a[0] <= 2:
+            return dict(kind="transport", state=a[0], blk=unblk4(a[1:]))
+        if k == SEQ_PATTERN and len(a) == 2:
+            return dict(kind="pattern", now=a[0], next=None if a[1] == SEQ_NONE else a[1])
+        if k == SEQ_SWITCH and len(a) == 6:
+            return dict(kind="switch", frm=a[0], to=a[1], blk=unblk4(a[2:]))
+        if k == SEQ_MUTES and len(a) == 2:
+            return dict(kind="mutes", mask=a[0] | a[1] << 7)
+        if k == SEQ_REC and len(a) == 2:
+            return dict(kind="rec", live=a[0], grid=a[1])
+        if k == SEQ_TEMPO and len(a) == 3:
+            return dict(kind="tempo", bpm=(a[0] << 14 | a[1] << 7 | a[2]) / 120)
+        if k == SEQ_SEQMODE and len(a) == 2:
+            return dict(kind="seqmode", on=a[0], track=None if a[1] == SEQ_NONE else a[1])
+        if k == SEQ_POS and len(a) == 7:
+            return dict(kind="pos", blk=unblk4(a), playing=a[4], master_step=a[5], dropped=a[6])
+        if k == SEQ_SCALE and (len(a) == 5 and a[0] < 12 or len(a) == 7 and a[0] == SEQ_NONE):
+            d = dict(kind="scale", track=None if a[0] == SEQ_NONE else a[0], length=a[1] | a[2] << 7, speed=a[3],
+                     mode=a[4])
+            if len(a) == 7:
+                d["chg"] = a[5] | a[6] << 7
+            return d
+        if k == SEQ_EDIT and len(a) == 8 and a[0] in SEQ_EDIT_OPS:
+            return dict(kind="edit", op=a[0], name=SEQ_EDIT_OPS[a[0]], pattern=a[1],
+                        track=None if a[2] == SEQ_NONE else a[2], ok=a[3], src=a[4], arg=a[5] | a[6] << 7 | a[7] << 14)
+        if k == SEQ_DIRTY and len(a) == 1:
+            return dict(kind="dirty", pattern=a[0])
+        if k == SEQ_FILL and len(a) == 1:
+            return dict(kind="fill", held=a[0])
+        if k == SEQ_SOLO and len(a) == 2:
+            return dict(kind="solo", mask=a[0] | a[1] << 7)
+        return None
+    if cmd == SEQ_MASK and len(b) in (3, 5, 7) and b[1] <= 0x1F and (len(b) == 3 or b[4] <= 0x1F) and \
+            (len(b) < 7 or b[6] <= 0x1F):
+        return dict(kind="mask", mask=b[0] | b[1] << 7, flags=b[2], clock=b[3] | b[4] << 7 if len(b) >= 5 else None,
+                    pin=b[5] | b[6] << 7 if len(b) == 7 else None)
+    if cmd == SEQ_SILENT and len(b) == 2 and b[1] <= 0x1F:
+        return dict(kind="silent", mask=b[0] | b[1] << 7)
+    if cmd == SEQ_PAGE_LEDS and len(b) == 4:
+        return dict(kind="page_leds", leds=list(b))
+    return None
+
+
+# ---- The Rytm's own pattern, by the stock SysEx dump (seq-p2; verified in rytm-emu on OS 1.73, rytm-mods sq_emu.py
+# "fetch"; the format from public community knowledge, no code copied). The request for pattern n; the active pattern's
+# answer is its working buffer as edited, saved or not [measured]; 0x80 | n answers the same but is not a MIDI data byte
+# (a byte-stream MIDI path cuts the SysEx there [measured: rytm-emu's link]): ask for the active pattern by number:
+#   F0 00 20 3C 07 00 64 01 01 <n> 00 00 00 05 F7
+# The answer (14988 bytes): F0 00 20 3C 07 00 54 01 01 <pattern 0..127> 00 <00 00 00 05: the record's 4-byte header>
+#   <the record's other 13097 bytes, 7-bit packed: 14968 bytes> <checksum hi7 lo7: the sum of the bytes from <pattern>
+#   up to the checksum, & 0x3FFF> <length hi7 lo7: the message's size - 10> F7
+# The record: 13101 bytes (docs/TOUCH-EDITOR.md, pi/ui/rytm_pattern.h's layout).
+RYTM_DUMP_REQ = bytes.fromhex("f000203c0700640101800000" "0005f7")   # the 0x80 form (raw USB-MIDI paths only)
+
+
+def rytm_dump_request(pattern):
+    """the request for pattern 0..127 (the active one: its working buffer)"""
+    return RYTM_DUMP_REQ[:9] + bytes([pattern & 0x7F]) + RYTM_DUMP_REQ[10:]
+RYTM_RECORD = 13101
+
+
+def rytm_pack7(raw):
+    """Elektron's 7-bit packing: each group of up to 7 bytes after a byte of their top bits (the first byte's in bit 6)."""
+    out = bytearray()
+    for i in range(0, len(raw), 7):
+        g = raw[i:i + 7]
+        out.append(sum(((b >> 7) & 1) << (6 - k) for k, b in enumerate(g)))
+        out += bytes(b & 0x7F for b in g)
+    return bytes(out)
+
+
+def rytm_unpack7(p):
+    out = bytearray()
+    for i in range(0, len(p), 8):
+        hi = p[i]
+        out += bytes(b | ((hi << (k + 1)) & 0x80) for k, b in enumerate(p[i + 1:i + 8]))
+    return bytes(out)
+
+
+def rytm_dump(record, pattern=0) -> bytes:
+    """A stock pattern dump of a 13101-byte record (as the Rytm answers RYTM_DUMP_REQ)."""
+    body = bytes([pattern & 0x7F, 0]) + record[:4] + rytm_pack7(record[4:])
+    cs = sum(body[1:]) & 0x3FFF   # the pattern number not in it [measured on a real Rytm MKII]
+    m = bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, 0x54, 0x01, 0x01]) + body + bytes([cs >> 7, cs & 0x7F])
+    n = len(m) + 3 - 10
+    return m + bytes([n >> 7 & 0x7F, n & 0x7F, 0xF7])
+
+
+def rytm_dump_parse(m):
+    """A stock pattern dump -> (pattern, the 13101-byte record), None when it is not one or its checksum / length is
+    wrong."""
+    if len(m) < 20 or m[:9] != bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, 0x54, 0x01, 0x01]) or m[-1] != 0xF7:
+        return None
+    if (m[-5] << 7 | m[-4]) != sum(m[10:-5]) & 0x3FFF or (m[-3] << 7 | m[-2]) != len(m) - 10:
+        return None
+    rec = bytes(m[11:15]) + rytm_unpack7(m[15:-5])
+    return (m[9], rec) if len(rec) == RYTM_RECORD else None
+
+
+# The pattern file: /.rytm/seq/<project>/pNNN.sqp, NNN = 000..127 (A01 = 000), little-endian, sparse:
+#   header  'SQP1' <u8 version 1> <u8 ntracks> <u16 flags 0> <u32 crc32 of everything after the header>
+#   track   <u8 rytm track 0..11> <u8 machine hint (voice byte & 0x78, 0x7F unknown)> <u16 length: 0 AUTO (the Rytm
+#           track's), else 1..128 steps> <u8 speed 0 (follow the Rytm)> <u8 swing: 0 straight, 51..80 (% of a step
+#           pair, Elektron's scale: every second step late by swing / 50 - 1 of a step; seq-p2)> <u8 default note> <u8 default vel>
+#           <u8 default len (1/96 step units / 4)> <u16 steps used>, then the used steps, ascending:
+#   step    <u16 index 0..127> <u8 flags: bit 0 trig on, bit 1 mute> <s8 strum (1/96 step a note, the CHD entry's)>
+#           <u8 chd 0..15> <u8 inv> <u8 prob 0..100 (100)> <u8 notes 1..8>, then each note:
+#           <u8 pitch> <u8 vel> <u16 len (1/96 step)> <s8 micro (-96..96, 1/96 step from the step's start)>, then
+#           <u8 locks 0> (reserved)
+#   end     'END\0'
+# A step's notes keep their own micro offsets: a broken chord / strum is its notes at 0, +s, +2s ...; loose timing is any
+# micro. Unknown versions are refused (an empty pattern).
+# v2 (seq-ux, rui1036): a step's locks are 3 bytes {param, value lo, value hi} (value 14 bits: int << 7 | frac; param 0..15
+# the machine's P1..P16, 16..23 FX1 / FX2 P2..P5); a step with locks and no notes is stored (a lock trig). v1 files
+# (locks {param, value}, never written) still read, a v1 lock's value as the integer part.
+SQP_MAGIC, SQP_VERSION, SQP_END = b"SQP1", 4, b"END\x00"   # rui1040: v3 = flags bits 2..7 the trig condition
+# seqx (E2): v4 = v3 + an optional trailer of tagged blocks before END: b"XB" <u16 count>, then per block <u8 id>
+# <u8 flags> <u16 len> <payload> (core/seq/pattern.cpp). Written only when there is a block (else v2 / v3 as before).
+SQP_BLK_SEED, SQP_BLK_TRACK_SEED, SQP_BLK_POLY = 1, 2, 3
+# seqtop (docs/SEQUENCER.md "Built: seqtop"): blocks that change how the pattern plays, written required (flags 1 | 4):
+#   4 a track's speed: <track> <id: SEQ_SPEEDS' index, 0 FOLLOW>
+#   5 a track's play direction: <track> <id: SEQ_DIRS' index, 0 FWD>
+#   6 the pattern's key and scale: <key 0..11> <scale: SEQ_SCALES' index, 0 CHR> <qnt 0 OFF 1 EDIT 2 PLAY> (required only
+#     with PLAY: the others are an edit aid)
+#   7 a track's random notes (R1): <track> <mode 0 OFF 1 STEPS 2 TRACK> <low note> <octaves 1..4> <weight: SEQ_WEIGHTS'
+#     index> <16 bytes: the steps whose notes are random, bit s % 8 of byte s / 8> (per-step)
+#   8 a track's SEED MOD (R1b): <track> <src 0 off, 1..16 the voice's P1..P16> <range 2..64> <quant 0 STEP 1 LOOP 2 BAR>
+#     <affects 0 NOTES 1 +CHANCE 2 +ORDER 3 ALL>
+#   9 a track's conditional locks (V1): <track> {<step> <param> <cond: the COND knob's code, not PRE / NEI>}.. (per-step)
+#  10 a track's ratchets / arps (P4 / M4): <track> {<step> <cnt> <rate> <vcrv> <pcrv s8> <mode> <oct> <gate>}.. (per-step;
+#     SEQ_RT_MODES, SEQ_RT_RATES, SEQ_VCRVS)
+SQP_BLK_SPEED, SQP_BLK_DIR, SQP_BLK_SCALE, SQP_BLK_RND, SQP_BLK_SMOD, SQP_BLK_LOCK_COND = 4, 5, 6, 7, 8, 9
+#  11 a track's sliding locks (X1): <track> {<step> <param>}.. (per-step; a step's slide=[param, ..], params it locks)
+#  12 a track's FX column (H1): <track> {<step> <cmd 1> <val 1> <cmd 2> <val 2>}.. (per-step; any step, an empty one's
+#     jump too: a step's fx=((cmd, val), (cmd, val)); SEQ_FX_CMDS; OCT / TRS signed, LOP (x - 1) << 4 | (n - 1))
+SQP_BLK_RTRG, SQP_BLK_SLIDE, SQP_BLK_FX = 10, 11, 12
+#  13 a track's poly flag in this pattern (per pattern poly, 2026-10-26): <track> <on 0|1>, not required; written only
+#     where the rule for a file without it (a track holding steps is on, an empty one off) would read it otherwise
+#     (a track's on=0|1)
+SQP_BLK_ON = 13
+SEQ_FX_CMDS = ("---", "RTG", "DLY", "CUT", "CHN", "RND", "RNV", "OCT", "TRS", "JMP", "JRN", "LOP", "SKP", "DIR", "FIL")
+SEQ_RT_MODES = ("CHORD", "WALK", "UP", "DOWN", "UPDN", "RND", "PLAYED", "CONV")
+SEQ_RT_RATES = ("AUTO", "2", "1", "2/3", "1/2", "1/3", "1/4", "1/6", "1/8")
+SEQ_VCRVS = ("FLAT", "UP", "DOWN", "UPDN")
+SEQ_RND_MODES = ("OFF", "STEPS", "TRACK")
+SEQ_WEIGHTS = ("FLAT", "ROOT", "CHORD", "LOW", "HIGH", "STEP")
+SEQ_RND_DEFAULT = (0, 48, 2, 0)            # mode, low, octaves, weight: no block
+SEQ_SMOD_DEFAULT = (0, 16, 1, 0)           # src, range, quant (LOOP: Q10), affects
+SEQ_SCALES = ("CHR", "MAJ", "MIN", "DOR", "PENT", "PHR", "LYD", "MIX", "LOC", "HMIN", "MMIN", "PMAJ", "BLUES", "WHOLE")
+SEQ_SCALE_MASKS = (0xFFF, 0xAB5, 0x5AD, 0x6AD, 0x4A9, 0x5AB, 0xAD5, 0x6B5, 0x56B, 0x9AD, 0xAAD, 0x295, 0x4E9, 0x555)
+SEQ_DIRS = ("FWD", "REV", "PEND", "PING", "RND", "BROWN")   # P1 (core/seq/rng.h kDir*)
+SEQ_SPEEDS = ("FOLLOW", "1/8", "1/4", "1/2", "3/4", "3/2", "2", "2/3", "5/4", "7/8")   # P2: Sidecar steps per Rytm step
+SQP_BLK_REQUIRED, SQP_BLK_PER_STEP, SQP_BLK_TRACK = 1, 2, 4
+SQP_ALLOCS = ("REASSIGN", "ROTATE", "RESET")   # PolyCfg.alloc (core/seq/seq.h; the Analog Four's POLY CONFIG names)
+SEQ_LOCKS, SEQ_LOCK_FX, SEQ_LOCK_INS, SEQ_LOCK_PARAMS = 12, 16, 24, 32   # fx-ins: 24..31 the INSERT params
+SEQ_MAX_STEPS, SEQ_MAX_NOTES = 128, 8
+
+
+def sqp_pack(tracks, seed=None, blocks=(), scale=None):
+    """tracks: [dict(track, hint=0x7F, length=0, defaults=(60, 100, 24), steps={index: dict(flags=1, strum=0, chd=0,
+    inv=0, prob=100, notes=[(pitch, vel, len, micro), ...][, locks=[(param, value14), ...]])}[, poly=(voices, alloc,
+    unison, detune, spread, group)][, tseed=(own, seed, same)] (a lock (param, value14[, cond]))[, speed=id (SEQ_SPEEDS)][, dir=id (SEQ_DIRS)][, rnd=(mode, low, oct, weight)][, smod=(src, range, quant,
+    affects)])] (a step's rnd=1: its notes random; rt=(cnt, rate, vcrv, pcrv, mode, oct, gate) its ratchet / arp) -> the file's bytes (v2; v3 with a condition; v4 with
+    a block). seed: (fixed, seed) the pattern's (E1); scale: (key, scale, qnt) the pattern's (seqtop M1); blocks: more raw blocks (id, flags, payload) after the known ones
+    (an unknown one, as a newer Sidecar would write it)."""
+    import struct
+    import zlib
+    body = bytearray()
+    for t in tracks:
+        steps = {i: s for i, s in t.get("steps", {}).items() if s.get("notes") or s.get("locks")}
+        dn, dv, dl = t.get("defaults", (60, 100, 24))
+        body += struct.pack("<BBHBBBBBH", t["track"], t.get("hint", 0x7F), t.get("length", 0), 0, t.get("swing", 0), dn,
+                            dv, dl // 4, len(steps))
+        for i in sorted(steps):
+            s = steps[i]
+            ns = s["notes"][:SEQ_MAX_NOTES]
+            body += struct.pack("<HBbBBBB", i, s.get("flags", 1), s.get("strum", 0), s.get("chd", 0), s.get("inv", 0),
+                                s.get("prob", 100), len(ns))
+            for p, v, ln, mi in ns:
+                body += struct.pack("<BBHb", p, v, ln, mi)
+            lk = s.get("locks", [])[:SEQ_LOCKS]
+            body += bytes([len(lk)])
+            for prm, val, *_ in lk:
+                body += struct.pack("<BH", prm, val & 0x3FFF)
+    bl = []   # E2: the known blocks in the core's order (the pattern's seed, then per track its seed, its poly config)
+    if seed and (seed[0] or seed[1]):
+        bl.append((SQP_BLK_SEED, 0, struct.pack("<BH", 1 if seed[0] else 0, seed[1])))
+    if scale and any(scale):
+        bl.append((SQP_BLK_SCALE, SQP_BLK_REQUIRED if scale[2] == 2 else 0, bytes(scale)))
+    for t in tracks:
+        if "on" in t and bool(t["on"]) != any(s.get("notes") or s.get("locks") for s in t.get("steps", {}).values()):
+            bl.append((SQP_BLK_ON, SQP_BLK_TRACK, bytes([t["track"], 1 if t["on"] else 0])))
+        ts = t.get("tseed")
+        if ts and any(ts):
+            bl.append((SQP_BLK_TRACK_SEED, SQP_BLK_TRACK, struct.pack("<BBHB", t["track"], 1 if ts[0] else 0, ts[1],
+                                                                       1 if ts[2] else 0)))
+        pc = t.get("poly")
+        if pc and (pc[0] or pc[1] or pc[2] > 1 or pc[3] or pc[4] or pc[5]):
+            bl.append((SQP_BLK_POLY, SQP_BLK_TRACK, bytes([t["track"]]) + bytes(pc)))
+        if t.get("speed"):
+            bl.append((SQP_BLK_SPEED, SQP_BLK_TRACK | SQP_BLK_REQUIRED, bytes([t["track"], t["speed"]])))
+        if t.get("dir"):
+            bl.append((SQP_BLK_DIR, SQP_BLK_TRACK | SQP_BLK_REQUIRED, bytes([t["track"], t["dir"]])))
+        rm = bytearray(16)
+        for i, st in t.get("steps", {}).items():
+            if st.get("rnd") and st.get("notes"):   # (as the core: a flag on a step with notes)
+                rm[i // 8] |= 1 << (i % 8)
+        rnd = tuple(t.get("rnd", SEQ_RND_DEFAULT))
+        if rnd != SEQ_RND_DEFAULT or any(rm):
+            bl.append((SQP_BLK_RND, SQP_BLK_TRACK | SQP_BLK_REQUIRED | SQP_BLK_PER_STEP,
+                       bytes([t["track"]]) + bytes(rnd) + bytes(rm)))
+        lc = b"".join(bytes([i, x[0], x[2]]) for i, st in sorted(t.get("steps", {}).items())
+                      for x in st.get("locks", [])[:SEQ_LOCKS] if len(x) > 2 and x[2] and (st.get("notes") or st.get("locks")))
+        if lc:
+            bl.append((SQP_BLK_LOCK_COND, SQP_BLK_TRACK | SQP_BLK_REQUIRED | SQP_BLK_PER_STEP, bytes([t["track"]]) + lc))
+        sl = b"".join(bytes([i, x[0]]) for i, st in sorted(t.get("steps", {}).items())
+                      for x in st.get("locks", [])[:SEQ_LOCKS] if x[0] in st.get("slide", ()))
+        if sl:
+            bl.append((SQP_BLK_SLIDE, SQP_BLK_TRACK | SQP_BLK_REQUIRED | SQP_BLK_PER_STEP, bytes([t["track"]]) + sl))
+        fx = b"".join(bytes([i, st["fx"][0][0], st["fx"][0][1] & 255, st["fx"][1][0], st["fx"][1][1] & 255])
+                      for i, st in sorted(t.get("steps", {}).items()) if st.get("fx") and (st["fx"][0][0] or st["fx"][1][0]))
+        if fx:
+            bl.append((SQP_BLK_FX, SQP_BLK_TRACK | SQP_BLK_REQUIRED | SQP_BLK_PER_STEP, bytes([t["track"]]) + fx))
+        rt = b"".join(struct.pack("<BBBBbBBB", i, *st["rt"]) for i, st in sorted(t.get("steps", {}).items())
+                      if st.get("notes") and st.get("rt") and (st["rt"][0] >= 2 or st["rt"][4] >= 2))
+        if rt:
+            bl.append((SQP_BLK_RTRG, SQP_BLK_TRACK | SQP_BLK_REQUIRED | SQP_BLK_PER_STEP, bytes([t["track"]]) + rt))
+        sm = tuple(t.get("smod", SEQ_SMOD_DEFAULT))
+        if sm != SEQ_SMOD_DEFAULT:
+            bl.append((SQP_BLK_SMOD, SQP_BLK_TRACK | SQP_BLK_REQUIRED, bytes([t["track"]]) + bytes(sm)))
+    bl += list(blocks)
+    if bl:
+        body += b"XB" + struct.pack("<H", len(bl))
+        for bid, fl, pay in bl:
+            body += struct.pack("<BBH", bid, fl, len(pay)) + bytes(pay)
+    body += SQP_END
+    ver = 3 if any(s.get("flags", 1) >> 2 and (s.get("notes") or s.get("locks")) for t in tracks
+                   for s in t.get("steps", {}).values()) else 2   # (no condition: v2, as the core writes)
+    if bl:
+        ver = SQP_VERSION
+    return SQP_MAGIC + struct.pack("<BBHI", ver, len(tracks), 0, zlib.crc32(bytes(body))) + bytes(body)
+
+
+def sqp_unpack(data, extra=None):
+    """The file's bytes -> tracks as sqp_pack takes them (a step's locks only when it has some; v4: a track's poly and
+    tseed); None when it is not a valid version 1..4 file. extra (a dict): gets "seed" (fixed, seed) and "blocks" [(id,
+    flags, payload)] - the blocks this mirror does not know, as sqp_pack's blocks takes them; "scale" (key, scale, qnt)."""
+    import struct
+    import zlib
+    if len(data) < 12 or data[:4] != SQP_MAGIC:
+        return None
+    ver, nt, _, crc = struct.unpack_from("<BBHI", data, 4)
+    body = data[12:]
+    if ver not in (1, 2, 3, SQP_VERSION) or zlib.crc32(body) != crc or body[-4:] != SQP_END:
+        return None
+    o, out = 0, []
+    for _ in range(nt):
+        tr, hint, length, _, swing, dn, dv, dl, ns = struct.unpack_from("<BBHBBBBBH", body, o)
+        o += 11
+        steps = {}
+        for _ in range(ns):
+            i, fl, strum, chd, inv, prob, nn = struct.unpack_from("<HBbBBBB", body, o)
+            o += 8
+            notes = []
+            for _ in range(nn):
+                notes.append(struct.unpack_from("<BBHb", body, o))
+                o += 5
+            nl, o = body[o], o + 1
+            locks = []
+            for _ in range(nl):
+                if ver >= 2:
+                    locks.append(struct.unpack_from("<BH", body, o))
+                    o += 3
+                else:
+                    locks.append((body[o], body[o + 1] << 7))
+                    o += 2
+            steps[i] = dict(flags=fl, strum=strum, chd=chd, inv=inv, prob=prob, notes=[tuple(n) for n in notes])
+            if locks:
+                steps[i]["locks"] = [tuple(x) for x in locks]
+        t = dict(track=tr, hint=hint, length=length, defaults=(dn, dv, dl * 4), steps=steps)
+        if swing:
+            t["swing"] = swing
+        out.append(t)
+    if ver >= 4 and body[o:o + 2] == b"XB":   # E2: the blocks (known ones onto their tracks; others in "blocks")
+        nb, o = struct.unpack_from("<H", body, o + 2)[0], o + 4
+        seed, more, scale = None, [], None
+        for _ in range(nb):
+            bid, fl, ln = struct.unpack_from("<BBH", body, o)
+            pay, o = bytes(body[o + 4:o + 4 + ln]), o + 4 + ln
+            tr = next((t for t in out if fl & SQP_BLK_TRACK and pay and t["track"] == pay[0]), None)
+            if bid == SQP_BLK_SEED:
+                seed = (pay[0], pay[1] | pay[2] << 8)
+            elif bid == SQP_BLK_SCALE:
+                scale = tuple(pay[:3])
+            elif bid == SQP_BLK_TRACK_SEED and tr is not None:
+                tr["tseed"] = (pay[1], pay[2] | pay[3] << 8, pay[4])
+            elif bid == SQP_BLK_ON and tr is not None:
+                tr["on"] = pay[1]
+            elif bid == SQP_BLK_POLY and tr is not None:
+                tr["poly"] = tuple(pay[1:7])
+            elif bid == SQP_BLK_SPEED and tr is not None:
+                tr["speed"] = pay[1]
+            elif bid == SQP_BLK_DIR and tr is not None:
+                tr["dir"] = pay[1]
+            elif bid == SQP_BLK_RND and tr is not None:
+                if tuple(pay[1:5]) != SEQ_RND_DEFAULT:
+                    tr["rnd"] = tuple(pay[1:5])
+                for i in range(128):
+                    if pay[5 + i // 8] >> (i % 8) & 1 and i in tr["steps"]:
+                        tr["steps"][i]["rnd"] = 1
+            elif bid == SQP_BLK_SMOD and tr is not None:
+                tr["smod"] = tuple(pay[1:5])
+            elif bid == SQP_BLK_FX and tr is not None:
+                for e in range(1, len(pay) - 4, 5):
+                    st = tr["steps"].setdefault(pay[e], dict(flags=1, strum=0, chd=0, inv=0, prob=100, notes=[]))
+                    sgn = lambda c, v: v - 256 if c in (7, 8) and v > 127 else v   # OCT / TRS
+                    st["fx"] = ((pay[e + 1], sgn(pay[e + 1], pay[e + 2])), (pay[e + 3], sgn(pay[e + 3], pay[e + 4])))
+            elif bid == SQP_BLK_SLIDE and tr is not None:
+                for e in range(1, len(pay) - 1, 2):
+                    if pay[e] in tr["steps"]:
+                        tr["steps"][pay[e]].setdefault("slide", []).append(pay[e + 1])
+            elif bid == SQP_BLK_RTRG and tr is not None:
+                for e in range(1, len(pay) - 7, 8):
+                    if pay[e] in tr["steps"]:
+                        tr["steps"][pay[e]]["rt"] = struct.unpack_from("<BBBbBBB", pay, e + 1)
+            elif bid == SQP_BLK_LOCK_COND and tr is not None:
+                for e in range(1, len(pay) - 2, 3):
+                    st = tr["steps"].get(pay[e])
+                    if st and "locks" in st:
+                        st["locks"] = [(x[0], x[1], pay[e + 2]) if x[0] == pay[e + 1] else x for x in st["locks"]]
+            else:
+                more.append((bid, fl, pay))
+        if extra is not None:
+            extra["seed"], extra["blocks"] = seed, more
+            if scale:
+                extra["scale"] = scale
+    return out
+
+
+def seq_strum(notes, strum):
+    """A broken chord: the notes (pitch, vel, len, micro) of a step re-timed at micro 0, strum, 2 strum ... from the
+    lowest (strum < 0: from the highest), clamped to -96..96 (core/seq: the STR encoder)."""
+    order = sorted(range(len(notes)), key=lambda i: notes[i][0], reverse=strum < 0)
+    out = list(notes)
+    for k, i in enumerate(order):
+        p, v, ln, _ = notes[i]
+        out[i] = (p, v, ln, max(-96, min(96, k * abs(strum))))
+    return out
+
+
+# ---- rui1036 (rytm-mods 0026 "1036"): the source lists' names and the host's parameter write
+RUI_NAMES, RUI_WRITE = 0x47, 0x48
+RUI_PAGE_INS_OUT = 3         # 30's page 3 (rui1047, UP + AMP): the INSERT page on its OUT view (an older host: SIDECAR)
+RUI_PAGE_SEQ = 0x10          # 30's page 0x10 + t: TRK + TRIG (rui1036: FUNC + LFO), the SEQ page of track t
+RUI_PAGE_POLY = 0x20         # 30's page 0x20 + t (rui1048): POLY CONFIG of track t (the Rytm's track menu item, FUNC + CHRO;
+                             # an older host: SIDECAR)
+
+
+def rui_names(lst, replace, total, first, names) -> bytes:
+    """host -> Rytm 47 <list 0 GRANULAR SRC / 1 WAVETABLE TBL / 2 MULTISAMPLE INST> <replace> <total> {<slot> <13 name
+    bytes>} x <= 8: the Rytm's value text of that knob at value v is name[min(v, total - 1)] (9 characters kept)."""
+    body = [lst & 3, 1 if replace else 0, total & 0x7F]
+    for i, n in enumerate(names[:8]):
+        body += [(first + i) & 0x7F] + list(n.upper().encode("ascii", "replace")[:13].ljust(13, b"\0"))
+    return _msg(RUI_NAMES, body)
+
+
+def rui_write(track, param, value, frac=None, flags=None) -> bytes:
+    """host -> Rytm 48 <track 0..11> <param 0..15> <value> [<frac> [<flags>]]: P(param + 1) of the track's sound set as a
+    knob turn sets it (kit and live sound). The Rytm answers 48 <track> <param> <status 0 written, 1 refused, 2 no such
+    param; rui1038: 3 the pattern's lock slots full, 4 locked>. rui1038: flags bit 0 - the bank list's commit: the steps
+    held at its YES get a lock of P1 instead of the kit."""
+    tail = ([(frac or 0) & 0x7F] if frac is not None or flags is not None else []) + ([flags & 0x7F] if flags is not None else [])
+    return _msg(RUI_WRITE, [track, param, value & 0x7F] + tail)
+
+
+# ---- rui1038 (rytm-mods 0026 "1038", docs/SRC-BANKS.md): the source banks
+RUI_BANK_LIST = 0x4A
+BANK_WHY = {0: "open", 1: "yes", 2: "no", 3: "knob", 4: "key", 5: "view", 6: "srcyes"}   # 6 (rui1049, on 3): FUNC + YES
+#                                                                                     on the SRC view: the host aims an OFF
+#                                                                                     entry at the bank's first free row
+
+
+def src_code(index, bank) -> int:
+    """GRANULAR SRC / WAVETABLE TBL / MULTISAMPLE INST: bank 0..7 (A..H) * 128 + index 0..127 (the word index << 8 |
+    bank << 5: on the wire hi = index, lo = bank << 4)."""
+    return (bank & 7) * 128 + (index & 127)
+
+
+def src_wire(code) -> tuple:
+    """the source code -> (hi, lo) as 48 / 2A / 03 carry it"""
+    return code & 127, (code >> 7 & 7) << 4
+
+
+def src_of_wire(hi, lo) -> int:
+    return ((lo & 0x7F) >> 4) * 128 + (hi & 127)
+
+
+def rui_names_bank(lst, replace, bank, names) -> bytes:
+    """host -> Rytm 47 <list> <replace> <127> <bank 1..7> {<row> <13 name bytes>} x <= 8: bank B..H's names (the Rytm
+    keeps one bank a list; rows without a name read as B005 / OFF). names: [(row, name)]."""
+    body = [lst & 3, 1 if replace else 0, 127, bank & 7]
+    for row, n in names[:8]:
+        body += [row & 0x7F] + list(n.upper().encode("ascii", "replace")[:13].ljust(13, b"\0"))
+    return _msg(RUI_NAMES, body)
+
+
+def decode_bank_list(payload):
+    """Rytm -> host 4A's payload (<ver> <track> <on> <hi> <lo> <why>, as parse() gives it) -> dict(track, on, code, why)
+    or None"""
+    if not payload or payload[0] != PROTO_VER:
+        return None
+    b = payload[1:]
+    if len(b) != 5 or b[0] > 11 or (b[1] > 1 and b[1] != 3):   # rui1040: on 3 = FUNC + YES (the row's files)
+        return None
+    return dict(track=b[0], on=b[1], code=src_of_wire(b[2], b[3]), why=BANK_WHY.get(b[4], b[4]))
+
+
+def rui_bank_browse(track, on):
+    """rui1040, host -> Rytm 4A: <track> <browse 0/1> - the host's file browser over the bank list open (YES / NO the
+    host's, 31) or closed (the list's own again)."""
+    return bytes([0xF0, 0x7D, 0x52, 0x54, RUI_BANK_LIST, PROTO_VER, track & 0x7F, 1 if on else 0, 0xF7])

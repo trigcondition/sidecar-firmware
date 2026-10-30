@@ -1,0 +1,367 @@
+{
+ "id": "mdkit.efm",
+ "version": "1.0.0",
+ "name": "MD-EFM",
+ "short": "MDEF",
+ "licence": "CC0-1.0 mdkit voices (soejrd); glue MIT",
+ "page2": "params",
+ "page2_title": "MD-EFM TYPE",
+ "max_voices": 1,
+ "pitch": "none",
+ "knobs": [
+  {
+   "p": 1,
+   "long": "Pitch",
+   "short": "PTCH",
+   "default": 0
+  },
+  {
+   "p": 2,
+   "long": "Decay",
+   "short": "DEC",
+   "default": 64
+  },
+  {
+   "p": 3,
+   "long": "Ramp",
+   "short": "RAMP",
+   "default": 32
+  },
+  {
+   "p": 4,
+   "long": "Highpass",
+   "short": "HPF",
+   "default": 127
+  },
+  {
+   "p": 5,
+   "long": "Mod",
+   "short": "MOD",
+   "default": 35
+  },
+  {
+   "p": 6,
+   "long": "Mod Freq",
+   "short": "MFRQ",
+   "default": 14
+  },
+  {
+   "p": 7,
+   "long": "Mod Decay",
+   "short": "MDEC",
+   "default": 64
+  },
+  {
+   "p": 8,
+   "long": "Click",
+   "short": "CLIC",
+   "default": 24
+  },
+  {
+   "p": 9,
+   "long": "Type",
+   "short": "TYPE",
+   "look": "list",
+   "text": "enum",
+   "default": 0,
+   "names": [
+    "BD",
+    "SD",
+    "XT",
+    "CP",
+    "RS",
+    "CB",
+    "HH",
+    "CY"
+   ]
+  },
+  {
+   "p": 10,
+   "long": "Level",
+   "short": "LEV",
+   "look": "fader",
+   "default": 100
+  }
+ ],
+ "type_labels": {
+  "knob": 9,
+  "params": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8
+  ],
+  "sets": [
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Mod Feedback",
+     "MFB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Noise",
+     "NOIS"
+    ],
+    [
+     "Noise Decay",
+     "NDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Ramp",
+     "RAMP"
+    ],
+    [
+     "Ramp Decay",
+     "RDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Click",
+     "CLIC"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Claps",
+     "CLPS"
+    ],
+    [
+     "Clap Decay",
+     "CDEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Snare",
+     "SNAR"
+    ],
+    [
+     "Snare Pitch",
+     "SPTC"
+    ],
+    [
+     "Snare Decay",
+     "SDEC"
+    ],
+    [
+     "Snare Mod",
+     "SMOD"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Snap",
+     "SNAP"
+    ],
+    [
+     "Feedback",
+     "FB"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    null
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Tremolo",
+     "TREM"
+    ],
+    [
+     "Trem Freq",
+     "TFRQ"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    [
+     "Feedback",
+     "FB"
+    ]
+   ],
+   [
+    [
+     "Pitch",
+     "PTCH"
+    ],
+    [
+     "Decay",
+     "DEC"
+    ],
+    [
+     "Feedback",
+     "FB"
+    ],
+    [
+     "Highpass",
+     "HPF"
+    ],
+    [
+     "Mod",
+     "MOD"
+    ],
+    [
+     "Mod Freq",
+     "MFRQ"
+    ],
+    [
+     "Mod Decay",
+     "MDEC"
+    ],
+    null
+   ]
+  ]
+ }
+}

@@ -84,13 +84,13 @@ bar. A new built-in page: a `Cell` array, a `Page`, one row in `kTable`.
 
 ## The host (`remote.h`)
 
-- `30 on` from the Rytm (TRK + YES) opens the SIDECAR status page and sends the whole frame (`3E`, every tile, every
+- `30 on` from the Rytm (UP + YES; TRK + YES, the legacy form) opens the SIDECAR status page and sends the whole frame (`3E`, every tile, every
   text item); `30 off` (TRK + YES, the Rytm's 1 s timeout) stops all output. Two status pages, stock geometry:
   SIDECAR, each track's number (a badge) and machine in two rows of four, FX1 / FX2 a row each (a badge, the TYPE,
   PRE / POST; "OFF" when off); SYSTEM, U1..U5, the recorder (a dot and the time while recording), Overbridge and
   underruns, each core's load as a bar and its percent, the network in the bottom bar (Ethernet / Wi-Fi up or down and
-  the address only). Pages: SIDECAR, SYSTEM, then each voice whose machine has a page (the title bar's dots); LEFT / UP
-  the previous, RIGHT / DOWN / PAGE the next, NO back to SIDECAR. A voice's machine is the one the Rytm's reports name
+  the address only). Pages: SIDECAR, SYSTEM, then each voice whose machine has a page (the title bar's dots); LEFT
+  the previous, RIGHT / DOWN / PAGE the next (UP alone nothing: the Sidecar's modifier, fix1049), NO back to SIDECAR. A voice's machine is the one the Rytm's reports name
   (the voice byte, as the engine plays it); before its first report a track has no page and "-" on SIDECAR (an analog
   track never reports), so only the tracks on a Sidecar machine have voice pages (none: SIDECAR, SYSTEM and the live
   pages only); the Pi's boot bench's own reports are forgotten (`remote_forget_voices`). 0021 reports a voice only while it sounds: a machine set on the SRC page (the list's YES)
@@ -107,10 +107,12 @@ bar. A new built-in page: a `Cell` array, a `Page`, one row in `kTable`.
   diffed against what the Rytm holds, the changed tiles sent as `38` runs (one per run of tiles in a tile row), the
   changed text items as `3D`, and one `39` (the turned knob's cell and the bottom bar first, in a commit of their own,
   when more changed); nothing when nothing changed; `3C` after 250 ms without a message.
-- The local echo: each numeric encoder of a voice page is bound (`3F`) to the bottom bar ("V1 HRM:" + value), so the
+- The local echo: each numeric encoder of a voice page is bound (`3F`) to the bottom bar ("BD HRM:" + value), so the
   Rytm shows a turn's value at its next render, before the round trip; lists are not bound.
 - The catch mask (1022, `37`): the page takes only its own keys and knobs; the rest work on the Rytm as on its stock
-  screen. Every page takes LEFT / RIGHT / UP / DOWN / YES / NO / PAGE, the keys that open or change a stock screen
+  screen. Every page takes LEFT / RIGHT / UP / DOWN / YES / NO / PAGE (ux1027: the SEQ page YES only under a question,
+  with FUNC or a trig held - else YES is the Rytm's, its YES combos; updown1029: UP / DOWN only under a question or
+  with FUNC held - else the Rytm's, CHRO's octave; FUNC + DOWN the poly track's menu), the keys that open or change a stock screen
   (TRIG, SRC, SMPL, FLTR, AMP, LFO, FX, GLOBAL, SAMPLER, PLAYMODE, QPER, SONG, CHAIN) and TRK, plus the encoders it
   binds and their pushes (the status pages: all nine, LEVEL and its push too, so no knob edits the stock parameter underneath; a turn there is ignored). Passed: RECORD / PLAY / STOP (the Rytm keeps them whatever
   the mask), the pads, trig and bank keys, MUTE / CHRO / SCNE / PERF, FIX, RTRG, FILL, FUNC, TEMPO, and on a voice page LEVEL and its
@@ -134,18 +136,21 @@ says nothing. If the Rytm has been up >= 3 s (the link came after its boot: a ca
 restarted later) and the page is closed, the host shows the splash for 3 s: the stock title bar (`kStatusTitle`, USB at
 its right), a USB trident (a 42 x 19 bitmap drawn for this project) sliding in from the left over 150 ms, CONNECTED in
 the Rytm's bold font (index 7, `kRBold`), the voices and send FX, the network address (else USB AUDIO+MIDI; never the
-Wi-Fi's name), a line under it running down over the 3 s, and the bottom bar "TRK + YES: SIDECAR PAGES". The first
+Wi-Fi's name), a line under it running down over the 3 s, and the bottom bar "UP+YES: SIDECAR PAGES" (rui1046: from the device's table, core/ui/page_keys.h; before: "TRK + YES: SIDECAR PAGES"). The first
 frame goes whole, then **36 64** (the Rytm holds it 3.2 s at most by itself), then small frames (<= 18 tiles while the
 icon slides, ~1 tile a frame for the line), then **36 0** at 3 s. Otherwise the hello gets a 3C. On the Rytm every key
 and knob stays its own during the splash (transport and pads play under it, a navigation key only ends it, any other
-key or a turn ends it and acts); TRK + YES opens the page over it (the host's 30 on ends the splash here too).
+key or a turn ends it and acts); UP + YES (TRK + YES, the legacy form) opens the page over it (the host's 30 on ends the splash here too).
 `sim/rui_render.py` writes its frames (splash_*ms.png); `sim/rui_e2e.py splash` runs it against the emulated Rytm.
 
 ## The LFO page (`page_lfo.cpp`)
 
 The first page drawn by code (LFO, REC, SCOPE): the Sidecar's LFOs (core/lfo.h, docs/lfo.md). Main view: the wave and
 its moving dot, A LFO B TGT C PAR D DEP (FUNC: BASE) E WAVE F RATE G SYNC H TRIG; YES the design view (the 16 steps,
-T1..T16 caught there only through `ExtraPage::trigs_now`, A step B value C shape D preset), YES / NO back.
+T1..T16 caught there only through `ExtraPage::trigs_now`, A step B value C shape D preset), YES / NO back. ux1027: off
+the LEFT / RIGHT ring (UP + LFO, the SIDECAR MENU); LEFT / RIGHT step the LFO (the design view: the step), as A; UP +
+LFO again leaves. Every page off the ring (SEQ, INSERT, LFO, POLY, POOL, CHOP, MENU, KEYS) replaces the Rytm's screen:
+no page dots, LEFT / RIGHT / DOWN / PAGE its own or nothing (remote.cpp `standalone`).
 `remote_render` draws page `6 + k` for the page drawn by code k (5: the connect splash).
 
 ## Live pages (1023: `extra.h`, `page_*.cpp`)

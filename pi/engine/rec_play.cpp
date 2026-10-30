@@ -13,7 +13,11 @@
 
 namespace recplay {
 
-static const char kDir[] = "/Recordings";
+void take_folder(char* out, unsigned cap, const char* id) {
+  const char* c = strchr(id, ':');
+  if (c) snprintf(out, cap, "%.*s/Recordings/%s", (int)(c + 1 - id), id, c + 1);
+  else snprintf(out, cap, "/Recordings/%s", id);
+}
 
 void Player::init(const Backend* b, uint32_t (*now_us)()) {
   b_ = b;
@@ -25,7 +29,9 @@ void Player::init(const Backend* b, uint32_t (*now_us)()) {
 
 static bool newer(uint32_t sa, const char* a, uint32_t sb, const char* b) {   // a before b in the list
   if (sa != sb) return sa > sb;
-  return strcmp(a, b) > 0;   // the same stamp (no clock): take_010 before take_009
+  const char *ca = strchr(a, ':'), *cb = strchr(b, ':');   // the same stamp (no clock): take_010 before take_009,
+  int c = strcmp(ca ? ca + 1 : a, cb ? cb + 1 : b);        // whichever volume it is on (USB:take_010 too)
+  return c ? c > 0 : strcmp(a, b) > 0;
 }
 
 int Player::scan(const char* prefer) {
@@ -33,21 +39,32 @@ int Player::scan(const char* prefer) {
   static uint64_t sizes[256];
   static bool dirs[256];
   static uint32_t stamps[256];
-  char was[40];
+  char was[sizeof takes_[0].name];
   strcpy(was, ntakes_ ? takes_[take_i_].name : "");
-  int n = b_ ? b_->list(kDir, names, sizes, dirs, stamps, 256) : -1;
+  const char* roots[8] = {""};
+  int nroots = 1;
+  if (b_ && b_->roots) nroots += b_->roots(roots + 1, 7);
   ntakes_ = 0;
-  for (int i = 0; i < n; ++i) {
-    if (!dirs[i] || names[i][0] == '.' || strlen(names[i]) >= sizeof takes_[0].name) continue;
-    int at = ntakes_ < kMaxTakes ? ntakes_++ : kMaxTakes - 1;   // full: the oldest falls out
-    if (at == kMaxTakes - 1 && ntakes_ == kMaxTakes && !newer(stamps[i], names[i], takes_[at].stamp, takes_[at].name)) continue;
-    while (at > 0 && newer(stamps[i], names[i], takes_[at - 1].stamp, takes_[at - 1].name)) takes_[at] = takes_[at - 1], --at;
-    strcpy(takes_[at].name, names[i]);
-    takes_[at].stamp = stamps[i];
+  for (int r = 0; r < nroots; ++r) {
+    char dir[48];
+    snprintf(dir, sizeof dir, "%s/Recordings", roots[r]);
+    int n = b_ ? b_->list(dir, names, sizes, dirs, stamps, 256) : -1;
+    size_t rl = strlen(roots[r]);
+    for (int i = 0; i < n; ++i) {
+      if (!dirs[i] || names[i][0] == '.' || rl + strlen(names[i]) >= sizeof takes_[0].name) continue;
+      char id[sizeof takes_[0].name];
+      snprintf(id, sizeof id, "%s%s", roots[r], names[i]);
+      int at = ntakes_ < kMaxTakes ? ntakes_++ : kMaxTakes - 1;   // full: the oldest falls out
+      if (at == kMaxTakes - 1 && ntakes_ == kMaxTakes && !newer(stamps[i], id, takes_[at].stamp, takes_[at].name)) continue;
+      while (at > 0 && newer(stamps[i], id, takes_[at - 1].stamp, takes_[at - 1].name)) takes_[at] = takes_[at - 1], --at;
+      strcpy(takes_[at].name, id);
+      takes_[at].stamp = stamps[i];
+    }
   }
   int sel = 0;
   for (int i = 0; i < ntakes_; ++i)
     if ((prefer && *prefer && !strcmp(takes_[i].name, prefer)) || (!(prefer && *prefer) && *was && !strcmp(takes_[i].name, was))) sel = i;
+  if (!ntakes_ || strcmp(takes_[sel].name, was)) resume_at_ = 0;   // a paused position belongs to its take
   if (active() && *was && !strcmp(takes_[sel].name, was)) take_i_ = sel;   // the one playing stays
   else if (ntakes_) select_take(sel);
   else {
@@ -63,8 +80,8 @@ void Player::load_channels() {
   static bool dirs[64];
   static uint32_t stamps[64];
   nch_ = 0;
-  char path[120];
-  snprintf(path, sizeof path, "%s/%s", kDir, takes_[take_i_].name);
+  char path[160];
+  take_folder(path, sizeof path, takes_[take_i_].name);
   int n = b_->list(path, names, sizes, dirs, stamps, 64);
   for (int i = 0; i < n && nch_ < kMaxChannels; ++i) {
     const char* f = names[i];
@@ -91,6 +108,7 @@ bool Player::select_take(int i) {
   i = i < 0 ? 0 : i >= ntakes_ ? ntakes_ - 1 : i;
   if (i == take_i_ && nch_) return false;
   if (active()) stop();
+  resume_at_ = 0;
   take_i_ = i;
   load_channels();
   if (!active()) {
@@ -106,6 +124,7 @@ bool Player::select_channel(int i) {
   if (i == ch_i_) return false;
   ch_i_ = i;
   if (active()) {
+    pause_req_ = false;
     resume_ = true;   // poll() opens it at the frame the fade ended on
     stop_req_ = true;
   } else probe();
@@ -144,7 +163,8 @@ bool Player::probe() {
   len_ = 0, width_ = bits_ = 0;
   if (!nch_) return false;
   char path[200];
-  snprintf(path, sizeof path, "%s/%s/%s", kDir, takes_[take_i_].name, ch_[ch_i_].file);
+  take_folder(path, sizeof path, takes_[take_i_].name);
+  snprintf(path + strlen(path), sizeof path - strlen(path), "/%s", ch_[ch_i_].file);
   int h = b_->open(path);
   if (h < 0) return false;
   uint8_t hd[recwav::kHeader];
@@ -160,7 +180,8 @@ bool Player::open_channel(uint64_t at, char* err, unsigned errlen) {
   while (ring_.pop(&x)) {   // the mix is idle here: the ring is the reader's alone
   }
   char path[200];
-  snprintf(path, sizeof path, "%s/%s/%s", kDir, takes_[take_i_].name, ch_[ch_i_].file);
+  take_folder(path, sizeof path, takes_[take_i_].name);
+  snprintf(path + strlen(path), sizeof path - strlen(path), "/%s", ch_[ch_i_].file);
   h_ = b_->open(path);
   uint8_t hd[recwav::kHeader];
   if (h_ < 0 || b_->read(h_, hd, sizeof hd) != (int)sizeof hd ||
@@ -242,12 +263,20 @@ bool Player::play(char* err, unsigned errlen) {
     return false;
   }
   resume_ = false;
-  return open_channel(0, err, errlen);
+  uint64_t at = resume_at_;   // paused: on from there
+  resume_at_ = 0;
+  return open_channel(at, err, errlen);
 }
 
 void Player::stop() {
-  resume_ = false;
+  resume_ = false, pause_req_ = false, resume_at_ = 0;
   if (active()) stop_req_ = true;
+}
+
+void Player::pause() {
+  if (state_ != kPlaying) return;
+  resume_ = false, pause_req_ = true;
+  stop_req_ = true;   // the fade out; poll() keeps the frame it ended on
 }
 
 void Player::set_level(int lev) {
@@ -277,6 +306,13 @@ void Player::poll() {
     if (!open_channel(pos_, e, sizeof e)) fail(e);
     return;
   }
+  if (pause_req_) {   // a pause: the stopped state keeps its frame (not at the end: that is a stop)
+    pause_req_ = false;
+    probe();
+    resume_at_ = pos_ + kFade < len_ ? pos_ : 0;
+    if (!resume_at_) pos_ = 0;
+    return;
+  }
   pos_ = 0;
   probe();
 }
@@ -289,6 +325,7 @@ void Player::status(Status* s) const {
   snprintf(s->error, sizeof s->error, "%s", error_);
   s->take_i = take_i_, s->takes = ntakes_, s->ch_i = ch_i_, s->channels = nch_;
   s->pos = pos_, s->len = len_;
+  s->paused = resume_at_ > 0 || (pause_req_ && active());
   s->level = level_;
   s->underruns = underruns_;
   s->reads = reads_, s->worst_read_us = worst_read_us_;

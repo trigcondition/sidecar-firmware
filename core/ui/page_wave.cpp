@@ -112,7 +112,12 @@ CORE_COLD const void* wave_of_slot(int slot, int* state, int* progress) {
   *state = w.state, *progress = w.col;
   return &w;
 }
-CORE_COLD const void* wave_of_voice(int vi, int* state, int* progress) { return wave_of_slot((int)v[vi & 7].p[10], state, progress); }
+CORE_COLD const void* wave_of_voice(int vi, int* state, int* progress) { return wave_of_slot(pool_slot(v[vi & 7].p[10]), state, progress); }
+// rui1045: SMP's slot as the page reads it (the SRC view's 2A at 14 bits, or the voice's report): bank * 127 + row, 0 OFF
+CORE_COLD int smp_slot(const Source& s) {
+  int c = s.code(10), row = c & 127;
+  return row ? (c >> 7 & 7) * kPool + row : 0;
+}
 
 // One column of the file being read, at most one a millisecond (remote_tick, while the page is open).
 CORE_COLD void wave_idle(uint32_t ms) {
@@ -191,7 +196,7 @@ CORE_COLD void plot(Canvas& c, const Overview* w, int x0, int y0, int wd, int h,
 CORE_COLD void status(Canvas& c, const Overview* w, const Source& s, int x0, int wd, int y0, int h, int slot) {
   int vi = s.voice() < 0 ? 0 : s.voice() & 7;
   const char* why = v[vi].grain && !psram ? "!RAM: GRAIN NEEDS PSRAM"
-                    : !w ? (s.param(10) < 1 ? "SMP OFF" : "EMPTY SLOT") : w->state == 1 ? "LOADING" : w->state == 3 ? "UNREADABLE"
+                    : !w ? (smp_slot(s) < 1 ? "SMP OFF" : "EMPTY SLOT") : w->state == 1 ? "LOADING" : w->state == 3 ? "UNREADABLE"
                                                                                                                   : nullptr;
   c.put_text(slot, kRSmall, x0 + wd / 2, y0 + h / 2 - 2, why, kAlignCentre);
 }
@@ -207,7 +212,7 @@ CORE_COLD void bracket(Canvas& c, int x, int y, int h, int dir) {   // a loop en
 CORE_COLD void draw_sample(Canvas& c, const Rect& r, const Cell& cell, const Source& s, int slot) {
   int vi = s.voice() < 0 ? 0 : s.voice();
   int st = 0, prog = 0;
-  const Overview* w = (const Overview*)wave_of_slot(s.param(10), &st, &prog);
+  const Overview* w = (const Overview*)wave_of_slot(smp_slot(s), &st, &prog);
   // rows 11..24 of the top row; the waveform in x 1..100, the mode's name in the column right of it
   int x0 = r.x + 1, wd = r.w - 28, y0 = r.y + 2, h = kLabelDy - 3;
   int sta = s.param(cell.in[0]), end = s.param(cell.in[1]), lop = s.param(cell.in[2]);
@@ -245,7 +250,7 @@ CORE_COLD void draw_sample(Canvas& c, const Rect& r, const Cell& cell, const Sou
 CORE_COLD void draw_grain(Canvas& c, const Rect& r, const Cell& cell, const Source& s, int slot) {
   int vi = s.voice() < 0 ? 0 : s.voice();
   int st = 0, prog = 0;
-  const Overview* w = (const Overview*)wave_of_slot(s.param(10), &st, &prog);
+  const Overview* w = (const Overview*)wave_of_slot(smp_slot(s), &st, &prog);
   int x0 = r.x + 1, wd = r.w - 2, y0 = r.y + 2, h = kLabelDy - 3;
   plot(c, w, x0, y0, wd, h, 1, 0);
   int pos = s.param(cell.in[0]), size = s.param(cell.in[1]);
@@ -321,7 +326,7 @@ UI_ROM const Cell kDspsSrcCells[] = {
 UI_ROM const Page kDspsSrcPage = {
     "DSP SAMPLE", kDspSample, sizeof kDspsSrcCells / sizeof kDspsSrcCells[0], kDspsSrcCells,
     {0, 1, 2, 3, 4, 5, 6, 7},
-    {"ENG", "STR", "BRI", "DMP", "MIX", "FB", "TUN", "LEV"},
+    {"ENG", "STR", "BRI", "DMP", "MIX", "SEED", "TUN", "LEV"},   // rui1050: P6 (never read: FB fixed) SEED MOD's slot
 };
 UI_ROM const Cell kGrainSrcCells[] = {
     {kDraw, 0, 0, 4, 1, {12, 13, 14, 11}, kDrawGrain, nullptr},
@@ -356,9 +361,16 @@ CORE_COLD uint32_t draw_key(const Cell& c, const Source& s) {
   uint32_t h = 0;
   if (c.arg == kDrawSample || c.arg == kDrawGrain) {
     int vi = s.voice() < 0 ? 0 : s.voice(), st = 0, prog = 0;
-    const void* w = wave_of_slot(s.param(10), &st, &prog);
+    const void* w = wave_of_slot(smp_slot(s), &st, &prog);
     h = (uint32_t)(w ? (uintptr_t)w : 1) ^ (uint32_t)st << 8 ^ (uint32_t)(prog / 16) << 12 ^ (uint32_t)(mode_of(vi, (float)s.param(11)) + 1) << 20 ^
-        (uint32_t)(s.param(10) < 1) << 28;
+        (uint32_t)(smp_slot(s) < 1) << 28;
+  } else if (c.arg == kDrawGran || c.arg == kDrawWt || c.arg == kDrawGrList || c.arg == kDrawWtList || c.arg == kDrawMsList ||
+             c.arg == kDrawBankList) {
+    h = wavegrain_key(c, s);
+#if CORE_POLY && CORE_MSAMP
+  } else if (c.arg == kDrawChop) {
+    h = chop_key(c, s);
+#endif
   } else {
     h = gfx_key(c, s);
   }
@@ -372,6 +384,15 @@ CORE_COLD void draw_custom(Canvas& cv, const Rect& r, const Cell& c, const Sourc
   switch (c.arg) {
     case kDrawSample: draw_sample(cv, r, c, s, slot); break;
     case kDrawGrain: draw_grain(cv, r, c, s, slot); break;
+    case kDrawGran:
+    case kDrawWt:
+    case kDrawGrList:
+    case kDrawWtList:
+    case kDrawMsList:
+    case kDrawBankList: wavegrain_draw(cv, r, c, s, slot); break;
+#if CORE_POLY && CORE_MSAMP
+    case kDrawChop: chop_draw(cv, r, c, s, slot); break;
+#endif
     default: gfx_draw(cv, r, c, s, slot); break;
   }
   cv.unclip();

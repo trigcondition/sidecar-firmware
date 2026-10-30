@@ -1,0 +1,13 @@
+plugins/nusaw - notices for the NUSAW package (nusaw.supersaw, nusaw.a64.rmp)
+
+NUSAW's DSP is NuSaw's engine (src/dsp/nusaw_engine.cpp), ported to C for one voice a state and adapted for the
+Sidecar (nusaw.c's header lists the changes: mono, block-rate coefficients, Q capped at 12, a click-free retrigger).
+  Taken from:  https://github.com/saustin2010/mpc-vst-nusaw  commit f4f7d15dd2d3343ece176e35c6720d34653ae3fe
+               (2026-10-23), which vendors
+               https://github.com/charlesvestal/schwung-nusaw  commit d4d824de1a5679d2d5c6f3667df1176cdba92efa
+               (2026-08-29, Schwung module "NuSaw" v0.2.2)
+  Licence:     MIT, Copyright (c) 2025-2026 Charles Vestal (LICENSE.nusaw, the upstream LICENSE unchanged)
+No upstream file is in this repository or the package: nusaw.c is a rewrite of the engine's per-voice DSP.
+
+The adaptation and the glue (nusaw.c, manifest.json, the Makefile, tests/): MIT, Copyright 2026 trigcondition and
+contributors (LICENSE). The package links sdk/rmp/shim (MIT).

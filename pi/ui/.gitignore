@@ -3,3 +3,9 @@
 host/obj/
 host/shot
 host/shot*.png
+host/seq-*.png
+host/rytm-*.png
+host/shots/
+host/shots-*/
+host/seq-oled.mp4
+host/seq-oled.gif

@@ -1,0 +1,30 @@
+{
+  "id": "raffo.mono4",
+  "version": "1.0.0",
+  "compatible_from": "1.0.0",
+  "name": "RAFFO",
+  "short": "RAFO",
+  "licence": "MIT (RaffoSynth: N. Roulet, J. Palladino)",
+  "page2": "params",
+  "page2_title": "RAFFO MORE",
+  "max_voices": 8,
+  "pitch": "note",
+  "knobs": [
+    {"p": 1, "long": "Osc1 Wave", "short": "WAV1", "look": "list", "text": "enum", "names": ["TRI", "SAW", "SQR", "PLS"], "default": 48},
+    {"p": 2, "long": "Osc2+4 Wave", "short": "WAV2", "look": "list", "text": "enum", "names": ["TRI", "SAW", "SQR", "PLS"], "default": 80},
+    {"p": 3, "long": "Detune 2/4", "short": "DTN2", "look": "centred", "text": "bipolar", "default": 72},
+    {"p": 4, "long": "Osc2+4 Mix", "short": "MIX", "look": "dial", "text": "number", "default": 85},
+    {"p": 5, "long": "Sub Osc3", "short": "SUB", "look": "dial", "text": "number", "default": 80},
+    {"p": 6, "long": "Cutoff", "short": "CUT", "look": "dial", "text": "number", "default": 44},
+    {"p": 7, "long": "Resonance", "short": "RES", "look": "dial", "text": "number", "default": 46},
+    {"p": 8, "long": "Contour", "short": "ENV", "look": "dial", "text": "number", "default": 64},
+    {"p": 9, "long": "Attack", "short": "ATK", "look": "dial", "text": "number", "default": 0},
+    {"p": 10, "long": "Decay", "short": "DEC", "look": "dial", "text": "number", "default": 60},
+    {"p": 11, "long": "Sustain", "short": "SUS", "look": "dial", "text": "number", "default": 110},
+    {"p": 12, "long": "Release", "short": "REL", "look": "dial", "text": "number", "default": 30},
+    {"p": 13, "long": "Filt Decay", "short": "FDEC", "look": "dial", "text": "number", "default": 30},
+    {"p": 14, "long": "Filt Sustain", "short": "FSUS", "look": "dial", "text": "number", "default": 24},
+    {"p": 15, "long": "Glide", "short": "GLID", "look": "dial", "text": "number", "default": 30},
+    {"p": 16, "long": "Level", "short": "LEV", "look": "fader", "text": "number", "default": 100}
+  ]
+}

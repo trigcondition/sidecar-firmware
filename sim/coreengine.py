@@ -28,6 +28,13 @@ class CoreEngine:
         self.lib.core_c_um_command(c.encode(), b, 200)
         return b.value.decode()
 
+    def poly_command(self, c):
+        """The poly / seq / inst console (core_c_poly_command: "poly", "seq=...", "inst", "inst=on:V:N:VEL:VOICES") ->
+        its answer."""
+        b = ctypes.create_string_buffer(2000)
+        self.lib.core_c_poly_command(c.encode(), b, 2000)
+        return b.value.decode()
+
     def um_json(self):
         """The user machines' status (a list of dicts, docs/user-machines-pi.md "JSON")."""
         import json
