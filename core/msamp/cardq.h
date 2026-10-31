@@ -52,8 +52,19 @@ constexpr uint32_t kCopyMax = 65536;     // kCopyReq: bytes a request copies at 
 // copy is many short requests and the streams keep their turn.
 // kRemoveReq (2026-10-27; fmt::post_remove and the project trash, core/bundle/prjslot.h): path removed - a file or an
 // empty folder; got 1 removed (checked gone) or not there, 0 not removed (a folder with files, a card error).
+// kDirReq (2026-10-30, core/user/um.cpp's preset scan): the next entries of the folder f (opened by a kOpenReq; its
+// place kept from one request to the next), each opened as openNext does, into buf as DirRec records, len / sizeof
+// (DirRec) at most; got the records written (0: the folder's end, -1: f is not a folder or no room for one). An entry
+// whose dir index is over 0xFFFF is left out.
+// kOpenAtReq (2026-10-30, um's preset load): f opened (core::kRead) as the entry with dir index off of the folder path
+// (a DirRec's index); got 1 opened, 0 not. f's fileSize() is known then (no card access to read it).
 enum Kind : uint8_t { kOpenReq, kReadReq, kCloseReq, kWriteReq, kAtomicReq, kExistsReq, kRenameReq, kListReq, kCopyReq,
-                      kRemoveReq, kKinds };   // (not kOpen / kRead: core::kRead is a file mode)
+                      kRemoveReq, kDirReq, kOpenAtReq, kKinds };   // (not kOpen / kRead: core::kRead is a file mode)
+struct DirRec {              // kDirReq's record
+  uint16_t index;            // the entry's dir index (File::open(dir, index))
+  uint8_t dir;               // 1 a folder
+  char name[128];            // NUL-ended ("" when it had none)
+};
 constexpr int32_t kListMissing = -1, kListUnread = -2;
 enum State : uint32_t { kFree = 0, kPosted, kRunning, kDone, kCancelled };
 

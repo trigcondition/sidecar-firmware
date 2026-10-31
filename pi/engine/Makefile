@@ -17,6 +17,7 @@ OBJS += paircode_pi.o          # the pairing code's Pi side (paircode_pi.h; the 
 OBJS += midibridge_pi.o        # the Rytm MIDI bridge (midibridge_pi.h; the portable part is the header midibridge.h)
 # the volumes besides the card and the storage bench (docs/STORAGE.md): Circle's side; the logic is hosted (PORT_SRC)
 OBJS += stor_pi.o
+OBJS += blackbox_pi.o          # the black box: the log to /.rytm/blackbox.log (blackbox.h)
 # FatFs's disk layer in place of Circle's addon/fatfs/diskio.cpp (linked before libfatfs.a, so the archive's diskio.o
 # is never pulled in): the USB drives' transfers kept to the 64 KB TRB rule below FatFs (stor_diskio.cpp)
 OBJS += stor_diskio.o

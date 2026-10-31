@@ -82,6 +82,24 @@ int32_t copy(const char* path, const char* to, uint64_t off, uint32_t len) {
   return ok ? (int32_t)done : -1;
 }
 
+// kDirReq: the folder's next entries into out (cardq.h)
+int32_t dir_next(File* d, DirRec* out, uint32_t n) {
+  if (!d || !d->isDir() || !out || !n) return -1;
+  uint32_t k = 0;
+  while (k < n) {
+    File e;
+    if (!e.openNext(d, core::kRead)) break;
+    uint32_t idx = e.dirIndex();
+    if (idx > 0xFFFFu) { e.close(); continue; }
+    DirRec& o = out[k++];
+    o.index = (uint16_t)idx;
+    o.dir = e.isDir() ? 1 : 0;
+    if (!e.getName(o.name, sizeof o.name)) o.name[0] = 0;
+    e.close();
+  }
+  return (int32_t)k;
+}
+
 void run(Req* r) {
   if (r->kind < kKinds) ++st.ran[r->kind];
   if (r->kind == kOpenReq) {
@@ -111,6 +129,12 @@ void run(Req* r) {
     r->got = list(r->path, r->buf, r->len);
   } else if (r->kind == kCopyReq) {
     r->got = copy(r->path, (const char*)r->buf, r->off, r->len);
+  } else if (r->kind == kDirReq) {
+    r->got = dir_next(r->f, (DirRec*)r->buf, r->len / (uint32_t)sizeof(DirRec));
+  } else if (r->kind == kOpenAtReq) {
+    File d;   // (the folder only for the open: File::open(dir, index) walks a fresh copy of it)
+    r->got = d.open(r->path, core::kRead) && r->f->open(&d, (uint32_t)r->off, core::kRead) ? 1 : 0;
+    d.close();
   } else if (r->kind == kRemoveReq) {
     Fs fs;   // (rel-host: fmt::post_remove's "removed or not there" and prjslot's "removed, checked" both hold)
     r->got = !fs.exists(r->path) || (fs.remove(r->path) && !fs.exists(r->path)) ? 1 : 0;

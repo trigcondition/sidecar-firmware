@@ -23,6 +23,7 @@
 #include "poolweb.h"
 #include "paircode.h"
 #include "paircode_pi.h"
+#include "blackbox_pi.h"
 #include "midibridge_pi.h"
 #include "wifi_conf.h"
 #include "hosted/web_page.h"	// build.sh: www/index.html as WebPage[] (a raw string)
@@ -552,6 +553,21 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		memcpy (pBuffer, (const char *) s, n);
 		*pLength = n;
 		*ppContentType = "application/json";
+	}
+	else if (strcmp (pPath, "/blackbox") == 0)	// the black box's file (blackbox_pi.h; not in the open set: paired only)
+	{
+		const char *p = strstr (pParams, "off=");
+		const unsigned long long nOff = p != 0 ? ParseU64 (p + 4) : ~0ull;
+		const unsigned Head = 48, nMax = *pLength - Head < 65536 ? *pLength - Head : 65536;
+		unsigned long long nSize, nFrom;
+		unsigned n = blackbox_pi::Read (strstr (pParams, "old=1") != 0, nOff, (char *) pBuffer + Head, nMax, &nSize, &nFrom);
+		CString h;
+		h.Format ("%lu %lu\n", (unsigned long) nSize, (unsigned long) nFrom);
+		unsigned nh = h.GetLength ();
+		memmove (pBuffer + nh, pBuffer + Head, n);
+		memcpy (pBuffer, (const char *) h, nh);
+		*pLength = nh + n;
+		*ppContentType = "text/plain; charset=utf-8";
 	}
 	else if (strcmp (pPath, "/log") == 0)
 	{

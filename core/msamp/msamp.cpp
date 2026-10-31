@@ -3,6 +3,7 @@
 
 #if CORE_MSAMP
 #include "msamp.h"
+#include "../engine.h"   // idle_note (7z)
 
 #include <math.h>
 #include <string.h>
@@ -48,77 +49,112 @@ struct Audio {
   uint32_t loop_s, loop_e;   // inclusive (a WAV's smpl chunk)
 };
 
-// WAV (RIFF/WAVE, fmt / data / smpl anywhere) or AIFF / AIFC (COMM, SSND; NONE, sowt, fl32). A few small reads.
-CORE_COLD bool audio_header(File& f, Audio* a) {
-  memset(a, 0, sizeof *a);
-  uint8_t b[12];
-  uint64_t size = f.fileSize();
-  if (!f.seekSet(0) || f.read(b, 12) != 12) return false;
-  bool wav = !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WAVE", 4);
-  bool aiff = !memcmp(b, "FORM", 4) && (!memcmp(b + 8, "AIFF", 4) || !memcmp(b + 8, "AIFC", 4));
-  if (!wav && !aiff) return false;
-  uint64_t pos = 12;
-  bool fmt = false, data = false;
-  uint32_t data_len = 0;
-  for (int guard = 0; guard < 64 && pos + 8 <= size; ++guard) {
-    uint8_t c[48];
-    if (!f.seekSet(pos) || f.read(c, 8) != 8) break;
+// WAV (RIFF/WAVE, fmt / data / smpl anywhere) or AIFF / AIFC (COMM, SSND; NONE, sowt, fl32), parsed from blocks of
+// the file in memory (7z: read by the card core, cardq.h): the chunks walked from the first block; a chunk whose bytes
+// lie past the block asks for the block at that chunk (kHdrNeed: read at h.pos, then parse again). The bytes a chunk
+// needs and what a short file gives are the old File-based parse's (a read past the file's end: refused, or for a
+// smpl's loop no loop).
+constexpr uint32_t kHdrBlock = 8192;   // a header's read
+struct Hdr {
+  uint64_t size;             // the file's
+  uint64_t base;             // the block's first byte in the file
+  uint32_t n;                // bytes in the block
+  uint64_t pos;              // the chunk walked next (the block to read when kHdrNeed)
+  int guard;
+  bool form, wav, aifc, fmt, data;
+  uint32_t data_len;
+};
+enum HdrResult : uint8_t { kHdrBad, kHdrOk, kHdrNeed };
+// the file's bytes [off, off + len) in the block; nullptr: *need when the block at h.pos would have them (else they
+// are past the file's end, or the block there was read and came short: the old read's short count)
+inline const uint8_t* hdr_at(const Hdr& h, const uint8_t* blk, uint64_t off, uint32_t len, bool* need) {
+  if (off >= h.base && off + len <= h.base + h.n) return blk + (off - h.base);
+  *need = h.base != h.pos && off + len <= h.size;
+  return nullptr;
+}
+CORE_COLD HdrResult audio_parse(Hdr& h, const uint8_t* blk, Audio* a) {
+  bool need = false;
+  if (!h.form) {
+    const uint8_t* b = hdr_at(h, blk, 0, 12, &need);
+    if (!b) return need ? kHdrNeed : kHdrBad;
+    h.wav = !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WAVE", 4);
+    h.aifc = !memcmp(b + 8, "AIFC", 4);
+    bool aiff = !memcmp(b, "FORM", 4) && (!memcmp(b + 8, "AIFF", 4) || h.aifc);
+    if (!h.wav && !aiff) return kHdrBad;
+    h.form = true;
+    h.pos = 12;
+  }
+  const bool wav = h.wav, aiff = !h.wav;
+  for (; h.guard < 64 && h.pos + 8 <= h.size; ++h.guard) {
+    const uint8_t* c = hdr_at(h, blk, h.pos, 8, &need);
+    if (!c) {
+      if (need) return kHdrNeed;
+      break;
+    }
     uint32_t sz = wav ? le32(c + 4) : be32(c + 4);
     uint32_t want = sz < 40 ? sz : 40;
+    const uint8_t* d;   // the chunk's body
     if (wav && !memcmp(c, "fmt ", 4)) {
-      if (sz < 16 || f.read(c + 8, want) != (int)want) return false;
-      uint16_t tag = le16(c + 8);
-      a->ch = (uint8_t)le16(c + 10);
-      a->rate = (float)le32(c + 12);
-      a->bits = (uint8_t)le16(c + 22);
-      if (tag == 0xFFFE && sz >= 26 + 8) tag = le16(c + 8 + 24);   // extensible: the SubFormat's first two bytes
+      if (sz < 16) return kHdrBad;
+      if (!(d = hdr_at(h, blk, h.pos + 8, want, &need))) return need ? kHdrNeed : kHdrBad;
+      uint16_t tag = le16(d);
+      a->ch = (uint8_t)le16(d + 2);
+      a->rate = (float)le32(d + 4);
+      a->bits = (uint8_t)le16(d + 14);
+      if (tag == 0xFFFE && sz >= 26 + 8) tag = le16(d + 24);   // extensible: the SubFormat's first two bytes
       a->fmt = tag == 3 ? 3 : tag == 1 ? 1 : 0;
-      fmt = true;
+      h.fmt = true;
     } else if (wav && !memcmp(c, "data", 4)) {
-      a->data_off = (uint32_t)pos + 8;
-      data_len = sz;
-      data = true;
+      a->data_off = (uint32_t)h.pos + 8;
+      h.data_len = sz;
+      h.data = true;
     } else if (wav && !memcmp(c, "smpl", 4) && sz >= 36 + 24) {
-      if (f.read(c + 8, 40) != 40) return false;
+      if (!(d = hdr_at(h, blk, h.pos + 8, 40, &need))) return need ? kHdrNeed : kHdrBad;
       // smpl: 36 bytes, then the loops (cue id, type, start, end, fraction, count); the first loop
-      uint8_t l[24];
-      if (le32(c + 8 + 28) >= 1 && f.seekSet(pos + 8 + 36) && f.read(l, 24) == 24) {
-        a->loop_s = le32(l + 8), a->loop_e = le32(l + 12);
-        a->has_loop = a->loop_e > a->loop_s;
+      if (le32(d + 28) >= 1) {
+        const uint8_t* l = hdr_at(h, blk, h.pos + 8 + 36, 24, &need);
+        if (!l && need) return kHdrNeed;
+        if (l) {
+          a->loop_s = le32(l + 8), a->loop_e = le32(l + 12);
+          a->has_loop = a->loop_e > a->loop_s;
+        }
       }
     } else if (aiff && !memcmp(c, "COMM", 4)) {
-      if (sz < 18 || f.read(c + 8, want) != (int)want) return false;
-      a->ch = (uint8_t)be16(c + 8);
-      a->frames = be32(c + 10);
-      a->bits = (uint8_t)be16(c + 14);
+      if (sz < 18) return kHdrBad;
+      if (!(d = hdr_at(h, blk, h.pos + 8, want, &need))) return need ? kHdrNeed : kHdrBad;
+      a->ch = (uint8_t)be16(d);
+      a->frames = be32(d + 2);
+      a->bits = (uint8_t)be16(d + 6);
       // the rate: an 80-bit extended float
-      int e = ((c[16] & 0x7F) << 8 | c[17]) - 16383 - 63;
+      int e = ((d[8] & 0x7F) << 8 | d[9]) - 16383 - 63;
       uint64_t m = 0;
-      for (int i = 0; i < 8; ++i) m = m << 8 | c[18 + i];
+      for (int i = 0; i < 8; ++i) m = m << 8 | d[10 + i];
       a->rate = (float)ldexp((double)m, e);
       a->fmt = 1, a->be = true;
-      if (!memcmp(b + 8, "AIFC", 4) && sz >= 22) {
-        if (!memcmp(c + 26, "sowt", 4)) a->be = false;
-        else if (!memcmp(c + 26, "fl32", 4) || !memcmp(c + 26, "FL32", 4)) a->fmt = 3;
-        else if (memcmp(c + 26, "NONE", 4)) a->fmt = 0;
+      if (h.aifc && sz >= 22) {
+        if (!memcmp(d + 18, "sowt", 4)) a->be = false;
+        else if (!memcmp(d + 18, "fl32", 4) || !memcmp(d + 18, "FL32", 4)) a->fmt = 3;
+        else if (memcmp(d + 18, "NONE", 4)) a->fmt = 0;
       }
-      fmt = true;
+      h.fmt = true;
     } else if (aiff && !memcmp(c, "SSND", 4)) {
-      if (f.read(c + 8, 8) != 8) return false;
-      a->data_off = (uint32_t)pos + 16 + be32(c + 8);
-      data_len = sz > 8 ? sz - 8 : 0;
-      data = true;
+      if (!(d = hdr_at(h, blk, h.pos + 8, 8, &need))) return need ? kHdrNeed : kHdrBad;
+      a->data_off = (uint32_t)h.pos + 16 + be32(d);
+      h.data_len = sz > 8 ? sz - 8 : 0;
+      h.data = true;
     }
-    pos += 8 + (uint64_t)sz + (sz & 1);
+    h.pos += 8 + (uint64_t)sz + (sz & 1);
   }
-  if (!fmt || !data || !a->fmt || a->ch < 1 || a->rate < 1000 || a->rate > 384000) return false;
-  if (a->fmt == 1 && a->bits != 8 && a->bits != 16 && a->bits != 24 && a->bits != 32) return false;
-  if (a->fmt == 3 && a->bits != 32) return false;
+  uint64_t size = h.size;
+  uint32_t data_len = h.data_len;
+  if (!h.fmt || !h.data || !a->fmt || a->ch < 1 || a->rate < 1000 || a->rate > 384000) return kHdrBad;
+  if (a->fmt == 1 && a->bits != 8 && a->bits != 16 && a->bits != 24 && a->bits != 32) return kHdrBad;
+  if (a->fmt == 3 && a->bits != 32) return kHdrBad;
   uint32_t fb = a->ch * (a->bits / 8);
   if ((uint64_t)a->data_off + data_len > size) data_len = (uint32_t)(size > a->data_off ? size - a->data_off : 0);
   uint32_t fr = data_len / fb;
   if (wav || a->frames > fr) a->frames = fr;
-  return a->frames > 0;
+  return a->frames > 0 ? kHdrOk : kHdrBad;
 }
 
 // One sample of channel c in a frame at p (in -1..1 as int16 scale)
@@ -334,17 +370,31 @@ LiveTag cur_live = {false, 0, 0};   // the live note start_region starts now (li
 uint32_t rnd = 22222;
 
 // ---- the job (one at a time)
+// 7z (2026-10-30): its card work (the .sfz's open and reads, each sample's open and header blocks, the heads' and loop
+// parts' reads, the closes) goes through the card queue (cardq.h: the Pi's core 0), a request a step, so the control
+// core never waits on the card (a 32 KB read there took 3.6-8.9 ms, measured: msamp.read). Its own request and File,
+// never a stream's (rqs, Wr); f and buf are touched by the control core only when no request of the job is in flight.
+// A read's frames are converted kConvFrames a step. Without a card core (the Mac's tests) each request runs at once.
 enum Phase : uint8_t { kIdle, kSfzRead, kHeaders, kSampleOpen, kSampleRead };
+constexpr uint32_t kConvFrames = 1024;   // frames a step converts at most (measured: tests/test_msamp_load.cpp)
 struct Job {
   Phase phase;
   // load
   int slot, entry;
   File f;
+  cardq::Req rq;
+  bool open;                // f is open (by its open's result, not the handle's flag: a request may run on it)
+  bool opening;             // the phase's open is still to come (kSfzRead, kHeaders)
+  bool closing;             // f's close to post or posted: done before the job's next card work
   char* text;
   uint32_t text_len, text_size;
   int smp;                  // the sample being read
   uint32_t got, want_n, t0;
   int16_t* dst;
+  uint64_t off;             // kSampleRead: the next read's place in the file
+  uint32_t bn, bp;          // the last read's whole frames in buf (bytes), of them converted
+  bool shrt;                // that read came short (the file ended)
+  Hdr hdr;                  // kHeaders: the sample's header parse
   uint8_t buf[kStreamChunk];
   int16_t cv[kStreamChunk];   // (8-bit mono: a sample a byte)
 };
@@ -801,6 +851,7 @@ CORE_COLD void slot_release(int s) {
   Slot& sl = slots[s];
   for (int i = 0; sl.smp && i < sl.d.nsamples && i < kMaxSamples; ++i) {
     Smp& m = sl.smp[i];
+    if (m.pe >= 0 && !m.cached && m.blk < 0) pcache::fill_end(m.pe, 0, false);   // a head still to read (a load abandoned)
     if (m.blk >= 0) pcache::unpin(m.blk);
     if (m.priv >= 0) pcache::release(m.priv);
     m.blk = m.priv = m.pe = -1;
@@ -809,13 +860,34 @@ CORE_COLD void slot_release(int s) {
   sl.state = kFree;
   if (sl.forced) sl.forced = false, sbudget::forced(-1);
 }
+// the job's file closed by the card queue before its next card work (step: job->closing)
+CORE_COLD void job_close() {
+  if (job->open) job->closing = true;
+}
+// A request still in flight (the job abandoned mid-load): cancelled if it has not started, else waited for (one card
+// operation); an open it made counted, then the file's close queued (job_close). f and buf free for the next load.
+CORE_COLD void job_abandon() {
+  cardq::Req& r = job->rq;
+  uint32_t s = __atomic_load_n(&r.state, __ATOMIC_ACQUIRE);
+  if (s == cardq::kPosted || s == cardq::kRunning) {
+    if (cardq::cancel(&r)) s = cardq::kCancelled;
+    else cardq::wait(&r), s = cardq::kDone;
+  }
+  if (s == cardq::kDone && r.kind == cardq::kOpenReq && r.got == 1) job->open = true;   // done, not taken in yet
+  if (s == cardq::kDone && r.kind == cardq::kCloseReq) job->open = job->closing = false;
+  r.state = cardq::kFree;
+  job->opening = false;
+  job->phase = kIdle;
+  job_close();
+}
 CORE_COLD void job_fail(const char* why) {
   Slot& sl = slots[job->slot];
   log(CORE_STR("msamp: %s: %s"), sl.path, why);
   if (job->entry >= 0 && job->entry < srclib::kEntries) failed[job->entry] = 1;
   slot_release(job->slot);
   sl.entry = -1;
-  job->f.close();
+  job_close();
+  job->opening = false;
   job->phase = kIdle;
   ++st.load_fails;
 }
@@ -851,16 +923,7 @@ CORE_COLD bool start_load() {
     job->slot = s, job->entry = e;
     job->text_len = 0;
     job->t0 = now_ms();
-    if (!job->f.open(sl.path, kRead)) {
-      job_fail("cannot open");
-      return true;
-    }
-    uint64_t size = job->f.fileSize();
-    if (size > kSfzMax) {
-      job_fail("the .sfz is over 256 KB");
-      return true;
-    }
-    job->text_size = (uint32_t)size;
+    job->opening = true;   // (step_sfz: the open, then the reads)
     job->phase = kSfzRead;
     return true;
   }
@@ -992,7 +1055,7 @@ CORE_COLD void plan() {
 
 CORE_COLD void next_sample() {
   Slot& sl = slots[job->slot];
-  job->f.close();
+  job_close();
   ++job->smp;
   while (job->smp < sl.d.nsamples && (!sl.smp[job->smp].frames || (sl.smp[job->smp].cached && !sl.smp[job->smp].res2))) {
     if (sl.smp[job->smp].cached) sl.smp[job->smp].ok = true;   // its head from the cache, nothing to read
@@ -1006,15 +1069,42 @@ CORE_COLD void next_sample() {
   job->phase = kSampleOpen;
 }
 
-// Every sample's header, one a step: the RAM size, the formats.
-CORE_COLD void step_header() {
-  Slot& sl = slots[job->slot];
-  Smp& m = sl.smp[job->smp];
+// the header of sample job->smp next: its open, then its blocks
+CORE_COLD void header_begin() {
+  Smp& m = slots[job->slot].smp[job->smp];
   memset(&m, 0, sizeof m);
   m.pe = m.blk = m.priv = -1;
+  memset(&job->hdr, 0, sizeof job->hdr);
+  job->opening = true;
+}
+// Every sample's header, a request a step (its open, its first block, a block further on when a chunk lies past it):
+// the RAM size, the formats. False while a request waits.
+CORE_COLD bool step_header() {
+  Slot& sl = slots[job->slot];
+  Smp& m = sl.smp[job->smp];
   const char* path = sl.d.samples[job->smp];
-  File f;
-  if (!f.open(path, kRead) || !audio_header(f, &m.a)) {
+  Hdr& h = job->hdr;
+  HdrResult res = kHdrBad;
+  if (job->opening) {
+    if (!cardq::async(&job->rq, cardq::kOpenReq, &job->f, path, 0, nullptr, 0)) return false;
+    job->opening = false;
+    if (job->rq.got != 1) goto done;
+    job->open = true;
+    h.size = job->f.fileSize();   // (known at the open: no card access)
+    h.pos = 0;
+    return true;                  // the first block at the next step
+  }
+  {
+    uint64_t left = h.size > h.pos ? h.size - h.pos : 0;
+    uint32_t len = left < kHdrBlock ? (uint32_t)left : kHdrBlock;
+    if (!cardq::async(&job->rq, cardq::kReadReq, &job->f, nullptr, h.pos, job->buf, len)) return false;
+    h.base = h.pos;
+    h.n = job->rq.got > 0 ? (uint32_t)job->rq.got : 0;
+    res = audio_parse(h, job->buf, &m.a);
+    if (res == kHdrNeed) return true;   // the block at h.pos next
+  }
+done:
+  if (res != kHdrOk) {
     log(CORE_STR("msamp: %s: cannot read %s"), slot_name(job->slot), path);
   } else {
     m.frames = m.a.frames;
@@ -1023,44 +1113,66 @@ CORE_COLD void step_header() {
     m.loop_s = m.a.loop_s, m.loop_e = m.a.loop_e;
     sl.need_ram += ((uint64_t)m.frames * 2 * ram_ch(m.a) + 63) & ~(uint64_t)63;
   }
-  f.close();
-  if (++job->smp < sl.d.nsamples) return;
+  job_close();
+  if (++job->smp < sl.d.nsamples) {
+    header_begin();
+    return true;
+  }
   plan();
   job->smp = -1;
   next_sample();
+  return true;
 }
 
-CORE_COLD void step_sample_open() {
+CORE_COLD bool step_sample_open() {
   Slot& sl = slots[job->slot];
   Smp& m = sl.smp[job->smp];
-  if (!job->f.open(sl.d.samples[job->smp], kRead)) {
+  if (!cardq::async(&job->rq, cardq::kOpenReq, &job->f, sl.d.samples[job->smp], 0, nullptr, 0)) return false;
+  if (job->rq.got != 1) {
     log(CORE_STR("msamp: %s: cannot read %s"), slot_name(job->slot), sl.d.samples[job->smp]);
     if (!m.cached && m.pe >= 0) pcache::fill_end(m.pe, 0, false), m.pe = -1;
     m.frames = 0;
     next_sample();
-    return;
+    return true;
   }
+  job->open = true;
   uint32_t fb = m.a.ch * (m.a.bits / 8);
   uint32_t first = m.part == 0 ? 0 : m.ws;
   job->want_n = m.part == 0 ? m.head_n : m.we - m.ws;
   job->dst = (int16_t*)(m.part == 0 ? m.head : m.res2);
   job->got = 0;
-  job->f.seekSet((uint64_t)m.a.data_off + (uint64_t)first * fb);
+  job->off = (uint64_t)m.a.data_off + (uint64_t)first * fb;
+  job->bn = job->bp = 0;
+  job->shrt = false;
   job->phase = kSampleRead;
+  return true;
 }
 
-CORE_COLD void step_sample_read() {
+// A read of up to kStreamChunk (as a stream's), its frames converted kConvFrames a step.
+CORE_COLD bool step_sample_read() {
   Slot& sl = slots[job->slot];
   Smp& m = sl.smp[job->smp];
   uint32_t fb = m.a.ch * (m.a.bits / 8);
-  uint32_t fr = kStreamChunk / fb, left = job->want_n - job->got;   // as a stream's read
-  if (fr > left) fr = left;
-  int got = job->f.read(job->buf, fr * fb);
-  uint32_t whole = got > 0 ? (uint32_t)got / fb : 0;
-  convert(m.a, job->buf, whole, job->dst + (size_t)job->got * m.ch, m.ch);
-  job->got += whole;
-  bool shrt = whole < fr;
-  if (!shrt && job->got < job->want_n) return;
+  if (job->bp >= job->bn) {   // the block converted: the next read
+    uint32_t fr = kStreamChunk / fb, left = job->want_n - job->got;
+    if (fr > left) fr = left;
+    uint32_t whole = 0;
+    if (fr) {
+      if (!cardq::async(&job->rq, cardq::kReadReq, &job->f, nullptr, job->off, job->buf, fr * fb)) return false;
+      whole = job->rq.got > 0 ? (uint32_t)job->rq.got / fb : 0;
+    }
+    job->shrt = whole < fr;
+    job->off += (uint64_t)whole * fb;
+    job->bn = whole * fb, job->bp = 0;
+  }
+  uint32_t n = (job->bn - job->bp) / fb;
+  if (n > kConvFrames) n = kConvFrames;
+  convert(m.a, job->buf + job->bp, n, job->dst + (size_t)job->got * m.ch, m.ch);
+  job->got += n;
+  job->bp += n * fb;
+  if (job->bp < job->bn) return true;   // the block's rest at the next steps
+  bool shrt = job->shrt;
+  if (!shrt && job->got < job->want_n) return true;
   if (shrt) {   // a short file: what was read plays
     if (m.part == 0) m.frames = m.head_n = job->got;
     m.res2 = nullptr, m.ws = m.we = 0;
@@ -1076,21 +1188,45 @@ CORE_COLD void step_sample_read() {
   if (m.part == 0 && m.res2) {
     m.part = 1;
     job->phase = kSampleOpen;
-    job->f.close();
-    return;
+    job_close();
+    return true;
   }
   if (!m.ok) m.frames = 0;
   next_sample();
+  return true;
 }
 
-CORE_COLD void step_sfz() {
+// The .sfz: its open, then its text in kChunk reads.
+CORE_COLD bool step_sfz() {
   Slot& sl = slots[job->slot];
+  if (job->opening) {
+    if (!cardq::async(&job->rq, cardq::kOpenReq, &job->f, sl.path, 0, nullptr, 0)) return false;
+    job->opening = false;
+    if (job->rq.got != 1) {
+      job_fail("cannot open");
+      return true;
+    }
+    job->open = true;
+    uint64_t size = job->f.fileSize();   // (known at the open: no card access)
+    if (size > kSfzMax) {
+      job_fail("the .sfz is over 256 KB");
+      return true;
+    }
+    job->text_size = (uint32_t)size;
+    return true;
+  }
   uint32_t want_n = job->text_size - job->text_len;
   if (want_n > kChunk) want_n = kChunk;
-  int got = want_n ? job->f.read(job->text + job->text_len, want_n) : 0;
+  int got = 0;
+  if (want_n) {
+    if (!cardq::async(&job->rq, cardq::kReadReq, &job->f, nullptr, job->text_len, (uint8_t*)job->text + job->text_len,
+                      want_n))
+      return false;
+    got = job->rq.got;
+  }
   if (got > 0) job->text_len += got;
-  if (got > 0 && job->text_len < job->text_size) return;
-  job->f.close();
+  if (got > 0 && job->text_len < job->text_size) return true;
+  job_close();
   job->text[job->text_len] = 0;
   char dir[kPath];
   strcpy(dir, sl.path);
@@ -1098,7 +1234,7 @@ CORE_COLD void step_sfz() {
   if (sl_) *sl_ = 0;
   if (!parse(job->text, (int)job->text_len, dir, &sl.d)) {
     job_fail(sl.d.err);
-    return;
+    return true;
   }
   // the pool entry's members (in the .sfz's order of distinct samples): each played from where the library finds it
   // now (a member moved: from there, the .sfz unchanged; missing: as the .sfz says, its regions then silent)
@@ -1117,6 +1253,8 @@ CORE_COLD void step_sfz() {
   memset(sl.seq, 0, sizeof(uint16_t) * kMaxRegions);
   job->smp = 0;
   job->phase = kHeaders;
+  header_begin();
+  return true;
 }
 
 // The voice's selection from INST (the control core's, at every report): the pool row; OFF / empty / missing: silent
@@ -1214,6 +1352,7 @@ CORE_COLD void begin(bool card) {
     log(CORE_STR("msamp: instruments in the pool RAM (%lu MB, shared), %d slots; stream rings %lu KB"),
         (unsigned long)(slot_cap >> 20), kSlots, (unsigned long)((uint64_t)kVoices * kPerVoice * kRing * 2 >> 10));
   }
+  job_abandon();   // a load under way dropped: its request settled, its file's close queued (before the slots go)
   for (int s = 0; s < kSlots; ++s) slot_release(s), slots[s].entry = -1;
   for (int vi = 0; vi < kVoices; ++vi) vslot[vi] = -1, want[vi] = -1, pend[vi].on = false;
   composed_sig = 0;
@@ -1221,7 +1360,6 @@ CORE_COLD void begin(bool card) {
   memset(lpend, 0, sizeof lpend);
   for (int vi = 0; vi < kVoices; ++vi)
     for (int k = 0; k < kPerVoice; ++k) notes[vi][k].slot = -1, wr_end(wr_of(vi, k));
-  job->phase = kIdle;
   if (card) load_limits();
 }
 
@@ -1233,20 +1371,40 @@ CORE_COLD void rescan() {   // the card changed: failed instruments tried again,
   for (int vi = 0; vi < kVoices; ++vi) vslot[vi] = -1, want[vi] = -1;
 }
 
+// (7z: each part timed by name for the control loop's slow-step line, core/engine.h IdleSlow)
+struct StepTimer {
+  const char* n;
+  uint32_t t = now_us();
+  explicit StepTimer(const char* name) : n(name) {}
+  ~StepTimer() { idle_note(n, now_us() - t); }
+};
 CORE_COLD bool step() {
   if (!job || !arena) return false;
-  if (stream_step()) return true;
+  {
+    StepTimer t("msamp.stream");
+    if (stream_step()) return true;
+  }
+  if (job->closing) {   // the job's file closed first (the card queue's), then its next card work
+    StepTimer t("msamp.close");
+    if (!cardq::async(&job->rq, cardq::kCloseReq, &job->f, nullptr, 0, nullptr, 0)) return false;
+    job->closing = job->open = false;
+    return true;
+  }
   switch (job->phase) {
     case kIdle:
       if (srclib::pool_sig(srclib::kMs) != composed_sig) {   // the INSTRUMENTS pool changed (a row, a state)
+        StepTimer t("msamp.compose");
         compose();
         return true;
       }
-      return start_load();
-    case kSfzRead: step_sfz(); return true;
-    case kHeaders: step_header(); return true;
-    case kSampleOpen: step_sample_open(); return true;
-    case kSampleRead: step_sample_read(); return true;
+      {
+        StepTimer t("msamp.start");
+        return start_load();
+      }
+    case kSfzRead: { StepTimer t("msamp.sfz"); return step_sfz(); }
+    case kHeaders: { StepTimer t("msamp.header"); return step_header(); }
+    case kSampleOpen: { StepTimer t("msamp.open"); return step_sample_open(); }
+    case kSampleRead: { StepTimer t("msamp.read"); return step_sample_read(); }
   }
   return false;
 }
@@ -1655,6 +1813,31 @@ int voice_slot(int vi) { return vslot[vi & 7]; }
 const Desc* slot_desc(int s) { return s >= 0 && s < kSlots && slots[s].state == kReady ? &slots[s].d : nullptr; }
 uint64_t slot_bytes(int s) { return s >= 0 && s < kSlots ? slots[s].used : 0; }
 bool slot_ram(int s) { return s >= 0 && s < kSlots && slots[s].ram; }
+CORE_COLD uint64_t slot_digest(int s) {
+  if (s < 0 || s >= kSlots || slots[s].state != kReady) return 0;
+  uint64_t h = 1469598103934665603ull;
+  auto mix = [&h](const void* p, size_t n) {
+    for (size_t i = 0; i < n; ++i) h = (h ^ ((const uint8_t*)p)[i]) * 1099511628211ull;
+  };
+  auto v = [&mix](uint64_t x) { mix(&x, sizeof x); };
+  const Slot& sl = slots[s];
+  v(sl.ram), v(sl.used), v(sl.need_ram), v((uint64_t)sl.d.nregions), v((uint64_t)sl.d.nsamples), v((uint64_t)sl.d.load);
+  v((uint64_t)sl.d.ignored), v((uint64_t)sl.d.skipped), v((uint64_t)sl.d.malformed);
+  mix(sl.d.regions, sizeof(Region) * sl.d.nregions);
+  for (int i = 0; i < sl.d.nsamples; ++i) {
+    mix(sl.d.samples[i], strlen(sl.d.samples[i]));
+    const Smp& m = sl.smp[i];
+    const Audio& a = m.a;
+    v(a.fmt), v(a.bits), v(a.ch), v(a.be), mix(&a.rate, 4), v(a.data_off), v(a.frames), v(a.has_loop), v(a.loop_s), v(a.loop_e);
+    v(m.frames), mix(&m.rate, 4), v(m.ok), v(m.has_loop), v(m.loop_s), v(m.loop_e);
+    if (!m.ok) continue;
+    v(m.head_n), v(m.ws), v(m.we), v(m.ch), v(m.res2 != nullptr);
+    mix(m.head, (size_t)m.head_n * 2 * m.ch);
+    if (m.res2) mix(m.res2, (size_t)(m.we - m.ws) * 2 * m.ch);
+  }
+  return h;
+}
+int load_phase() { return job ? job->phase : 0; }
 
 CORE_COLD void reset() {
   for (int vi = 0; vi < kVoices; ++vi) {

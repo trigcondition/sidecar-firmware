@@ -256,7 +256,7 @@ inline void Log(const char* p, size_t n) {   // CLogTee::Write (under its lock)
     a->log[t++ & (kLog - 1)] = p[i];
   }
   uint64_t from = a->log_total;
-  a->log_total = t;
+  __atomic_store_n(&a->log_total, t, __ATOMIC_RELEASE);   // (the black box reads it from core 0: the bytes first)
   if (t - from >= kLog) clean(a->log, kLog);
   else {
     uint32_t s = (uint32_t)(from & (kLog - 1)), e = (uint32_t)(t & (kLog - 1));
@@ -291,6 +291,7 @@ inline const char* sec_name(unsigned core, uint32_t s) {
       case 24: return "the stats line (LogStats)";
       case 40: return "the network's tasks (MsSleep: the web server, the TCP links)";
       case 41: return "writing /.rytm/prevboot.txt (the breadcrumb's copy on the card)";
+      case 42: return "writing /.rytm/blackbox.log (the black box, blackbox_pi.cpp)";
       default: return "?";
     }
   if (core == 3) switch (s) {

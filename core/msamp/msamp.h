@@ -17,8 +17,10 @@
 //            RAM's shared cache (core/pool/pcache.h: one copy a content, shared with GRANULAR and DSP SAMPLE; the
 //            budget `poolram=MB`), the loop parts in private blocks of it. An instrument stays in its slot until the
 //            slot is needed (least recently used, not selected, not playing); its heads stay cached until evicted.
-//   loading  between blocks (step(): one open, one header or one read of up to kStreamChunk a call; the .sfz's text
-//            in kChunk reads), a voice's wanted instrument first. A trig
+//   loading  between blocks, a voice's wanted instrument first: a card request a step through the card queue (cardq.h,
+//            run by the card core; the control core never waits on the card): the .sfz's open and its text in kChunk
+//            reads, each sample's open and header (its first 8 KB, a block further on for a chunk past it), the heads'
+//            and loop parts' reads of up to kStreamChunk (converted at most 1024 frames a step), the closes. A trig
 //            before its instrument is ready plays when it is, if that is within kLateMs.
 //   streaming between blocks too, before loading: one read of up to kStreamChunk a call for the note with the least
 //            audio ahead, while it has less than the read-ahead (`ahead_ms`: 300 ms, or the SD card test's, sdtest.h).
@@ -128,6 +130,10 @@ int voice_slot(int vi);
 const Desc* slot_desc(int slot);
 uint64_t slot_bytes(int slot);
 bool slot_ram(int slot);              // tests: the instrument is held whole
+// tests: a hash of a slot's loaded contents (its regions, sample paths, each sample's format, parts and int16 data;
+// the cache's ids and whether a head was shared left out), 0 not resident; the load job's phase (0 idle)
+uint64_t slot_digest(int slot);
+int load_phase();
 void set_head_ms(uint32_t ms);
 void reset();                         // tests: every note free, the list and slots kept
 #endif

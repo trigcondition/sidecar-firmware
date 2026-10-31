@@ -1,4 +1,5 @@
 // core/user/um.cpp - see um.h. Control core only, but user_render (a render core) and json_copy (any core).
+#include "../engine.h"   // idle_note (7z)
 #include "um.h"
 #include "inst.h"
 
@@ -10,6 +11,10 @@
 #include "pool/pool.h"
 #include "rmp_api.h"
 #include "rmp_loader.h"
+#if CORE_MSAMP
+#include "../msamp/cardq.h"   // the package's reads on the card core (7z)
+namespace cardq = core::cardq;
+#endif
 #include "rmp_manifest.h"
 #include "rmp_meta.h"
 #include "rmp_pool.h"
@@ -116,7 +121,36 @@ uint32_t g_voice_epoch[8];   // the epoch each voice last rendered at (a barrier
 // the load under way
 int g_job = -1;
 uint8_t* g_buf = nullptr;  // the package being read (kPkgMax, once)
+// (7z: each branch timed by name for the control loop's slow-step line, core/engine.h IdleSlow)
+struct UmTimer {
+  const char* n;
+  uint32_t t = core::now_us();
+  explicit UmTimer(const char* name) : n(name) {}
+  ~UmTimer() { core::idle_note(n, core::now_us() - t); }
+};
+#define UMT(name) UmTimer umt_(name)
 core::File g_jf;
+// 7z (2026-10-30): the load job's card work (open, 8 KB reads, close) goes through the card queue (core/msamp/cardq.h:
+// the Pi's core 0), a step at a time, so the control core never waits on the card. A read here on the control core
+// waited for core 0's hold on the card (the recorder, an upload, the black box): 15 ms passes, a dropout at a kit
+// change. Without a card core (the Mac's tests) async runs at once, as before.
+#if CORE_MSAMP
+cardq::Req g_jrq;
+bool g_jopen = false;   // the open is still to come (job_step's first part)
+bool g_jclosing = false;   // the close is posted (job_step's last part, until its request is done)
+// the request still running (a job abandoned mid-read): waited for, one card operation at most, before the File is reused
+void jrq_settle() {
+  if (!cardq::idle(&g_jrq) && !cardq::cancel(&g_jrq)) cardq::wait(&g_jrq);
+  g_jrq.state = cardq::kFree;
+}
+#endif
+void jf_close() {   // a job ended or abandoned (failure paths): its request settled, the file closed here
+#if CORE_MSAMP
+  jrq_settle();
+  g_jopen = g_jclosing = false;
+#endif
+  if (g_jf.isOpen()) g_jf.close();
+}
 uint32_t g_job_off = 0, g_job_len = 0, g_job_crc = 0;
 
 // ---- voices
@@ -403,9 +437,25 @@ rmp_pv g_pv[core::kVoices];                // per voice: its preset state
 uint8_t g_rbuf[4096];                      // a preset file being read
 uint32_t g_pre_key[kSlots];                // what the slot's presets were scanned for (its id and package)
 core::File g_pdir;
+#if CORE_MSAMP
+// 7z (2026-10-30): the scan's and the load's card work on the card core through the card queue (as the package job's,
+// g_jrq), each with a request and a File of its own: an openNext or a preset's open and read on the control core waited
+// for core 0's hold on the card (4-10 ms passes, measured). Without a card core (the Mac's tests) each runs at once.
+cardq::Req g_prq;                          // the scan's: the folder's open, its entries, its close
+cardq::DirRec g_pent[8];                   // a kDirReq's entries
+enum : uint8_t { kPsIdle, kPsOpen, kPsList, kPsClose };
+uint8_t g_ps = kPsIdle;                    // where the scan's requests are
+int g_ps_s = -1;                           // the slot g_pdir is open for (g_pscan_slot unless the scan was abandoned)
+bool g_ps_found = false;                   // the folder opened (the scan's end logged)
+cardq::Req g_lrq;                          // the load's: the preset's open, read, close
+core::File g_lf;
+struct PreJob { int8_t vi, which, s; uint8_t seq, stage; bool native, cut; uint16_t dir; int n; uint32_t t0; };
+enum : uint8_t { kLjOpen, kLjRead, kLjClose, kLjDone };
+PreJob g_lj = {-1, 0, 0, 0, kLjDone, false, false, 0, -1, 0};   // the one load in flight (vi -1: none)
+#endif
 uint8_t g_pre_page[kSlots];                // name pages asked for (19 what 2): bit p
 uint8_t g_pv_new = 0, g_pv_wait = 0, g_last_trig = 0, g_pv_resync = 0;   // bit vi
-struct PreLoad { bool on; int8_t s; uint8_t gen; int16_t entry; bool sync; float p[16]; };
+struct PreLoad { bool on; int8_t s; uint8_t gen; int16_t entry; bool sync; float p[16]; uint8_t seq; };   // seq: moves with each new decision
 PreLoad g_pl[core::kVoices][2];            // [0] the sound's own preset (written back), [1] a p-lock's play
 struct HeldNote { uint8_t note, vel; bool held; uint32_t t; };
 HeldNote g_hn[core::kVoices];              // a trig's note_on held until its preset load ran
@@ -521,7 +571,11 @@ void on_pool_changed(int line) {   // a pool slot (or the pool: -1) changed: the
 
 // ---- presets
 void pre_invalidate(int s) {
+#if CORE_MSAMP
+  if (g_pscan_slot == s) g_pscan_slot = -1;   // (its requests still run to the folder's close, the entries dropped)
+#else
   if (g_pscan_slot == s) { if (g_pdir.isOpen()) g_pdir.close(); g_pscan_slot = -1; }
+#endif
   rmp_preset_invalidate(&g_pix[s]);
   g_pre_has[s] = false;
   g_pre_fp[s] = 0;
@@ -553,6 +607,58 @@ void pscan_end(int s) {
   g_pre_fp[s] = g_pix[s].print;
   g_mp = g_pub = true;
 }
+#if CORE_MSAMP
+// One step of scanning a slot's /PRESETS/<id>/: the folder opened, then its entries (8 a request), then closed - a
+// card request a step, run by the card core. A request under way always runs to its end (its File and g_pent are
+// not touched before): a scan abandoned meanwhile (pre_invalidate) closes the folder and drops what it read.
+bool pscan_busy() { return g_pscan_slot >= 0 || g_pscan_todo || g_ps != kPsIdle; }
+void pscan_step() {
+  if (g_ps == kPsIdle) {
+    if (!g_pscan_todo) return;
+    int s = __builtin_ctz(g_pscan_todo);
+    g_pscan_todo &= ~(1u << s);
+    rmp_preset_scan_begin(&g_pnames, &g_pix[s], s);
+    if (!core::card_ok || !g_map.slot[s].id[0]) {
+      pscan_end(s);
+      return;
+    }
+    g_ps = kPsOpen, g_ps_s = g_pscan_slot = s, g_ps_found = false;
+  }
+  int s = g_ps_s;
+  bool live = g_pscan_slot == s;
+  if (g_ps == kPsOpen) {
+    char path[48];
+    sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[s].id);
+    if (!cardq::async(&g_prq, cardq::kOpenReq, &g_pdir, path, 0, nullptr, 0)) return;   // (later)
+    g_ps_found = g_prq.got == 1 && g_pdir.isDir();
+    if (g_ps_found && live) { g_ps = kPsList; return; }
+    g_ps = g_pdir.isOpen() ? kPsClose : kPsIdle;   // not there (a plain file of that name: closed), or abandoned
+  } else if (g_ps == kPsList) {
+    if (live || g_prq.state != cardq::kFree) {   // (a request posted: its end first)
+      if (!cardq::async(&g_prq, cardq::kDirReq, &g_pdir, nullptr, 0, (uint8_t*)g_pent, sizeof g_pent)) return;
+      int n = g_prq.got;
+      if (live && n > 0) {
+        rmp_desc d;
+        const rmp_desc* p = slot_desc(s, &d);
+        for (int k = 0; k < n; ++k) {
+          const cardq::DirRec& e = g_pent[k];
+          if (!e.dir && e.name[0] && e.name[0] != '.') rmp_preset_add(&g_pnames, &g_pix[s], e.name, e.index, p ? p->preset_ext : "");
+        }
+      }
+      if (live && n == (int)(sizeof g_pent / sizeof g_pent[0])) return;   // (fewer: the folder's end)
+    }
+    g_ps = kPsClose;
+  }
+  if (g_ps == kPsClose) {   // (by the request's end, not the handle's flag: the close may be running)
+    if (!cardq::async(&g_prq, cardq::kCloseReq, &g_pdir, nullptr, 0, nullptr, 0)) return;
+    g_ps = kPsIdle;
+  }
+  if (g_pscan_slot != s) return;   // abandoned
+  g_pscan_slot = -1;
+  pscan_end(s);
+  if (g_ps_found) core::log("um: presets U%d %s: %d", s + 1, g_map.slot[s].id, (int)g_pix[s].n);
+}
+#else
 // One step of scanning a slot's /PRESETS/<id>/: open it, then kScanPerStep entries.
 constexpr int kScanPerStep = 4;
 void pscan_step() {
@@ -591,6 +697,8 @@ void pscan_step() {
       rmp_preset_add(&g_pnames, &g_pix[s], nm, (uint16_t)idx, p ? p->preset_ext : "");
   }
 }
+bool pscan_busy() { return g_pscan_slot >= 0 || g_pscan_todo; }
+#endif
 // 1B 0x20: page p of slot s's names (16 a page), only while the shared names are the slot's.
 void send_presets(int s, int page) {
   const rmp_preset_names& l = g_pnames;
@@ -640,6 +748,8 @@ void pv_decide(int vi, int s, bool is_trig, const float* p) {
   }
   if (sync && (is_trig || !(g_note_wait >> vi & 1))) P[1].on = false;
   PreLoad& L = P[sync ? 0 : 1];
+  if (!L.on || L.s != s || L.gen != ix.gen || L.entry != e || L.sync != sync || (!takeover && memcmp(L.p, p, sizeof L.p)))
+    ++L.seq;   // (a load of the one before still under way is dropped: pre_job)
   L.on = true, L.s = (int8_t)s, L.gen = ix.gen, L.entry = (int16_t)e, L.sync = sync;
   if (!takeover) memmove(L.p, p, sizeof L.p);
 }
@@ -670,33 +780,29 @@ void note_fire(int vi) {   // a trig's held note_on, now
   if (n.held) core::log("um: trig voice %d U%d note %d (after its preset load: %u us)", vi, s + 1, n.note,
                         (unsigned)(core::now_us() - n.t));
 }
-// One pending load of voice vi.
-void pre_load(int vi, PreLoad& L) {
-  uint32_t t0 = core::now_us();
+// A pending load of voice vi that cannot run now (L.on cleared, as for any load taken): the voice moved on, or the list
+// changed meanwhile (decided again). True: dropped.
+bool pre_stale(int vi, PreLoad& L) {
   L.on = false;
   int s = L.s;
   const rmp_preset_index& ix = g_pix[s];
   const Slot& sl = g_slot[s];
-  if (core::v[vi].user != s || g_cur[vi] != s || sl.st != RMP_SLOT_READY || !sl.p) return;   // moved on
+  if (core::v[vi].user != s || g_cur[vi] != s || sl.st != RMP_SLOT_READY || !sl.p) return true;   // moved on
   if (!rmp_preset_index_ok(&ix) || ix.gen != L.gen || L.entry >= ix.n) {   // the list changed meanwhile: decided again
     if (L.sync || g_pl[vi][0].on) g_pv_resync |= (uint8_t)(1u << vi);
     g_pl[vi][0].on = g_pl[vi][1].on = false;
     g_pv_wait |= (uint8_t)(1u << vi);
-    return;
+    return true;
   }
+  return false;
+}
+// The preset's bytes read (g_rbuf[0..n), n -1 not read; cut: the file is over 4096 B): its values to the voice.
+void pre_apply(int vi, PreLoad& L, int n, bool cut, uint32_t t0) {
+  int s = L.s;
+  const rmp_preset_index& ix = g_pix[s];
+  const Slot& sl = g_slot[s];
   bool native = ix.kind[L.entry] == RMP_PRESET_NATIVE;
   const char* name = rmp_preset_names_ok(&g_pnames, &ix, s) ? g_pnames.name[L.entry] : "";
-  int n = -1;
-  bool cut = false;
-  char path[48];
-  sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[s].id);
-  core::File d, f;
-  if (core::card_ok && d.open(path, core::kRead) && f.open(&d, ix.dir[L.entry], core::kRead)) {
-    cut = f.fileSize() > sizeof g_rbuf;
-    if (!(native && cut)) n = f.read(g_rbuf, sizeof g_rbuf);   // a native preset is whole or not at all
-  }
-  if (f.isOpen()) f.close();
-  if (d.isOpen()) d.close();
   int16_t vals[16];
   for (int k = 0; k < 16; ++k) vals[k] = -1;
   const char* why = nullptr;
@@ -727,6 +833,76 @@ void pre_load(int vi, PreLoad& L) {
   core::log("um: preset voice %d U%d %d %s (%s%s, %u us)", vi, s + 1, (int)L.entry, name, L.sync ? "written back" : "played",
             cut ? ", cut at 4096 B" : "", (unsigned)(core::now_us() - t0));
 }
+#if CORE_MSAMP
+// The load in flight, a card request a step (its open, a read of 4096 B at most, the close), then its values - unless
+// a newer decision replaced it meanwhile (its seq moved, it was dropped, or the sound's own preset came before a
+// p-lock's play): dropped then, the newer one loaded next, as if it had come before this one started. The voice's
+// checks (moved on, the list changed) are made again when the bytes are there. True when it ended.
+bool pre_job() {
+  PreJob& j = g_lj;
+  for (;;) {
+    if (j.stage == kLjOpen) {
+      char path[48];
+      sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[j.s].id);
+      if (!cardq::async(&g_lrq, cardq::kOpenAtReq, &g_lf, path, j.dir, nullptr, 0)) return false;   // (later)
+      if (g_lrq.got == 1) {
+        j.cut = g_lf.fileSize() > sizeof g_rbuf;
+        j.stage = j.native && j.cut ? kLjClose : kLjRead;   // a native preset is whole or not at all
+      } else {
+        j.stage = g_lf.isOpen() ? kLjClose : kLjDone;
+      }
+    } else if (j.stage == kLjRead) {
+      if (!cardq::async(&g_lrq, cardq::kReadReq, &g_lf, nullptr, 0, g_rbuf, sizeof g_rbuf)) return false;
+      j.n = g_lrq.got;
+      j.stage = kLjClose;
+    } else if (j.stage == kLjClose) {   // (by the request's end, not the handle's flag)
+      if (!cardq::async(&g_lrq, cardq::kCloseReq, &g_lf, nullptr, 0, nullptr, 0)) return false;
+      j.stage = kLjDone;
+    } else {
+      break;
+    }
+  }
+  int vi = j.vi;
+  j.vi = -1;
+  PreLoad* P = g_pl[vi];
+  PreLoad& L = P[(int)j.which];
+  if (!L.on || L.seq != j.seq || (j.which == 1 && P[0].on)) return true;   // replaced meanwhile
+  if (pre_stale(vi, L)) return true;
+  pre_apply(vi, L, j.n, j.cut, j.t0);
+  return true;
+}
+#endif
+// One pending load of voice vi (P[which]); with a card queue it starts here and ends in pre_job.
+void pre_load(int vi, int which) {
+  uint32_t t0 = core::now_us();
+  PreLoad& L = g_pl[vi][which];
+  if (pre_stale(vi, L)) return;
+  int s = L.s;
+  const rmp_preset_index& ix = g_pix[s];
+  bool native = ix.kind[L.entry] == RMP_PRESET_NATIVE;
+  if (!core::card_ok) {
+    pre_apply(vi, L, -1, false, t0);
+    return;
+  }
+#if CORE_MSAMP
+  L.on = true;   // (until it ends: a decision meanwhile sees it pending, as before it started)
+  g_lj = PreJob{(int8_t)vi, (int8_t)which, (int8_t)s, L.seq, kLjOpen, native, false, ix.dir[L.entry], -1, t0};
+  pre_job();
+#else
+  int n = -1;
+  bool cut = false;
+  char path[48];
+  sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[s].id);
+  core::File d, f;
+  if (d.open(path, core::kRead) && f.open(&d, ix.dir[L.entry], core::kRead)) {
+    cut = f.fileSize() > sizeof g_rbuf;
+    if (!(native && cut)) n = f.read(g_rbuf, sizeof g_rbuf);   // a native preset is whole or not at all
+  }
+  if (f.isOpen()) f.close();
+  if (d.isOpen()) d.close();
+  pre_apply(vi, L, n, cut, t0);
+#endif
+}
 // One preset step (the Teensy's plug_preset_pass): a waiting voice decided, else a pending load. True when it did.
 bool pre_pass() {
   for (int vi = 0; vi < core::kVoices; ++vi) {
@@ -740,13 +916,22 @@ bool pre_pass() {
     }
     if (g_pscan_slot != s) g_pscan_todo |= 1u << s;
   }
+#if CORE_MSAMP
+  if (g_lj.vi >= 0) {   // one load at a time: the one under way first
+    int vi = g_lj.vi;
+    if (!pre_job()) return false;
+    PreLoad* P = g_pl[vi];
+    if (!P[0].on && !P[1].on && !(g_pv_wait >> vi & 1)) note_fire(vi);
+    return true;
+  }
+#endif
   for (int vi = 0; vi < core::kVoices; ++vi) {
     PreLoad* P = g_pl[vi];
     if (!P[0].on && !P[1].on) {
       if ((g_note_wait >> vi & 1) && !(g_pv_wait >> vi & 1)) { note_fire(vi); return true; }
       continue;
     }
-    pre_load(vi, P[0].on ? P[0] : P[1]);
+    pre_load(vi, P[0].on ? 0 : 1);
     if (!P[0].on && !P[1].on && !(g_pv_wait >> vi & 1)) note_fire(vi);
     return true;
   }
@@ -1319,7 +1504,7 @@ void slot_set(int s, rmp_slot_state st, const rmp_plugin* p, int pkg) {
   pre_slot(s);
 }
 void job_end(int s, rmp_slot_state st, const rmp_plugin* p, int pkg, const char* what) {
-  if (g_jf.isOpen()) g_jf.close();
+  jf_close();
   slot_set(s, st, p, pkg);
   if (st != RMP_SLOT_READY) sniprintf(g_why[s], sizeof g_why[s], "%s: %s", st == RMP_SLOT_NO_ROOM ? "no room" : "bad", what);
   g_job = -1;
@@ -1353,7 +1538,13 @@ bool job_begin(int s) {
       core::log("um: U%d %s: ready (shares U%d's image)", s + 1, m.id, t + 1);
       return false;
     }
+#if CORE_MSAMP
+  jf_close();
+  if (g_buf && e.size <= kPkgMax) g_jopen = true;   // opened by job_step through the card queue
+  if (!g_jopen) {
+#else
   if (!g_buf || e.size > kPkgMax || !g_jf.open(e.file, core::kRead)) {
+#endif
     slot_set(s, RMP_SLOT_BAD, nullptr, k);
     copy(g_why[s], "bad: cannot read the package", sizeof g_why[s]);
     core::log("um: U%d %s: cannot read %s", s + 1, m.id, e.file);
@@ -1367,9 +1558,28 @@ bool job_begin(int s) {
 void job_step() {
   int s = g_job;
   const Pkg& e = g_pkg[g_slot[s].pkg];
+#if CORE_MSAMP
+  if (g_jopen) {   // the open, on the card core
+    if (!cardq::async(&g_jrq, cardq::kOpenReq, &g_jf, e.file, 0, nullptr, 0)) return;
+    g_jopen = false;
+    if (g_jrq.got != 1) {
+      slot_set(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg);
+      copy(g_why[s], "bad: cannot read the package", sizeof g_why[s]);
+      core::log("um: U%d %s: cannot read %s", s + 1, g_map.slot[s].id, e.file);
+      g_job = -1;
+      return;
+    }
+    return;
+  }
+#endif
   if (g_job_off < g_job_len) {
     uint32_t n = g_job_len - g_job_off < kChunk ? g_job_len - g_job_off : kChunk;
+#if CORE_MSAMP
+    if (!cardq::async(&g_jrq, cardq::kReadReq, &g_jf, nullptr, g_job_off, g_buf + g_job_off, n)) return;   // (later)
+    if (g_jrq.got != (int32_t)n) {
+#else
     if (!g_jf.seekSet(g_job_off) || g_jf.read(g_buf + g_job_off, n) != (int)n) {
+#endif
       job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "read error");
       return;
     }
@@ -1378,7 +1588,13 @@ void job_step() {
     g_job_off += n;
     return;
   }
-  g_jf.close();
+#if CORE_MSAMP
+  if (g_jf.isOpen()) g_jclosing = true;   // (by the request's end, not the handle's flag: the close may be running)
+  if (g_jclosing && !cardq::async(&g_jrq, cardq::kCloseReq, &g_jf, nullptr, 0, nullptr, 0)) return;   // (later)
+  g_jclosing = false;
+#endif
+  if (g_jf.isOpen()) g_jf.close();   // (no card core: here, as before)
+  UMT("um.place");   // the placement, the cache sync and the plugin's init() (one step)
   rmp_info info;
   rmp_status st = rmp_verify_header(g_buf, g_job_len, &info);
   if (st == RMP_OK && ~g_job_crc != info.crc32) st = RMP_ERR_CRC;
@@ -1683,34 +1899,37 @@ void begin(const Exec* e, const char* d) {
 bool idle() {
   if (!ex) return false;
   bool did = true;
-  if (g_scan) scan_step();
+  if (g_scan) { UMT("um.scan"); scan_step(); }
   else if (g_full) {
     for (int vi = 0; vi < core::kVoices; ++vi) voice_leave(vi);
     for (int s = 0; s < kSlots; ++s) slot_set(s, g_map.slot[s].id[0] ? RMP_SLOT_LOADING : RMP_SLOT_EMPTY, nullptr, -1);
-    if (g_jf.isOpen()) g_jf.close();
+    jf_close();
     g_job = -1;
     ex->reset();
     g_arena_used = 0;
     g_data_used = 0;
     g_full = false;
     g_need = (1u << kSlots) - 1;
-  } else if (g_prints_pending) prints_apply();
-  else if (g_fresh && (int32_t)(core::now_ms() - g_fresh_until) >= 0) inherit_now();
+  } else if (g_prints_pending) { UMT("um.prints"); prints_apply(); }
+  else if (g_fresh && (int32_t)(core::now_ms() - g_fresh_until) >= 0) { UMT("um.inherit"); inherit_now(); }
   else if (g_resolve_save) {
     g_resolve_save = false;
+    UMT("um.mapsave");
     if (!map_save()) core::log("um: %s not written (the slots change until the next project load)", g_map_file);
-  } else if (pre_pass()) {
-  } else if (g_job >= 0) job_step();
+  } else if ([] { UMT("um.prepass"); return pre_pass(); }()) {
+  } else if (g_job >= 0) { UMT("um.job"); job_step(); }
   else if (g_need) {
     int s = __builtin_ctz(g_need);
     g_need &= ~(1u << s);
+    UMT("um.begin");
     job_begin(s);
-  } else if (pre_pages()) {
-  } else if (g_pscan_slot >= 0 || g_pscan_todo) {
+  } else if ([] { UMT("um.prepages"); return pre_pages(); }()) {
+  } else if (pscan_busy()) {
+    UMT("um.pscan");
     pscan_step();
   } else did = false;
-  notes_overdue();
-  if (upool_pass()) did = true;
+  { UMT("um.notes"); notes_overdue(); }
+  { UMT("um.upool"); if (upool_pass()) did = true; }
   if (g_pre_again && (int32_t)(core::now_ms() - g_pre_again_ms) >= 0) {   // a preset written: the lists again
     g_pre_again = false;
     for (int s = 0; s < kSlots; ++s) pre_invalidate(s);
@@ -1723,10 +1942,11 @@ bool idle() {
   if (g_mp || did || core::now_ms() - g_mp_ms >= 100) {   // (the prints hash every description: not every pass)
     g_mp = false;
     g_mp_ms = core::now_ms();
+    UMT("um.meta");
     meta_poll();
   }
   uint32_t age = core::now_ms() - g_1d_ms;
-  if (g_meta.dirty || (g_1d_owed && age >= 1000) || age >= 5000 || !g_1d_sent) { send_1d(0, 0); did = true; }
+  if (g_meta.dirty || (g_1d_owed && age >= 1000) || age >= 5000 || !g_1d_sent) { UMT("um.1d"); send_1d(0, 0); did = true; }
   if (core::now_ms() - g_cost_ms >= 1000) {   // the measured cost moves while something plays
     g_cost_ms = core::now_ms();
     uint32_t tot = 0;

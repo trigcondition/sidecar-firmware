@@ -7,16 +7,17 @@ and the one the measurements are made on; the Pi 5 scales its HDMI picture.
 > **Sidecar Mini (Teensy 4.1) is phased out.** It is frozen at 0.1.0: no new features. Its source stays in `teensy/`
 > and in the history (commit `101a3fb`) for reference, and the 0.1.0 release stays downloadable.
 
-This repository holds the source of **Sidecar 0.3.0**: poly tracks with the Sidecar's own sequencer; the machines
-MULTISAMPLE, WAVETABLE, GRANULAR, CHOP, LIVE IN and MD (built in); the user machines, now with NUSAW, VOX, HUSH1 and
+This repository holds the source of **Sidecar 0.3.1**, a fix release of 0.3.0: card work moved off the control core
+(this fixes the dropouts when loading user machines, presets and multisamples) and the black box (the whole log on the
+card). The 0.3 line brings poly tracks with the Sidecar's own sequencer; the machines MULTISAMPLE, WAVETABLE, GRANULAR, CHOP, LIVE IN and MD (built in); the user machines, now with NUSAW, VOX, HUSH1 and
 RAFFO; insert effects with AMP (Neural Amp Modeler captures); the SPACE echo; the recorder; projects kept by the Rytm's
-slot; and the pairing code for the web page. It works with the Rytm firmware 0.3.0.
+slot; and the pairing code for the web page. It works with the Rytm firmware 0.3.1.
 
-- Release and binaries: <https://github.com/trigcondition/sidecar-firmware/releases/tag/v0.3.0> (the Pi SD cards, the
+- Release and binaries: <https://github.com/trigcondition/sidecar-firmware/releases/tag/v0.3.1> (the Pi SD cards, the
   user machines, the starter content); 0.1.0 and 0.2.0: <https://github.com/trigcondition/sidecar-expander/releases>
 - Documentation, the browser patcher and the web console: <https://trigcondition.github.io/sidecar-expander/>
 - The Rytm side (the OS mods the Sidecar talks to): [sidecar-mods](https://github.com/trigcondition/sidecar-mods), its
-  0.3.0 release (one elekloader module): <https://github.com/trigcondition/sidecar-mods/releases/tag/v0.3.0>
+  0.3.1 release (one elekloader module): <https://github.com/trigcondition/sidecar-mods/releases/tag/v0.3.1>
 
 > **Unofficial, experimental software.** Not affiliated with, endorsed by or supported by Elektron. No Elektron
 > firmware, and nothing extracted from it, is in this repository.
@@ -63,9 +64,9 @@ Both run on every pull request (`.github/workflows/test.yml`).
 
 ## Written offer of source
 
-The released binaries (Sidecar for Pi 4B and Pi 5, version 0.3.0; Sidecar Mini, version 0.1.0) contain GPL and LGPL code, among it Circle
+The released binaries (Sidecar for Pi 4B and Pi 5, version 0.3.1; Sidecar Mini, version 0.1.0) contain GPL and LGPL code, among it Circle
 (GPL-3.0-or-later, with its `addon/rp1dsi` display driver linked into the Pi 5 kernel) and the Teensyduino core and SPI library
-(LGPL-2.1). The complete corresponding source of version 0.3.0 is this repository at tag `v0.3.0` (of Sidecar Mini 0.1.0: commit `101a3fb`), plus the third-party
+(LGPL-2.1). The complete corresponding source of version 0.3.1 is this repository at tag `v0.3.1` (of Sidecar Mini 0.1.0: commit `101a3fb`), plus the third-party
 sources the build scripts fetch at the pinned commits named in `NOTICE` (Circle with `pi/circle/*.patch`). For three years
 from the release, anyone who received a binary can also ask for it on a physical medium for the cost of that medium, or for
 the materials needed to relink the Teensy firmware with a modified LGPL part: open an issue in this repository.
