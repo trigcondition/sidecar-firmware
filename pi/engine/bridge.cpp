@@ -116,6 +116,12 @@ uint32_t render(int16_t (*block)[kVoices], int v0, int v1, uint64_t* mach, int16
 bool idle_prepare() { return core::idle_prepare(); }
 bool idle_save() { return core::idle_save(); }
 void idle_stream() { core::idle_stream(); }
+const char* idle_slowest(unsigned* us) {
+  core::IdleSlow r = core::idle_slowest_take();
+  *us = r.us;
+  return r.name;
+}
+void idle_note(const char* name, unsigned us) { core::idle_note(name, us); }
 // The remote UI is the control core's: remote_status and remote_popup write the state remote_tick draws from (the
 // popup's lines among it). The stats tick on core 0 only queues them here; tick() hands them over on the control core.
 // One producer (core 0's stats tick), one consumer (tick): a full queue drops the newest, which the next second sends

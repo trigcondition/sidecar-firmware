@@ -4,6 +4,7 @@
 // (selftest.h). Cores 1-3: cores.cpp.
 #include "kernel.h"
 #include "mbtrace.h"
+#include "blackbox_pi.h"	// the black box (2026-10-30): the whole log appended to /.rytm/blackbox.log
 #include "crumb.h"		// the crash breadcrumb (2026-10-29): kept over a watchdog reset, reported here at the next boot
 
 static volatile unsigned s_nTempC;	// the SoC temperature as the stats line last read it (once a second); /status and the UI show this
@@ -591,6 +592,12 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		bridge::lfo_json (Lfo, sizeof Lfo);
 		pOut->Append (",");
 		pOut->Append (Lfo);
+	}
+	{
+		char Bb[128];			// the black box's counts (blackbox_pi.h)
+		blackbox_pi::Status (Bb, sizeof Bb);
+		pOut->Append (",\"blackbox\":");
+		pOut->Append (Bb);
 	}
 	{
 		static char Poly[3072];		// E0: the seq tracks' poly configs and the instances (core/seq, core/inst.h; plain reads)
@@ -1654,8 +1661,9 @@ void CKernel::StopAndReboot (const char *pWhy, boolean bTryboot)
 	m_pTransport->Stop ();
 	if (m_pTransport != &m_Usb) m_Usb.Stop ();		// a Rytm that streams anyway (no-op without one)
 	m_Timer.MsDelay (50);					// the log line out
-	m_Watchdog.Stop ();
 	if (bTryboot && !CSdFiles::SetTryboot ()) m_Logger.Write (From, LogWarning, "reboot: the tryboot flag was refused (a plain boot follows)");
+	blackbox_pi::Flush ();					// and onto the card (the black box; after the flag: a slow card cannot lose it)
+	m_Watchdog.Stop ();
 	reboot ();
 }
 
@@ -1732,6 +1740,7 @@ void CKernel::Run (void)
 		}
 		{ mbtrace::Scope Mb (16, 200); bridge::card_service (8); }
 		{ mbtrace::Scope Mb (19, 200); stor_pi::Poll (bPlugAndPlay); }		// USB drives in and out, the bench's step (stor_pi.h)
+		blackbox_pi::Poll ();						// the log to /.rytm/blackbox.log (its own crumb section, 42)
 		{ mbtrace::Scope Mb (20, 200); bridge::samp_poll (); }			// SAMPLING / the AUTO-SAMPLER: a take's step (core/samp)
 		if (m_pDisplay != 0)
 		{

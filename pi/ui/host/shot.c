@@ -1597,7 +1597,7 @@ static void theme_run (int style, const char *pre)
 		tap (127 + 3 * DX / 8, 41 + VS (63) + VS (22) / 2);   EXPECT_CMD ("out=tracks");
 		tap (127 + 3 * DX / 8, 41 + VS (102) + VS (22) / 2);  EXPECT_CMD ("mac=on");
 		tap (rx + 4 + (rw - 8) * 7 / 8, 41 + VS (13) + VS (46) / 4);				// BT = voice 1 (row 1, 4th: the Rytm's track order)
-		tap (rx + 4 + (rw - 8) * 5 / 6, 41 + VS (76) + VS (46) * 3 / 4);  EXPECT_CMD ("notemach=1:dd");	// machine DD (row 2, last)
+		tap (rx + 4 + (rw - 8) * 5 / 6, 41 + VS (76) + VS (46) * 3 / 4);  EXPECT_CMD ("notemach=1:md");	// machine MD (row 2, last; DIGIDRUM before 0.3.0)
 		tap (OTAB (4), 27);							// tab: Service (T18): FIFO, the drone
 		EXPECT (sidecar_ui_page () == 16);
 		run (2); shot ("service");
@@ -1632,7 +1632,7 @@ static void theme_run (int style, const char *pre)
 		tap (300 + 3 * DX / 8, 114 + CY (118) + CH / 2);   EXPECT_CMD ("out=tracks");
 		tap (300 + 3 * DX / 8, 114 + CY (188) + CH / 2);   EXPECT_CMD ("mac=on");
 		tap (x0 + 140 + 7 * DX / 32, 114 + CY (48) + CH / 2);			// BT = voice 1 (4th key: the Rytm's track order)
-		tap (x0 + vw - 20, 114 + CY (118) + CH / 2);   EXPECT_CMD ("notemach=1:dd");
+		tap (x0 + vw - 20, 114 + CY (118) + CH / 2);   EXPECT_CMD ("notemach=1:md");
 		tap (CTAB (4), 84);								// tab: Service (T18)
 		EXPECT (sidecar_ui_page () == 16);
 		run (2); shot ("service");

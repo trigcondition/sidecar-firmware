@@ -466,10 +466,22 @@ void CEngineCores::Control (void)
 		else
 		{
 			bridge::idle_stream ();
+			u64 tU = Ticks ();
 			if (um::idle ()) bWorked = TRUE;	// the user machines: one bounded step (an 8 KB read at most)
+			u64 tL = Ticks ();
 			lists::idle ();			// the pool / lists JSON for the web page, when it changed (<= 4 a second)
+			u64 tE = Ticks ();
+			(void) tU;	// (um: timed inside, by branch)
+			bridge::idle_note ("lists", (unsigned) ((tE - tL) * 1000000 / TickRate ()));
 		}
 		Mark (5);
+		{	// 7z: an idle section past 2 ms (the FIFO's refill waits that long): its slowest step, named in the log
+			unsigned nSlowUs;
+			const char *pSlow = bridge::idle_slowest (&nSlowUs);
+			if (nSec[5] > 2000)
+				CLogger::Get ()->Write (From, LogWarning, "control: idle section %u us, its slowest step %s (%u us)",
+							nSec[5], pSlow, nSlowUs);
+		}
 		if (bWorked)
 		{
 			u64 dt = Ticks () - t0;
