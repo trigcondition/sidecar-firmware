@@ -799,7 +799,7 @@ Licence: SIL Open Font License 1.1, Copyright 2011 The Montserrat Project Author
 
 ------------------------------------------------------------------------------
 Circle addon/rp1dsi (Rene Stange), linked into the Raspberry Pi 5 kernel
-Licence: GNU GPL version 3 (or later), like Circle itself: licenses/GPL-3.0.txt. DSI display and FT5x06 touch driver for the Pi 5's RP1; source as Circle's, see the written offer in README.md.
+Licence: GNU GPL version 3 (or later), like Circle itself: licenses/GPL-3.0.txt. DSI display and touch driver for the Pi 5's RP1 (FT5x06 for the 7" v1, Goodix GT911 for the Touch Display 2), with our patch pi/circle/circle-rp1dsi.patch (Touch Display 2); source as Circle's with that patch, see the written offer in README.md.
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------

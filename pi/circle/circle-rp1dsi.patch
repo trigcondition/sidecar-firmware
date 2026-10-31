@@ -1,0 +1,271 @@
+circle-rp1dsi.patch (Sidecar): the Raspberry Pi Touch Display 2 (5" and 7") on the Pi 5 with Circle's addon/rp1dsi.
+The DSI host takes the panel's mode flags (the v2 default is VIDEO|LPM, sync events, as Linux; the v1 display keeps its
+own), dropped commands and each bring-up step are logged, the GT911 is probed on both addresses with its contact id
+bounded, and the v2 panel size can be forced (g_nRPiTouchScreen2Panel). The Pi 4 and the v1 display are not changed.
+
+diff -ruN a/addon/rp1dsi/rp1dsihostcontroller.cpp b/addon/rp1dsi/rp1dsihostcontroller.cpp
+--- a/addon/rp1dsi/rp1dsihostcontroller.cpp
++++ b/addon/rp1dsi/rp1dsihostcontroller.cpp
+@@ -503,7 +503,7 @@
+ 
+ CRP1DSIHostController::CRP1DSIHostController (CInterruptSystem *pInterrupt,
+ 					      unsigned nDepth, unsigned nDisplay,
+-					      unsigned nDataLanes)
++					      unsigned nDataLanes, unsigned long ulModeFlags)
+ :	mipi_dsi_host {&s_host_ops},
+ 	m_pInterrupt (pInterrupt),
+ 	m_nDepth (nDepth),
+@@ -524,15 +524,14 @@
+ 		      (nDepth == 16 ? 16 : 24) >= 8 * nDataLanes
+ 		    ? GPIOClockSourceMIPIDSIByteClock
+ 		    : GPIOClockSourcePLLSys),
+-	m_display_flags (  MIPI_DSI_MODE_VIDEO
+-			 | MIPI_DSI_MODE_VIDEO_SYNC_PULSE
+-			 | MIPI_DSI_MODE_LPM
+-			 | MIPI_DSI_MODE_VIDEO_HSE),
++	m_display_flags (ulModeFlags),
+ 	m_display_format (MIPI_DSI_FMT_RGB888),
+ 	m_bIRQConnected (FALSE),
+ 	m_bDSIRunning (FALSE),
+ 	m_bDMARunning (FALSE),
+-	m_pVBlankHandler (nullptr)
++	m_pVBlankHandler (nullptr),
++	m_nSends (0),
++	m_nSendTimeouts (0)
+ {
+ 	assert (m_nDepth == 16 || m_nDepth == 32);
+ 	assert (m_nDataLanes == 1 || m_nDataLanes == 2);
+@@ -880,6 +879,10 @@
+ 	else if (8 * m_nDataLanes > bpp)
+ 		mask &= ~DSI_VID_MODE_LP_HBP_EN; /* PULSE && inexact DPICLK => fix HBP time */
+ 	DSI_WRITE(DSI_VID_MODE_CFG, mask);
++	LOGNOTE ("DISP%u: %u lanes, video mode %s (flags 0x%lX), %ux%u",
++		 m_nDisplay, m_nDataLanes,
++		 (mask & DSI_VID_MODE_BURST) ? "burst" : (mask & DSI_VID_MODE_SYNC_EVENTS) ? "sync events" : "sync pulses",
++		 m_display_flags, (unsigned) mode->hdisplay, (unsigned) mode->vdisplay);
+ 	DSI_WRITE(DSI_CMD_MODE_CFG,
+ 		  (m_display_flags & MIPI_DSI_MODE_LPM) ? DSI_CMD_MODE_ALL_LP : 0);
+ 	DSI_WRITE(DSI_PCKHDL_CFG,
+@@ -1030,6 +1033,12 @@
+ 			break;
+ 		usleep_range(100, 150);
+ 	}
++
++	/* A command, whose FIFOs did not drain, may not have reached the panel: say so */
++	m_nSends++;
++	if (val == 0 && ++m_nSendTimeouts <= 8)
++		LOGWARN ("Command 0x%08X (%d bytes) not sent in time (status 0x%X, %u of %u)",
++			 hdr, len, DSI_READ(DSI_CMD_PKT_STATUS), m_nSendTimeouts, m_nSends);
+ }
+ 
+ int CRP1DSIHostController::rp1dsi_dsi_recv (int len, u8 *buf)
+diff -ruN a/addon/rp1dsi/rp1dsihostcontroller.h b/addon/rp1dsi/rp1dsihostcontroller.h
+--- a/addon/rp1dsi/rp1dsihostcontroller.h
++++ b/addon/rp1dsi/rp1dsihostcontroller.h
+@@ -29,8 +29,14 @@
+ class CRP1DSIHostController : public mipi_dsi_host  /// Driver for DSI output on Raspberry Pi RP1
+ {
+ public:
++	/// \param ulModeFlags The panel's MIPI_DSI_MODE_* flags (Linux: the attached device's
++	///	   mode_flags); the default is the v1 display's (TC358762)
+ 	CRP1DSIHostController (CInterruptSystem *pInterrupt, unsigned nDepth, unsigned nDisplay,
+-			       unsigned nDataLanes);
++			       unsigned nDataLanes,
++			       unsigned long ulModeFlags =   MIPI_DSI_MODE_VIDEO
++							   | MIPI_DSI_MODE_VIDEO_SYNC_PULSE
++							   | MIPI_DSI_MODE_LPM
++							   | MIPI_DSI_MODE_VIDEO_HSE);
+ 	~CRP1DSIHostController (void);
+ 
+ 	boolean Initialize (const drm_display_mode *pMode);
+@@ -40,6 +46,11 @@
+ 	typedef void TVBlankHandler (void *pParam);
+ 	void RegisterVBlankHandler (TVBlankHandler *pHandler, void *pParam);
+ 
++	/// \return Number of command sends, whose FIFOs did not drain in time
++	unsigned GetSendTimeouts (void) const	{ return m_nSendTimeouts; }
++	/// \return Number of command sends
++	unsigned GetSends (void) const		{ return m_nSends; }
++
+ private:
+ 	static const u32 LanePolarities = 0;	// for all lanes
+ 	static const u8 VC = 0;			// channel
+@@ -112,6 +123,9 @@
+ 	TVBlankHandler *m_pVBlankHandler;
+ 	void *m_pVBlankParam;
+ 
++	unsigned m_nSends;
++	unsigned m_nSendTimeouts;
++
+ 	static const hsfreq_range s_hsfreq_table[];
+ 
+ 	static mipi_dsi_host_ops s_host_ops;
+diff -ruN a/addon/rp1dsi/rpitouchscreen2.cpp b/addon/rp1dsi/rpitouchscreen2.cpp
+--- a/addon/rp1dsi/rpitouchscreen2.cpp
++++ b/addon/rp1dsi/rpitouchscreen2.cpp
+@@ -56,6 +56,9 @@
+ 
+ LOGMODULE ("rp1touch2");
+ 
++unsigned long g_ulRPiTouchScreen2ModeFlags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_LPM;
++unsigned g_nRPiTouchScreen2Panel = 0;
++
+ CRPiTouchScreen2::CRPiTouchScreen2 (CInterruptSystem *pInterrupt, CI2CMaster *pI2C,
+ 				    unsigned nDepth, unsigned nDisplay,
+ 				    boolean bEnableTouch,
+@@ -67,7 +70,7 @@
+ 	m_PanelType (PanelType),
+ 	m_bRPiPanel2Initialized (FALSE),
+ 	m_Regulator (pI2C),
+-	m_DSI (pInterrupt, nDepth, nDisplay, 2),
++	m_DSI (pInterrupt, nDepth, nDisplay, 2, g_ulRPiTouchScreen2ModeFlags),
+ 	m_Panel (this, &m_Regulator),
+ 	m_nKnownIDs (0),
+ 	m_pInterface (nullptr)
+@@ -96,15 +99,35 @@
+ 	usleep_range(10, 100);
+ 
+ 	m_bRPiPanel2Initialized = TRUE;
++	LOGNOTE ("Panel regulator up");
+ 
+ 	if (m_bEnableTouch)
+ 	{
++		// The GT911 answers at 0x5D or 0x14: both are probed. After a software restart it may not answer at all
++		// (a known limitation, docs/pi5.md; the cause is not known): the caller then runs without touch.
+ 		if (!m_Regulator.GPIOWrite (CRPiPanel2Regulator::CTP_RESET, 1))
+ 		{
+ 			LOGERR ("Cannot power on touch controller");
+ 			return FALSE;
+ 		}
+-		usleep_range(5000, 6000);
++		msleep (100);	// the supply's startup delay (Linux overlay: 50 ms) and the GT911's boot
++
++		static const u8 Addresses[] = {I2CAddress, I2CAddressAlt};
++		u8 ID[GOODIX_ID_MAX_LEN + 1] = {0};
++		boolean bFound = FALSE;
++		for (unsigned i = 0; i < sizeof Addresses && !bFound; i++)
++		{
++			m_uchTouchAddress = Addresses[i];
++			bFound = goodix_i2c_read (GOODIX_REG_ID, ID, GOODIX_ID_MAX_LEN) == 0;
++		}
++		if (!bFound)
++		{
++			m_uchTouchAddress = I2CAddress;
++			LOGERR ("No touch controller at I2C 0x%02X or 0x%02X",
++				(unsigned) I2CAddress, (unsigned) I2CAddressAlt);
++			return FALSE;	// the caller may try again without touch
++		}
++		LOGNOTE ("Touch controller GT%s at I2C 0x%02X", (const char *) ID, (unsigned) m_uchTouchAddress);
+ 	}
+ 
+ 	if (!m_DSI.Initialize (CILI9881Panel::GetDisplayMode (m_PanelType)))
+@@ -112,12 +135,15 @@
+ 		LOGERR ("Cannot init DSI host controller");
+ 		return FALSE;
+ 	}
++	LOGNOTE ("DSI host up");
+ 
+ 	if (!m_Panel.Initialize (m_PanelType))
+ 	{
+ 		LOGERR ("Cannot init panel");
+ 		return FALSE;
+ 	}
++	LOGNOTE ("Panel initialized (%u commands sent, %u timed out)",
++		 m_DSI.GetSends (), m_DSI.GetSendTimeouts ());
+ 
+ 	return TRUE;
+ }
+@@ -126,8 +152,10 @@
+ {
+ 	if (!m_DSI.Start (pFrameBuffer, nPitch))
+ 	{
++		LOGERR ("Cannot start DSI video");
+ 		return FALSE;
+ 	}
++	LOGNOTE ("DSI video started");
+ 
+ 	if (m_bEnableTouch)
+ 	{
+@@ -163,11 +191,11 @@
+ 	u16 wbuf = le2be16 (reg);
+ 	int ret;
+ 
+-	ret = m_pI2C->Write (I2CAddress, &wbuf, 2);
++	ret = m_pI2C->Write (m_uchTouchAddress, &wbuf, 2);
+ 	if (ret != 2)
+ 		return -EIO;
+ 
+-	ret = m_pI2C->Read (I2CAddress, buf, len);
++	ret = m_pI2C->Read (m_uchTouchAddress, buf, len);
+ 	if (ret == len)
+ 		return 0;
+ 
+@@ -185,7 +213,7 @@
+ 	addr_buf[1] = reg & 0xFF;
+ 	memcpy(&addr_buf[2], buf, len);
+ 
+-	ret = m_pI2C->Write (I2CAddress, addr_buf, len + 2);
++	ret = m_pI2C->Write (m_uchTouchAddress, addr_buf, len + 2);
+ 	if (ret == len + 2)
+ 		return 0;
+ 
+@@ -224,7 +252,9 @@
+ 		x = contact->x & 0xfff;
+ 		y = contact->y & 0xfff;
+ 
+-		id = contact->id;
++		id = contact->id & 0x0F;	// as Linux (goodix.c)
++		if (id >= (unsigned) MaxTouchPoints)
++			continue;
+ 
+ 		active_ids |= BIT(id);
+ 
+diff -ruN a/addon/rp1dsi/rpitouchscreen2.h b/addon/rp1dsi/rpitouchscreen2.h
+--- a/addon/rp1dsi/rpitouchscreen2.h
++++ b/addon/rp1dsi/rpitouchscreen2.h
+@@ -30,6 +30,12 @@
+ #include "rp1dsihostcontroller.h"
+ #include "ili9881panel.h"
+ 
++/// The DSI host's MIPI_DSI_MODE_* flags for the v2 display, set before Initialize():
++/// default VIDEO | LPM (sync events), as Linux (panel-ilitek-ili9881c.c)
++extern unsigned long g_ulRPiTouchScreen2ModeFlags;
++/// The v2 panel's size, set before CRPiTouchScreen::Initialize(): 0 from the regulator's id, 5 or 7 (inch) forced
++extern unsigned g_nRPiTouchScreen2Panel;
++
+ class CRPiTouchScreen2 : public mipi_dsi_device	// Driver for Raspberry Pi Touchscreen v2
+ {
+ public:
+@@ -62,6 +68,9 @@
+ 
+ private:
+ 	static const u8 I2CAddress = 0x5D;
++	static const u8 I2CAddressAlt = 0x14;	// the GT911's other address
++
++	u8 m_uchTouchAddress = I2CAddress;	// the one that answered
+ 
+ 	static const unsigned Width = 720;
+ 	static const unsigned Height = 1280;
+diff -ruN a/addon/rp1dsi/rpitouchscreen.cpp b/addon/rp1dsi/rpitouchscreen.cpp
+--- a/addon/rp1dsi/rpitouchscreen.cpp
++++ b/addon/rp1dsi/rpitouchscreen.cpp
+@@ -74,9 +74,19 @@
+ 		return FALSE;
+ 	}
+ 
++	LOGNOTE ("DISP%u: regulator id 0x%02X, touch %s%s", m_nDisplay, (unsigned) uchID,
++		 m_bEnableTouch ? "on" : "off",
++		   g_nRPiTouchScreen2Panel == 7 ? ", forced: v2 7 inch"
++		 : g_nRPiTouchScreen2Panel == 5 ? ", forced: v2 5 inch" : "");
++
+ 	assert (!m_pTouchScreen1);
+ 	assert (!m_pTouchScreen2);
+ 
++	if (g_nRPiTouchScreen2Panel == 7)
++		uchID = 0x01;
++	else if (g_nRPiTouchScreen2Panel == 5)
++		uchID = 0x09;
++
+ 	switch (uchID & 0x0F)
+ 	{
+ 	case 0x01: /* 7 inch */

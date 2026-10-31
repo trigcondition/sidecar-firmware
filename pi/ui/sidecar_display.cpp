@@ -112,6 +112,12 @@ CSidecarDisplay::CSidecarDisplay (unsigned nWidth, unsigned nHeight)
 	memset (&m_Status, 0, sizeof m_Status);
 	for (unsigned c = 0; c < SIDECAR_UI_CORES; c++) m_Status.load[c] = -1;
 	s_pThis = this;
+#if RASPPI >= 5
+	m_nDsiDepth = 16;
+	m_pConv = 0;
+	m_nRot = 0;
+	m_pYMap = 0;
+#endif
 }
 
 // The firmware's displays (Pi 4: max_framebuffers=2 in config.txt gives each its frame buffer): "get display id" per
@@ -311,14 +317,35 @@ void CSidecarDisplay::ChooseUi (void)
 // neighbouring areas meet without gaps. Each UI row is scaled once, its repeats copied, ScaleRows rows per DMA.
 void CSidecarDisplay::Put (const CDisplay::TArea &rArea, const u16 *pPixels)
 {
+#if RASPPI >= 5
+	if (m_nRot)
+	{
+		PutRotated (rArea, pPixels);
+		return;
+	}
+#endif
 	if (!m_bScaled)
 	{
 		if (m_nOffX || m_nOffY)				// centred: moved to the UI's place
 		{
 			CDisplay::TArea A = {rArea.x1 + m_nOffX, rArea.x2 + m_nOffX, rArea.y1 + m_nOffY, rArea.y2 + m_nOffY};
+#if RASPPI >= 5
+			if (m_pOut != m_pFB)
+			{
+				DsiSetArea (A, pPixels);	// rp1dsi: at its depth
+				return;
+			}
+#endif
 			m_pOut->SetArea (A, pPixels);
 			return;
 		}
+#if RASPPI >= 5
+		if (m_pOut != m_pFB)
+		{
+			DsiSetArea (rArea, pPixels);		// rp1dsi: at its depth
+			return;
+		}
+#endif
 		m_pOut->SetArea (rArea, pPixels);
 		return;
 	}
@@ -415,7 +442,16 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 		return FALSE;
 	}
 	unsigned nWant = pOpt->GetAppOptionDecimal ("dsi_port", 2);	// 2: both, DISP0 first
-	unsigned nRotate = pOpt->GetAppOptionDecimal ("dsi_rotate", 0) == 180 ? 180 : 0;
+	unsigned nRotOpt = pOpt->GetAppOptionDecimal ("dsi_rotate", 0);
+	unsigned nRotate = nRotOpt == 180 ? 180 : 0;			// v1: rp1dsi turns it; a portrait panel: RotateSetup
+	// the Touch Display 2's DSI video mode (circle-rp1dsi.patch): sync events as Linux, or dsi_mode=pulse (rp1dsi's
+	// v1 flags, as Sidecar 0.2.0 drove it)
+	g_nRPiTouchScreen2Panel = pOpt->GetAppOptionDecimal ("dsi_panel", 0);	// 5 or 7: the Touch Display 2's size forced
+										// (0: from the regulator's id)
+	const char *pMode = pOpt->GetAppOptionString ("dsi_mode", "events");
+	if (strcmp (pMode, "pulse") == 0)
+		g_ulRPiTouchScreen2ModeFlags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE | MIPI_DSI_MODE_LPM
+					       | MIPI_DSI_MODE_VIDEO_HSE;
 	unsigned nInv = pOpt->GetAppOptionDecimal ("dsitouch_inv", 0);
 	m_nDsiInvert = nInv <= 3 ? nInv : 0;
 	boolean bAny = FALSE;
@@ -438,7 +474,8 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 			boolean bTouch = nTry == 0;
 			CDevice *pBefore[8];
 			DsiTouchDevice (pBefore, FALSE);
-			CRPiTouchScreen *pDsi = new CRPiTouchScreen (CInterruptSystem::Get (), 16, nPort, bTouch);
+			m_nDsiDepth = pOpt->GetAppOptionDecimal ("dsi_depth", 16) == 32 ? 32 : 16;	// the panel's frame buffer
+			CRPiTouchScreen *pDsi = new CRPiTouchScreen (CInterruptSystem::Get (), m_nDsiDepth, nPort, bTouch);
 			pDsi->SetRotation (nRotate);
 			if (!pDsi->Initialize ())
 			{
@@ -452,6 +489,12 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 			m_bFrameBuffer = TRUE;
 			m_nFbWidth = m_nWidth = pDsi->GetWidth ();
 			m_nFbHeight = m_nHeight = pDsi->GetHeight ();
+			if (m_nFbHeight > m_nFbWidth)					// Touch Display 2: portrait
+			{
+				if (nRotOpt != 0 && nRotOpt != 90 && nRotOpt != 270)
+					LOGWARN ("DSI: dsi_rotate=%u is not supported on a portrait panel (90 or 270): using 90", nRotOpt);
+				RotateSetup (nRotOpt == 270 ? 270 : 90);
+			}
 			CDevice *pTouch = bTouch ? DsiTouchDevice (pBefore, TRUE) : 0;
 			if (pTouch)
 			{
@@ -459,8 +502,10 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 				((CTouchScreenDevice *) pTouch)->Setup (pDsi);
 				((CTouchScreenDevice *) pTouch)->RegisterEventHandler (H::DsiTouchHandler);
 			}
-			LOGNOTE ("DSI: DISP%u %ux%u (rp1dsi, no scaling), rotation %u, touch %s%s", nPort, m_nWidth, m_nHeight,
-				 nRotate, pTouch ? "FT5x06 polled" : "none", pTouch && m_nDsiInvert ? ", inverted" : "");
+			LOGNOTE ("DSI: DISP%u %ux%u (rp1dsi, %s), rotation %u, touch %s%s", nPort, m_nFbWidth,
+				 m_nFbHeight, m_nRot ? "UI turned" : "no scaling", m_nRot ? m_nRot : nRotate,
+				 pTouch ? (m_nRot ? "GT911 polled" : "FT5x06 polled") : "none",
+				 pTouch && m_nDsiInvert ? ", inverted" : "");
 			return TRUE;
 		}
 	}
@@ -505,6 +550,105 @@ void CSidecarDisplay::ScaleSetup (unsigned nWidth, unsigned nHeight)
 	m_bScaled = TRUE;
 	LOGNOTE ("UI %ux%u scaled to the frame buffer's %ux%u (x %u.%02u, y %u.%02u; res=800x480|1024x600 sets the UI's size)",
 		 nWidth, nHeight, FW, FH, FW / nWidth, FW * 100 / nWidth % 100, FH / nHeight, FH * 100 / nHeight % 100);
+}
+
+// The panel indices k (0..N-1) whose UI index ((bFlip ? N-1-k : k) * S / N) lies in a1..a2 (N >= S: never empty)
+static void Span (unsigned a1, unsigned a2, unsigned N, unsigned S, boolean bFlip, unsigned *p1, unsigned *p2)
+{
+	unsigned k1 = (a1 * N + S - 1) / S, k2 = ((a2 + 1) * N + S - 1) / S - 1;
+	if (bFlip)
+	{
+		unsigned t = N - 1 - k2;
+		k2 = N - 1 - k1;
+		k1 = t;
+	}
+	*p1 = k1;
+	*p2 = k2;
+}
+
+// The Touch Display 2 (rp1dsi v2: a 720x1280 portrait panel): the 800x480 UI turned a quarter (dsi_rotate=90, the
+// default: its top at the panel's right edge; 270: at its left) and stretched to the whole panel, non-uniform as the
+// HDMI scaler (x1.60 along, x1.50 across). The UI's size is fixed at 800x480 here: cmdline.txt's width=/height= (ScaleSetup,
+// HDMI) are not read. Panel column X shows UI row m_pXMap[X], panel row Y UI column m_pYMap[Y].
+void CSidecarDisplay::RotateSetup (unsigned nRot)
+{
+	const unsigned PW = m_nFbWidth, PH = m_nFbHeight, W = 800, H = 480;
+	m_pXMap = new u16[PW];
+	m_pYMap = new u16[PH];
+	m_pScaleBuf = new (HEAP_DMA30) u16[PW * ScaleRows];
+	if (!m_pXMap || !m_pYMap || !m_pScaleBuf)
+	{
+		LOGWARN ("DSI: no memory to turn the UI: %ux%u portrait", PW, PH);
+		return;
+	}
+	for (unsigned X = 0; X < PW; X++) m_pXMap[X] = (nRot == 90 ? PW - 1 - X : X) * H / PW;
+	for (unsigned Y = 0; Y < PH; Y++) m_pYMap[Y] = (nRot == 90 ? Y : PH - 1 - Y) * W / PH;
+	m_nWidth = W;
+	m_nHeight = H;
+	m_nRot = nRot;
+	LOGNOTE ("DSI: UI %ux%u turned %u and stretched to the panel's %ux%u (dsi_rotate=90|270)", W, H, nRot, PW, PH);
+}
+
+// RGB565 pixels (rArea's, row after row) to the rp1dsi display: as they are, or with dsi_depth=32 as ARGB8888
+// (the frame buffer format Linux uses on the Touch Display 2), converted in bands of m_pConv's size
+void CSidecarDisplay::DsiSetArea (const CDisplay::TArea &rArea, const u16 *pPixels)
+{
+	if (m_nDsiDepth != 32)
+	{
+		m_pOut->SetArea (rArea, pPixels);
+		return;
+	}
+	static const unsigned ConvPixels = 720 * 64;
+	if (!m_pConv) m_pConv = new u32[ConvPixels];
+	if (!m_pConv) return;
+	const unsigned nWidth = rArea.x2 - rArea.x1 + 1;
+	unsigned nRows = ConvPixels / nWidth;
+	if (nRows == 0) return;
+	for (unsigned Y = rArea.y1; Y <= rArea.y2; Y += nRows)
+	{
+		unsigned n = rArea.y2 - Y + 1 < nRows ? rArea.y2 - Y + 1 : nRows;
+		const u16 *p = pPixels + (Y - rArea.y1) * nWidth;
+		for (unsigned i = 0; i < n * nWidth; i++)
+		{
+			u32 c = p[i], r = c >> 11 & 31, g = c >> 5 & 63, b = c & 31;
+			m_pConv[i] = 0xFF000000 | (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2);
+		}
+		CDisplay::TArea Band = {rArea.x1, rArea.x2, Y, Y + n - 1};
+		m_pOut->SetArea (Band, m_pConv);
+	}
+}
+
+// Put on the turned panel: the panel rows and columns that show rArea (the inverse of the maps), ScaleRows panel rows
+// per SetArea, each panel row one UI column read down the area's rows
+void CSidecarDisplay::PutRotated (const CDisplay::TArea &rArea, const u16 *pPixels)
+{
+	const unsigned PW = m_nFbWidth, PH = m_nFbHeight, nStride = rArea.x2 - rArea.x1 + 1;
+	unsigned X1, X2, Y1, Y2;
+	Span (rArea.y1, rArea.y2, PW, m_nHeight, m_nRot == 90, &X1, &X2);	// panel columns <- UI rows
+	Span (rArea.x1, rArea.x2, PH, m_nWidth, m_nRot == 270, &Y1, &Y2);	// panel rows <- UI columns
+	if (X2 < X1 || Y2 < Y1 || X2 >= PW || Y2 >= PH) return;
+	const unsigned nOut = X2 - X1 + 1;
+	for (unsigned Y = Y1; Y <= Y2; )
+	{
+		unsigned n = Y2 - Y + 1 < ScaleRows ? Y2 - Y + 1 : ScaleRows;
+		u16 *pOut = m_pScaleBuf;
+		unsigned nPrev = ~0u;
+		for (unsigned k = 0; k < n; k++, pOut += nOut)
+		{
+			unsigned u = m_pYMap[Y + k];			// this panel row's UI column
+			if (u == nPrev)
+			{
+				memcpy (pOut, pOut - nOut, nOut * sizeof (u16));
+				continue;
+			}
+			nPrev = u;
+			const u16 *pIn = pPixels + (u - rArea.x1);
+			for (unsigned i = 0; i < nOut; i++) pOut[i] = pIn[(m_pXMap[X1 + i] - rArea.y1) * nStride];
+		}
+		CDisplay::TArea Out = {X1, X2, Y, Y + n - 1};
+		DsiSetArea (Out, m_pScaleBuf);			// the rp1dsi display (m_pFB is 0 there)
+		Y += n;
+	}
 }
 #endif
 
@@ -1055,17 +1199,29 @@ void H::DsiTouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, 
 	else
 	{
 #if RASPPI >= 5
-		const unsigned PW = p->m_nFbWidth, PH = p->m_nFbHeight;	// rp1dsi: the panel's pixels
+		const unsigned PW = p->m_nFbWidth, PH = p->m_nFbHeight;	// rp1dsi: the panel's pixels (the UI's, unless turned)
 #else
 		const unsigned PW = 800, PH = 480;			// the firmware's touch buffer
 #endif
 		unsigned x = nPosX < PW ? nPosX : PW - 1, y = nPosY < PH ? nPosY : PH - 1;
-		if (p->m_nDsiInvert & 1) x = PW - 1 - x;
+		if (p->m_nDsiInvert & 1) x = PW - 1 - x;		// mirrored in the panel's axes
 		if (p->m_nDsiInvert & 2) y = PH - 1 - y;
-		const unsigned SW = p->m_bScaled ? p->m_nWidth : p->m_nFbWidth, SH = p->m_bScaled ? p->m_nHeight : p->m_nFbHeight;
-		int sx = (int) (x * SW / PW) - (int) p->m_nOffX, sy = (int) (y * SH / PH) - (int) p->m_nOffY;
-		x = sx < 0 ? 0 : sx >= (int) p->m_nWidth ? p->m_nWidth - 1 : (unsigned) sx;
-		y = sy < 0 ? 0 : sy >= (int) p->m_nHeight ? p->m_nHeight - 1 : (unsigned) sy;
+#if RASPPI >= 5
+		if (p->m_nRot)						// turned: the inverse of PutRotated's maps
+		{
+			unsigned u = (p->m_nRot == 90 ? y : PH - 1 - y) * p->m_nWidth / PH;
+			unsigned v = (p->m_nRot == 90 ? PW - 1 - x : x) * p->m_nHeight / PW;
+			x = u;
+			y = v;
+		}
+		else
+#endif
+		{
+			const unsigned SW = p->m_bScaled ? p->m_nWidth : p->m_nFbWidth, SH = p->m_bScaled ? p->m_nHeight : p->m_nFbHeight;
+			int sx = (int) (x * SW / PW) - (int) p->m_nOffX, sy = (int) (y * SH / PH) - (int) p->m_nOffY;
+			x = sx < 0 ? 0 : sx >= (int) p->m_nWidth ? p->m_nWidth - 1 : (unsigned) sx;
+			y = sy < 0 ? 0 : sy >= (int) p->m_nHeight ? p->m_nHeight - 1 : (unsigned) sy;
+		}
 		if (nID == 1)
 		{
 			p->m_nPointer2 = 1u << 31 | (u32) y << 16 | (u32) x;

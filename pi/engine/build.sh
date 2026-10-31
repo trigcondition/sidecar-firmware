@@ -147,7 +147,12 @@ make -C lib/usb -j$J >/dev/null
 # the WLAN driver (the Plan 9 ether4330 port) and wpa_supplicant, once (libwlan.a, libwpa_supplicant.a)
 [ -f addon/wlan/libwlan.a ] || make -C addon/wlan -j$J >/dev/null
 [ -f addon/wlan/hostap/wpa_supplicant/libwpa_supplicant.a ] || make -C addon/wlan/hostap/wpa_supplicant -f Makefile.circle -j$J >/dev/null
-# Pi 5: the DSI display driver (Circle'"'"'s addon/rp1dsi, unchanged; docs/pi5.md "DSI display"), once
+# Pi 5: the DSI display driver (Circle'"'"'s addon/rp1dsi; docs/pi5.md "DSI display") with the Touch Display 2 fixes
+# (pi/circle/circle-rp1dsi.patch: the panel'"'"'s DSI mode flags, bring-up logged, the GT911 probed; idempotent: a
+# patched tree rebuilds the library once)
+if [ "$R" = 5 ] && ! grep -q g_nRPiTouchScreen2Panel addon/rp1dsi/rpitouchscreen2.h; then
+  patch -p1 < /repo/pi/circle/circle-rp1dsi.patch && rm -f addon/rp1dsi/librp1dsi.a addon/rp1dsi/*.o
+fi
 [ "$R" != 5 ] || [ -f addon/rp1dsi/librp1dsi.a ] || make -C addon/rp1dsi -j$J >/dev/null
 # Pi 5: the NVMe SSD driver (Circle'"'"'s addon/nvme, unchanged, experimental; docs/STORAGE.md), once
 [ "$R" != 5 ] || [ -f addon/nvme/libnvme.a ] || make -C addon/nvme -j$J >/dev/null

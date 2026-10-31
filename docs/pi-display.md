@@ -128,7 +128,7 @@ redraws the area it uncovers in 48-line bands, about the cost of that first draw
 | GeeekPi EP-0194 7" IPS HDMI (1024x600, USB capacitive touch, HDMI in) | Display measured (`display: 1024x600`). Touch (USB 0416:c169 "TSTP MTouch"): stock Circle took it for a keyboard (`input none`). Its boot-keyboard interface's 84-byte descriptor (measured) is an absolute mouse (ID 2, button 1 = finger, X/Y 0..32767): `circle-touch-pointer.patch` binds it as a single-touch screen ("USB touch screens" below), to be confirmed on the panel. config.txt as in "Screen sizes". |
 | Official Raspberry Pi 7" Touch Display v1 (DSI, 800x480) | Expected on both boards, not yet measured here. Pi 4: firmware frame buffer + `CRPiTouchScreen` (firmware touch buffer). Pi 5: Circle's `addon/rp1dsi` (display and touch, no firmware). |
 | OSOYOO 7" IPS DSI V4.0 (800x480, 15-pin DSI) | Expected, to be confirmed: sold as plug-and-play on Raspberry Pi OS, which normally means it emulates the official display (ATTiny regulator at I2C 0x45, TC358762 bridge, FT5x06 touch at 0x38). The boot log names what answers ("DSI on the Pi 5"). |
-| Raspberry Pi Touch Display 2 | Pi 4: not supported (needs a KMS DSI panel driver and a Goodix touch driver, which Circle does not have on the Pi 4). Pi 5: `addon/rp1dsi` drives it (*inferred*, untested); it is 720x1280 portrait, which the 800x480 layout is not made for. |
+| Raspberry Pi Touch Display 2 | Pi 4: not supported (needs a KMS DSI panel driver and a Goodix touch driver, which Circle does not have on the Pi 4). Pi 5: `addon/rp1dsi` drives it with `pi/circle/circle-rp1dsi.patch`; the UI is turned a quarter onto the 720x1280 portrait panel. The 5" was measured on hardware with a development build this code was cut from (picture and touch; this exact build has not been run on the panel yet), and after a software restart its touch did not answer until a power cycle; the 7" is untested. Details: docs/pi5.md, "Touch Display 2". |
 
 ### USB touch screens
 
@@ -280,23 +280,29 @@ On the Pi 5 see "DSI on the Pi 5" below. On the Pi 4:
 ### DSI on the Pi 5
 
 The Pi 5's firmware does not drive a DSI display: the engine drives it itself with Circle's `addon/rp1dsi` (Circle
-51.1.1, GPL-3.0, unchanged; `pi/engine/build.sh` builds `librp1dsi.a` in the Pi 5 tree). All *inferred* from Circle's
-sources; not yet run on hardware.
+51.1.1, GPL-3.0; `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi.patch` (Touch Display 2 only) and builds
+`librp1dsi.a` in the Pi 5 tree). The v1 path is *inferred* from Circle's sources, not yet run on hardware; the Touch
+Display 2 5" was measured with a development build of this code, not this exact build, and with no touch after a software
+restart (docs/pi5.md, "Touch Display 2").
 
 - At boot (the boot screen), unless `dsi=0`: the engine reads the display regulator (I2C address 0x45, register 1) on
   each DSI port, **CAM/DISP 0 first, then CAM/DISP 1** (`dsi_port=0` or `1` in cmdline.txt: only that one). DISP0's I2C
   is RP1's I2C6 (GPIO38/39), DISP1's I2C4 (GPIO40/41), rp1dsi's mapping; neither is on the 40-pin header.
 - The regulator's id picks the driver (rp1dsi's own choice): low nibble 1/4 = Touch Display 2 7", 8/9 = Touch Display 2
-  5", anything else = the v1 path (ATTiny regulator, TC358762 bridge, 800x480 at 30 MHz, FT5x06 touch at 0x38).
-- Found: the UI is drawn on it at its own size (800x480: **no scaling**; the HDMI scaler is not used), HDMI is not
+  5" (`dsi_panel=5|7` forces it), anything else = the v1 path (ATTiny regulator, TC358762 bridge, 800x480 at 30 MHz,
+  FT5x06 touch at 0x38). The Touch Display 2 is 720x1280 portrait with a Goodix GT911 touch (I2C 0x5D, else 0x14): the
+  UI is turned (`dsi_rotate=90|270`) and stretched to the panel, `dsi_depth=32` gives it an ARGB8888 frame buffer.
+- Found: on the v1 the UI is drawn at its own size (800x480: **no scaling**; the HDMI scaler is not used); on the Touch
+  Display 2 it is turned a quarter and stretched over the 720x1280 panel (docs/pi5.md, "Touch Display 2"). HDMI is not
   used. Not found on either port: HDMI as before (the scaler, "HDMI display" in docs/pi5.md).
-- Touch: rp1dsi's FT5x06 driver, polled over I2C from the display's `Update` (core 0, every 10 ms; each poll is an
+- Touch: rp1dsi's FT5x06 driver (the v1; the Touch Display 2: its GT911 driver), polled over I2C from the display's `Update` (core 0, every 10 ms; each poll is an
   I2C transfer, its cost shows in the stats line's `longest update`). Coordinates are panel pixels. A USB touch
   screen still has priority. If the display does not start with touch (rp1dsi accepts only a "generic FT5x06";
   EDT M06/M09/M12 and FT5x26 ids are refused with `Model is not supported`), it is started again without touch, so the
   picture still works.
-- `dsi_rotate=180` in cmdline.txt: picture and touch turned by 180 degrees together (rp1dsi's `SetRotation`: the
-  ATTiny's scan direction and the touch coordinates). `dsitouch_inv=1|2|3` mirrors x / y / both on top, as on the Pi 4.
+- `dsi_rotate=180` in cmdline.txt (v1): picture and touch turned by 180 degrees together (rp1dsi's `SetRotation`: the
+  ATTiny's scan direction and the touch coordinates). On the Touch Display 2 only `90` and `270` apply (180 is treated
+  as 90, with a warning in the log), and `width=`/`height=` are ignored (the UI is 800x480). `dsitouch_inv=1|2|3` mirrors x / y / both on top, as on the Pi 4.
   (The Pi 4's `lcd_rotate=2` in config.txt does nothing on the Pi 5.)
 - Screensaver: the DSI backlight off (rp1dsi's `SetBacklightBrightness (0)`), back to 200 (rp1dsi's default) on wake.
 - No config.txt line is needed or used for it. Do not add `dtoverlay=vc4-kms-dsi-7inch` or `display_auto_detect=1`:
@@ -305,7 +311,7 @@ sources; not yet run on hardware.
 
       display: DSI: DISP0: display regulator id 0xNN (official 7" v1 or compatible: TC358762, FT5x06)
       rp1touch1: Model is generic FT5x06 (NN)          (or an EDT model name)
-      display: DSI: DISP0 800x480 (rp1dsi, no scaling), rotation 0, touch FT5x06 polled
+      display: DSI: DISP0 800x480 (rp1dsi, no scaling), rotation 0, touch FT5x06 polled     (the v1)
       engine: boot screen: 800x480 in N us
       display: 800x480, LVGL 9.4
       display: touch: DSI (rp1dsi)
@@ -327,6 +333,8 @@ sources; not yet run on hardware.
 - Power: the official v1 and compatibles take 5 V from the Pi's header (pins 2 or 4 = 5 V, a GND pin) on jumper wires,
   not over the ribbon. The serial console uses pins 6 (GND), 8, 10: put the display's GND on pin 9, 14 or 20 if pin 6
   is taken.
+- **Touch Display 2**: the same two connectors; the ribbon must be fully seated at both ends (a loose one gave a black
+  screen on the measured 5"). Power from the header as above.
 - Connect everything with the Pi off.
 
 ### If the DSI screen is not firmware-compatible (fallback, not implemented)

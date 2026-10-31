@@ -1,7 +1,7 @@
 # The Pi engine on a Raspberry Pi 5 (first build, 2026-10-19)
 
 Status: **runs on a Pi 5** (*measured* 2026-10-19: Rytm, voices, remote UI, web UI over Ethernet, replug, Wi-Fi);
-the HDMI display shows the UI with touch (measured, at 1920x1080 unscaled); the 800x480 UI scaled to it is measured working (slightly soft); the DSI display (official 7" v1 and compatibles, through Circle's `addon/rp1dsi`) is built, not yet run ("DSI display"). Everything below about the hardware is *inferred* from Circle's sources,
+the HDMI display shows the UI with touch (measured, at 1920x1080 unscaled); the 800x480 UI scaled to it is measured working (slightly soft); the DSI display (official 7" v1 and compatibles, through Circle's `addon/rp1dsi`) is built, not yet run; the Raspberry Pi Touch Display 2 5" (DSI, portrait 720x1280) is *measured* working, picture and touch, with a development build of this code ("DSI display", "Touch Display 2"). Everything below about the hardware is *inferred* from Circle's sources,
 its README and the Pi 5 device tree, unless marked *measured*. The Pi 4 build of the `pi5` branch was unchanged (same
 symbols and sizes as `final-010`, measured by comparing the two `kernel8-rpi4.elf` with `nm -S`). In 0.2.0 (`release-020`:
 `pi5` + `display-dsi` + `web-wifi`) the Pi 4 kernel differs from 0.1.0 only by those merges (`nm -S`, measured): the
@@ -22,7 +22,7 @@ The same engine as on the Pi 4 (`docs/pi-engine.md`), built with `RASPPI=5`, wit
 | Ethernet / web UI / mDNS `sidecar.local` | BCM54213 | RP1's MACB/GEM (Circle picks it) |
 | Wi-Fi | CYW43455 | the same chip, firmware files with the Pi 5's names (in the SD set): **works** (*measured* 2026-10-19: credentials entered on the web page, saved, connected) |
 | HDMI display (LVGL) | yes | needs `hdmi_force_hotplug=1`; the firmware's frame buffer is 1920x1080, the 800x480 UI is scaled to it ("HDMI display"); `display=0` turns it off |
-| DSI display + touch | the firmware's (frame buffer + FT5406 buffer) | Circle's `addon/rp1dsi` (display and FT5x06 touch, no firmware), preferred over HDMI, 800x480 unscaled ("DSI display"; built, not run) |
+| DSI display + touch | the firmware's (frame buffer + FT5406 buffer) | Circle's `addon/rp1dsi` (display and FT5x06 or GT911 touch, no firmware), preferred over HDMI; the 7" v1: 800x480 unscaled (built, not run); the Touch Display 2: the UI turned onto its portrait panel ("Touch Display 2"; the 5" measured with a development build, not this exact build) |
 | USB-C gadget (UAC2 12/12 + MIDI to the computer) | yes | **compiled out** (`SIDECAR_NO_GADGET`); the boot log says `gadget: none on this board (Pi 5 build)` |
 | serial console | GPIO14/15, 921600 | GPIO14/15, 921600 (default, `PI5_UART=0`), or the 3-pin debug connector (`PI5_UART=10`) |
 | `sdboot` (serial bootloader + `engine.img`) and `flash.sh` | yes | not yet: see "Updating the kernel" |
@@ -250,15 +250,61 @@ Built, **not yet run** (everything here *inferred* from Circle 51.1.1's `addon/r
 - The display: the official 7" Touch Display v1 or a compatible (the OSOYOO 7" IPS DSI V4.0 is sold as one) on
   `CAM/DISP 0` or `CAM/DISP 1`, with a 22-pin to 15-pin Pi 5 display cable; 5 V from the header.
 - The pick, at boot: a DSI display found (its regulator answers at I2C 0x45, DISP0 tried first, then DISP1) -> the UI on
-  it at 800x480, no scaling, HDMI unused; else HDMI with the scaler ("HDMI display"). `dsi=0` in cmdline.txt: HDMI only,
+  it at 800x480, no scaling (the Touch Display 2: turned and stretched, "Touch Display 2" below), HDMI unused; else HDMI with the scaler ("HDMI display"). `dsi=0` in cmdline.txt: HDMI only,
   no DSI probe. `dsi_port=0|1`: one port only.
 - Upside down in the case: `dsi_rotate=180` in cmdline.txt (picture and touch together). Mirrored touch only:
   `dsitouch_inv=1` (x), `2` (y), `3`.
 - config.txt: nothing for DSI. The `[pi5]` HDMI lines stay (an HDMI-only setup needs `hdmi_force_hotplug=1`; with a DSI
   display they do no harm: the HDMI frame buffer is never opened). No `vc4-kms-*` overlay, no `display_auto_detect`.
-- Build: `pi/engine/build.sh` builds `addon/rp1dsi/librp1dsi.a` in the Pi 5 tree once (Circle unchanged); the engine
+- Build: `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi.patch` (the Touch Display 2 fixes below; the v1 path is
+  not changed) and builds `addon/rp1dsi/librp1dsi.a` in the Pi 5 tree once; the engine
   links it before `libinput` (both have a `CRPiTouchScreen`; rp1dsi's is the display, libinput's is the Pi 4's firmware
   touch and is not linked on the Pi 5).
+
+## Touch Display 2
+
+The Raspberry Pi Touch Display 2 (5" or 7", DSI, 720x1280 portrait, Goodix GT911 touch) is driven by the same
+`addon/rp1dsi`, with the fixes of `pi/circle/circle-rp1dsi.patch`. **Measured** (2026-10-28), with the development
+build this code was cut from: a Pi 5 (4 GB) with the **5"** display on `CAM/DISP 1`: boot screen, LVGL home screen and touch at the finger. The build described here (without that
+development build's extra test options and SD boot log) is built, not yet run on the panel. **Not tested:**
+the 7" Touch Display 2, `CAM/DISP 0`, a Pi 5 with other RAM, long runs (hours), the Rytm and the audio path with this
+display attached. With the default options the v1 path is as in Circle (the mode flags and the panel functions
+below are the Touch Display 2's); the 7" v1 and compatibles were not run either.
+
+- Wiring: the display's ribbon to `CAM/DISP 0` or `CAM/DISP 1` (the engine tries DISP0 first, then DISP1), power from
+  the 40-pin header (5 V and GND, as for the v1). A ribbon not fully seated shows as a **black screen** with the
+  backlight on or off, no error: reseat both ends first (that was the cause of the first black screen on the measured
+  5"; checking the same display and cable with Raspberry Pi OS tells the cable from the code).
+- The UI is 800x480; it is **turned a quarter** and stretched over the whole panel (1.60 along, 1.50 across, as the HDMI
+  scaler: not uniform). `dsi_rotate=90` (default: the UI's top at the panel's right edge) or `270` (at its left) in
+  cmdline.txt; `dsitouch_inv=1|2|3` mirrors the touch if needed. The touch follows the turn.
+- Options in cmdline.txt (all optional, defaults are what the measured setup needs unless noted):
+
+  | Option | Default | |
+  |---|---|---|
+  | `dsi_depth=32` | 16 | the panel's frame buffer as ARGB8888 (what Linux uses), converted from the UI's RGB565. The measured 5" unit runs with `dsi_depth=32`; 16 (RGB565) was not re-tested on it after the black screen was traced to the cable |
+  | `dsi_mode=pulse` | `events` | the DSI video mode: sync events (as Linux's ILI9881C driver) or the v1's sync pulses; `pulse` is rp1dsi's v1 flags, as Sidecar 0.2.0 drove it (not measured on the 5" with this build) |
+  | `dsi_panel=5\|7` | from the regulator's id | forces the Touch Display 2's size if the id is misread (the log's `regulator id 0x..` line) |
+  | `dsi_rotate`, `dsitouch_inv`, `dsi_port`, `dsi` | | as in "DSI display" above |
+
+- Log (`DISPn:` lines are from the driver): `regulator id 0x09` (low nibble 8/9: 5"; 1/4: 7"), `Panel regulator up`,
+  `Touch controller GT911 at I2C 0x5D`, `DISPn: 2 lanes, video mode sync events (flags 0x..), 720x1280`, `DSI host up`,
+  `Panel initialized (N commands sent, 0 timed out)`, `DSI video started`, then
+  `display: DSI: DISP1 720x1280 (rp1dsi, UI turned), rotation 90, touch GT911 polled`. A non-zero
+  `timed out` means DSI commands did not reach the panel (the picture may be wrong or missing).
+- `dsi_rotate` on the Touch Display 2: only `90` (default) and `270`; any other value (`180` included) is treated as 90
+  and logged (`dsi_rotate=N is not supported on a portrait panel`). The UI's size is fixed at 800x480 there:
+  `width=` and `height=` in cmdline.txt (the HDMI scaler's) are not read.
+- **Known limitation, warm restart:** after a *software* restart (the engine's own reboot, e.g. `sdboot.py reboot`)
+  the touch controller does **not** answer (`No touch controller at I2C 0x5D or 0x14` in the log; the engine then runs
+  without touch). Only a power cycle brings it back (observed on the one measured unit). The cause is not known. Two
+  things were tried on a development build and did not fix it, so they are not in this patch: shutting the panel down
+  before the engine's reboot (display off, sleep, resets, supplies off, as Linux does) and holding the touch supply off
+  for longer at start, retrying up to three times.
+- What the patch changes in Circle 51.1.1's `addon/rp1dsi` (Touch Display 2 only): the DSI host takes the panel's mode
+  flags as an argument (default `VIDEO | LPM`; the v1 keeps its own); each bring-up step and dropped DSI commands are
+  logged; the GT911 is probed on both addresses (0x5D, 0x14) with a bounded contact id (as Linux's goodix driver); the
+  panel size can be forced.
 
 ## Serial cable
 
@@ -348,7 +394,7 @@ What replaces it for now:
 7. **Replug**: unplug and replug the Rytm 5 times, also during playback: the stream comes back each time, no hang,
    no watchdog reset.
 8. **Display**: the "HDMI display" config.txt lines, the LCD on micro-HDMI 0 before power-on: the boot screen, LVGL's home screen, touch; Wi-Fi still connected with the display on.
-   **DSI**: the 7" DSI display on CAM/DISP 0 (then 1), HDMI unplugged: the `display: DSI:` lines, the boot screen and
+   **DSI**: the 7" DSI display on CAM/DISP 0 (then 1), HDMI unplugged (the Touch Display 2: "Touch Display 2" above): the `display: DSI:` lines, the boot screen and
    home screen at 800x480 on the panel, touch at the finger (else `dsi_rotate=180` / `dsitouch_inv=`), the stats
    line's `input touch (DSI)` and `longest update`; with HDMI also plugged in, the UI stays on DSI; `dsi=0` gives HDMI.
 9. **Update path**: `sdboot.py pi5-try` with a rebuilt kernel, check it boots, power-cycle (the old kernel), then
