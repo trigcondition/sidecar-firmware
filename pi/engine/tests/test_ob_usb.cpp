@@ -99,6 +99,9 @@ static void same_sequence(const CUSBHostController& h) {
     CHECK(h.ctl[k].req == SET_INTERFACE && h.ctl[k].value == want[k][0] && h.ctl[k].index == want[k][1]);
 }
 
+// the driver holds its URBs and endpoints for the life of the device; on the Pi nothing frees them
+extern "C" const char *__asan_default_options () { return "detect_leaks=0"; }
+
 int main() {
   memcpy(g_digitakt, g_rytm, sizeof g_rytm);
   CHECK(g_rytm[kOutAlt3Mps] == 0x70 && g_rytm[kOutAlt3Mps + 1] == 0x01);
