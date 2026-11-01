@@ -477,7 +477,9 @@ void CObUsb::FillOut (u8 *pBuf, unsigned nBlocks)
 			s_nCapOutPos = pos;
 		}
 	}
+#if defined (__aarch64__)
 	asm volatile ("dsb sy; sev");
+#endif
 }
 
 boolean CObUsb::SubmitIn (unsigned i)
