@@ -122,7 +122,10 @@ class Pi:
         self.gated = True             # until the probe in auth() says otherwise
         if os.environ.get("SIDECAR_LINK") != "serial":
             try:
-                self.s = socket.create_connection((host, PORT), timeout=3)
+                # SIDECAR_SRC: the Mac's own address to send from (a link-local alias on the port the Pi is on,
+                # when another port holds the 169.254/16 route)
+                src = os.environ.get("SIDECAR_SRC")
+                self.s = socket.create_connection((host, PORT), timeout=3, source_address=(src, 0) if src else None)
                 self.s.settimeout(30)
                 self.f = self.s.makefile("rb")
                 print(f"link: tcp {host}:{PORT}", file=sys.stderr)
