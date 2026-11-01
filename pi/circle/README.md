@@ -33,7 +33,7 @@ Serial: 3.3 V USB-TTL, GND pin 6, adapter RX to pin 8 (GPIO14), adapter TX to pi
 
 ## spike2 (step 2 skeleton)
 `rytmobdevice.cpp` is a `CUSBFunction` for 1935:0b48. It needs a 6-line hook in Circle's `CUSBDeviceFactory`
-(`circle-usbdevicefactory.patch`, applied by `build.sh` to `build/circle`, the weak symbol `RytmObDeviceCreate`).
+(`circle-usbdevicefactory.patch`, applied by `build.sh` to `build/circle`, the weak symbol `RytmObDeviceCreate`; `circle-usbdevicefactory2.patch`, applied by `pi/engine/build.sh`, widens it to every Elektron id, the driver asks the device profiles).
 It logs the configuration descriptor, sends SET_INTERFACE alt 3 for interfaces 1 and 2, creates endpoints
 0x83 (IN) and 0x03 (OUT), and keeps 2 URBs of 368 B in flight on each, counting blocks, frame-counter gaps
 (+7), bad headers and errors, and sending a 1 kHz tone on MAIN L/R. Block format: `teensy/libraries/RytmHost/ob_block.h`.

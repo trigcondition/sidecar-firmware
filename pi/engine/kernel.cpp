@@ -1422,9 +1422,9 @@ void CKernel::LogStats (void)
 		PushUi ();
 		static unsigned s_nDisplayLog;
 		if (++s_nDisplayLog % 10 == 0)			// every 10 s: the redraw cost on this core
-			m_Logger.Write (From, LogNotice, "display: %ux%u, input %s, longest update %u us%s", m_pDisplay->GetWidth (),
+			m_Logger.Write (From, LogNotice, "display: %ux%u, input %s, longest update %u us%s%s", m_pDisplay->GetWidth (),
 					m_pDisplay->GetHeight (), m_pDisplay->GetInput (), m_pDisplay->TakeMaxUpdateUs (),
-					m_pDisplay->TakeTouchDiag ());
+					m_pDisplay->TakeRotateDiag (), m_pDisplay->TakeTouchDiag ());
 	}
 	m_Logger.Write (From, LogNotice,
 		"engine: fifo min %u max %u target %u under %u (restart %u, streams %u) | blocks %u max %u us | cpu c1 %u.%u c2 %u.%u c3 %u.%u %% | "
@@ -1973,6 +1973,7 @@ void CKernel::Run (void)
 		if (s_bRebootRequested) StopAndReboot ("the flasher's magic");
 		if (g_Guard.FatalWhy () != 0) StopAndReboot (g_Guard.FatalWhy ());
 		if (m_pWifi->TakeReboot ()) StopAndReboot ("the Wi-Fi settings (a join, or a failed one's revert)");
+		if (bridge::take_restart ()) StopAndReboot ("another device's state folder");
 		CSdFiles::TReboot SdReboot = CSdFiles::TakeReboot ();
 		if (SdReboot != CSdFiles::RebootNone) StopAndReboot ("asked on the SD file port", SdReboot == CSdFiles::RebootTry);
 		if (m_Timer.GetTicks () - m_nLastStats >= HZ || m_Console.TakeStatsNow ())

@@ -7,6 +7,7 @@
 #include "sidecar_seqed.h"		// the second finger: the SEQ page's pinch
 #include "sidecar_splash.h"
 #include "sidecar_dot.h"		// the OLED theme's dot expansion (Flush)
+#include "dsi_rotate.h"			// a portrait DSI panel mounted landscape
 #include "lvgl.h"
 #include <circle/bcmpropertytags.h>
 #include <circle/devicenameservice.h>
@@ -67,6 +68,14 @@ CSidecarDisplay::CSidecarDisplay (unsigned nWidth, unsigned nHeight)
 	m_nHeight (0),
 	m_nFbWidth (0),
 	m_nFbHeight (0),
+	m_nDsiRot (0),
+	m_nPanelW (0),
+	m_nPanelH (0),
+	m_pPanelFb (0),
+	m_nPanelPitch (0),
+	m_nBlitMaxUs (0),
+	m_nBlitSumUs (0),
+	m_bDsiSkip (FALSE),
 	m_bScaled (FALSE),
 	m_pXMap (0),
 	m_pScaleBuf (0),
@@ -279,6 +288,7 @@ void CSidecarDisplay::ChooseUi (void)
 		const boolean bExact = (FW == 800 && FH == 480) || (FW == 1024 && FH == 600);
 		W = bExact || FW < 800 || FH < 480 ? FW : 800;
 		H = bExact || FW < 800 || FH < 480 ? FH : 480;
+		if (m_nDsiRot) W = 1024, H = 600;		// Touch Display 2's 1280x720: the bigger layout, centred
 	}
 	m_nWidth = W;
 	m_nHeight = H;
@@ -295,7 +305,7 @@ void CSidecarDisplay::ChooseUi (void)
 			{
 				All.y1 = y;
 				All.y2 = (y + 16 < FH ? y + 16 : FH) - 1;
-				m_pOut->SetArea (All, pRow);
+				PutFrame (All, pRow);
 			}
 			delete [] pRow;
 		}
@@ -316,10 +326,10 @@ void CSidecarDisplay::Put (const CDisplay::TArea &rArea, const u16 *pPixels)
 		if (m_nOffX || m_nOffY)				// centred: moved to the UI's place
 		{
 			CDisplay::TArea A = {rArea.x1 + m_nOffX, rArea.x2 + m_nOffX, rArea.y1 + m_nOffY, rArea.y2 + m_nOffY};
-			m_pOut->SetArea (A, pPixels);
+			PutFrame (A, pPixels);
 			return;
 		}
-		m_pOut->SetArea (rArea, pPixels);
+		PutFrame (rArea, pPixels);
 		return;
 	}
 	const unsigned W = m_nWidth, H = m_nHeight, FW = m_nFbWidth, FH = m_nFbHeight;
@@ -352,11 +362,54 @@ void CSidecarDisplay::Put (const CDisplay::TArea &rArea, const u16 *pPixels)
 	}
 }
 
+// Frame pixels out. A portrait panel mounted landscape: turned straight into its frame buffer, then each panel row of the
+// area cleaned from the data cache, one barrier for the whole area (LVGL hands over dirty areas only, 48 rows at a time
+// at most, so an area is at most a band). On core 0's loop, interrupts on, as the display's other work.
+void CSidecarDisplay::PutFrame (const CDisplay::TArea &rArea, const u16 *pPixels)
+{
+#if RASPPI >= 5
+	if (m_nDsiRot)
+	{
+		const unsigned nStart = CTimer::GetClockTicks ();
+		const unsigned w = rArea.x2 - rArea.x1 + 1, h = rArea.y2 - rArea.y1 + 1;
+		unsigned nRow, nCol, nRows, nCols;
+		if (!dsirot::blit (m_pPanelFb, m_nPanelPitch, m_nPanelW, m_nPanelH, m_nDsiRot, rArea.x1, rArea.y1, w, h, pPixels, w,
+				   &nRow, &nCol, &nRows, &nCols)) return;
+		for (unsigned r = 0; r < nRows; r++)
+		{
+			const uintptr nFrom = (uintptr) (m_pPanelFb + (nRow + r) * m_nPanelPitch + nCol);
+			const uintptr nTo = nFrom + nCols * sizeof (u16);
+			for (uintptr a = nFrom & ~(uintptr) (DATA_CACHE_LINE_LENGTH_MIN - 1); a < nTo; a += DATA_CACHE_LINE_LENGTH_MIN)
+				asm volatile ("dc cvac, %0" : : "r" (a) : "memory");
+		}
+		DataSyncBarrier ();
+		const unsigned nUs = CTimer::GetClockTicks () - nStart;
+		if (nUs > m_nBlitMaxUs) m_nBlitMaxUs = nUs;
+		m_nBlitSumUs += nUs;
+		return;
+	}
+#endif
+	m_pOut->SetArea (rArea, pPixels);
+}
+
+const char *CSidecarDisplay::TakeRotateDiag (void)
+{
+	m_RotateText[0] = '\0';
+	if (m_nDsiRot == 0) return m_RotateText;
+	CString Text;
+	Text.Format (", rotate %u longest %u us, total %u us", m_nDsiRot, m_nBlitMaxUs, m_nBlitSumUs);
+	strncpy (m_RotateText, (const char *) Text, sizeof m_RotateText - 1);
+	m_RotateText[sizeof m_RotateText - 1] = '\0';
+	m_nBlitMaxUs = m_nBlitSumUs = 0;
+	return m_RotateText;
+}
+
 #if RASPPI >= 5
 // The Pi 5's DSI display (docs/pi5.md "DSI display"): Circle's addon/rp1dsi drives the official 7" display v1 (an ATTiny
 // regulator at I2C 0x45, the TC358762 DSI bridge, an FT5x06 touch at 0x38) and v2 itself: the RP1's DSI host, no firmware.
 // cmdline.txt: dsi=0 (HDMI only), dsi_port=0|1 (CAM/DISP 0 or 1; default: 0, then 1), dsi_rotate=180 (the picture and the
-// touch turned, for an upside-down mount), dsitouch_inv=1|2|3 (x, y, both mirrored). Each port's display regulator is
+// touch turned, for an upside-down mount; v1), dsi_rotate=90|270 (Touch Display 2, portrait: the landscape frame turned
+// onto it in software, default 270, dsi_rotate.h), dsitouch_inv=1|2|3 (x, y, both mirrored). Each port's display regulator is
 // read first (its id logged); with none on either port both ports' I2C buses are scanned and the answering addresses
 // logged (another panel: docs/pi-display.md "If the DSI screen is not firmware-compatible"). If the display does not
 // start with its touch (a touch controller rp1dsi does not know), it is started again without touch.
@@ -415,7 +468,8 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 		return FALSE;
 	}
 	unsigned nWant = pOpt->GetAppOptionDecimal ("dsi_port", 2);	// 2: both, DISP0 first
-	unsigned nRotate = pOpt->GetAppOptionDecimal ("dsi_rotate", 0) == 180 ? 180 : 0;
+	const unsigned nAskRotate = pOpt->GetAppOptionDecimal ("dsi_rotate", 0);
+	unsigned nRotate = nAskRotate == 180 ? 180 : 0;		// the v1 display's, in its scan direction
 	unsigned nInv = pOpt->GetAppOptionDecimal ("dsitouch_inv", 0);
 	m_nDsiInvert = nInv <= 3 ? nInv : 0;
 	boolean bAny = FALSE;
@@ -452,6 +506,22 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 			m_bFrameBuffer = TRUE;
 			m_nFbWidth = m_nWidth = pDsi->GetWidth ();
 			m_nFbHeight = m_nHeight = pDsi->GetHeight ();
+			if (m_nFbHeight > m_nFbWidth)			// Touch Display 2: portrait, mounted landscape
+			{
+				if (nAskRotate != 0 && nAskRotate != 90 && nAskRotate != 270)
+					LOGWARN ("DSI: dsi_rotate=%u: this panel takes 90 or 270, using 270", nAskRotate);
+				nRotate = m_nDsiRot = nAskRotate == 90 ? 90 : 270;
+				m_nPanelW = m_nFbWidth;
+				m_nPanelH = m_nFbHeight;
+				m_pPanelFb = (u16 *) pDsi->GetBuffer ();
+				m_nPanelPitch = pDsi->GetPitch () / sizeof (u16);
+				m_nFbWidth = m_nPanelH;
+				m_nFbHeight = m_nPanelW;
+				m_nWidth = m_nFbWidth < 1024 ? m_nFbWidth : 1024;	// the boot screen at the UI's size and place
+				m_nHeight = m_nFbHeight < 600 ? m_nFbHeight : 600;
+				m_nOffX = (m_nFbWidth - m_nWidth) / 2;
+				m_nOffY = (m_nFbHeight - m_nHeight) / 2;
+			}
 			CDevice *pTouch = bTouch ? DsiTouchDevice (pBefore, TRUE) : 0;
 			if (pTouch)
 			{
@@ -459,8 +529,9 @@ boolean CSidecarDisplay::OpenRp1Dsi (void)
 				((CTouchScreenDevice *) pTouch)->Setup (pDsi);
 				((CTouchScreenDevice *) pTouch)->RegisterEventHandler (H::DsiTouchHandler);
 			}
-			LOGNOTE ("DSI: DISP%u %ux%u (rp1dsi, no scaling), rotation %u, touch %s%s", nPort, m_nWidth, m_nHeight,
-				 nRotate, pTouch ? "FT5x06 polled" : "none", pTouch && m_nDsiInvert ? ", inverted" : "");
+			LOGNOTE ("DSI: DISP%u %ux%u (rp1dsi, no scaling), rotation %u, touch %s%s", nPort, m_nFbWidth, m_nFbHeight,
+				 nRotate, pTouch ? (m_nDsiRot ? "Goodix polled" : "FT5x06 polled") : "none",
+				 pTouch && m_nDsiInvert ? ", inverted" : "");
 			return TRUE;
 		}
 	}
@@ -766,7 +837,8 @@ void CSidecarDisplay::Update (boolean bPlugAndPlayUpdated)
 
 	if (m_pMouse) ((CMouseDevice *) m_pMouse)->UpdateCursor ();	// polls the mouse (cursor off)
 	if (m_pTouch) ((CTouchScreenDevice *) m_pTouch)->Update ();
-	if (m_pDsiTouch) ((CTouchScreenDevice *) m_pDsiTouch)->Update ();	// reads the firmware's touch buffer
+	m_bDsiSkip = m_nDsiRot != 0 && !m_bDsiSkip;
+	if (m_pDsiTouch && !m_bDsiSkip) ((CTouchScreenDevice *) m_pDsiTouch)->Update ();	// the firmware's touch buffer, or the panel's I2C
 
 	u32 nSeq = m_nTouchSeq;
 	boolean bDown = (m_nPointer >> 31) != 0;
@@ -1055,7 +1127,8 @@ void H::DsiTouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, 
 	else
 	{
 #if RASPPI >= 5
-		const unsigned PW = p->m_nFbWidth, PH = p->m_nFbHeight;	// rp1dsi: the panel's pixels
+		const unsigned PW = p->m_nDsiRot ? p->m_nPanelW : p->m_nFbWidth;	// rp1dsi: the panel's pixels
+		const unsigned PH = p->m_nDsiRot ? p->m_nPanelH : p->m_nFbHeight;
 #else
 		const unsigned PW = 800, PH = 480;			// the firmware's touch buffer
 #endif
@@ -1063,7 +1136,19 @@ void H::DsiTouchHandler (TTouchScreenEvent Event, unsigned nID, unsigned nPosX, 
 		if (p->m_nDsiInvert & 1) x = PW - 1 - x;
 		if (p->m_nDsiInvert & 2) y = PH - 1 - y;
 		const unsigned SW = p->m_bScaled ? p->m_nWidth : p->m_nFbWidth, SH = p->m_bScaled ? p->m_nHeight : p->m_nFbHeight;
-		int sx = (int) (x * SW / PW) - (int) p->m_nOffX, sy = (int) (y * SH / PH) - (int) p->m_nOffY;
+		int sx, sy;
+		if (p->m_nDsiRot)					// a portrait panel: back to the landscape frame
+		{
+			unsigned fx, fy;
+			dsirot::to_frame (p->m_nDsiRot, PW, PH, x, y, &fx, &fy);
+			sx = (int) fx - (int) p->m_nOffX;
+			sy = (int) fy - (int) p->m_nOffY;
+		}
+		else
+		{
+			sx = (int) (x * SW / PW) - (int) p->m_nOffX;
+			sy = (int) (y * SH / PH) - (int) p->m_nOffY;
+		}
 		x = sx < 0 ? 0 : sx >= (int) p->m_nWidth ? p->m_nWidth - 1 : (unsigned) sx;
 		y = sy < 0 ? 0 : sy >= (int) p->m_nHeight ? p->m_nHeight - 1 : (unsigned) sy;
 		if (nID == 1)

@@ -7,6 +7,7 @@
 #include "engine.h"
 #include "md/md.h"   // the built-in MD's cost (poly_json)
 #include "lfo.h"
+#include "device/device.h"
 #include "fx/insert.h"
 #include "fx/out.h"
 #include "heap_buffers.h"
@@ -105,8 +106,13 @@ unsigned long heap_bytes() { return 0; }
 void heap_place(void*) {}
 #endif
 
+static volatile bool s_restart;
+static void device_restart() { s_restart = true; }
+bool take_restart() { bool r = s_restart; s_restart = false; return r; }
+
 bool begin(void (*to_host)(const uint8_t*, int)) {
   core::hooks.to_rytm = to_host;
+  core::hooks.device_restart = device_restart;
   return core::engine_begin();
 }
 void sysex(const uint8_t* d, int len) { core::engine_sysex(d, len); }
@@ -142,21 +148,33 @@ void rui_take() {
 }
 }  // namespace
 
+// each named for the control loop's slow-step line (the tick section past 2 ms: cores.cpp)
+template <class F> static void timed_tick(const char* name, F f) {
+  uint32_t t = core::now_us();
+  f();
+  core::idle_note(name, core::now_us() - t);
+}
 void tick() {
   if (!core::hooks.slot_ask) core::slots_1d(5000);   // the user machines (core/user/um.cpp) send their own 1D
-  rui_take();                              // core 0's status and popups for the remote UI, on this core
-  core::ui::remote_tick(core::now_ms());   // nothing while the Rytm's remote page is closed
-  core::lfo::tick(core::now_us());        // the Sidecar's LFOs (core/lfo.h): once a millisecond at most
-  core::poly::tick(core::now_ms());       // poly FM: a held trig's time, a live chord's window (core/poly.h)
-  core::seq::tick(core::now_ms());        // the Sidecar sequencer: its LEDs, its 2E (core/seq/seq.h)
-  core::song::tick(core::now_ms());       // SONG RECORD (core/song/song.h)
-  song_pi::Tick();                        // its view for the display's SONG page
+  timed_tick("rui_take", [] { rui_take(); });                              // core 0's status and popups for the remote UI, on this core
+  {
+    uint32_t t = core::now_us();
+    core::ui::remote_tick(core::now_ms());   // nothing while the Rytm's remote page is closed
+    uint32_t us = core::now_us() - t, w = core::ui::wave_take_us();   // (the overview by its own name: wave_idle's note)
+    core::idle_note("remote", us > w ? us - w : 0);
+  }
+  timed_tick("lfo", [] { core::lfo::tick(core::now_us()); });        // the Sidecar's LFOs (core/lfo.h): once a millisecond at most
+  timed_tick("device", [] { core::device::tick(core::now_us()); });  // a box's envelopes (core/device/strip.h): the Rytm has none
+  timed_tick("poly", [] { core::poly::tick(core::now_ms()); });      // poly FM: a held trig's time, a live chord's window (core/poly.h)
+  timed_tick("seq", [] { core::seq::tick(core::now_ms()); });        // the Sidecar sequencer: its LEDs, its 2E (core/seq/seq.h)
+  timed_tick("song", [] { core::song::tick(core::now_ms()); });      // SONG RECORD (core/song/song.h)
+  timed_tick("songview", [] { song_pi::Tick(); });                   // its view for the display's SONG page
 #if SIDECAR_SEQED
-  seqed_pi::Tick();                       // the touch editor's view for the display (docs/TOUCH-EDITOR.md)
-  rytmpat_pi::Tick();                     // the Rytm pattern view: its dump fetched while the page is open
+  timed_tick("seqed", [] { seqed_pi::Tick(); });                     // the touch editor's view for the display (docs/TOUCH-EDITOR.md)
+  timed_tick("rytmpat", [] { rytmpat_pi::Tick(); });                 // the Rytm pattern view: its dump fetched while the page is open
 #endif
-  core::samp::tick();                     // a written take's instruments listed (core/samp/sampler.h)
-  core::samp::asamp_tick();               // the auto-sampler: a Rytm take's notes on time, its rescan (core/samp/autosamp.h)
+  timed_tick("samp", [] { core::samp::tick(); });                    // a written take's instruments listed (core/samp/sampler.h)
+  timed_tick("asamp", [] { core::samp::asamp_tick(); });             // the auto-sampler: a Rytm take's notes on time, its rescan
 }
 void seq_block() { core::seq::pre_block(); }
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2) {

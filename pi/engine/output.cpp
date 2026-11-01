@@ -52,6 +52,7 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
   // target since. Before any stream nothing is filling the FIFO for a reason, and no pull is a glitch.
   if (!armed_ && streams_ && target_ && fifo_.size() + kArmSlack >= target_)
     armed_ = true, d_.arm_at = base, d_.arm_level = fifo_.size();
+  const Mode mode = GetMode();
   const bool test = core::out::meas::active();   // stereo=measure: its test signals (core/fx/out_measure.h)
   for (uint32_t i = 0; i < n; ++i) {
     for (int ch = 0; ch < kChannels; ++ch) out[i][ch] = 0;
@@ -79,7 +80,7 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
     float g = main_.Gain();
     if (!test && mix_->AllTrk(c)) {   // every voice on TRK: the old path, bit for bit
       if (voices) memcpy(voices[i], f.v, sizeof f.v);
-      if (mode_ == kMain) {
+      if (mode == kMain) {
         out[i][0] = out[i][1] = To32(main_.Sum(f.v, g));
       } else {
         for (int v = 0; v < kVoices; ++v) {
@@ -109,7 +110,7 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
       m[v] = (int16_t)trk[v];
       if (voices) voices[i][v] = (int16_t)(((int32_t)f.v[v] + (int32_t)f.r[v]) / 2);
     }
-    if (mode_ == kMain) {
+    if (mode == kMain) {
       out[i][core::out::device().post[0]] = out[i][core::out::device().post[1]] = To32(main_.Sum(m, g));
     } else {
       for (int v = 0; v < kVoices; ++v) {

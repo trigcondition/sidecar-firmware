@@ -99,7 +99,7 @@ bool read_only(const char* p) {
 }
 
 bool kept_dir(const char* p) {
-  static const char* const kKept[] = {"/.rytm", "/Samples", "/Plugins", "/Bundles"};   // Bundles: docs/BUNDLES.md
+  static const char* const kKept[] = {"/.rytm", "/.digitakt", "/Samples", "/Plugins", "/Bundles"};   // Bundles: docs/BUNDLES.md
   for (const char* k : kKept) if (ieq(p, k, strlen(k) + 1)) return true;
   return false;
 }

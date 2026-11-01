@@ -97,6 +97,7 @@ int juno_pick(int pat, const uint8_t** b, const char** name);
 void juno_select(int vi, int pat, bool sync, bool force);
 void juno_relist();
 bool refill_neediest(uint32_t below);
+bool pool_line_open(int line);   // a pool line's file (open_on_card): false while the card core opens it
 
 // Boot: the sample RAM (after the card) and the voices (after the project: pool_load resets prepared[]).
 void sample_ram_init();

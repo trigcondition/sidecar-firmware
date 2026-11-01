@@ -12,6 +12,7 @@
 #include <algorithm>
 
 #include "platform.h"
+#include "device/device.h"
 
 namespace core {
 
@@ -46,6 +47,8 @@ static std::string root_of(const char* p) {   // the Mac folder a path's volume 
   return k < 0 ? std::string() : g_vol_dir[k];
 }
 std::string host_path(const char* p) {
+  char sb[512];
+  p = device::state_path(p, sb, sizeof sb);   // a box's state folder (core/device/device.h)
   int n = vol_len(p);
   if (n) {
     std::string r = root_of(p);

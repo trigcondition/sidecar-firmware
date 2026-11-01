@@ -1,7 +1,7 @@
 # The Pi engine on a Raspberry Pi 5 (first build, 2026-10-19)
 
 Status: **runs on a Pi 5** (*measured* 2026-10-19: Rytm, voices, remote UI, web UI over Ethernet, replug, Wi-Fi);
-the HDMI display shows the UI with touch (measured, at 1920x1080 unscaled); the 800x480 UI scaled to it is measured working (slightly soft); the DSI display (official 7" v1 and compatibles, through Circle's `addon/rp1dsi`) is built, not yet run ("DSI display"). Everything below about the hardware is *inferred* from Circle's sources,
+the HDMI display shows the UI with touch (measured, at 1920x1080 unscaled); the 800x480 UI scaled to it is measured working (slightly soft); the DSI display (official 7" v1 and compatibles, through Circle's `addon/rp1dsi`) is built, not yet run; the Touch Display 2 7" is *measured* working, picture and touch, the 1024x600 UI rotated onto it ("DSI display"). Everything below about the hardware is *inferred* from Circle's sources,
 its README and the Pi 5 device tree, unless marked *measured*. The Pi 4 build of the `pi5` branch was unchanged (same
 symbols and sizes as `final-010`, measured by comparing the two `kernel8-rpi4.elf` with `nm -S`). In 0.2.0 (`release-020`:
 `pi5` + `display-dsi` + `web-wifi`) the Pi 4 kernel differs from 0.1.0 only by those merges (`nm -S`, measured): the
@@ -22,7 +22,7 @@ The same engine as on the Pi 4 (`docs/pi-engine.md`), built with `RASPPI=5`, wit
 | Ethernet / web UI / mDNS `sidecar.local` | BCM54213 | RP1's MACB/GEM (Circle picks it) |
 | Wi-Fi | CYW43455 | the same chip, firmware files with the Pi 5's names (in the SD set): **works** (*measured* 2026-10-19: credentials entered on the web page, saved, connected) |
 | HDMI display (LVGL) | yes | needs `hdmi_force_hotplug=1`; the firmware's frame buffer is 1920x1080, the 800x480 UI is scaled to it ("HDMI display"); `display=0` turns it off |
-| DSI display + touch | the firmware's (frame buffer + FT5406 buffer) | Circle's `addon/rp1dsi` (display and FT5x06 touch, no firmware), preferred over HDMI, 800x480 unscaled ("DSI display"; built, not run) |
+| DSI display + touch | the firmware's (frame buffer + FT5406 buffer) | Circle's `addon/rp1dsi` (display and FT5x06 or GT911 touch, no firmware), preferred over HDMI; v1: 800x480 unscaled (built, not run); Touch Display 2: the 1024x600 UI rotated, centred ("DSI display") |
 | USB-C gadget (UAC2 12/12 + MIDI to the computer) | yes | **compiled out** (`SIDECAR_NO_GADGET`); the boot log says `gadget: none on this board (Pi 5 build)` |
 | serial console | GPIO14/15, 921600 | GPIO14/15, 921600 (default, `PI5_UART=0`), or the 3-pin debug connector (`PI5_UART=10`) |
 | `sdboot` (serial bootloader + `engine.img`) and `flash.sh` | yes | not yet: see "Updating the kernel" |
@@ -256,7 +256,10 @@ Built, **not yet run** (everything here *inferred* from Circle 51.1.1's `addon/r
   `dsitouch_inv=1` (x), `2` (y), `3`.
 - config.txt: nothing for DSI. The `[pi5]` HDMI lines stay (an HDMI-only setup needs `hdmi_force_hotplug=1`; with a DSI
   display they do no harm: the HDMI frame buffer is never opened). No `vc4-kms-*` overlay, no `display_auto_detect`.
-- Build: `pi/engine/build.sh` builds `addon/rp1dsi/librp1dsi.a` in the Pi 5 tree once (Circle unchanged); the engine
+- Touch Display 2 (720x1280 portrait, mounted landscape): the 1024x600 UI centred, rotated in software, `dsi_rotate=270`
+  (default) or `90`; docs/pi-display.md, "Touch Display 2 on the Pi 5".
+- Build: `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi-fb.patch` and `circle-rp1dsi-td2.patch` and builds
+  `addon/rp1dsi/librp1dsi.a` in the Pi 5 tree once; the engine
   links it before `libinput` (both have a `CRPiTouchScreen`; rp1dsi's is the display, libinput's is the Pi 4's firmware
   touch and is not linked on the Pi 5).
 

@@ -1,0 +1,103 @@
+circle-rp1dsi-td2.patch (Sidecar): Touch Display 2 fixes for Circle 51.1.1's addon/rp1dsi, on top of circle-rp1dsi-fb.patch
+(which touches another file). Taken from bandersong's sidecar-firmware PR #4 (circle-rp1dsi.patch), narrowed:
+- A contact's id comes off the I2C bus and indexes m_nPosX / m_nPosY and a shift: masked and bounded, as Linux's goodix.c.
+- The DSI host takes the panel's mode flags. The 5" panel gets sync events (VIDEO | LPM), as Linux's ili9881c driver and
+  the setup bandersong measured on a 5". The 7" panel and the v1 display keep Circle's flags, as measured on the 7".
+- A GT911 that does not answer at start gets no touch device, so the picture runs without touch and the log is not
+  filled with an error per poll (a warm restart can leave it silent: docs/pi-display.md).
+
+diff -ruN a/addon/rp1dsi/rp1dsihostcontroller.cpp b/addon/rp1dsi/rp1dsihostcontroller.cpp
+--- a/addon/rp1dsi/rp1dsihostcontroller.cpp
++++ b/addon/rp1dsi/rp1dsihostcontroller.cpp
+@@ -503,7 +503,7 @@
+ 
+ CRP1DSIHostController::CRP1DSIHostController (CInterruptSystem *pInterrupt,
+ 					      unsigned nDepth, unsigned nDisplay,
+-					      unsigned nDataLanes)
++					      unsigned nDataLanes, unsigned long ulModeFlags)
+ :	mipi_dsi_host {&s_host_ops},
+ 	m_pInterrupt (pInterrupt),
+ 	m_nDepth (nDepth),
+@@ -524,10 +524,7 @@
+ 		      (nDepth == 16 ? 16 : 24) >= 8 * nDataLanes
+ 		    ? GPIOClockSourceMIPIDSIByteClock
+ 		    : GPIOClockSourcePLLSys),
+-	m_display_flags (  MIPI_DSI_MODE_VIDEO
+-			 | MIPI_DSI_MODE_VIDEO_SYNC_PULSE
+-			 | MIPI_DSI_MODE_LPM
+-			 | MIPI_DSI_MODE_VIDEO_HSE),
++	m_display_flags (ulModeFlags),
+ 	m_display_format (MIPI_DSI_FMT_RGB888),
+ 	m_bIRQConnected (FALSE),
+ 	m_bDSIRunning (FALSE),
+diff -ruN a/addon/rp1dsi/rp1dsihostcontroller.h b/addon/rp1dsi/rp1dsihostcontroller.h
+--- a/addon/rp1dsi/rp1dsihostcontroller.h
++++ b/addon/rp1dsi/rp1dsihostcontroller.h
+@@ -29,8 +29,14 @@
+ class CRP1DSIHostController : public mipi_dsi_host  /// Driver for DSI output on Raspberry Pi RP1
+ {
+ public:
++	/// \param ulModeFlags The panel's MIPI_DSI_MODE_* flags (circle-rp1dsi-td2.patch); the default
++	///	   is what the host used for every panel
+ 	CRP1DSIHostController (CInterruptSystem *pInterrupt, unsigned nDepth, unsigned nDisplay,
+-			       unsigned nDataLanes);
++			       unsigned nDataLanes,
++			       unsigned long ulModeFlags =   MIPI_DSI_MODE_VIDEO
++							   | MIPI_DSI_MODE_VIDEO_SYNC_PULSE
++							   | MIPI_DSI_MODE_LPM
++							   | MIPI_DSI_MODE_VIDEO_HSE);
+ 	~CRP1DSIHostController (void);
+ 
+ 	boolean Initialize (const drm_display_mode *pMode);
+diff -ruN a/addon/rp1dsi/rpitouchscreen2.cpp b/addon/rp1dsi/rpitouchscreen2.cpp
+--- a/addon/rp1dsi/rpitouchscreen2.cpp
++++ b/addon/rp1dsi/rpitouchscreen2.cpp
+@@ -67,7 +67,13 @@
+ 	m_PanelType (PanelType),
+ 	m_bRPiPanel2Initialized (FALSE),
+ 	m_Regulator (pI2C),
+-	m_DSI (pInterrupt, nDepth, nDisplay, 2),
++	// circle-rp1dsi-td2.patch: the 5 inch panel in sync events, as Linux: its 2 pixel hsync is 3 byte clocks on the
++	// lanes, about what the sync packets alone take. The 7 inch panel keeps the default, measured on that panel.
++	m_DSI (pInterrupt, nDepth, nDisplay, 2,
++	         PanelType == CILI9881Panel::RPi5InchPanel
++	       ? (unsigned long) (MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_LPM)
++	       : (unsigned long) (  MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE
++				  | MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_VIDEO_HSE)),
+ 	m_Panel (this, &m_Regulator),
+ 	m_nKnownIDs (0),
+ 	m_pInterface (nullptr)
+@@ -131,6 +137,22 @@
+ 
+ 	if (m_bEnableTouch)
+ 	{
++		// circle-rp1dsi-td2.patch: a GT911 that does not answer now (after a warm restart it may not, until a
++		// power cycle) gets no touch device: else each poll logs an I2C error, 50 lines a second
++		u8 ID[GOODIX_ID_MAX_LEN + 1] = {0};
++		int nResult = goodix_i2c_read (GOODIX_REG_ID, ID, GOODIX_ID_MAX_LEN);
++		for (unsigned i = 0; i < 4 && nResult != 0; i++)
++		{
++			msleep (20);
++			nResult = goodix_i2c_read (GOODIX_REG_ID, ID, GOODIX_ID_MAX_LEN);
++		}
++		if (nResult != 0)
++		{
++			LOGERR ("No touch controller at I2C 0x%02X, running without touch", (unsigned) I2CAddress);
++			return TRUE;
++		}
++		LOGNOTE ("Touch controller GT%s at I2C 0x%02X", (const char *) ID, (unsigned) I2CAddress);
++
+ 		m_pInterface = new CTouchScreenDevice (UpdateStub, this);
+ 		assert (m_pInterface);
+ 	}
+@@ -224,7 +246,9 @@
+ 		x = contact->x & 0xfff;
+ 		y = contact->y & 0xfff;
+ 
+-		id = contact->id;
++		id = contact->id & 0x0F;	// circle-rp1dsi-td2.patch: as Linux (goodix.c); it indexes m_nPosX, m_nPosY
++		if (id >= (unsigned) MaxTouchPoints)
++			continue;
+ 
+ 		active_ids |= BIT(id);
+ 

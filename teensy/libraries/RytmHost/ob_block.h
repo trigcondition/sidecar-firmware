@@ -21,6 +21,10 @@
 //                     CH/OH CY/CB (4..11) - each voice's own input, mixed into
 //                     the voice's digital layer before its analog chain
 //                     (docs/overbridge-voice-inputs.md).
+//   The sizes follow the descriptor and each direction has its own: a Digitakt
+//   mk1 is 12 channels / 368 B to the host and 2 / 88 B from it, alt 3, same
+//   endpoints (Overwitch's device table agrees; the numbers per box are in
+//   their profiles, core/device).
 #pragma once
 #include <stdint.h>
 #include <string.h>
@@ -89,6 +93,14 @@ inline void put_voice_frame(uint8_t* blk, int channels, int f, const int16_t* v,
   if (mirror >= 0 && mirror < kVoices && channels >= 2) {
     put_be32(fr, (int32_t)v[mirror] << 16);
     put_be32(fr + 4, (int32_t)v[mirror] << 16);
+  }
+}
+
+// Host -> device: a block's frames, the first `channels` of each row of F (a Digitakt takes 2 of the 12 the output stage makes).
+inline void put_frames(uint8_t* blk, int channels, const int32_t (*F)[kChannels]) {
+  for (int f = 0; f < kFramesPerBlock; ++f) {
+    uint8_t* fr = blk + kHeaderBytes + 4 * channels * f;
+    for (int c = 0; c < channels; ++c) put_be32(fr + 4 * c, F[f][c]);
   }
 }
 

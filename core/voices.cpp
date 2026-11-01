@@ -431,9 +431,10 @@ static CORE_COLD void open_done() {
       cards.file(s_open_f, s_open_smp, &pool_recs[l]))
     pool_open[l] = true;
   else
-    pool_files[l].close();   // (the slot changed while it opened)
+    pool_close_file(l);   // (the slot changed while it opened)
 }
 static CORE_COLD bool open_on_card(int line, int f, int smp) {
+  if (pool_closing(line)) return false;   // (its File still closing)
   if (s_open_line >= 0 && (s_open_line != line || s_open_f != f || s_open_smp != smp)) {   // another one first
     if (!cardq::async(&s_open, cardq::kOpenReq, &pool_files[s_open_line], s_open_path, 0, nullptr, 0)) return false;
     open_done();
@@ -448,6 +449,8 @@ static CORE_COLD bool open_on_card(int line, int f, int smp) {
   open_done();
   return true;
 }
+// The line's file (page_wave.cpp, as a prepare opens it): false while its open waits for the card core
+CORE_COLD bool pool_line_open(int line) { return pool_open[line] || open_on_card(line, pool[line].folder, pool[line].file); }
 static bool card_core() { return cardq::worker(); }
 #else
 static bool card_core() { return false; }

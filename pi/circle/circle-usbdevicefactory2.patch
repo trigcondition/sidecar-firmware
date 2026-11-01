@@ -1,0 +1,29 @@
+--- a/lib/usb/usbdevicefactory.cpp
++++ b/lib/usb/usbdevicefactory.cpp
+@@ -56,6 +56,7 @@
+ #include <circle/usb/usbserialft231x.h>
+ #include <circle/usb/usbtouchscreen.h>
+ #include <circle/usb/hiddigitizer.h>
++#include <circle/util.h>
+ 
+ #ifndef EXCLUDE_USB_TOUCHSCREEN
+ // circle-touch.patch: does this boot keyboard/mouse interface carry a touch screen? Cheap HDMI panels (GeeekPi 7",
+@@ -111,7 +112,8 @@
+ }
+ #endif
+ 
+-// rytm-pi hook: the application may define this to claim the Analog Rytm MKII (1935:0b48)
++// rytm-pi hook (circle-usbdevicefactory2): the application may claim any Elektron device; it returns 0 for one it does not
++// serve, and Circle goes on to the device's interfaces
+ extern CUSBFunction *RytmObDeviceCreate (CUSBFunction *pParent) __attribute__ ((weak));
+ 
+ CUSBFunction *CUSBDeviceFactory::GetDevice (CUSBFunction *pParent, CString *pName)
+@@ -131,7 +133,7 @@
+ 
+ 	CUSBFunction *pResult = 0;
+ 
+-	if (RytmObDeviceCreate != 0 && pName->Compare ("ven1935-b48") == 0)
++	if (RytmObDeviceCreate != 0 && strncmp ((const char *) *pName, "ven1935-", 8) == 0)
+ 	{
+ 		pResult = RytmObDeviceCreate (pParent);
+ 	}

@@ -57,6 +57,7 @@ public:
 	static unsigned TouchContacts (void)	{ return s_pThis ? s_pThis->GetTouchContacts () : 0; }
 	unsigned TakeMaxUpdateUs (void);	// the longest Update (a redraw) since the last call
 	unsigned PeekMaxUpdateUs (void) const	{ return m_nMaxUs; }	// the same, not reset (the STATUS page)
+	const char *TakeRotateDiag (void);	// a rotated panel, for the periodic log line: the blit's longest and total time; else ""
 
 	// The screensaver: after nMinutes (0: never) without a touch or a display command the screen goes black (the
 	// frame buffer filled black, LVGL not run, the firmware's blank-screen call); the next touch only wakes it (its
@@ -72,6 +73,7 @@ private:
 	void BindInput (void);
 	void Blank (boolean bOn);
 	void Put (const CDisplay::TArea &rArea, const u16 *pPixels);	// UI pixels to the frame buffer (centred, or scaled on the Pi 5)
+	void PutFrame (const CDisplay::TArea &rArea, const u16 *pPixels);	// frame pixels out (a portrait panel: turned, dsi_rotate.h)
 	void ReadEdid (void);						// HDMI: the display's preferred mode (m_nEdidW/H), logged
 	void ChooseUi (void);						// the UI's size and place (Initialize)
 #if RASPPI >= 5
@@ -94,7 +96,14 @@ private:
 	boolean		m_bRp1Tried;		// Pi 5: the DSI display looked for (once)
 	boolean		m_bOn;
 	unsigned	m_nWidth, m_nHeight;	// the UI's (LVGL's) size: the frame buffer's, or on the Pi 5 a smaller one
-	unsigned	m_nFbWidth, m_nFbHeight;	// the frame buffer's
+	unsigned	m_nFbWidth, m_nFbHeight;	// the frame buffer's (a portrait panel: its landscape frame, 1280x720)
+	unsigned	m_nDsiRot;		// Pi 5, a portrait DSI panel: 90 or 270 (dsi_rotate.h), else 0
+	unsigned	m_nPanelW, m_nPanelH;	// that panel's own size
+	u16		*m_pPanelFb;		// its frame buffer (circle-rp1dsi-fb.patch)
+	unsigned	m_nPanelPitch;		// in pixels
+	unsigned	m_nBlitMaxUs, m_nBlitSumUs;	// PutFrame on that panel, since the last log line
+	boolean		m_bDsiSkip;		// that panel's touch: every second Update (20 ms; each poll is about 1.6 ms of I2C)
+	char		m_RotateText[64];
 	boolean		m_bScaled;		// Pi 5: the UI scaled up to the frame buffer (Put)
 	u16		*m_pXMap;		// scaled: the UI column of each frame buffer column
 	u16		*m_pScaleBuf;		// scaled: ScaleRows frame buffer rows, DMA'd to the frame buffer

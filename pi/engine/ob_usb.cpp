@@ -1,5 +1,6 @@
 //
-// ob_usb.cpp - Rytm MKII Overbridge host for Circle (Raspberry Pi 4, xHCI/VL805).
+// ob_usb.cpp - Rytm MKII Overbridge host for Circle (Raspberry Pi 4, xHCI/VL805), and any box whose device profile has an
+// audio row: only the block size of OUT and its channel count differ (IN is 12 channels for every box so far).
 //
 // What it does:
 //   1. logs the whole configuration descriptor (interfaces, alternate settings, endpoints);
@@ -57,12 +58,13 @@
 #include "sendfx_pi.h"
 #include "rec_pi.h"
 #include "bridge.h"
+#include "device/device.h"
 #include "fx/out_measure.h"		// stereo=measure's read-back (MAIN L/R)
 #include "shared.h"
 
 static const char From[] = "rytmob";
 
-static const unsigned kBlk = ob::block_bytes (ob::kChannels);			// 368
+static const unsigned kBlk = ob::block_bytes (ob::kChannels);			// 368, IN; the biggest OUT block too
 static const unsigned kBufSize = (CObUsb::MaxBlocks * kBlk + 63) & ~63u;	// 2944
 
 static_assert (CObUsb::MaxURBs <= XHCI_EP_MAX_URBS, "Circle's per-endpoint URB FIFO");
@@ -177,10 +179,29 @@ void CObUsb::CaptureFeed (const s32 *pOutL, unsigned nFrames)
 
 CObUsb::TEvStats CObUsb::s_EvIn, CObUsb::s_EvOut;
 
-// The hook the patched CUSBDeviceFactory calls for "ven1935-b48" (weak reference there).
+// The hook the patched CUSBDeviceFactory calls for every "ven1935-..." name (weak reference there): a box with an audio row
+// and the stream shape this driver serves, else 0 and Circle goes on to the device's interfaces (a Digitakt in USB MIDI mode,
+// 1935:000d: Circle's MIDI driver takes it).
 CUSBFunction *RytmObDeviceCreate (CUSBFunction *pParent)
 {
-	return new CObUsb (pParent);
+	const TUSBDeviceDescriptor *pDesc = pParent->GetDevice ()->GetDeviceDescriptor ();
+	const core::device::Profile *p = core::device::by_usb (pDesc->idVendor, pDesc->idProduct);
+	if (p == 0) return 0;
+	const core::out::Device *pAudio = p->audio;
+	boolean bRytm = pAudio == &core::out::kRytmMk2;
+	if (bRytm && CObUsb::s_bActive) core::device::rytm_on_usb (true);	// a stock Rytm's way back to /.rytm (core/device/device.h)
+	if (CObUsb::s_pThis != 0)					// one stream: a second box keeps its MIDI, Circle goes on to its interfaces
+	{
+		CLogger::Get ()->Write (From, LogWarning, "%s: a box already streams, no audio from this one", pAudio->name);
+		return 0;
+	}
+	if (pAudio->in_channels != ob::kChannels || pAudio->channels < 2 || pAudio->channels > ob::kChannels)
+	{
+		CLogger::Get ()->Write (From, LogError, "%s: %u channels in, %u out: not a stream this driver serves", pAudio->name,
+					(unsigned) pAudio->in_channels, (unsigned) pAudio->channels);
+		return 0;
+	}
+	return new CObUsb (pParent, pAudio);
 }
 
 // The hook the patched CXHCIEndpoint::TransferEvent calls for every transfer event (weak there).
@@ -209,8 +230,15 @@ void CObUsb::XHCIEvent (unsigned nEndpointID, unsigned nCode, unsigned nResidue,
 	}
 }
 
-CObUsb::CObUsb (CUSBFunction *pFunction)
+void CObUsb::SetActive (boolean bActive)
+{
+	s_bActive = bActive;
+	core::out::set_device (bActive && s_pThis != 0 ? s_pThis->m_pAudio : 0);	// the TCP link's host is 12 channels, the Rytm's
+}
+
+CObUsb::CObUsb (CUSBFunction *pFunction, const core::out::Device *pAudio)
 :	CUSBFunction (pFunction),
+	m_pAudio (pAudio), m_nOutCh (pAudio->channels), m_nOutBlk (ob::block_bytes (pAudio->channels)),
 	m_pInDesc (0), m_pOutDesc (0), m_pIn (0), m_pOut (0),
 	m_pInURB {}, m_pOutURB {}, m_bInBusy {}, m_bOutBusy {},
 	m_nInPending (0), m_nOutPending (0), m_bStreaming (FALSE),
@@ -242,6 +270,8 @@ CObUsb::~CObUsb (void)
 {
 	s_pThis = 0;
 	m_bStreaming = FALSE;
+	core::out::set_device (0);
+	if (m_pAudio == &core::out::kRytmMk2) core::device::rytm_on_usb (false);
 	// URBs still queued on the (gone) endpoint are leaked, not freed under the controller
 	for (unsigned i = 0; i < MaxURBs; i++)
 	{
@@ -286,10 +316,11 @@ boolean CObUsb::ScanDescriptors (void)
 						(unsigned) e->wMaxPacketSize, (unsigned) e->bInterval);
 
 			bool intr = (e->bmAttributes & 3) == 3;
-			if (alt == ob::kAlt && intr && (e->wMaxPacketSize & 0x7FF) == kBlk)
+			if (alt == ob::kAlt && intr)
 			{
-				if (iface == ob::kInIface && e->bEndpointAddress == ob::kInEp) m_pInDesc = e;
-				if (iface == ob::kOutIface && e->bEndpointAddress == ob::kOutEp) m_pOutDesc = e;
+				unsigned nMps = e->wMaxPacketSize & 0x7FF;
+				if (iface == ob::kInIface && e->bEndpointAddress == ob::kInEp && nMps == kBlk) m_pInDesc = e;
+				if (iface == ob::kOutIface && e->bEndpointAddress == ob::kOutEp && nMps == m_nOutBlk) m_pOutDesc = e;
 			}
 		}
 		p += p[0];
@@ -302,12 +333,14 @@ boolean CObUsb::Configure (void)
 {
 	AllocBufs ();
 
-	CLogger::Get ()->Write (From, LogNotice, "Analog Rytm MKII (1935:0b48) claimed");
+	const TUSBDeviceDescriptor *pDevDesc = GetDevice ()->GetDeviceDescriptor ();
+	CLogger::Get ()->Write (From, LogNotice, "%s (%04x:%04x) claimed", m_pAudio->name, (unsigned) pDevDesc->idVendor,
+				(unsigned) pDevDesc->idProduct);
 
 	if (!ScanDescriptors ())
 	{
-		CLogger::Get ()->Write (From, LogError, "no interrupt endpoints 0x83/0x03 (368 B) at alt 3: "
-					"not in OVERBRIDGE mode?");
+		CLogger::Get ()->Write (From, LogError, "no interrupt endpoints 0x83/0x03 (%u/%u B) at alt 3: "
+					"not in OVERBRIDGE mode?", kBlk, m_nOutBlk);
 		return FALSE;
 	}
 
@@ -340,12 +373,12 @@ boolean CObUsb::Configure (void)
 	m_pIn = new CUSBEndpoint (GetDevice (), m_pInDesc);
 	m_pOut = new CUSBEndpoint (GetDevice (), m_pOutDesc);
 
-	const unsigned nLen = m_nBlocks * kBlk;
+	const unsigned nLen = m_nBlocks * kBlk, nOutLen = m_nBlocks * m_nOutBlk;
 	for (unsigned i = 0; i < m_nURBs; i++)
 	{
 		m_pInURB[i] = new CUSBRequest (m_pIn, s_InBuf[i], nLen);
 		m_pInURB[i]->SetCompletionRoutine (InStub, (void *) (uintptr) i, this);
-		m_pOutURB[i] = new CUSBRequest (m_pOut, s_OutBuf[i], nLen);
+		m_pOutURB[i] = new CUSBRequest (m_pOut, s_OutBuf[i], nOutLen);
 		m_pOutURB[i]->SetCompletionRoutine (OutStub, (void *) (uintptr) i, this);
 	}
 
@@ -353,6 +386,14 @@ boolean CObUsb::Configure (void)
 	CLogger::Get ()->Write (From, LogNotice, "alt 3 selected: %u URBs x %u blocks (%u B) per endpoint, "
 				"OUT %s (delay %u blk), OUT counter from %s", m_nURBs, m_nBlocks, nLen,
 				Modes[m_OutMode], m_nOutDelay, m_bCounterFromIn ? "IN" : "0");
+
+	if (m_nOutCh != ob::kChannels)
+	{
+		CLogger::Get ()->Write (From, LogNotice, "OUT %u channels (%u B a block), %s", m_nOutCh, m_nOutBlk,
+					m_pAudio->ret == core::out::kStereoMix ? "the voices as one stereo mix" : "per voice");
+	}
+
+	if (s_bActive) core::out::set_device (m_pAudio);	// the voices' channels and routes follow the box; not while the TCP link owns g_Output
 
 	// the completions run in the xHCI IRQ: start everything with it held off, so the
 	// TRB order on each ring is the submit order and the counters stay consistent
@@ -391,7 +432,7 @@ void CObUsb::FillOut (u8 *pBuf, unsigned nBlocks)
 {
 	for (unsigned b = 0; b < nBlocks; b++)
 	{
-		u8 *pBlock = pBuf + b * kBlk;
+		u8 *pBlock = pBuf + b * m_nOutBlk;
 		ob::write_header (pBlock, m_nOutCounter);
 		m_nOutCounter += ob::kFramesPerBlock;
 
@@ -424,11 +465,7 @@ void CObUsb::FillOut (u8 *pBuf, unsigned nBlocks)
 		}
 		if (g_Rec.wants_side ()) g_Rec.out_block (V, X, ob::kFramesPerBlock, LR, PR);	// the voices as rendered, the FX, the pairs
 		if (bridge::samp_wants_voices ()) bridge::samp_voices (V, ob::kFramesPerBlock, LR, X);	// the sampler's Sidecar voice (X: its FX, CHOP)
-		for (int f = 0; f < ob::kFramesPerBlock; f++)
-		{
-			u8 *fr = pBlock + ob::kHeaderBytes + 4 * ob::kChannels * f;
-			for (int c = 0; c < ob::kChannels; c++) ob::put_be32 (fr + 4 * c, F[f][c]);
-		}
+		ob::put_frames (pBlock, m_nOutCh, F);
 
 		if (s_bCapOn)
 		{
@@ -639,7 +676,7 @@ void CObUsb::OutDone (unsigned i, CUSBRequest *pURB)
 
 	if (pURB->GetStatus () != 0)
 	{
-		m_nOutBlocks += pURB->GetResultLength () / kBlk;
+		m_nOutBlocks += pURB->GetResultLength () / m_nOutBlk;
 		if (m_nOut16Us == 0 && m_nOutBlocks >= 16) m_nOut16Us = now - m_nStartUs + 1;
 	}
 	else

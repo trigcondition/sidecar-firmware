@@ -135,6 +135,8 @@ void run(Req* r) {
     File d;   // (the folder only for the open: File::open(dir, index) walks a fresh copy of it)
     r->got = d.open(r->path, core::kRead) && r->f->open(&d, (uint32_t)r->off, core::kRead) ? 1 : 0;
     d.close();
+  } else if (r->kind == kFnReq) {
+    r->fn(r);
   } else if (r->kind == kRemoveReq) {
     Fs fs;   // (rel-host: fmt::post_remove's "removed or not there" and prjslot's "removed, checked" both hold)
     r->got = !fs.exists(r->path) || (fs.remove(r->path) && !fs.exists(r->path)) ? 1 : 0;

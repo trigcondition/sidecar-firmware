@@ -58,8 +58,10 @@ constexpr uint32_t kCopyMax = 65536;     // kCopyReq: bytes a request copies at 
 // whose dir index is over 0xFFFF is left out.
 // kOpenAtReq (2026-10-30, um's preset load): f opened (core::kRead) as the entry with dir index off of the folder path
 // (a DirRec's index); got 1 opened, 0 not. f's fileSize() is known then (no card access to read it).
+// kFnReq (2026-10-31, the sample overview, core/ui/page_wave.cpp): r->fn(r) on the card core: a bounded piece of card work whose
+// results go to memory only its owner reads after the request's end.
 enum Kind : uint8_t { kOpenReq, kReadReq, kCloseReq, kWriteReq, kAtomicReq, kExistsReq, kRenameReq, kListReq, kCopyReq,
-                      kRemoveReq, kDirReq, kOpenAtReq, kKinds };   // (not kOpen / kRead: core::kRead is a file mode)
+                      kRemoveReq, kDirReq, kOpenAtReq, kFnReq, kKinds };   // (not kOpen / kRead: core::kRead is a file mode)
 struct DirRec {              // kDirReq's record
   uint16_t index;            // the entry's dir index (File::open(dir, index))
   uint8_t dir;               // 1 a folder
@@ -79,6 +81,7 @@ struct Req {
   uint32_t len;
   int32_t got;               // kReadReq: bytes read (-1 an error); kOpenReq: 1 opened, 0 not
   uint32_t posted_us;
+  void (*fn)(Req*);          // kFnReq
 };
 
 void set_worker(bool on);    // a card core runs service() (the Pi: core 0); off: post() runs the request itself

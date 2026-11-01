@@ -1,5 +1,6 @@
 // core/host_link.cpp - see host_link.h. Per SysEx message, never per sample: cold.
 #include "md/md.h"
+#include "device/device.h"
 #include "host_link.h"
 #include "inst.h"
 
@@ -188,6 +189,12 @@ CORE_COLD void link_reset(const char* why) {
 }
 
 __attribute__((noinline)) CORE_COLD void host_sysex(const uint8_t* d, int len) {
+  uint8_t box[device::kMaxMessage];   // a box's message as the engine's own (core/device/device.h); the Rytm: never
+  if (device::foreign() && !device::translate(device::g_link, d, len, box)) return;
+  if (len >= 6 && d[4] == device::kCmdHello && d[1] == 0x7D && d[2] == 0x52 && d[3] == 0x54) {   // a box says what it is
+    device::hello(device::g_link, d, len);
+    return;
+  }
   // F0 7D 52 54 cmd voice ...
   if (len >= 6 && d[1] == 0x7D && d[2] == 0x52 && d[3] == 0x54 && d[4] == 0x27) {   // FXIN_STATE
     if (len >= 7 && d[5] <= 1) fxin::on_state(d[5]);

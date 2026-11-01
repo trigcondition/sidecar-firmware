@@ -11,6 +11,7 @@
 #include <fatfs/ff.h>
 
 #include "platform.h"
+#include "device/device.h"
 #include "console.h"
 #include "crumb.h"   // the crash breadcrumb: the last file call by path (2026-10-29)
 
@@ -43,6 +44,8 @@ int vol_len(const char* p) {
 bool other_vol(const char* p) { int n = vol_len(p); return n && !(n == 3 && p[0] == 'S' && p[1] == 'D'); }
 
 void full(char* out, size_t n, const char* path) {   // "SD:" + the card's path ("/" added if it has none); a drive's as is
+  char sb[256];
+  path = core::device::state_path(path, sb, sizeof sb);   // a box's state folder (core/device/device.h)
   size_t k = 0;
   int v = vol_len(path);
   const char* pre = v ? "" : path[0] == '/' ? "SD:" : "SD:/";

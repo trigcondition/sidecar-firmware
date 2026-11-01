@@ -453,6 +453,13 @@ void CEngineCores::Control (void)
 			// else no Rytm yet: it stays owed (a try a second, none counted) until the Rytm's hello
 		}
 		Mark (3);			// the tick section ends here: Drone, bridge::tick and the pair popup
+		{	// its slowest step, named in the log past 2 ms (as the idle section's below)
+			unsigned nSlowUs;
+			const char *pSlow = bridge::idle_slowest (&nSlowUs);
+			if (nSec[3] > 2000)
+				CLogger::Get ()->Write (From, LogWarning, "control: tick section %u us, its slowest step %s (%u us)",
+							nSec[3], pSlow, nSlowUs);
+		}
 		unsigned nLevel = g_Output.Level ();
 		if (nLevel < s_nFifoMin) s_nFifoMin = nLevel;
 		if (nLevel > s_nFifoMax) s_nFifoMax = nLevel;

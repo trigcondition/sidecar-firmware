@@ -117,8 +117,14 @@ void value_text(int k, int v, char* b, int cap) {
   sniprintf(b, cap, CORE_STR("%d"), v);
 }
 
+// The routes the project holds. control.route is what plays: a stereo mix's box forces POST there and leaves these for line(),
+// so a box never changes what a Rytm's project says.
+static uint8_t g_route[kVoices];
+
 void set_route(int vi, int r) {
   if (vi < 0 || vi >= kVoices || r < 0 || r >= kRoutes) return;
+  g_route[vi] = (uint8_t)r;
+  if (device().ret == kStereoMix) r = kPost;   // one stereo mix: no route to choose
   if (control.route[vi] != r) ++g_stats.xfades;
   control.route[vi] = (uint8_t)r;
   changed();
@@ -168,17 +174,24 @@ bool from_line(const char* const* w, int n) {
 }
 int line(int vi, char* b, int cap) {
   if (vi < 0 || vi >= kVoices) return 0;
-  if (control.route[vi] == kTrk && g_knob[vi][0] == 100 && g_knob[vi][1] == 64 && g_knob[vi][2] == 64 && !g_knob[vi][3])
+  if (g_route[vi] == kTrk && g_knob[vi][0] == 100 && g_knob[vi][1] == 64 && g_knob[vi][2] == 64 && !g_knob[vi][3])
     return 0;
-  return sniprintf(b, cap, CORE_STR("OUT V%d %s %d %d %d %d\n"), vi + 1, route_name(control.route[vi]), g_knob[vi][0],
+  return sniprintf(b, cap, CORE_STR("OUT V%d %s %d %d %d %d\n"), vi + 1, route_name(g_route[vi]), g_knob[vi][0],
                    g_knob[vi][1], g_knob[vi][2], g_knob[vi][3]);
 }
 void clear() {
   for (int v = 0; v < kVoices; ++v) {
-    control.route[v] = kTrk;
+    g_route[v] = kTrk, control.route[v] = device().ret == kStereoMix ? kPost : kTrk;
     g_knob[v][0] = 100, g_knob[v][1] = 64, g_knob[v][2] = 64, g_knob[v][3] = 0;
     refresh(v);
   }
+}
+
+void set_device(const Device* d) {
+  if (!d) d = &kRytmMk2;
+  if (d->ret != g_device->ret)
+    for (int v = 0; v < kVoices; ++v) control.route[v] = d->ret == kStereoMix ? (uint8_t)kPost : g_route[v];
+  g_device = d;
 }
 
 static int voice_text(int vi, char* o, int cap) {
@@ -301,6 +314,7 @@ const Stats& stats() { return g_stats; }
 
 void reset() {
   defaults(control);
+  g_device = &kRytmMk2;
   for (int v = 0; v < kVoices; ++v) {
     g_knob[v][0] = 100, g_knob[v][1] = 64, g_knob[v][2] = 64, g_knob[v][3] = 0;
     g_lfo[v][0] = g_lfo[v][1] = g_lfo[v][2] = 0;

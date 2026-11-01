@@ -1,0 +1,15 @@
+diff -ru a/addon/rp1dsi/rpitouchscreen.h b/addon/rp1dsi/rpitouchscreen.h
+--- a/addon/rp1dsi/rpitouchscreen.h
++++ b/addon/rp1dsi/rpitouchscreen.h
+@@ -60,6 +60,11 @@
+ 	/// \return Number of bits per pixels
+ 	unsigned GetDepth (void) const		{ return m_nDepth; }
+ 
++	// circle-rp1dsi-fb.patch: the frame buffer and its pitch in bytes, for a rotating blit into it (SetArea takes rows,
++	// a barrier each); the writer cleans the data cache (the scan-out reads the memory, not the cache)
++	void *GetBuffer (void) const		{ return m_pFrameBuffer; }
++	unsigned GetPitch (void) const		{ return m_nPitch; }
++
+ 	/// \brief Set a single pixel to color
+ 	/// \param nPosX X-position (0..Width-1)
+ 	/// \param nPosY Y-position (0..Height-1)

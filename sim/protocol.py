@@ -237,6 +237,7 @@ Looper mode (rytm-mods 0022-looper):
                                   took over), 0 restore them
 
 cmd 0x02 TRIG (a trig without parameters) is unused, kept reserved.
+cmd 0x4F DEVICE HELLO: another box than a Rytm says what it is (core/device/device.h, docs/device-profiles.md).
 
 The AUDIO direction is unused: Overbridge's own audio stream carries the voices
 (docs/overbridge-voice-inputs.md).

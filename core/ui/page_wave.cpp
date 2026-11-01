@@ -2,9 +2,10 @@
 // per-file overview cache that feeds them, and the dispatch of the cells drawn by code (Kind kDraw). Cold.
 //
 // The overview: 128 columns of (min, max) over the file's data, found once per file and kept (kWaveSlots files: the
-// last used goes first). Read on the control side in remote_tick, one column a millisecond at most: a column of up
-// to 256 frames is read whole, a longer one as four evenly spaced runs of a quarter of that (2 KB a read at most; ~130 ms a
-// file), from the card through its own handle (core/pool: cards, pool[]). 16 / 24 / 32-bit integer PCM, mono or
+// last used goes first). One column a millisecond at most, from remote_tick: a column of up to 256 frames is read
+// whole, a longer one as four evenly spaced runs of a quarter of that (2 KB a read at most; ~130 ms a file), through its own
+// handle. With a card core a column is a request (7z, 2026-10-31: measured 3.6-7.5 ms of core 3 a column, 17 ms beside a whole
+// load, a sample picked in the bank list; wave_q), the file a copy of the pool line's. 16 / 24 / 32-bit integer PCM, mono or
 // stereo (the channels' extremes). Drawn normalised to the file's peak.
 //
 // DSP SAMPLE (machine 0x20), the SD SAMPLE page P9..P16: TUN FIN SMP MOD over the waveform, STA END LOP LEV under it.
@@ -15,6 +16,10 @@
 // spray (a quarter of a grain either way) dotted on from its edges.
 #include <string.h>
 
+#include "engine.h"
+#if CORE_MSAMP
+#include "msamp/cardq.h"
+#endif
 #include "pool/pool.h"
 #include "ui/extra.h"
 #include "voices.h"
@@ -37,6 +42,7 @@ struct Overview {
   uint16_t file = 0;
   uint8_t state = 0;    // 0 empty, 1 loading, 2 ready, 3 failed (not readable)
   uint8_t col = 0;      // the next column to read
+  int16_t line = 0;     // its pool line
   uint32_t frames = 0, rate = 0, used = 0;
   int16_t pk[kCols][2];
 };
@@ -84,11 +90,88 @@ CORE_COLD bool read_column(Overview& w, int c) {
   return true;
 }
 
+#if CORE_MSAMP
+cardq::Req g_wrq;       // a column, or the file's close; g_wc: its column
+Overview* g_wj = nullptr;
+int g_wc = 0, g_wk = -1;   // g_wk: the column's cache entry, -1 a close
+bool g_wok = false;
+int g_wcopy = -1;       // the entry whose file is being copied (from pool line g_wl), -1 none
+int g_wl = 0;
+void wave_card(cardq::Req*) {   // the card core
+  if (g_wcopy >= 0) wfile = pool_files[g_wl];
+  else g_wok = read_column(*g_wj, g_wc);
+}
+#endif
+CORE_COLD bool on_card_core() {
+#if CORE_MSAMP
+  return cardq::worker();
+#else
+  return false;
+#endif
+}
 CORE_COLD void wave_fail(Overview& w) {
   w.state = 3;
-  if (wfile.isOpen()) wfile.close();
+  if (wfile.isOpen() && !on_card_core()) wfile.close();   // (a card core: wave_q closes it, its request's end first)
   wfile_of = -1;
 }
+#if CORE_MSAMP
+// A step with a card core: a column's result taken in, the next one (or the file's close) posted. The file: the pool line's, as a
+// voice's prepare opens it (no card call here), copied (its own place in it).
+CORE_COLD void wave_q() {
+  if (!cardq::idle(&g_wrq)) return;
+  bool done = g_wrq.state == cardq::kDone;
+  g_wrq.state = cardq::kFree;
+  if (done && g_wk >= 0 && g_wk == wfile_of) {   // (else its entry moved on: dropped)
+    Overview& w = cache[g_wk];
+    if (!g_wok) wave_fail(w);
+    else if (++w.col == kCols) w.state = 2, wfile_of = -1;
+  }
+  g_wk = -1;
+  int k = -1;
+  for (int i = 0; i < kWaveSlots; ++i)
+    if (cache[i].state == 1 && (k < 0 || cache[i].used > cache[k].used)) k = i;
+  if (done && g_wcopy >= 0) {
+    if (g_wcopy == k && wfile.isOpen()) wfile_of = k;   // (else another file is wanted now: closed below)
+    else if (g_wcopy == k) cache[k].state = 0, cache[k].folder = -1;   // (the line closed before the copy: read again when asked)
+    g_wcopy = -1;
+  }
+  if (k != wfile_of) wfile_of = -1;
+  if (wfile_of < 0 && wfile.isOpen()) {
+    cardq::async(&g_wrq, cardq::kCloseReq, &wfile, nullptr, 0, nullptr, 0);
+    return;
+  }
+  if (k < 0) return;
+  Overview& w = cache[k];
+  if (wfile_of < 0) {
+    int l = w.line;
+    if (pool[l].folder != w.folder || pool[l].file != w.file) {   // a project switch, a slot edit: not a bad file
+      w.state = 0, w.folder = -1;
+      return;
+    }
+    if (!pool_line_open(l)) return;   // (its open on the card core: a later pass)
+    if (!pool_open[l]) { wave_fail(w); return; }
+    wrec = pool_recs[l];
+    int bpf = bytes_per_frame(wrec);
+    if (wrec.format != 1 || (wrec.bits != 16 && wrec.bits != 24 && wrec.bits != 32) || bpf <= 0 || bpf > 64) { wave_fail(w); return; }
+    w.frames = wrec.data_len / bpf, w.rate = wrec.rate;
+    if (!w.frames) { wave_fail(w); return; }
+    g_wcopy = k, g_wl = l;
+    g_wrq.fn = wave_card;
+    cardq::async(&g_wrq, cardq::kFnReq, nullptr, nullptr, 0, nullptr, 0);   // (no card time on the Pi, the Mac's copy reopens)
+    return;
+  }
+  g_wj = &w, g_wc = w.col, g_wk = k;
+  g_wrq.fn = wave_card;
+  cardq::async(&g_wrq, cardq::kFnReq, nullptr, nullptr, 0, nullptr, 0);
+}
+#endif
+CORE_COLD bool wave_busy(int i) {   // being read, or its file on its way
+#if CORE_MSAMP
+  if (i == g_wcopy) return true;
+#endif
+  return i == wfile_of;
+}
+uint32_t g_wave_us = 0;   // this tick's time here (the slow-step line's own name for it)
 
 }  // namespace
 
@@ -102,12 +185,13 @@ CORE_COLD const void* wave_of_slot(int slot, int* state, int* progress) {
     if (cache[i].state && cache[i].folder == f && cache[i].file == fi) pick = i;
   if (pick < 0) {   // the least recently used entry (not the one being read, when there is a choice)
     for (int i = 0; i < kWaveSlots; ++i)
-      if (pick < 0 || (i != wfile_of && (pick == wfile_of || cache[i].used < cache[pick].used))) pick = i;
+      if (pick < 0 || (!wave_busy(i) && (wave_busy(pick) || cache[i].used < cache[pick].used))) pick = i;
     if (pick == wfile_of) wave_fail(cache[pick]);
     Overview& w = cache[pick];
     w.folder = (int16_t)f, w.file = (uint16_t)fi, w.state = 1, w.col = 0, w.frames = w.rate = 0;
   }
   Overview& w = cache[pick];
+  w.line = (int16_t)(slot - 1);
   w.used = ++wave_clock;
   *state = w.state, *progress = w.col;
   return &w;
@@ -120,9 +204,26 @@ CORE_COLD int smp_slot(const Source& s) {
 }
 
 // One column of the file being read, at most one a millisecond (remote_tick, while the page is open).
+static void wave_read();
 CORE_COLD void wave_idle(uint32_t ms) {
   if (col_clock && ms == last_col_ms) return;
   col_clock = true, last_col_ms = ms;
+  uint32_t t0 = now_us();
+#if CORE_MSAMP
+  if (on_card_core()) wave_q();
+  else
+#endif
+    wave_read();
+  uint32_t us = now_us() - t0;
+  g_wave_us += us;
+  idle_note("rui.wave", us);
+}
+CORE_COLD uint32_t wave_take_us() {
+  uint32_t us = g_wave_us;
+  g_wave_us = 0;
+  return us;
+}
+static CORE_COLD void wave_read() {
   int k = -1;
   for (int i = 0; i < kWaveSlots; ++i)
     if (cache[i].state == 1 && (k < 0 || cache[i].used > cache[k].used)) k = i;
@@ -155,6 +256,11 @@ CORE_COLD void wave_column(const void* w, int c, int* lo, int* hi) {
 }
 
 CORE_COLD void wave_reset() {   // tests
+#if CORE_MSAMP
+  if (!cardq::idle(&g_wrq) && !cardq::cancel(&g_wrq)) cardq::wait(&g_wrq);
+  g_wrq.state = cardq::kFree;
+  g_wk = g_wcopy = -1;
+#endif
   for (Overview& w : cache) w = Overview();
   if (wfile.isOpen()) wfile.close();
   wfile_of = -1;

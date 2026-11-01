@@ -128,7 +128,7 @@ redraws the area it uncovers in 48-line bands, about the cost of that first draw
 | GeeekPi EP-0194 7" IPS HDMI (1024x600, USB capacitive touch, HDMI in) | Display measured (`display: 1024x600`). Touch (USB 0416:c169 "TSTP MTouch"): stock Circle took it for a keyboard (`input none`). Its boot-keyboard interface's 84-byte descriptor (measured) is an absolute mouse (ID 2, button 1 = finger, X/Y 0..32767): `circle-touch-pointer.patch` binds it as a single-touch screen ("USB touch screens" below), to be confirmed on the panel. config.txt as in "Screen sizes". |
 | Official Raspberry Pi 7" Touch Display v1 (DSI, 800x480) | Expected on both boards, not yet measured here. Pi 4: firmware frame buffer + `CRPiTouchScreen` (firmware touch buffer). Pi 5: Circle's `addon/rp1dsi` (display and touch, no firmware). |
 | OSOYOO 7" IPS DSI V4.0 (800x480, 15-pin DSI) | Expected, to be confirmed: sold as plug-and-play on Raspberry Pi OS, which normally means it emulates the official display (ATTiny regulator at I2C 0x45, TC358762 bridge, FT5x06 touch at 0x38). The boot log names what answers ("DSI on the Pi 5"). |
-| Raspberry Pi Touch Display 2 | Pi 4: not supported (needs a KMS DSI panel driver and a Goodix touch driver, which Circle does not have on the Pi 4). Pi 5: `addon/rp1dsi` drives it (*inferred*, untested); it is 720x1280 portrait, which the 800x480 layout is not made for. |
+| Raspberry Pi Touch Display 2 | Pi 4: not supported (needs a KMS DSI panel driver and a Goodix touch driver, which Circle does not have on the Pi 4). Pi 5: `addon/rp1dsi` drives it, the 1024x600 UI centred on the landscape 1280x720, rotated in software. Measured on the 7" (2026-10-31, a 0.4.0 test kernel with this display code): picture, rotation 270, touch on the right controls, Rytm, voices. The 5" is expected, not measured with this code ("Touch Display 2 on the Pi 5"). |
 
 ### USB touch screens
 
@@ -280,8 +280,8 @@ On the Pi 5 see "DSI on the Pi 5" below. On the Pi 4:
 ### DSI on the Pi 5
 
 The Pi 5's firmware does not drive a DSI display: the engine drives it itself with Circle's `addon/rp1dsi` (Circle
-51.1.1, GPL-3.0, unchanged; `pi/engine/build.sh` builds `librp1dsi.a` in the Pi 5 tree). All *inferred* from Circle's
-sources; not yet run on hardware.
+51.1.1, GPL-3.0; `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi-fb.patch` and `circle-rp1dsi-td2.patch`, for the Touch
+Display 2, and builds `librp1dsi.a` in the Pi 5 tree). The v1 path is *inferred* from Circle's sources, not yet run on hardware.
 
 - At boot (the boot screen), unless `dsi=0`: the engine reads the display regulator (I2C address 0x45, register 1) on
   each DSI port, **CAM/DISP 0 first, then CAM/DISP 1** (`dsi_port=0` or `1` in cmdline.txt: only that one). DISP0's I2C
@@ -299,6 +299,7 @@ sources; not yet run on hardware.
   ATTiny's scan direction and the touch coordinates). `dsitouch_inv=1|2|3` mirrors x / y / both on top, as on the Pi 4.
   (The Pi 4's `lcd_rotate=2` in config.txt does nothing on the Pi 5.)
 - Screensaver: the DSI backlight off (rp1dsi's `SetBacklightBrightness (0)`), back to 200 (rp1dsi's default) on wake.
+- Touch Display 2: "Touch Display 2 on the Pi 5" below.
 - No config.txt line is needed or used for it. Do not add `dtoverlay=vc4-kms-dsi-7inch` or `display_auto_detect=1`:
   they only edit Linux's device tree, Circle ignores them; harmless, but they suggest Linux KMS is involved.
 - The log:
@@ -313,6 +314,56 @@ sources; not yet run on hardware.
 
   Nothing on a port: `display: DSI: DISP1: no display regulator at I2C4 0x45`. Nothing on both: each bus is scanned,
   `display: DSI: DISP0 I2C6 answers at: 0x.. 0x..` (or `none`), then `display: DSI: no display found, HDMI`.
+
+### Touch Display 2 on the Pi 5
+
+720x1280 portrait, mounted landscape. *Measured* on the 7" (2026-10-31, a 0.4.0 test kernel with this display code): the 1024x600 UI
+centred, rotation 270, touch on the right controls, the Rytm, voices. On that mounting memory (0,0) is the viewed bottom left, columns
+going up, rows right, so 270 is the right way up there. That kernel drove the panel at 16 bits, in Circle's sync pulse mode, with no
+change to `addon/rp1dsi` but the frame buffer accessors. The blit's real cost is still to be read from the stats line.
+
+- **cmdline.txt:** nothing for the owner's mounting. `dsi_rotate=270` is the default (Linux's `rotate=270` on the same
+  unit, a quarter turn clockwise); upside down: `dsi_rotate=90`. The panel takes these two; 0 or unset means 270, 180 logs
+  a warning and uses 270 (`SetRotation` is the v1 display's only). The angle means what it means on Linux: how far the
+  picture is turned counter-clockwise on the panel (`pi/ui/dsi_rotate.h`).
+- **The picture:** the frame is 1280x720. The UI is 1024x600 at (128, 60), black around it, no scaling; `res=800x480` gives
+  the 800x480 UI at (240, 120). (Before this the UI's display was 720x1280, which is below the wide layouts' 1024x600, so
+  the 800x480 layout came up in the middle of the panel.) Which size is chosen at run time (`ChooseUi`): one kernel for every screen, the
+  `sd-1024x600` card differs only in config.txt's HDMI mode.
+- **The 5" panel:** the regulator's id picks it (low nibble 8 or 9). Same 720x1280, same code, same default rotation, and the 1024x600
+  UI is physically small on it. Not measured with this code. It runs in sync events, as Linux drives it and as the development build of
+  bandersong (sidecar-firmware PR #4) ran on a 5"; that build used a 32-bit frame buffer, here it is 16 as on the 7". The 7" stays in sync
+  pulses, measured. If a 5" stays black, reseat the ribbon first (the cause of the black screen on that 5"), then open an issue with the log.
+- **The blit:** LVGL hands over dirty areas only, at most a 48-row band. `CSidecarDisplay::PutFrame` turns each straight
+  into the panel's frame buffer (`pi/circle/circle-rp1dsi-fb.patch` gives its pointer and pitch), cleans the rows it wrote from
+  the data cache, one barrier for the area. Through `SetArea` a 1024-wide band would be 1024 panel rows with a barrier each.
+- **Cost, core 0's loop, interrupts on:** turning a full 1024x600 screen takes 59 us on the Mac (measured,
+  `pi/engine/tests/test_dsi_rotate.cpp`, run it with an argument; an M-series core, no cache clean). The Pi 5 is *estimated*
+  at 0.5 ms for that and about 1 ms for the 32000 cache lines; a page change is about 2 ms on top of LVGL's own drawing, a
+  meter a few hundred pixels, microseconds. The stats line measures it: `rotate 270 longest N us, total N us` (per area; the
+  total of the last 10 s).
+- **Touch:** a Goodix GT911 at I2C 0x5D, on the display's own bus; rp1dsi polls it, it has no interrupt here. It reports panel
+  pixels (1..5 contacts); `dsitouch_inv=1|2|3` mirrors those first, then the same mapping back (`dsirot::to_frame`), then the
+  UI's offset. A touch on the black margin lands on the UI's edge. Each poll is 3 I2C transfers, about 18 bytes at 100 kHz, about
+  1.6 ms of busy-wait in core 0's loop, interrupts on (the I2C lock is task level), so this panel is polled every 20 ms, not
+  10: about 8 % of the loop, whether or not a finger is down. The stats line's `longest update` includes it.
+- **Touch after a warm restart:** on a 5" the GT911 did not answer after a software restart until a power cycle (bandersong's
+  measurement; shutting the panel down first and a longer power-off at start did not help). The 7" has not been tried, and the cause is not
+  known. The engine restarts itself after an update, a Wi-Fi join or a change of device. If the controller is silent at start the log says
+  `rp1touch2: No touch controller at I2C 0x5D, running without touch` and the engine runs on without touch: use the web UI, or power
+  cycle. The contact id from the controller is bounded before it indexes anything (from the same PR).
+
+The log:
+
+    display: DSI: DISP0: display regulator id 0xNN (Touch Display 2, 7")
+    rp1touch2: Touch controller GT911 at I2C 0x5D
+    display: DSI: DISP0 1280x720 (rp1dsi, no scaling), rotation 270, touch Goodix polled
+    display: UI 1024x600 centred on the frame buffer's 1280x720 (res=800x480|1024x600 in /.rytm/display.txt or cmdline.txt)
+    display: touch: DSI (rp1dsi)
+    display: touch: down raw 360,640 -> 512,299
+    engine: display: 1024x600, input touch (DSI), longest update N us, rotate 270 longest N us, total N us
+
+A USB mouse on this panel still moves in the panel's portrait range: not handled, it reaches part of the UI only.
 
 ### Cabling (DSI)
 

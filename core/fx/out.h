@@ -53,6 +53,11 @@ constexpr float kSmoothMs = 3.0f;    // LEV / PAN / WID smoothing
 // AUDIO IN (`audio_in`: what LIVE IN plays, core/livein/livein.h) and its own OUT -> IN loop (`loop_frames`: host -> device
 // frames back in the device -> host stream, the converters and the device's buffers; LIVE IN's latency estimate). The only
 // device so far: the Analog Rytm MKII over Overbridge (device-specific: docs/STEREO.md "Device-specific").
+// `ret` is how the voices go back: per voice on their own channels, or a stereo mix on `post` (every voice POST, whatever its
+// OUT says: LEV, PAN and WID still apply; a box with two return channels, docs/device-profiles.md). A channel a device does
+// not have is kNoChannel. in_channels: device -> host channels a frame (the driver's consumers take 12).
+constexpr uint8_t kNoChannel = 0xFF;
+enum Return : uint8_t { kPerVoice = 0, kStereoMix = 1 };
 struct Device {
   const char* name;
   uint8_t channels;          // host -> device channels a frame
@@ -62,15 +67,19 @@ struct Device {
   int8_t tracks[kVoices][2];
   uint8_t audio_in[2];       // device -> host: AUDIO IN L / R
   uint16_t loop_frames;      // host -> device -> host, frames (0: not measured)
+  uint8_t in_channels;       // device -> host channels a frame
+  Return ret;                // per voice, or one stereo mix
 };
 // the Rytm: voices BD BT SD LT CH/OH MT/HT CY/CB RS/CP (core/ui/remote.cpp kTrackVoice), channels 4..11 / stems
 // IN 2..9 in the order BD SD RS/CP BT LT MT/HT CH/OH CY/CB, tracks BD SD RS CP BT LT MT HT CH OH CY CB; AUDIO IN L / R on
 // IN 10 / 11 (ob_block.h); the loop 289 frames [measured 2026-10-15 on the Rytm, docs/pi-engine.md: a voice's onset as
 // sent in OUT -> back in MAIN on IN, FIFO not included]
-constexpr Device kRytmMk2 = {"Analog Rytm MKII", 12, {0, 1}, {2, 3}, {4, 7, 5, 8, 10, 9, 11, 6}, {0, 3, 1, 4, 6, 5, 7, 2},
-                             {{0, -1}, {4, -1}, {1, -1}, {5, -1}, {8, 9}, {6, 7}, {10, 11}, {2, 3}}, {10, 11}, 289};
-// the device connected (the only one so far)
-inline const Device& device() { return kRytmMk2; }
+inline constexpr Device kRytmMk2 = {"Analog Rytm MKII", 12, {0, 1}, {2, 3}, {4, 7, 5, 8, 10, 9, 11, 6}, {0, 3, 1, 4, 6, 5, 7, 2},
+                                    {{0, -1}, {4, -1}, {1, -1}, {5, -1}, {8, 9}, {6, 7}, {10, 11}, {2, 3}}, {10, 11}, 289, 12, kPerVoice};
+// the device connected: the Rytm until the Pi's Overbridge driver claims another (a device's own row: its profile, core/device)
+inline const Device* g_device = &kRytmMk2;
+inline const Device& device() { return *g_device; }
+void set_device(const Device* d);            // the driver, before its stream starts; null: the Rytm
 
 struct Control {
   volatile uint8_t route[kVoices];   // Route (the knob: what the render and the output stage follow)

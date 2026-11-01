@@ -7,13 +7,17 @@ and the one the measurements are made on; the Pi 5 scales its HDMI picture.
 > **Sidecar Mini (Teensy 4.1) is phased out.** It is frozen at 0.1.0: no new features. Its source stays in `teensy/`
 > and in the history (commit `101a3fb`) for reference, and the 0.1.0 release stays downloadable.
 
-This repository holds the source of **Sidecar 0.3.1**, a fix release of 0.3.0: card work moved off the control core
-(this fixes the dropouts when loading user machines, presets and multisamples) and the black box (the whole log on the
-card). The 0.3 line brings poly tracks with the Sidecar's own sequencer; the machines MULTISAMPLE, WAVETABLE, GRANULAR, CHOP, LIVE IN and MD (built in); the user machines, now with NUSAW, VOX, HUSH1 and
+This repository holds the source of **Sidecar 0.3.2**, a Pi-only release after 0.3.1. It adds super basic native support
+for the Digitakt and a starting point for other devices (device profiles, `docs/device-profiles.md`), it fixes a stop on
+the Pi 5 at the first USB MIDI message to the Rytm, and it adds the Pi 5's Touch Display 2 (with work by
+[bandersong](https://github.com/bandersong)). Digitakt support is experimental: it has run in an emulator only, never
+on a real Digitakt, and its mod is in the separate repository
+[sidecar-digitakt](https://github.com/trigcondition/sidecar-digitakt). No Rytm flash is needed and nothing changes for Rytm
+users. The 0.3 line brings poly tracks with the Sidecar's own sequencer; the machines MULTISAMPLE, WAVETABLE, GRANULAR, CHOP, LIVE IN and MD (built in); the user machines, now with NUSAW, VOX, HUSH1 and
 RAFFO; insert effects with AMP (Neural Amp Modeler captures); the SPACE echo; the recorder; projects kept by the Rytm's
 slot; and the pairing code for the web page. It works with the Rytm firmware 0.3.1.
 
-- Release and binaries: <https://github.com/trigcondition/sidecar-firmware/releases/tag/v0.3.1> (the Pi SD cards, the
+- Release and binaries: <https://github.com/trigcondition/sidecar-firmware/releases/tag/v0.3.2> (the Pi SD cards, the
   user machines, the starter content); 0.1.0 and 0.2.0: <https://github.com/trigcondition/sidecar-expander/releases>
 - Documentation, the browser patcher and the web console: <https://trigcondition.github.io/sidecar-expander/>
 - The Rytm side (the OS mods the Sidecar talks to): [sidecar-mods](https://github.com/trigcondition/sidecar-mods), its
@@ -26,13 +30,13 @@ slot; and the pairing code for the web page. It works with the Rytm firmware 0.3
 
 | path | what |
 |---|---|
-| `core/` | the engine core: voices, machines, send FX, LFOs, presets, the remote pages' UI, the recorder; host tests in `core/tests` |
+| `core/` | the engine core: voices, machines, send FX, LFOs, presets, the remote pages' UI, the recorder, the device profiles; host tests in `core/tests` |
 | `teensy/` | Sidecar Mini, frozen at 0.1.0 (for reference): the `voiceloop` sketch, USB host to the Rytm, the plugin loader (`libraries/RytmPlugins`), the Overbridge block codec (`libraries/RytmHost`), setup scripts for the engine libraries |
 | `pi/` | Sidecar: the bare-metal engine on Circle (`pi/engine`, `pi/circle`), the display UI (`pi/ui`), Linux experiments (`pi/linux`) |
 | `plugins/` | user machine plugins (`.a64.rmp` on the Pi): the six starter machines `sc_*` (MIT), NUSAW, VOX, HUSH1, RAFFO (MIT ports), MD (`mdkit`), Noise Plethora packages, test plugins |
 | `third_party/` | vendored third-party sources: mdkit (CC0 1.0, the MD machine), TONE3000's NAM A2-Lite engine (MIT, the AMP insert) |
 | `sdk/` | the plugin SDK: ABI header, linker scripts, the Teensy Audio shim |
-| `sim/` | the Mac-side simulator, protocol and end-to-end tools (some need the rytm-emu emulator, which is not public) |
+| `sim/` | the Mac-side simulator, protocol and end-to-end tools (some need the emulator, [analog-emu](https://github.com/trigcondition/analog-emu)) |
 | `web/` | the Sidecar Mini web console (WebSerial), frozen at 0.1.0 |
 | `content/` | the starter content generator (Juno-106 and DX7 patch libraries) |
 | `tools/` | packaging, version, plugin pack/install, the portable test runner |
@@ -64,9 +68,9 @@ Both run on every pull request (`.github/workflows/test.yml`).
 
 ## Written offer of source
 
-The released binaries (Sidecar for Pi 4B and Pi 5, version 0.3.1; Sidecar Mini, version 0.1.0) contain GPL and LGPL code, among it Circle
+The released binaries (Sidecar for Pi 4B and Pi 5, version 0.3.2; Sidecar Mini, version 0.1.0) contain GPL and LGPL code, among it Circle
 (GPL-3.0-or-later, with its `addon/rp1dsi` display driver linked into the Pi 5 kernel) and the Teensyduino core and SPI library
-(LGPL-2.1). The complete corresponding source of version 0.3.1 is this repository at tag `v0.3.1` (of Sidecar Mini 0.1.0: commit `101a3fb`), plus the third-party
+(LGPL-2.1). The complete corresponding source of version 0.3.2 is this repository at tag `v0.3.2` (of Sidecar Mini 0.1.0: commit `101a3fb`), plus the third-party
 sources the build scripts fetch at the pinned commits named in `NOTICE` (Circle with `pi/circle/*.patch`). For three years
 from the release, anyone who received a binary can also ask for it on a physical medium for the cost of that medium, or for
 the materials needed to relink the Teensy firmware with a modified LGPL part: open an issue in this repository.

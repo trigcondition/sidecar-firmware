@@ -32,7 +32,8 @@ class Output {
   static const uint8_t kVoiceToChannel[kVoices];        // ob_block.h's kVoiceToRytm
 
   void SetMode(Mode m) { mode_ = m; }
-  Mode GetMode() const { return mode_; }
+  // a device with no voice channels (core/fx/out.h: a stereo mix) plays MAIN whatever was asked; the setting is kept
+  Mode GetMode() const { return core::out::device().voice[0] >= kChannels ? kMain : mode_; }
   // The OUT settings the output stage follows (core::out::control; the kernel sets it). Unset: its own defaults (every
   // voice TRK: the Mac tests of the output stage alone).
   void SetOutControl(const core::out::Control* c) { ctl_ = c ? c : &own_; }

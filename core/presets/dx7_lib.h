@@ -493,6 +493,8 @@ class Lib {
     if (*p == '\t') {
       strncpy(s->name, p + 1, sizeof s->name - 1);
       s->name[sizeof s->name - 1] = 0;
+      for (char* q = s->name; *q; q++)   // 0.4.0's list has a voice column after the name
+        if (*q == '\t') *q = 0;
     }
     return true;
   }

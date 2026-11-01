@@ -145,6 +145,7 @@ void AddReturn(int32_t (*out)[12], unsigned n, float (*slots)[4]) {
     if (s_Rets.size() < kPrime) return;
     s_bPrimed = true;
   }
+  const uint8_t* pre = core::out::device().pre;   // the device's table: the Rytm's 2 / 3, a stereo mix's main pair
   for (unsigned f = 0; f < n; ++f) {
     Ret r;
     if (!s_Rets.pop(&r)) {   // ran dry: silence, and prime again
@@ -153,8 +154,8 @@ void AddReturn(int32_t (*out)[12], unsigned n, float (*slots)[4]) {
       return;
     }
     if (slots) slots[f][0] = r.s[0], slots[f][1] = r.s[1], slots[f][2] = r.s[2], slots[f][3] = r.s[3];
-    out[f][2] = Add(out[f][2], r.l);   // PRE: MAIN FX, through the analog distortion + compressor
-    out[f][3] = Add(out[f][3], r.r);
+    out[f][pre[0]] = Add(out[f][pre[0]], r.l);   // PRE: MAIN FX, through the analog distortion + compressor
+    out[f][pre[1]] = Add(out[f][pre[1]], r.r);
     if (r.pl != 0.0f || r.pr != 0.0f) out[f][0] = Add(out[f][0], r.pl), out[f][1] = Add(out[f][1], r.pr);   // POST: MAIN
   }
 }

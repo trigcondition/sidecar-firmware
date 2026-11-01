@@ -1,6 +1,7 @@
 // core/engine.cpp - see engine.h. Boot and between-requests work: cold.
 #include "engine.h"
 
+#include "device/device.h"
 #include "fmt/fmt.h"
 #include "fx/send_fx.h"
 #include "fx/insert.h"
@@ -28,6 +29,7 @@ CORE_COLD bool engine_begin() {
   {   // an import cut by a power loss: finished or undone before anything reads the card (core/bundle/bundle.h)
     Fs fs;
     if (fs.begin()) {
+      device::boot();   // first: every read below is of this box's state folder (core/device/device.h)
       bundle::recover();
       fmt::sweep_boot();   // 2026-10-26: every atomic write's .prev / .tmp, for the readers that never recover()
     }
@@ -98,7 +100,12 @@ CORE_COLD IdleSlow idle_slowest_take() {
 #define T_(n, e) timed(n, [&]() -> bool { return (e); })
 #define TV_(n, e) timed(n, [&]() -> bool { e; return false; })
 
-CORE_COLD bool idle_prepare() { return T_("prepare", prepare_pending()); }
+CORE_COLD bool idle_prepare() {
+#if CORE_MSAMP
+  TV_("closes", pool_closes_step());
+#endif
+  return T_("prepare", prepare_pending());
+}
 
 CORE_COLD bool idle_save() {
 #if CORE_MSAMP
@@ -124,8 +131,11 @@ CORE_COLD bool idle_save() {
     return true;
   }
   if (T_("fxin", fxin::save())) return true;
+  bool leaving = device::leaving();   // a restart is coming: what waits for its edits to settle goes now
+  if (leaving) lfo::save_due();
   if (T_("lfo", lfo::save())) return true;
 #if CORE_POLY
+  if (leaving) ins::settings_due();
   if (T_("ins", ins::save())) return true;
 #endif
 #if CORE_POLY
@@ -138,9 +148,15 @@ CORE_COLD bool idle_save() {
 #else
   bool ix = false;
 #endif
-  if (!project_dirty) return ix;
-  TV_("project", project_save());   // (with the index: the same project change's two small files, one step)
-  return true;
+  if (project_dirty) {
+    TV_("project", project_save());   // (with the index: the same project change's two small files, one step)
+    return true;
+  }
+  bool settled = !lfo::dirty() && !fx::card_dirty;
+#if CORE_POLY
+  settled = settled && !ins::settings_dirty(nullptr);
+#endif
+  return device::step(settled) || ix;   // a change of state folder: the last write, behind all of the above
 }
 
 // With the sample RAM: a stream within ~85 ms of running dry first, then a load step (one open or one 8 KB read),

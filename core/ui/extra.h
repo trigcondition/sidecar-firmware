@@ -288,6 +288,7 @@ const Page* page_for_voice(int machine, int vi, int mod = -1);   // mod: MOD (P1
 const Page* src_view_page(const Page* p);
 // The sample overviews: one column of the file being read (remote_tick while the page is open); tests: cleared.
 void wave_idle(uint32_t ms);
+uint32_t wave_take_us();   // wave_idle's time since the last call
 void wave_reset();
 const void* wave_of_slot(int slot, int* state, int* progress);  // state 0 none, 1 loading (progress columns), 2 ready, 3 failed
 const void* wave_of_voice(int vi, int* state, int* progress);   // the voice's SMP (P11)

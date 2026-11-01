@@ -23,6 +23,7 @@ bool idle_save();
 void idle_stream();
 const char* idle_slowest(unsigned* us);   // the slowest idle step since the last call (core/engine.h IdleSlow)
 void idle_note(const char* name, unsigned us);
+bool take_restart();                       // another box needs its state folder (core/device/device.h): reboot
 // The control core's loop, every pass: the 13-byte 1D (user slots, all EMPTY) every 5 s, as the Teensy's loop sends
 // it (core::slots_1d(5000)): a Rytm whose 1D went missing sees a host again and asks for the slots' 1A.
 void tick();

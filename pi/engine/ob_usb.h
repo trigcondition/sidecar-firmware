@@ -1,6 +1,8 @@
 //
-// ob_usb.h - Circle USB function driver for the Analog Rytm MKII in OVERBRIDGE mode
-// (VID 0x1935, PID 0x0b48): alt 3, interrupt IN 0x83 / OUT 0x03, 368-byte blocks.
+// ob_usb.h - Circle USB function driver for an Elektron box in OVERBRIDGE mode: the Analog Rytm MKII (VID 0x1935, PID 0x0b48)
+// and any box whose device profile has an audio row (core/device, docs/device-profiles.md "Audio"): alt 3, interrupt
+// IN 0x83 / OUT 0x03, each direction's block size from the profile (the Rytm 368 / 368, the Digitakt 368 / 88), the descriptor
+// checked against it. The log's prefix stays rytmob for every box.
 //
 // Run-time options (cmdline.txt on the SD card, one line, space separated; all optional):
 //   oburbs=N       URBs in flight per endpoint, 1..16 (default 8; stock Circle allowed 2)
@@ -20,6 +22,7 @@
 #include <circle/usb/usbrequest.h>
 #include <circle/logger.h>
 #include <circle/types.h>
+#include "fx/out.h"
 
 class CObUsb : public CUSBFunction
 {
@@ -27,7 +30,7 @@ public:
 	static const unsigned MaxURBs = 16;		// <= XHCI_EP_MAX_URBS (circle-xhci-urbqueue.patch)
 	static const unsigned MaxBlocks = 8;
 
-	CObUsb (CUSBFunction *pFunction);
+	CObUsb (CUSBFunction *pFunction, const core::out::Device *pAudio);
 	~CObUsb (void);
 
 	boolean Configure (void);
@@ -35,7 +38,7 @@ public:
 	// called once a second from the main loop (counters are updated in IRQ context)
 	static void LogAllStats (CLogger *pLogger);
 	static boolean Streaming (void)		{ return s_pThis != 0 && s_pThis->m_bStreaming; }
-	static void SetActive (boolean bActive)	{ s_bActive = bActive; }	// FALSE: silence out, MIDI in dropped (the TCP link is the host)
+	static void SetActive (boolean bActive);	// FALSE: silence out, MIDI in dropped (the TCP link is the host)
 	static boolean Active (void)		{ return s_bActive; }
 
 	static void Stop (void);			// task level: the stream stopped cleanly (alt 0)
@@ -84,6 +87,9 @@ public:
 		unsigned nOrphan;		// no URB pending when the event came
 	};
 
+	static CObUsb *s_pThis;
+	static volatile boolean s_bActive;
+
 private:
 	boolean ScanDescriptors (void);			// log everything, locate alt 3 endpoints
 	boolean SubmitIn (unsigned i);
@@ -97,6 +103,9 @@ private:
 	static void OutStub (CUSBRequest *pURB, void *pParam, void *pContext);
 
 private:
+	const core::out::Device *m_pAudio;		// the box's row: channels, what it is called
+	const unsigned m_nOutCh, m_nOutBlk;		// host -> device: channels a frame, bytes a block
+
 	// options
 	unsigned m_nURBs, m_nBlocks, m_nOutDelay;
 	TOutMode m_OutMode;
@@ -132,9 +141,6 @@ private:
 	unsigned m_nStartUs, m_nLastInUs, m_nLastOutUs, m_nFirstInUs, m_nFirstOutUs, m_nOut16Us, m_nLastLogUs;
 	boolean m_bSaidStart;
 	unsigned m_nPrevIn, m_nPrevOut, m_nSeconds;
-
-	static CObUsb *s_pThis;
-	static volatile boolean s_bActive;
 
 	static s32 *s_pCapBuf;
 	static volatile unsigned s_nCapPos;		// frames written

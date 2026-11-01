@@ -27,6 +27,8 @@ struct Hooks {
   // as MIDI realtime: 0xFA start, 0xFB continue, 0xFC stop (pause too). The control core; null: ignored. The Pi's
   // recorder arms on it as on the MIDI messages (its gate is idempotent: both may arrive).
   void (*transport)(uint8_t status);
+  // Another box needs another state folder (core/device/device.h): saved, restart the Sidecar. Null: a board that cannot.
+  void (*device_restart)();
 };
 extern Hooks hooks;
 // True while the core itself calls user_report for a parameter change of its own (voice_params_changed: the Sidecar's

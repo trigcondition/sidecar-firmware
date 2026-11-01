@@ -20,6 +20,7 @@
 #include "../granular/granular.h"
 #include "../lib/pools.h"
 #include "../lib/srclib.h"
+#include "../msamp/cardq.h"
 #include "../store/store.h"
 #endif
 
@@ -51,8 +52,41 @@ CORE_COLD int pool_slot(float p11) {
 #endif
 }
 
+// A line's file closed. A close takes FatFs's lock, so with a card core it is a request: the line goes at once, its File is
+// closed a little later (pool_closes_step), and open_on_card waits for that.
+#if CORE_MSAMP
+static bool g_closing[kPoolLines];
+static int g_nclosing = 0;
+static int g_close_line = -1;
+static cardq::Req g_close_rq;
+CORE_COLD void pool_close_file(int line) {
+  if (!cardq::worker()) {
+    pool_files[line].close();
+    return;
+  }
+  if (g_closing[line]) return;
+  g_closing[line] = true;
+  ++g_nclosing;
+}
+CORE_COLD bool pool_closing(int line) { return g_closing[line]; }
+CORE_COLD void pool_closes_step() {
+  if (!g_nclosing) return;
+  if (g_close_line < 0) {
+    for (int i = 0; i < kPoolLines && g_close_line < 0; ++i)
+      if (g_closing[i]) g_close_line = i;
+  }
+  if (!cardq::async(&g_close_rq, cardq::kCloseReq, &pool_files[g_close_line], nullptr, 0, nullptr, 0)) return;
+  g_closing[g_close_line] = false;
+  --g_nclosing;
+  g_close_line = -1;
+}
+#else
+CORE_COLD void pool_close_file(int line) { pool_files[line].close(); }
+CORE_COLD bool pool_closing(int) { return false; }
+CORE_COLD void pool_closes_step() {}
+#endif
 CORE_COLD void pool_forget(int line) {
-  if (pool_open[line]) pool_files[line].close();
+  if (pool_open[line]) pool_close_file(line);
   pool_open[line] = false;
 }
 

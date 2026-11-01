@@ -143,11 +143,19 @@ grep -q circle-hid-reenum2 include/circle/usb/usbhiddevice.h || patch -p1 < /rep
 # members (a spin lock first) after CUSBHIDDevice::Poll had deleted it, GetReEnumCount moves before each removal,
 # and the time the main loop is held is logged. Its own file and marker for the same reason as -reenum2; idempotent
 grep -q circle-hid-reenum3 include/circle/usb/usbhiddevice.h || patch -p1 < /repo/pi/circle/circle-hid-reenum3.patch
+# then any Elektron device reaches the Overbridge driver, which asks the device profiles (circle-usbdevicefactory2.patch, not an edit
+# to the spike2 patch: the same reason as -reenum2; a box with no audio row is 0 and Circle goes on to its interfaces); idempotent
+grep -q circle-usbdevicefactory2 lib/usb/usbdevicefactory.cpp || patch -p1 < /repo/pi/circle/circle-usbdevicefactory2.patch
 make -C lib/usb -j$J >/dev/null
 # the WLAN driver (the Plan 9 ether4330 port) and wpa_supplicant, once (libwlan.a, libwpa_supplicant.a)
 [ -f addon/wlan/libwlan.a ] || make -C addon/wlan -j$J >/dev/null
 [ -f addon/wlan/hostap/wpa_supplicant/libwpa_supplicant.a ] || make -C addon/wlan/hostap/wpa_supplicant -f Makefile.circle -j$J >/dev/null
-# Pi 5: the DSI display driver (Circle'"'"'s addon/rp1dsi, unchanged; docs/pi5.md "DSI display"), once
+# Pi 5: the DSI display driver, addon/rp1dsi of Circle (docs/pi5.md "DSI display"), once. Two changes, each with its own
+# file and marker, idempotent. circle-rp1dsi-fb.patch: the frame buffer pointer and pitch in the header, for the rotating
+# blit of a Touch Display 2; inline, no object changes. circle-rp1dsi-td2.patch: the Touch Display 2 fixes (contact id
+# bounded, the 5 inch panel in sync events, no touch device for a silent GT911); objects change, so the library is rebuilt.
+[ "$R" != 5 ] || grep -q circle-rp1dsi-fb addon/rp1dsi/rpitouchscreen.h || patch -p1 < /repo/pi/circle/circle-rp1dsi-fb.patch
+[ "$R" != 5 ] || grep -q circle-rp1dsi-td2 addon/rp1dsi/rpitouchscreen2.cpp || { patch -p1 < /repo/pi/circle/circle-rp1dsi-td2.patch && rm -f addon/rp1dsi/librp1dsi.a addon/rp1dsi/*.o; }
 [ "$R" != 5 ] || [ -f addon/rp1dsi/librp1dsi.a ] || make -C addon/rp1dsi -j$J >/dev/null
 # Pi 5: the NVMe SSD driver (Circle'"'"'s addon/nvme, unchanged, experimental; docs/STORAGE.md), once
 [ "$R" != 5 ] || [ -f addon/nvme/libnvme.a ] || make -C addon/nvme -j$J >/dev/null
