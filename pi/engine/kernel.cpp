@@ -1661,6 +1661,7 @@ void CKernel::StopAndReboot (const char *pWhy, boolean bTryboot)
 	m_pTransport->Stop ();
 	if (m_pTransport != &m_Usb) m_Usb.Stop ();		// a Rytm that streams anyway (no-op without one)
 	m_Timer.MsDelay (50);					// the log line out
+	if (m_pDisplay != 0) m_pDisplay->PowerOff ();		// the Touch Display 2 off first (its touch comes back after the reboot)
 	if (bTryboot && !CSdFiles::SetTryboot ()) m_Logger.Write (From, LogWarning, "reboot: the tryboot flag was refused (a plain boot follows)");
 	blackbox_pi::Flush ();					// and onto the card (the black box; after the flag: a slow card cannot lose it)
 	m_Watchdog.Stop ();

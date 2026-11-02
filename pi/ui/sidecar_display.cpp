@@ -931,6 +931,16 @@ extern "C" unsigned sidecar_touch_contacts (void)
 	return CSidecarDisplay::TouchContacts ();
 }
 
+// Before a reboot (kernel.cpp StopAndReboot): the Touch Display 2 shut down as Linux does (display off, sleep, supplies
+// off), else its touch controller may not answer after the warm restart (circle-rp1dsi-warmrestart.patch). Any other
+// display: nothing.
+void CSidecarDisplay::PowerOff (void)
+{
+#if RASPPI >= 5
+	if (m_pRPiTouch && m_pOut == m_pRPiTouch) m_pRPiTouch->PowerOff ();
+#endif
+}
+
 const char *CSidecarDisplay::TakeTouchDiag (void)
 {
 	m_DiagText[0] = '\0';

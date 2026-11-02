@@ -1,0 +1,183 @@
+circle-rp1dsi-warmrestart.patch (Sidecar): the Touch Display 2's touch controller after a warm restart (the engine's own reboot:
+an update, a Wi-Fi join, a change of device). On top of circle-rp1dsi-fb.patch and circle-rp1dsi-td2.patch (build.sh applies
+it after both). Taken from bandersong's sidecar-firmware PR #4 (circle-rp1dsi.patch), narrowed to the warm restart:
+- CRPiTouchScreen2::PowerOff (and CILI9881Panel::PowerOff, CRPiTouchScreen::PowerOff): the panel shut down as Linux does
+  before a reboot (display off, sleep in, reset, backlight and the touch controller's supply off). The engine calls it from
+  StopAndReboot (pi/ui/sidecar_display.cpp PowerOff).
+- At start the GT911's supply is switched off for a real power-on reset (100 ms, then 300 ms, then 1000 ms on each retry), and
+  the controller is probed on 0x5D and on 0x14 (the address it takes after a reset with INT high) after each. The regulator's
+  own init switches the supply off for microseconds only, which does not reset a GT911 whose supply the panel's MCU kept
+  on. A controller that stays silent leaves the engine running without touch, as circle-rp1dsi-td2.patch does.
+
+diff -ruN a/addon/rp1dsi/ili9881panel.cpp b/addon/rp1dsi/ili9881panel.cpp
+--- a/addon/rp1dsi/ili9881panel.cpp
++++ b/addon/rp1dsi/ili9881panel.cpp
+@@ -523,6 +523,15 @@
+ 	}
+ }
+ 
++void CILI9881Panel::PowerOff (void)
++{
++	if (m_bInitialized)
++	{
++		ili9881c_unprepare ();
++		m_bInitialized = FALSE;
++	}
++}
++
+ boolean CILI9881Panel::Initialize (TPanelType PanelType)
+ {
+ 	assert (m_PanelType == PanelUnknown);
+diff -ruN a/addon/rp1dsi/ili9881panel.h b/addon/rp1dsi/ili9881panel.h
+--- a/addon/rp1dsi/ili9881panel.h
++++ b/addon/rp1dsi/ili9881panel.h
+@@ -42,6 +42,10 @@
+ 
+ 	boolean Initialize (TPanelType PanelType);
+ 
++	/// \brief Display off, sleep in, reset (as Linux before a reboot, circle-rp1dsi-warmrestart.patch);
++	///	   Initialize() may follow again
++	void PowerOff (void);
++
+ 	static const drm_display_mode *GetDisplayMode (TPanelType PanelType);
+ 
+ private:
+diff -ruN a/addon/rp1dsi/rpitouchscreen.h b/addon/rp1dsi/rpitouchscreen.h
+--- a/addon/rp1dsi/rpitouchscreen.h
++++ b/addon/rp1dsi/rpitouchscreen.h
+@@ -90,6 +90,9 @@
+ 	/// \param pParam User pointer to be handed over to the handler
+ 	void RegisterVerticalSyncHandler (TVerticalSyncHandler *pHandler, void *pParam = nullptr);
+ 
++	/// \brief circle-rp1dsi-warmrestart.patch: the Touch Display 2 shut down before a reboot (no-op for the v1 display)
++	void PowerOff (void)			{ if (m_pTouchScreen2) m_pTouchScreen2->PowerOff (); }
++
+ private:
+ 	u8 GetRegID (void);
+ 
+diff -ruN a/addon/rp1dsi/rpitouchscreen2.cpp b/addon/rp1dsi/rpitouchscreen2.cpp
+--- a/addon/rp1dsi/rpitouchscreen2.cpp
++++ b/addon/rp1dsi/rpitouchscreen2.cpp
+@@ -105,12 +105,35 @@
+ 
+ 	if (m_bEnableTouch)
+ 	{
+-		if (!m_Regulator.GPIOWrite (CRPiPanel2Regulator::CTP_RESET, 1))
++		// circle-rp1dsi-warmrestart.patch: after a warm restart the panel's MCU has kept the touch supply on, and
++		// the regulator's init switches it off for microseconds only: the GT911 does not reset and does not answer.
++		// So the supply is held off long enough for a real power-on reset, longer on each try, and both GT911
++		// addresses are probed (it takes 0x14 after a reset with INT high). Silent after all: Start() goes on
++		// without touch, as it does for a controller that is silent there.
++		static const unsigned OffMs[] = {100, 300, 1000};
++		u8 ID[GOODIX_ID_MAX_LEN + 1] = {0};
++		boolean bFound = FALSE;
++		for (unsigned nTry = 0; nTry < sizeof OffMs / sizeof OffMs[0] && !bFound; nTry++)
+ 		{
+-			LOGERR ("Cannot power on touch controller");
+-			return FALSE;
++			if (   !m_Regulator.GPIOWrite (CRPiPanel2Regulator::CTP_RESET, 0)
++			    || (msleep (OffMs[nTry]), !m_Regulator.GPIOWrite (CRPiPanel2Regulator::CTP_RESET, 1)))
++			{
++				LOGERR ("Cannot power on touch controller");
++				return FALSE;
++			}
++			msleep (100);	// the supply's startup delay (Linux overlay: 50 ms) and the GT911's boot
++
++			static const u8 Addresses[] = {I2CAddress, I2CAddressAlt};
++			for (unsigned i = 0; i < sizeof Addresses / sizeof Addresses[0] && !bFound; i++)
++			{
++				m_uchTouchAddress = Addresses[i];
++				bFound = goodix_i2c_read (GOODIX_REG_ID, ID, GOODIX_ID_MAX_LEN) == 0;
++			}
++			if (!bFound)
++				LOGWARN ("No touch controller after %u ms off (try %u)", OffMs[nTry], nTry + 1);
+ 		}
+-		usleep_range(5000, 6000);
++		if (!bFound)
++			m_uchTouchAddress = I2CAddress;
+ 	}
+ 
+ 	if (!m_DSI.Initialize (CILI9881Panel::GetDisplayMode (m_PanelType)))
+@@ -128,6 +151,20 @@
+ 	return TRUE;
+ }
+ 
++// circle-rp1dsi-warmrestart.patch: as Linux does before a reboot - the panel off and reset, the backlight and the touch
++// controller's supply off (a 5" at 0.3.1: without it the GT911 stayed silent after the restart)
++void CRPiTouchScreen2::PowerOff (void)
++{
++	if (!m_bRPiPanel2Initialized)
++		return;
++
++	m_Panel.PowerOff ();
++	m_Regulator.SetBacklight (0);
++	m_Regulator.GPIOWrite (CRPiPanel2Regulator::CTP_RESET, 0);
++	m_Regulator.GPIOWrite (CRPiPanel2Regulator::LCD_RESET, 0);
++	msleep (50);
++}
++
+ boolean CRPiTouchScreen2::Start (void *pFrameBuffer, unsigned nPitch)
+ {
+ 	if (!m_DSI.Start (pFrameBuffer, nPitch))
+@@ -148,10 +185,11 @@
+ 		}
+ 		if (nResult != 0)
+ 		{
+-			LOGERR ("No touch controller at I2C 0x%02X, running without touch", (unsigned) I2CAddress);
++			LOGERR ("No touch controller at I2C 0x%02X or 0x%02X, running without touch",
++				(unsigned) I2CAddress, (unsigned) I2CAddressAlt);
+ 			return TRUE;
+ 		}
+-		LOGNOTE ("Touch controller GT%s at I2C 0x%02X", (const char *) ID, (unsigned) I2CAddress);
++		LOGNOTE ("Touch controller GT%s at I2C 0x%02X", (const char *) ID, (unsigned) m_uchTouchAddress);
+ 
+ 		m_pInterface = new CTouchScreenDevice (UpdateStub, this);
+ 		assert (m_pInterface);
+@@ -185,11 +223,11 @@
+ 	u16 wbuf = le2be16 (reg);
+ 	int ret;
+ 
+-	ret = m_pI2C->Write (I2CAddress, &wbuf, 2);
++	ret = m_pI2C->Write (m_uchTouchAddress, &wbuf, 2);
+ 	if (ret != 2)
+ 		return -EIO;
+ 
+-	ret = m_pI2C->Read (I2CAddress, buf, len);
++	ret = m_pI2C->Read (m_uchTouchAddress, buf, len);
+ 	if (ret == len)
+ 		return 0;
+ 
+@@ -207,7 +245,7 @@
+ 	addr_buf[1] = reg & 0xFF;
+ 	memcpy(&addr_buf[2], buf, len);
+ 
+-	ret = m_pI2C->Write (I2CAddress, addr_buf, len + 2);
++	ret = m_pI2C->Write (m_uchTouchAddress, addr_buf, len + 2);
+ 	if (ret == len + 2)
+ 		return 0;
+ 
+diff -ruN a/addon/rp1dsi/rpitouchscreen2.h b/addon/rp1dsi/rpitouchscreen2.h
+--- a/addon/rp1dsi/rpitouchscreen2.h
++++ b/addon/rp1dsi/rpitouchscreen2.h
+@@ -50,6 +50,11 @@
+ 	typedef CRP1DSIHostController::TVBlankHandler TVerticalSyncHandler;
+ 	void RegisterVerticalSyncHandler (TVerticalSyncHandler *pHandler, void *pParam = nullptr);
+ 
++	/// \brief The panel shut down as Linux does before a reboot (circle-rp1dsi-warmrestart.patch): display off,
++	///	   sleep, reset, backlight and the touch controller's supply off. Else the touch controller does not
++	///	   come back after a warm restart.
++	void PowerOff (void);
++
+ private:
+ 	int goodix_i2c_read (u16 reg, u8 *buf, int len);
+ 	int goodix_i2c_write (u16 reg, const u8 *buf, int len);
+@@ -62,6 +67,9 @@
+ 
+ private:
+ 	static const u8 I2CAddress = 0x5D;
++	static const u8 I2CAddressAlt = 0x14;	// the GT911's other address (chosen by INT at its reset)
++
++	u8 m_uchTouchAddress = I2CAddress;	// the one that answered
+ 
+ 	static const unsigned Width = 720;
+ 	static const unsigned Height = 1280;

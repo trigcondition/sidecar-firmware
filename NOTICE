@@ -43,7 +43,8 @@ In tree (ported or adapted; notices next to the code):
   sim/juno/juno_patches.h       Juno-106 patch data from shorepine/amy juno.py (MIT)
   pi/circle/*.patch             patches to Circle (GPL-3.0-or-later);
                                 circle-rp1dsi-td2.patch from bandersong's work
-                                on the Touch Display 2 (sidecar-firmware PR #4)
+                                on the Touch Display 2 (sidecar-firmware PR #4);
+                                circle-rp1dsi-warmrestart.patch too (the warm restart)
   third_party/mdkit/            mdkit, Soejrd's drum voices (CC0 1.0), vendored
                                 unchanged at 96157fe (third_party/mdkit/VENDORED.md)
   third_party/nam/              TONE3000's NAM A2-Lite engine and .namb reader (MIT),

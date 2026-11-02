@@ -258,7 +258,7 @@ Built, **not yet run** (everything here *inferred* from Circle 51.1.1's `addon/r
   display they do no harm: the HDMI frame buffer is never opened). No `vc4-kms-*` overlay, no `display_auto_detect`.
 - Touch Display 2 (720x1280 portrait, mounted landscape): the 1024x600 UI centred, rotated in software, `dsi_rotate=270`
   (default) or `90`; docs/pi-display.md, "Touch Display 2 on the Pi 5".
-- Build: `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi-fb.patch` and `circle-rp1dsi-td2.patch` and builds
+- Build: `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi-fb.patch`, `circle-rp1dsi-td2.patch` and `circle-rp1dsi-warmrestart.patch` and builds
   `addon/rp1dsi/librp1dsi.a` in the Pi 5 tree once; the engine
   links it before `libinput` (both have a `CRPiTouchScreen`; rp1dsi's is the display, libinput's is the Pi 4's firmware
   touch and is not linked on the Pi 5).

@@ -44,6 +44,7 @@ public:
 	boolean IsOn (void) const		{ return m_bOn; }
 	unsigned GetWidth (void) const		{ return m_nWidth; }
 	unsigned GetHeight (void) const		{ return m_nHeight; }
+	void PowerOff (void);			// before a reboot: the Pi 5's Touch Display 2 shut down as Linux does
 	const char *GetInput (void) const;	// "touch (USB)", "touch (DSI)", "mouse1" or "none"
 	// the touch diagnostics for the periodic log line: events (down/move/up) and USB reports since the last call, the last
 	// raw x/y and pressed state, and the HID endpoint's counters (circle-hid.patch); "" without a USB touch screen

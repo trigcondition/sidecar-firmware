@@ -154,8 +154,11 @@ make -C lib/usb -j$J >/dev/null
 # file and marker, idempotent. circle-rp1dsi-fb.patch: the frame buffer pointer and pitch in the header, for the rotating
 # blit of a Touch Display 2; inline, no object changes. circle-rp1dsi-td2.patch: the Touch Display 2 fixes (contact id
 # bounded, the 5 inch panel in sync events, no touch device for a silent GT911); objects change, so the library is rebuilt.
+# circle-rp1dsi-warmrestart.patch, after both: PowerOff of the panel before a reboot and a real power-on reset of the GT911
+# at start (touch after a warm restart); same rebuild.
 [ "$R" != 5 ] || grep -q circle-rp1dsi-fb addon/rp1dsi/rpitouchscreen.h || patch -p1 < /repo/pi/circle/circle-rp1dsi-fb.patch
 [ "$R" != 5 ] || grep -q circle-rp1dsi-td2 addon/rp1dsi/rpitouchscreen2.cpp || { patch -p1 < /repo/pi/circle/circle-rp1dsi-td2.patch && rm -f addon/rp1dsi/librp1dsi.a addon/rp1dsi/*.o; }
+[ "$R" != 5 ] || grep -q circle-rp1dsi-warmrestart addon/rp1dsi/rpitouchscreen2.h || { patch -p1 < /repo/pi/circle/circle-rp1dsi-warmrestart.patch && rm -f addon/rp1dsi/librp1dsi.a addon/rp1dsi/*.o; }
 [ "$R" != 5 ] || [ -f addon/rp1dsi/librp1dsi.a ] || make -C addon/rp1dsi -j$J >/dev/null
 # Pi 5: the NVMe SSD driver (Circle'"'"'s addon/nvme, unchanged, experimental; docs/STORAGE.md), once
 [ "$R" != 5 ] || [ -f addon/nvme/libnvme.a ] || make -C addon/nvme -j$J >/dev/null

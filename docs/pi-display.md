@@ -280,7 +280,7 @@ On the Pi 5 see "DSI on the Pi 5" below. On the Pi 4:
 ### DSI on the Pi 5
 
 The Pi 5's firmware does not drive a DSI display: the engine drives it itself with Circle's `addon/rp1dsi` (Circle
-51.1.1, GPL-3.0; `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi-fb.patch` and `circle-rp1dsi-td2.patch`, for the Touch
+51.1.1, GPL-3.0; `pi/engine/build.sh` applies `pi/circle/circle-rp1dsi-fb.patch`, `circle-rp1dsi-td2.patch` and `circle-rp1dsi-warmrestart.patch`, for the Touch
 Display 2, and builds `librp1dsi.a` in the Pi 5 tree). The v1 path is *inferred* from Circle's sources, not yet run on hardware.
 
 - At boot (the boot screen), unless `dsi=0`: the engine reads the display regulator (I2C address 0x45, register 1) on
@@ -348,10 +348,15 @@ change to `addon/rp1dsi` but the frame buffer accessors. The blit's real cost is
   1.6 ms of busy-wait in core 0's loop, interrupts on (the I2C lock is task level), so this panel is polled every 20 ms, not
   10: about 8 % of the loop, whether or not a finger is down. The stats line's `longest update` includes it.
 - **Touch after a warm restart:** on a 5" the GT911 did not answer after a software restart until a power cycle (bandersong's
-  measurement; shutting the panel down first and a longer power-off at start did not help). The 7" has not been tried, and the cause is not
-  known. The engine restarts itself after an update, a Wi-Fi join or a change of device. If the controller is silent at start the log says
-  `rp1touch2: No touch controller at I2C 0x5D, running without touch` and the engine runs on without touch: use the web UI, or power
-  cycle. The contact id from the controller is bounded before it indexes anything (from the same PR).
+  measurement; the cause is not known). The engine restarts itself after an update, a Wi-Fi join or a change of device.
+  `circle-rp1dsi-warmrestart.patch` does what Linux does and what the regulator's own init does too briefly: before the restart
+  the panel is shut down (display off, sleep, reset, backlight and the controller's supply off), and at start the controller's
+  supply is held off for a real power-on reset (100, then 300, then 1000 ms on each retry), after which 0x5D and then 0x14 are
+  probed (the address a GT911 takes after a reset with INT high). This is the same approach as bandersong's 0.3.1 work; **it
+  has not been confirmed on hardware** (not on this build, not on the 7"), so whether touch now returns after a warm restart is
+  still open. If the controller is silent after all, the log says
+  `rp1touch2: No touch controller at I2C 0x5D or 0x14, running without touch` and the engine runs on without touch: use the web
+  UI, or power cycle. The contact id from the controller is bounded before it indexes anything (from the same PR).
 
 The log:
 
