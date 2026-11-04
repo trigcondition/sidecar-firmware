@@ -283,7 +283,16 @@ uint32_t g_pub_ms = 0;
 
 rmp_host g_host1, g_host2;
 
-void plog(const char* m) { core::log("plugin: %s", m); }
+// A plugin's log line: copied first, bounded (API 3: inside a guarded call a bad pointer faults here, before the log's
+// lock is taken, so the slot is muted and no host lock stays held)
+void plog(const char* m) {
+  char b[128];
+  int n = 0;
+  if (m)
+    for (; n < (int)sizeof b - 1 && m[n]; ++n) b[n] = m[n];
+  b[n] = 0;
+  core::log("plugin: %s", b);
+}
 uint32_t prandom(uint32_t* s) {
   uint32_t x = *s ? *s : 2463534242u;
   x ^= x << 13; x ^= x >> 17; x ^= x << 5;

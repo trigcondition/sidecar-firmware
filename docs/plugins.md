@@ -835,6 +835,16 @@ ignored on both sides; spec 2.1). Everything below is answered from `loop()` bet
   silence for the rest. Call `pool_info` about once a block, not per sample (it runs from flash).
 - Test plugin: `plugins/v2_test` (every API-2 feature; `sim/tests/test_rmp.py` V2Test, `sim/rmp_e2e.py` 7..11).
 
+## 12a. Plugin API 3 (the Pi; in development)
+
+`sdk/rmp/rmp_api3.h`; what this engine implements of the proposal and where it differs: docs/plugin-api-3-plan.md.
+A dual package (an API 2 table, `.api = 2u`, with an `rmp3_plugin` in `reserved[RMP_P_V3]`) plays as API 2 on an
+older host and as API 3 here; an API 3 only package (`.api = 3u`) is refused by an older host (effects must be). In
+the engine so far: the transport snapshot in every block, the slot arena (`plugram=` on the Pi), guarded control calls
+(a fault mutes the slot; `um=reload:<slot>`), stereo out on PRE / POST, and user effects in the send FX's UFX1..UFX4
+(`um=fx:<n>:<id>`). Test plugins: `plugins/api3_test` (the probe), `plugins/ufx_pingpong` (the example effect).
+API 1 and 2 plugins are unchanged: `core/tests/test_api3_compat.cpp` compares their output with an API 2 host's.
+
 ## 13. Presets
 
 `/PRESETS/<id>/` on the card: generic presets `<name>.txt` with one `P<n> <value>` line per knob (others ignored; a file
