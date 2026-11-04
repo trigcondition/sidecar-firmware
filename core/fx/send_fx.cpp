@@ -71,7 +71,7 @@ CORE_COLD State state(int slot) {
   // a user id: the slot map must hold an effect whose tag matches the kit's (an untagged kit takes the slot's), and
   // (Plugin API 3) its plugin must be loaded: READY then, else MISSING (the name says which effect the slot holds)
   int u = id - kFirstUser;
-  if (u >= 0 && u < kUserSlots && user_plays(id) && (!kit_tag[slot] || kit_tag[slot] == user[u].tag)) return kStReady;
+  if (u >= 0 && u < kUserSlots && user_plays_at(id, slot)) return kStReady;
   return kStMissing;
 }
 

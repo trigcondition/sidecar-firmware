@@ -171,7 +171,8 @@ typedef struct rmp3_plugin {     /* 136 B on AArch64 */
   uint8_t pad[6];
   const rmp3_sig_decl *sig_out;
   const rmp3_sig_decl *sig_in;
-  int32_t (*setup)(const rmp3_setup *s);                  /* after init, once per slot; nonzero = refuse */
+  int32_t (*setup)(const rmp3_setup *s);                  /* after init, per slot: 0 done, RMP3_SETUP_MORE call
+                                                             again (next idle step), else refuse */
   void (*voice_attach)(void *state, const rmp3_voice *v); /* after voice_init */
   void (*render)(void *state, const rmp3_block *b);       /* replaces rmp_plugin.render */
   int32_t (*view)(void *state, int32_t id, rmp3_view *v); /* a page's live data */
@@ -211,6 +212,13 @@ typedef struct rmp3_page {       /* 64 B, then nrytm + ntouch cells */
 } rmp3_page;
 
 typedef void (*rmp3_render_fn)(void *state, const rmp3_block *b);
+
+/* setup()'s "not done yet": the host calls it again from its next idle step, with the engine playing in between. init()
+   and each setup() call run on the control core between blocks: keep each under 1 ms (the host refuses the package
+   past it), and do heavy work (tables, a big arena's layout) in pieces. */
+#define RMP3_SETUP_MORE 0x45524F4D   /* "MORE" */
+/* Host rule (the guarded calls): a host service a plugin can call reads or writes the plugin's memory before it takes
+   any lock, so a bad pointer faults with no host lock held. */
 
 #ifdef __aarch64__
 #ifdef __cplusplus

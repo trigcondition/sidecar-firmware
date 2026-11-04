@@ -176,6 +176,12 @@ struct UserFx {
 };
 extern UserFx user[kUserSlots];
 extern volatile uint16_t kit_tag[kSlots];   // the kit's tag for FX k (0x20 track 13; 0 = none reported)
+// Plugin API 3: a user TYPE plays in send slot `slot` only when its effect is loaded and the kit was made for it (an
+// untagged kit takes the slot's): a kit for another effect plays silence there (MISSING), not this one
+inline bool user_plays_at(int t, int slot) {
+  int u = t - kFirstUser;
+  return user_plays(t) && (!kit_tag[slot] || kit_tag[slot] == __atomic_load_n(&user[u].tag, __ATOMIC_ACQUIRE));
+}
 uint16_t fx_tag(const char* name);          // FNV-1a 32 of the name, folded to 14 bits, 0 avoided
 
 // ---- the DSP
@@ -589,7 +595,7 @@ class SendFx {
       int ss[kSlots], ns = 0;
       for (int s = 0; s < kSlots; ++s)
         if ((plays(cur_[s]) && cur_[s] != kStutter) || (plays(c.knob[s][0]) && c.knob[s][0] != kStutter) ||
-            user_plays(cur_[s]) || user_plays(c.knob[s][0]))
+            user_plays(cur_[s]) || user_plays_at(c.knob[s][0], s))
           ss[ns++] = s;
       if (ns) Mix(stems, n, tg, ss, ns, xs);
       for (int k2 = 0; k2 < ns; ++k2) have[ss[k2]] = true;
@@ -600,6 +606,8 @@ class SendFx {
     for (int s = 0; s < kSlots; ++s) {
       uint8_t want = c.knob[s][0];
       if (want == kStutter && s != sslot) want = kOff;   // the other slot has it: this one silent (MISSING)
+      if (want >= kFirstUser && !user_plays_at(want, s)) want = kOff;   // a user effect not loaded, or the kit's another: off, faded
+      if (cur_[s] >= kFirstUser && !user_plays(cur_[s])) cur_[s] = kOff, fade_[s] = 0;   // (gone: it fades in again when back)
       bool same;
       int t = Step(s, want, n, c, &same);
       if (!plays(t) && !user_plays(t)) continue;   // off, an effect this build lacks, or waiting for its clear: silence

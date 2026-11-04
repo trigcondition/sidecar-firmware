@@ -1,0 +1,22 @@
+{
+  "id": "rytm.api3_polyar",
+  "version": "1.0.0",
+  "name": "API3 POLYA",
+  "short": "A3T",
+  "licence": "MIT",
+  "max_voices": 4,
+  "knobs": [
+    {
+      "p": 1,
+      "long": "Mode",
+      "short": "MOD",
+      "default": 0
+    },
+    {
+      "p": 2,
+      "long": "Level",
+      "short": "LEV",
+      "default": 100
+    }
+  ]
+}

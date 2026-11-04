@@ -1,11 +1,14 @@
 // core/tests/test_api3_compat.cpp - API 1 / API 2 user machines play the same, sample for sample, on an API 3 host
 // (docs/plugin-api-3-plan.md, "Proof that API 2 is unchanged"). Every RMPA package built under plugins/ (make -C
 // plugins/<p> a64) is assigned to U1 in turn and played on voice 0 through the engine (a 0x04 trig, a 0x03 knob
-// change, a 0x11 note off, the blocks rendered by render_voices); the voice's int16 output is hashed (FNV-1a 64) and
+// change, a 0x11 note off, the blocks rendered by render_voices); then the same voice routed OUT PRE (render_voices with
+// the R rows: the stereo pair's path, both channels hashed) and, for a package that declares poly instances
+// (RMP_HF_INSTANCES), three instances of the voice (um::inst_note_on / inst_render). Each output is hashed (FNV-1a 64) and
 // compared with tests/golden/api2_compat.txt, which an API 2 host (origin/dev before API 3) wrote with
 // API2_COMPAT_WRITE=1. The same source builds against both hosts: it uses no API 3 name.
-// Without built packages it says so and passes (CI has no AArch64 cross compiler); a package missing from the golden
-// file is printed, not failed (a new plugin: write the golden file again on the API 2 host).
+// Without built packages it says so and passes (CI has no AArch64 cross compiler). With packages, every one in the
+// golden file must be built, load READY and be compared, else the test fails; one not in the golden file is printed
+// (a new plugin: write the golden file again on the API 2 host).
 #include <dirent.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -19,6 +22,7 @@
 
 #include "check.h"
 #include "engine.h"
+#include "fx/out.h"
 #include "hooks.h"
 #include "rmp_format.h"
 #include "rmp_slots.h"
@@ -81,18 +85,26 @@ static std::vector<uint8_t> report(uint8_t cmd, int note, const int* p) {   // 0
   return m;
 }
 static int16_t g_ring[1024][kVoices];
+static int16_t g_ring_r[1024][kVoices];
+static uint8_t g_stm[kVoices];
 static uint64_t g_t = 1000000;   // the fake clock (host_fake_time): a block is 250 us, so every run times the same
 static uint64_t g_mach[16];
-// n blocks of voice 0 into h (FNV-1a 64 over its int16 samples); peak: the largest |sample|
-static void render(int blocks, uint64_t* h, int* peak) {
+static void hash16(uint64_t* h, int16_t x) {
+  for (int k = 0; k < 2; ++k) *h = (*h ^ (uint8_t)(x >> (8 * k))) * 0x100000001b3ull;
+}
+// n blocks of voice 0 into h (FNV-1a 64 over its int16 samples); peak: the largest |sample|. stereo: the R rows
+// too (render_voices' stereo pairs), R hashed into hr
+static void render(int blocks, uint64_t* h, int* peak, bool stereo = false, uint64_t* hr = nullptr) {
   static int w = 0;
   for (int b = 0; b < blocks; ++b) {
     g_t += 250;
     host_fake_time(true, g_t);
-    render_voices(g_ring, 1024, w, 0, kVoices, g_mach);
+    if (stereo) render_voices(g_ring, 1024, w, 0, kVoices, g_mach, g_ring_r, g_stm);
+    else render_voices(g_ring, 1024, w, 0, kVoices, g_mach);
     for (int s = 0; s < kBlock; ++s) {
       int16_t x = g_ring[(w + s) % 1024][0];
-      for (int k = 0; k < 2; ++k) *h = (*h ^ (uint8_t)(x >> (8 * k))) * 0x100000001b3ull;
+      hash16(h, x);
+      if (stereo) hash16(hr, g_ring_r[(w + s) % 1024][0]);
       int a = x < 0 ? -x : x;
       if (a > *peak) *peak = a;
     }
@@ -111,7 +123,9 @@ int main() {
         while (dirent* f = readdir(d2)) {
           std::string n = f->d_name;
           // (plugins/fault_test faults on purpose: the guard's tests, not a sound)
-          if (n.size() > 8 && n.compare(n.size() - 8, 8, ".a64.rmp") == 0 && n.find("fault") == std::string::npos)
+          // (and the API 3 packages, plugins/api3_test and ufx_pingpong: an API 2 host plays them otherwise or not at all)
+          if (n.size() > 8 && n.compare(n.size() - 8, 8, ".a64.rmp") == 0 && n.find("fault") == std::string::npos &&
+              n.find("api3_") != 0 && n.find("ufx_") != 0)
             pkgs.push_back(sub + "/" + n);
         }
         closedir(d2);
@@ -160,30 +174,34 @@ int main() {
     snprintf(n, sizeof n, "/Plugins/p%02zu.rmp", i);
     put(n, b);
   }
-  hooks.to_rytm = out;
+  hooks.to_rytm = ::out;
   CHECK(engine_begin());
   um::begin(host_um_exec());
   sysex({0xf0, 0x7d, 0x52, 0x54, 0x10, 'U', 'M', 'C', 0xf7});
   idle_all();
 
-  std::string text = "# test_api3_compat's golden file: <package id> <FNV-1a 64 of voice 0> <peak>, from an API 2 host\n";
+  std::string text = "# test_api3_compat's golden file, from an API 2 host: <package id> <FNV-1a 64 of voice 0 on TRK> <its peak>\n"
+                     "# <voice 0 on PRE: L> <R> <its peak> <three poly instances, - when it declares none>\n";
   int compared = 0, fails = 0;
   for (size_t i = 0; i < ids.size(); ++i) {
     char o[200];
     CHECK(um::command(("um=assign:1:" + ids[i]).c_str(), o, sizeof o));
     idle_all();
-    if (um::slot_view(0).state != RMP_SLOT_READY) {
-      printf("test_api3_compat: %s not READY here (state %d): skipped\n", ids[i].c_str(), um::slot_view(0).state);
+    if (um::slot_view(0).state != RMP_SLOT_READY) {   // a package the API 2 host played must load here
+      printf("test_api3_compat: %s not READY here (state %d)\n", ids[i].c_str(), um::slot_view(0).state);
+      if (!write) ++fails;
       continue;
     }
     uint64_t h = 0xcbf29ce484222325ull;
     int peak = 0;
     int p[16];
     for (int k = 0; k < 16; ++k) p[k] = (40 + 5 * k) << 7;   // a fixed sound, distinct knobs
+    p[5] = 10 << 7;   // (P6 low: plugins/v2_test's MODE SINE; its POOL mode is silent without a pool)
     sysex(report(0x04, 60, p));
     idle_all();
     render(200, &h, &peak);
     for (int k = 0; k < 16; ++k) p[k] = ((90 - 3 * k) << 7) | 37;   // a knob change with fractions, mid-note
+    p[5] = (12 << 7) | 37;
     sysex(report(0x03, -1, p));
     idle_all();
     render(200, &h, &peak);
@@ -193,8 +211,35 @@ int main() {
     sysex(report(0x04, 67, p));   // a second note, another pitch
     idle_all();
     render(200, &h, &peak);
+    // OUT PRE: the stereo pair's path (user_render2, R kept or L copied), a fresh note
+    out::set_route(0, out::kPre);
+    uint64_t hl = 0xcbf29ce484222325ull, hr = hl;
+    int peak2 = 0;
+    sysex(report(0x04, 62, p));
+    idle_all();
+    render(300, &hl, &peak2, true, &hr);
+    out::set_route(0, out::kTrk);
+    render(4, &hl, &peak2, true, &hr);   // (the route back: both rows still hashed)
+    // poly instances, when it declares them (RMP_HF_INSTANCES): three notes on voice 0's instances 0..2
+    char poly[24] = "-";
+    uint32_t hf = 0, cpu = 0, stb = 0;
+    if (um::inst_decl(0, &hf, &cpu, &stb) && (hf & RMP_HF_INSTANCES)) {
+      uint64_t hp = 0xcbf29ce484222325ull;
+      for (int n = 0; n < 3; ++n) CHECK(um::inst_note_on(0, n, (float)(60 + 4 * n), 0.8f));
+      for (int b = 0; b < 300; ++b) {
+        if (b == 150) um::inst_note_off(0, 1);
+        for (int n = 0; n < 3; ++n) {
+          float o[kBlock];
+          um::inst_render(0, n, o);
+          for (int s = 0; s < kBlock; ++s) hash16(&hp, (int16_t)(o[s] * 32767.0f));
+        }
+      }
+      um::inst_stop(0);
+      snprintf(poly, sizeof poly, "%016llx", (unsigned long long)hp);
+    }
     char line[160];
-    snprintf(line, sizeof line, "%016llx %d", (unsigned long long)h, peak);
+    snprintf(line, sizeof line, "%016llx %d %016llx %016llx %d %s", (unsigned long long)h, peak, (unsigned long long)hl,
+             (unsigned long long)hr, peak2, poly);
     text += ids[i] + " " + line + "\n";
     auto it = want.find(ids[i]);
     if (write) {
@@ -218,6 +263,13 @@ int main() {
     fclose(f);
     printf("test_api3_compat: wrote %s (%zu packages)\n", golden, ids.size());
     return 0;
+  }
+  if (compared != (int)want.size()) {   // every package the API 2 host played: built, loaded and compared
+    for (auto& w : want)
+      if (std::find(ids.begin(), ids.end(), w.first) == ids.end())
+        fprintf(stderr, "test_api3_compat: %s is in %s but not built here (make -C plugins/<p> a64)\n", w.first.c_str(), golden);
+    fprintf(stderr, "test_api3_compat: %d of %zu golden packages compared\n", compared, want.size());
+    ++fails;
   }
   CHECK(fails == 0);
   printf("test_api3_compat: %d packages sound as on the API 2 host: PASS\n", compared);

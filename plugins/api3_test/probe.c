@@ -12,7 +12,9 @@
 // P1 MODE in zones of 16: 0 plays, 1 params() faults, 2 params() runs ~2 ms (late), 3 note_on() faults.
 // Variants (Makefile V=): PROBE_ONLY an API 3 only table (api 3, no API 2 render); PROBE_INITCRASH init() faults;
 // PROBE_NEEDS needs the signal bus (no host has it yet); PROBE_BIG wants an arena past any slot's limit;
-// PROBE_STEREO out_channels 2: on a stereo route R is -L.
+// PROBE_STEREO out_channels 2: on a stereo route R is -L; PROBE_NOARENA no arena at all (a poly variant: max_voices 4);
+// PROBE_SETUP 1 setup() faults, 2 runs ~3 ms (late), 3 asks for more twice (RMP3_SETUP_MORE: three calls), 4 refuses;
+// PROBE_ATTACHCRASH voice_attach() faults.
 // MIT, Copyright 2026 trigcondition and contributors.
 #include "rmp/rmp_api3.h"
 
@@ -55,16 +57,31 @@ static void p_render2(void *st, float *out, int32_t n) {
 }
 
 static int32_t p_setup(const rmp3_setup *su) {
+#if PROBE_SETUP == 1
+  *(volatile int *)0 = 1;
+#elif PROBE_SETUP == 2
+  for (volatile uint32_t i = 0; i < 9000000u; ++i) {}
+#elif PROBE_SETUP == 4
+  return 7;
+#endif
   uint32_t *sh = (uint32_t *)su->shared;
   if (!sh || su->shared_bytes < 16) return 0;
-  for (uint32_t i = 0; i < su->shared_bytes / 4; ++i)
-    if (sh[i]) return 0;   /* not zeroed: the probe's frame 4 stays 0 */
-  sh[0] = SHARED_MAGIC;
+  if (sh[0] != SHARED_MAGIC) {
+    for (uint32_t i = 0; i < su->shared_bytes / 4; ++i)
+      if (sh[i]) return 0;   /* not zeroed: the probe's frame 4 stays 0 */
+    sh[0] = SHARED_MAGIC;
+  }
   sh[1] += 1;
+#if PROBE_SETUP == 3
+  if (sh[1] < 3) return RMP3_SETUP_MORE;
+#endif
   return 0;
 }
 static void p_attach(void *st, const rmp3_voice *v) {
   probe *s = st;
+#ifdef PROBE_ATTACHCRASH
+  *(volatile int *)0 = 1;
+#endif
   s->attached = 1;
   s->voice = v->voice;
   s->shared = (uint32_t *)v->shared;
@@ -109,9 +126,19 @@ static const rmp3_plugin g3 = {
 #ifdef PROBE_NEEDS
   .needs = RMP3_CAP_BUS,
 #endif
+#ifdef PROBE_NOARENA
+  .wants = RMP3_CAP_TRANSPORT | RMP3_CAP_GUARD,
+#else
   .wants = RMP3_CAP_TRANSPORT | RMP3_CAP_ARENA | RMP3_CAP_GUARD | RMP3_CAP_STEREO,
+#endif
+#ifdef PROBE_NOARENA
+  .shared_min = 0, .shared_want = 0,
+#else
   .shared_min = 4096, .shared_want = 65536,
-#ifdef PROBE_BIG
+#endif
+#ifdef PROBE_NOARENA
+  .voice_min = 0, .voice_want = 0,
+#elif defined(PROBE_BIG)
   .voice_min = 64u << 20, .voice_want = 64u << 20,
 #else
   .voice_min = 65536, .voice_want = 262144,

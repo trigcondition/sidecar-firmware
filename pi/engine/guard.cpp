@@ -2,6 +2,7 @@
 #include "guard.h"
 
 #include <circle/multicore.h>
+#include <circle/synchronize.h>
 
 #include "bridge.h"
 #include "crumb.h"
@@ -63,6 +64,16 @@ void CGuard::LogNews (CLogger *pLogger)
 		pLogger->Write ("guard", LogWarning, "voice %u !%s muted: %s (longest render %u us, budget %u us)", v,
 				bridge::machine_name (v), m_pWhy[v], m_nMaxTicks[v] / nPerUs, m_nBudget / nPerUs);
 	}
+	for (unsigned c = 2; c <= 3; c++)	// Plugin API 3: a guarded plugin call that faulted (once each)
+	{
+		if (m_nCtlLastPC[c])
+		{
+			pLogger->Write ("guard", LogWarning, "core %u: a plugin call faulted at PC 0x%lx, resumed %s (%u in all)", c,
+					(unsigned long) m_nCtlLastPC[c], m_bCtlResumedOK[c] ? "at task level (EL1t)" : "NOT at task level",
+					m_nCtlFaults);
+			m_nCtlLastPC[c] = 0;
+		}
+	}
 	for (unsigned c = 1; c <= 2; c++)
 	{
 		if (m_nFaultPC[c])
@@ -89,29 +100,21 @@ static void __attribute__ ((noinline, noreturn)) ResumeWorker (void)
 // Plugin API 3: a fault inside a guarded plugin call on core 3 comes back here, at task level, as ResumeWorker does.
 static void __attribute__ ((noinline, noreturn)) ResumeControl (void)
 {
-	__builtin_longjmp (g_Guard.ControlJumpBuffer (CMultiCoreSupport::ThisCore ()), 1);
+	GUARD_LONGJMP (g_Guard.ControlJumpBuffer (CMultiCoreSupport::ThisCore ()));
 }
 
-int __attribute__ ((noinline)) CGuard::ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC)
+int CGuard::ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC)
 {
 	const unsigned c = CMultiCoreSupport::ThisCore ();
-	if ((c != 2 && c != 3) || m_bCtlArmed[c] || (c == 2 && m_bArmed[2]))	// (core 2 inside a voice: the voice's guard)
+	int r = ControlCallOn (c, pFunc, pParam, pPC);
+	if (r)		// the evidence the hardware check wants: back at task level, on SP_EL0, as the render guard's resume
 	{
-		pFunc (pParam);
-		return 0;
+		u64 nSPSel;
+		asm volatile ("mrs %0, spsel" : "=r" (nSPSel));
+		m_bCtlResumedOK[c & 3] = CurrentExecutionLevel () == TASK_LEVEL && nSPSel == 0;
+		m_nCtlLastPC[c & 3] = *pPC;
 	}
-	m_pCtlPC[c] = pPC;
-	if (__builtin_setjmp (m_CtlJmp[c]))
-	{
-		const unsigned c2 = CMultiCoreSupport::ThisCore ();
-		m_bCtlArmed[c2] = FALSE;
-		*m_pCtlPC[c2] = m_nCtlPC[c2];
-		return 1;
-	}
-	m_bCtlArmed[c] = TRUE;
-	pFunc (pParam);
-	m_bCtlArmed[c] = FALSE;
-	return 0;
+	return r;
 }
 
 void CEngineExceptionHandler::Throw (unsigned nException, TAbortFrame *pFrame)

@@ -56,15 +56,23 @@ watchdog on core 0), and agents do not build kernels.
   supplies `Exec::guard`: on the Pi, core 3's own jump buffer in pi/engine/guard.cpp (the exception handler returns
   into it as it does for a render core); on the Mac, `sigsetjmp` and a signal handler (core/host/um_host.cpp). A fault
   mutes the slot (silent, no further calls, the JSON's `"muted":true` and `why` "muted: crashed in params at +0x84")
-  and the engine plays on; `init` or `setup` faulting refuses the package (BAD). API 3 plugins are also held to the
-  time limits: a control call over 500 us three times in a row mutes the slot, `init` or `setup` over 100 ms refuses
-  it. `um=reload:<slot>` loads a slot again.
+  and the engine plays on; `init` or `setup` faulting refuses the package (BAD). A fault also mutes every slot that
+  shares the faulting slot's image (its globals may be what the fault damaged). API 3 plugins are also held to the
+  time limits: a control call over 500 us three times in a row mutes the slot; `init`, and each `setup` call, over
+  1 ms refuses the package (decision 1: `setup` may return `RMP3_SETUP_MORE` and is called again from the next idle
+  step, so heavy work goes in pieces). `um=reload:<slot>` loads a slot again.
 - **The slot arena:** `Exec::arena` gives um one pool at boot (the Pi: `plugram=` MB from the heap before the pool
   RAM, default 64 / 128 / 256 MB on 2 / 4 / 8 GB, none under 2 GB; the Mac: 64 MB). A slot's arena is reserved when
   it loads: the shared part and `states` voice parts, each the plugin's `want`, else its `min`, at most a quarter of
   the pool a slot; zeroed in 256 KB pieces, one an idle step, the slot LOADING meanwhile; then `setup`. Voice `vi`
-  gets part `vi`, poly instance `i` part `8 + i`; a state past `states` stays silent. Two slots of one package share
-  the image and get an arena and a `setup` each. The arenas come back with the code's at a full reload.
+  gets part `vi`, poly instance `i` part `8 + i`. `states` defaults to 8, 40 for a poly machine (`RMP_HF_INSTANCES`),
+  2 for an effect. A plugin with no voice part (no arena) never runs out of states. A state past `states` is refused
+  in words (the log once, the slot's `why`: "no room: poly instance 3 past the arena's 8 states"). Two slots of one
+  package share the image and get an arena and a `setup` each. A slot's block comes back when the slot loads again,
+  empties or takes another plugin: to the pool's top, or to a short list of free blocks any load it fits reuses.
+  Only when the free space is there but in pieces does a load reload every slot (a full reload packs the pool).
+  Arena parts are not cleared between occupants (a voice's part keeps the last track's data: clear what you read
+  before writing) and have no guard words: an overrun into the next part is not caught.
 
 ### Phase 2: stereo
 
@@ -94,9 +102,18 @@ TIME in the Rytm's tempo from the transport (1/16 .. 1 BAR), FDBK, TONE, WIDTH; 
 side at least, 4 s wanted). core/tests/test_api3.cpp runs it through `SendFx::Process` on the host: no output until
 the echo, the first echo on the left at the tempo's 1/8, the feedback's on the right at twice that.
 
+The effect's budget (as the voices' guard): its render is timed on core 2; 16 calls in a row over 120 us a 12-frame
+block (scaled by n), or one call over 2 ms, mute it ("muted: render ran 2400 us, over its budget"). The send FX's
+transport snapshot is read once a call; its edges (START, STOP, JUMP) reach each of an effect's states exactly once,
+in the first sub-block, however core 2's send FX falls against the blocks (each snapshot carries the edges' running
+counts). A kit made for another effect (its tag) plays silence in that slot, not the effect UFX`n` holds; a user TYPE
+that goes away (unloaded, muted) fades in again when it comes back. A rescan follows the UFX slots as it does U1..U5
+(a package changed reloads them, the package indices follow the new list). Changing a UFX first takes it off core 2
+with a bounded wait (5 ms): an effect that never returns is left behind (its memory never reused) and core 3 goes on,
+so its own watchdog sees core 2 stuck and the board restarts, as for a hung voice.
+
 Not yet: the INSERT, bus and master positions (part 8), the slot map file for UFX (`/.rytm/fxslots/` holds tag and
-name only; um's assignment is in memory), a fresh state on a TYPE change back to the same effect, a time limit on an
-effect's render on core 2 (only faults are caught).
+name only; um's assignment is in memory), a fresh state on a TYPE change back to the same effect.
 
 Tests: core/tests/test_api3.cpp (the probe plugin plugins/api3_test in six variants, kept built in
 core/tests/api3_pkgs), core/tests/test_api3_compat.cpp (below), tools/tests/test_rmp_api.c,
@@ -117,12 +134,14 @@ a line saying it compared nothing (CI has no AArch64 compiler).
 
 Each: what the page says, what the engine does, why. Listed for the owner.
 
-1. **`init` and `setup` run on the control core, not a core 0 task.** The page moves them to a setup task on core 0
-   with 100 ms of room. The engine runs both where `init` always ran, in the load's idle step on core 3, guarded and
-   timed: a fault refuses the package, over 100 ms too (an API 3 plugin). Why: a guarded task on core 0 needs a second
-   guarded context on the core that runs USB, the card and the web, and the page's own open question 2 says its cost
-   is not measured. A long `setup` on core 3 costs one control pass (a glitch while it runs, as a long `init` does
-   today); the 100 ms rule makes such a package a refusal, not a habit. Revisit with measurements on the Pi.
+1. **`init` and `setup` run on the control core, not a core 0 task, with 1 ms a call and `setup` in pieces.** The page
+   moves them to a setup task on core 0 with 100 ms of room. The engine runs both where `init` always ran, in the
+   load's idle step on core 3, guarded and timed. Core 3 renders no block while a call runs and the FIFO holds 2 ms, so
+   100 ms would be a dropout of every track at each load: the limit is 1 ms (an API 3 plugin's `init`, and each
+   `setup` call), past it the package is refused, and `setup` may return `RMP3_SETUP_MORE` (rmp_api3.h: "MORE") to be
+   called again from the next idle step, the engine playing in between (4000 calls at most). The page's "nonzero =
+   refuse" keeps holding for every other value. Why not core 0: a guarded task there needs a second guarded context
+   on the core that runs USB, the card and the web, and the page's open question 2 says its cost is not measured.
 2. **The arena is zeroed on the control core**, in 256 KB pieces (one an idle step), not by core 0. Same reason;
    256 KB of `memset` is tens of microseconds on a Pi 4. The slot stays LOADING meanwhile, as the page says.
 3. **Late calls mute API 3 plugins only.** The page's three-late-calls rule would newly mute existing API 2 machines
@@ -134,12 +153,14 @@ Each: what the page says, what the engine does, why. Listed for the owner.
 5. **How the scan knows an effect:** the page does not say. The packer sets `RMP_HF_API3` / `RMP_HF_EFFECT` in the
    header from the table; the scan keeps effects out of the Rytm's machine list; the loader checks the table itself.
 6. **`rmp3_voice.instance` is -1 for a voice's own state** (the page says "0.. on a poly track" only), and the arena
-   part of instance `i` is `8 + i`: the default 8 states cover the voices, a poly machine sets `states` up to 40.
+   part of instance `i` is `8 + i`. The page's default of 8 states would silence a ported poly machine's instances:
+   the default is 40 for a package with `RMP_HF_INSTANCES`, and a plugin with no voice part needs no states at all.
 7. **`cpu_mhz` is 0** in `rmp3_host` for now (the engine has no clock call in the portable core yet); `board` is 4 or
    5 on the Pi, 0 on the Mac.
 8. **The endless-loop recovery** (core 0 watching core 3, the slot skipped at the next boot, `!CRASH`) is not built:
    kernel work that only hardware can test (the plan's part 13). A plugin that loops in a control call on core 3 does
-   what it does today (core 3 stops serving blocks, the stream stops); only faults are caught.
+   what it does today (core 3 stops serving blocks, the stream stops); an effect that hangs on core 2 trips core 3's
+   20 ms block watchdog (a restart). Faults and slow effects are caught; a hang is not, yet.
 9. **Also refused at load:** an API 1 / 2 table with a null `init` or `render` (it crashed before; now BAD), and
    function pointers outside the image's code part (an API 3 table only: an API 2 table is not checked further, so
    nothing that loaded before is refused).

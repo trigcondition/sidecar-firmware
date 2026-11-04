@@ -1,0 +1,21 @@
+{
+  "id": "fx.api3_fx",
+  "version": "1.0.0",
+  "name": "API3 FX",
+  "short": "A3T",
+  "licence": "MIT",
+  "knobs": [
+    {
+      "p": 1,
+      "long": "Mode",
+      "short": "MOD",
+      "default": 0
+    },
+    {
+      "p": 2,
+      "long": "Level",
+      "short": "LEV",
+      "default": 100
+    }
+  ]
+}

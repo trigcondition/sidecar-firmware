@@ -24,6 +24,7 @@
 #include "fx/out.h"
 #include "fx/send_fx.h"
 #include <memory>
+#include <thread>
 #include "hooks.h"
 #include "lfo.h"
 #include "rmp_api3.h"
@@ -141,7 +142,9 @@ int main() {
   Fs fs;
   CHECK(fs.begin() && fs.mkdir("/Samples") && fs.mkdir("/Plugins") && fs.mkdir("/.rytm/projects/A3"));
   put("/.rytm/project", "A3");
-  for (const char* n : {"api3_test", "api3_only", "api3_initcrash", "api3_needs", "api3_big", "api3_stereo", "ufx_pingpong"})
+  for (const char* n : {"api3_test", "api3_only", "api3_initcrash", "api3_needs", "api3_big", "api3_stereo", "ufx_pingpong",
+                        "api3_poly", "api3_polyar", "api3_setupcr", "api3_setupsl", "api3_setupmo", "api3_setupre",
+                        "api3_attachcr", "api3_fx"})
     put(std::string("/Plugins/") + n + ".rmp", slurp(std::string("tests/api3_pkgs/") + n + ".a64.rmp"));
   hooks.to_rytm = ::out;
   CHECK(engine_begin());
@@ -194,6 +197,17 @@ int main() {
   f = block(0);
   fl = (int)lroundf(f[2] * 64);
   CHECK((fl & RMP3_T_STOP) && !(fl & RMP3_T_RUNNING) && !(fl & RMP3_T_LOCKED) && near(f[7], -0.5f));
+  // a Start while it plays (the position back to 0): START and JUMP
+  lfo::clock(0xFA, 0);
+  clock_ticks(30, 16667);
+  f = block(0);
+  lfo::clock(0xFA, 0);
+  clock_ticks(2, 16667);
+  f = block(0);
+  fl = (int)lroundf(f[2] * 64);
+  CHECK((fl & RMP3_T_START) && (fl & RMP3_T_JUMP) && near(f[7], 0.001f));
+  lfo::clock(0xFC, 0);
+  block(0);
 
   // ---- an API 3 only package on U2 (also a machine in the Rytm's list)
   cmd("um=assign:2:rytm.api3_only");
@@ -202,7 +216,7 @@ int main() {
   report(1, 1, 60, 0);
   f = block(1);
   CHECK(near(f[0], 0.5f) && near(f[5], 2.0f / 16));
-  CHECK(um::installed() == 6);   // (the effect is not a machine: not in the Rytm's list)   // (every probe package lists: they are machines; the BAD ones too until loaded)
+  CHECK(um::installed() == 13);   // every probe machine lists (the BAD ones too until loaded); the effects do not
 
   // ---- guarded calls: a fault in params mutes U1, U2 plays on
   report(0, 0, -1, 16);   // MODE zone 1: params() writes through a null pointer
@@ -336,12 +350,172 @@ int main() {
   cmd("um=fx:1:-");
   CHECK(!fx::user_ready(0) && fx::state(0) == fx::kStMissing);
 
+  // ---- a kit made for another effect: MISSING, and silence in that slot (not UFX1's PINGPONG)
+  cmd("um=fx:1:fx.pingpong");
+  {
+    auto sfx = std::make_unique<fx::SendFx>(48000.0f);
+    fx::kit_tag[0] = (uint16_t)(fx::user[0].tag ^ 0x155);
+    CHECK(fx::state(0) == fx::kStMissing);
+    float st[12][fx::kStems], o[12][2], peak = 0.0f;
+    for (int i = 0; i < 24000; i += 12) {
+      for (int j = 0; j < 12; ++j) {
+        for (int k = 0; k < fx::kStems; ++k) st[j][k] = 0.0f;
+        if (i + j == 1200) st[j][0] = 1.0f;
+      }
+      sfx->Process(st, 12, o, fx::control);
+      for (int j = 0; j < 12; ++j) peak = std::fmax(peak, std::fmax(std::fabs(o[j][0]), std::fabs(o[j][1])));
+    }
+    CHECK(peak == 0.0f);
+    fx::kit_tag[0] = fx::user[0].tag;   // the kit's own: READY
+    CHECK(fx::state(0) == fx::kStReady);
+    fx::kit_tag[0] = 0;
+  }
+  // ---- a rescan with a UFX assigned: its package index follows the new list (a package listed before it), it plays on
+  {
+    put("/Plugins/0first.rmp", slurp("tests/api3_pkgs/api3_only.a64.rmp"));   // (a duplicate id: listed, not loadable)
+    um::rescan();
+    idle_all();
+    v = um::slot_view(5);
+    CHECK(v.state == RMP_SLOT_READY && fx::user_ready(0));
+    CHECK(cmd("um=reload:f1").find("UFX1") == 0);
+    CHECK(um::slot_view(5).state == RMP_SLOT_READY && fx::user_ready(0));
+  }
+
+  // ---- setup(): a fault, a refusal, more than one call, and one too long; voice_attach faulting
+  cmd("um=assign:5:rytm.api3_setupcr");
+  CHECK(std::string(um::slot_view(4).why).find("bad: crashed in setup at +0x") == 0);
+  CHECK(near(block(1)[0], 0.5f));   // (the engine plays on)
+  cmd("um=assign:5:rytm.api3_setupre");
+  CHECK(std::string(um::slot_view(4).why) == "bad: its setup() refused");
+  cmd("um=assign:5:rytm.api3_setupmo");
+  CHECK(um::slot_view(4).state == RMP_SLOT_READY);
+  report(4, 7, 60, 0);
+  f = block(7);
+  CHECK(near(f[0], 0.5f) && near(f[4], 0.5f) && near(f[10], 3.0f / 16));   // three setup() calls, one an idle step
+  host_fake_time(false, 0);   // (real time: the probe's ~3 ms loop)
+  cmd("um=assign:5:rytm.api3_setupsl");
+  host_fake_time(true, g_t);
+  CHECK(std::string(um::slot_view(4).why).find("bad: setup ran ") == 0);
+  cmd("um=assign:5:rytm.api3_attachcr");
+  CHECK(um::slot_view(4).state == RMP_SLOT_READY);
+  report(4, 7, 60, 0);
+  CHECK(um::slot_view(4).muted && std::string(um::slot_view(4).why).find("muted: crashed in voice_attach at +0x") == 0);
+  CHECK(silent(block(7)));
+
+  // ---- poly instances (H2): a plugin without an arena plays every instance; one with an arena gets 40 states by
+  // default when it is a poly machine; a machine of 8 states says so when an instance is past them (never silently)
+  cmd("um=assign:5:rytm.api3_poly");
+  report(4, 7, 60, 0);
+  {
+    float o[kBlock];
+    CHECK(um::inst_note_on(7, 31, 64.0f, 1.0f));
+    um::inst_render(7, 31, o);
+    CHECK(near(o[0], 0.5f) && near(o[5], 8.0f / 16) && near(o[3], 0.0f));   // voice 7, no arena
+    cmd("um=assign:5:rytm.api3_polyar");
+    CHECK(um::slot_view(4).state == RMP_SLOT_READY && um::slot_view(4).arena == (64u << 10) + 40u * (256u << 10));
+    report(4, 7, 60, 0);
+    CHECK(um::inst_note_on(7, 31, 64.0f, 1.0f));
+    um::inst_render(7, 31, o);
+    CHECK(near(o[0], 0.5f) && near(o[3], 0.5f) && near(o[6], 0.015625f));   // instance 31: its own part (8 + 31)
+    cmd("um=assign:5:rytm.api3_test");   // 8 states (no instances declared): an instance is refused, in words
+    report(4, 7, 60, 0);
+    CHECK(!um::inst_note_on(7, 3, 64.0f, 1.0f));
+    CHECK(std::string(um::slot_view(4).why) == "no room: poly instance 3 past the arena's 8 states");
+    CHECK(logged("past the arena's 8 states (set states in its rmp3_plugin)") == 1);
+    CHECK(!um::inst_note_on(7, 4, 64.0f, 1.0f));
+    CHECK(logged("past the arena's 8 states (set states in its rmp3_plugin)") == 1);   // (once)
+  }
+
+  // ---- the arena comes back (M3): reloads and replacements reuse it, the pool does not grow
+  auto pool_used = [] {
+    um::publish_now();
+    static char js[16384];
+    CHECK(um::json_copy(js, sizeof js) > 0);
+    std::string j = js;
+    size_t a = j.find("\"plugpool\":[");
+    CHECK(a != std::string::npos);
+    return std::stoul(j.substr(j.find(',', a) + 1));
+  };
+  {
+    unsigned long u0 = pool_used();
+    for (int k = 0; k < 6; ++k) cmd("um=reload:1");
+    CHECK(pool_used() == u0);
+    for (int k = 0; k < 4; ++k) cmd("um=assign:5:rytm.api3_polyar"), cmd("um=assign:5:rytm.api3_test");
+    CHECK(pool_used() == u0);
+    CHECK(logged("is in pieces") == 0);   // (no full reload)
+  }
+
+  // ---- a user effect on core 2 (the hooks, as the send FX calls them): the transport's edges once per state, a
+  // fault, a render over its budget, a render that never returns (fx_stop gives up, bounded)
+  cmd("um=fx:2:fx.api3_fx");
+  CHECK(um::slot_view(6).state == RMP_SLOT_READY && fx::user_ready(1));
+  {
+    float x[40] = {0}, y[40][2];
+    uint8_t k[6] = {65, 0, 0, 0, 0, 0};
+    auto run = [&](int sl, int n) {
+      for (int i = 0; i < n; ++i) y[i][0] = y[i][1] = 0.0f;
+      fx::user_run(1, sl, x, n, y, k);
+    };
+    run(0, 12);
+    CHECK(near(y[0][0], 0.5f) && near(y[1][0], 0.0f) && near(y[2][0], 12.0f / 64));
+    lfo::clock(0xFA, 0);   // Start: one block's START
+    um::pre_block();
+    run(0, 40);
+    CHECK(near(y[1][0], 1.0f / 16) && near(y[17][0], 0.0f) && near(y[18][0], 16.0f / 64));   // the first sub-block only
+    run(0, 12);
+    CHECK(near(y[1][0], 0.0f));   // the same block again: not twice
+    run(1, 12);
+    CHECK(near(y[1][0], 1.0f / 16));   // send FX 2's state sees it once too
+    um::pre_block();
+    um::pre_block();   // two blocks the effect did not see: no edge in them, none delivered
+    run(0, 12);
+    CHECK(near(y[1][0], 0.0f));
+    lfo::clock(0xFC, 0);
+    um::pre_block();
+    um::pre_block();   // a STOP in a block the effect skipped still reaches it, once
+    run(0, 12);
+    CHECK(near(y[1][0], 2.0f / 16));
+    run(0, 12);
+    CHECK(near(y[1][0], 0.0f));
+    // a fault in render: muted, the why from the control core, the slot back with um=reload
+    k[2] = 16;
+    run(0, 12);
+    CHECK(!fx::user_ready(1) && y[0][0] == 0.0f);
+    idle_all();
+    CHECK(std::string(um::slot_view(6).why).find("muted: crashed in render at +0x") == 0);
+    cmd("um=reload:f2");
+    CHECK(fx::user_ready(1));
+    // over its budget (real time): muted after a run of slow calls, or at once past the FIFO
+    k[2] = 32;
+    host_fake_time(false, 0);
+    for (int i = 0; i < 40 && fx::user_ready(1); ++i) run(0, 12);
+    host_fake_time(true, g_t);
+    CHECK(!fx::user_ready(1));
+    idle_all();
+    CHECK(std::string(um::slot_view(6).why).find("muted: render ran ") == 0);
+    cmd("um=reload:f2");
+    CHECK(fx::user_ready(1));
+  }
+
   // ---- the JSON says it
   um::publish_now();
   static char js[16384];
   CHECK(um::json_copy(js, sizeof js) > 0);
   std::string j = js;
   CHECK(j.find("\"api\":3") != std::string::npos && j.find("\"plugpool\":[67108864,") != std::string::npos);
+  // ---- last (it leaves a thread spinning in the effect's code): a render that never returns. fx_stop gives up after
+  // its bounded wait, the UFX is left behind (its memory never reused), and the control core goes on
+  {
+    static float x[12], y[12][2];
+    static uint8_t k[6] = {65, 0, 48, 0, 0, 0};
+    std::thread t([] { fx::user_run(1, 0, x, 12, y, k); });
+    t.detach();
+    usleep(20000);
+    host_fake_time(false, 0);
+    cmd("um=fx:2:-");
+    CHECK(logged("um: UFX2 fx.api3_fx: core 2 never left its render (5 ms): left behind") == 1);
+    CHECK(!fx::user_ready(1));
+  }
   printf("test_api3: PASS\n");
   return 0;
 }
