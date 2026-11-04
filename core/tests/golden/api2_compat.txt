@@ -1,0 +1,17 @@
+# test_api3_compat's golden file: <package id> <FNV-1a 64 of voice 0> <peak>, from an API 2 host
+hush1.sh101 b2f44fcea70130e9 21799
+mdkit.pi dd0ad4a15095924a 12604
+modele.voice ee5940fb28f74424 12520
+nusaw.supersaw 921a851fffcb34e1 7839
+raffo.mono4 02124a4c3b875132 250
+sc.acid cafb589cd0c2a483 6598
+sc.grain d0f05f1d185ace0c 1660
+sc.metal 0cd71dd411e6e0ef 7769
+sc.pluck 7940c4b8fa2e5306 5449
+sc.snare 4e1f725646423f0d 8816
+sc.wavepad 9abaf8abda200c0a 2203
+rytm.sine_test 7c1ec438bb128235 12396
+sophie.perc fbe11b0dae17e8ec 14521
+rytm.state_test 7c1ec438bb128235 12396
+rytm.v2_test 044bbed217e07f25 0
+vox.trombone 9cd863d42c7a1af9 2583
