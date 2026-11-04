@@ -68,14 +68,16 @@ CORE_COLD State state(int slot) {
   if (id == kOff) return kStEmpty;
   if (id == kStutter && stutter_slot(control) != slot) return kStMissing;   // FX 1 has it (or this build lacks it)
   if (builtin(id)) return kStReady;
-  // a user id: the slot map must hold an effect whose tag matches the kit's (an untagged kit takes the slot's);
-  // even then no user-effect plugin runs yet, so MISSING either way (the name says which effect the slot holds)
+  // a user id: the slot map must hold an effect whose tag matches the kit's (an untagged kit takes the slot's), and
+  // (Plugin API 3) its plugin must be loaded: READY then, else MISSING (the name says which effect the slot holds)
+  int u = id - kFirstUser;
+  if (u >= 0 && u < kUserSlots && user_plays(id) && (!kit_tag[slot] || kit_tag[slot] == user[u].tag)) return kStReady;
   return kStMissing;
 }
 
 bool any_on() {
   for (int s = 0; s < kSlots; ++s)
-    if (builtin(control.knob[s][0])) return true;
+    if (builtin(control.knob[s][0]) || user_plays(control.knob[s][0])) return true;
   return false;
 }
 
@@ -92,6 +94,8 @@ bool all_sound_off() {
 uint8_t (*knob_filter)(int slot, int knob, uint8_t v) = nullptr;
 void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
 void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
+bool (*user_ready)(int u) = nullptr;
+void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 
 CORE_COLD void clock_in(uint8_t status, uint16_t spp) {   // per MIDI realtime byte, control side: cold

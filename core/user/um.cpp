@@ -126,7 +126,11 @@ struct Slot {
   uint32_t state_bytes, crc;
   uint16_t fp;
 };
-Slot g_slot[kSlots];
+// Plugin API 3's user effects UFX1..UFX4 (core/fx/send_fx.h kFirstUser): load targets kSlots + u next to the machine
+// slots - the same job, the same checks, an arena and the guard - but never in the Rytm's slot protocol (19..1E).
+constexpr int kUfx = 4;
+constexpr int kAll = kSlots + kUfx;
+Slot g_slot[kAll];
 // ---- Plugin API 3 (sdk/rmp/rmp_api3.h, docs/plugin-api-3-plan.md): per slot its API 3 table, its image's code part,
 // its arena. Set by the load (job_step, the arena phase), cleared when the slot's assignment starts again (job_begin);
 // read by the render cores only while the slot is READY.
@@ -141,10 +145,17 @@ struct V3 {
   uint32_t shared_bytes, voice_bytes, states;
   uint32_t zero_off, zero_len;   // the arena phase: zeroed so far, in all
 };
-V3 g_v3[kSlots];
+V3 g_v3[kAll];
 volatile uint32_t g_muted = 0;   // the guard muted the slot (bit s): a plugin call faulted, or ran late three times
-uint8_t g_late[kSlots];          // late control calls in a row (API 3 plugins: three mute)
-uint32_t g_late_n[kSlots];       // late control calls since the load (every plugin: the JSON's "late")
+uint8_t g_late[kAll];            // late control calls in a row (API 3 plugins: three mute)
+uint32_t g_late_n[kAll];         // late control calls since the load (every plugin: the JSON's "late")
+// the effects: which package each UFX plays (um=fx:<n>:<id>; in memory), its two states (send FX 1 and 2: in its
+// arena block), live while core 2 may run it (published after both states are set up), busy while core 2 runs it
+rmp_slot_entry g_fxmap[kUfx];
+uint8_t* g_fxst[kUfx][2];
+volatile uint8_t g_fx_live[kUfx], g_fx_busy[kUfx];
+volatile uint64_t g_fx_fault[kUfx];   // core 2's fault address (the control core words the why)
+float g_fx_p[kUfx][2][16];            // the knobs last handed to each state (b->p_changed)
 uint8_t g_jph = 0;               // the load's phase: 0 the package, 1 the arena (zeroed in pieces, then setup())
 enum : uint8_t { kJphImage = 0, kJphArena = 1 };
 constexpr uint32_t kZeroStep = 256u << 10;     // the arena zeroed per idle step (the slot LOADING meanwhile)
@@ -164,7 +175,7 @@ int32_t g_xp_song = -1;
 // what a block hands a plugin that declares signals while the host has no bus (RMP3_CAP_BUS): silence in, a sink out
 float g_sig_zero[16];
 rmp3_sig_in g_sig_none[4];
-char g_why[kSlots][64];    // why the slot is not READY, in words (the web page's "why"; "" when READY / EMPTY / LOADING)
+char g_why[kAll][64];    // why the slot is not READY, in words (the web page's "why"; "" when READY / EMPTY / LOADING)
 uint32_t g_need = 0;       // slots to (re)load, bit s
 bool g_full = false;       // reset the arena and load every slot again
 uint32_t g_arena_used = 0;
@@ -335,7 +346,8 @@ int find_ver(const char* id, uint32_t version) {
     if (g_pkg[i].ok && g_pkg[i].version == version && strncmp(g_pkg[i].id, id, 32) == 0) return i;
   return find_pkg(id);
 }
-int find_slot(int s) { return g_map.slot[s].id[0] ? find_ver(g_map.slot[s].id, g_map.slot[s].version) : -1; }
+const rmp_slot_entry& entry_of(int s) { return s < kSlots ? g_map.slot[s] : g_fxmap[s - kSlots]; }
+int find_slot(int s) { const rmp_slot_entry& m = entry_of(s); return m.id[0] ? find_ver(m.id, m.version) : -1; }
 int find_any(const char* id) {
   for (int i = 0; i < g_npkg; ++i)
     if (strncmp(g_pkg[i].id, id, 32) == 0) return i;
@@ -1982,8 +1994,9 @@ void slot_set(int s, rmp_slot_state st, const rmp_plugin* p, int pkg) {
   sl.state_bytes = pkg >= 0 ? g_pkg[pkg].state : 0;
   sl.crc = pkg >= 0 && st == RMP_SLOT_READY ? g_pkg[pkg].crc ^ g_pkg[pkg].size : 0;
   sl.fp = st == RMP_SLOT_READY && pkg >= 0 ? g_pkg[pkg].fp : 0;
-  cost_sum(s, &g_cyc0[s], &g_blk0[s]);   // the cost is measured from here
   g_pub = true;
+  if (s >= kSlots) return;   // (an effect: no cost row, no presets, nothing the Rytm asks for)
+  cost_sum(s, &g_cyc0[s], &g_blk0[s]);   // the cost is measured from here
   g_mp = true;
   pre_slot(s);
 }
@@ -1993,12 +2006,124 @@ void job_end(int s, rmp_slot_state st, const rmp_plugin* p, int pkg, const char*
   if (st != RMP_SLOT_READY) sniprintf(g_why[s], sizeof g_why[s], "%s: %s", st == RMP_SLOT_NO_ROOM ? "no room" : "bad", what);
   g_job = -1;
   g_jph = kJphImage;
-  core::log("um: U%d %s: %s", s + 1, g_map.slot[s].id, what);
+  core::log("um: %s%d %s: %s", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1, entry_of(s).id, what);
+}
+
+// A machine slot plays machines, an effect slot effects (with the send position, the one built yet): else why not.
+const char* kind_wrong(int s, const rmp3_plugin* p3) {
+  if (s < kSlots) return p3 && p3->kind != RMP3_KIND_MACHINE ? "an effect (UFX1..UFX4), not a machine" : nullptr;
+  if (!p3 || p3->kind != RMP3_KIND_EFFECT) return "a machine (U1..U5), not an effect";
+  if (!(p3->places & RMP3_AT_SEND)) return "its places lack a send slot (the one position built yet)";
+  return nullptr;
+}
+// ---- API 3's user effects: the states, the stop, core 2's render
+// An effect's two states (send FX 1 and 2), set up by the control core before core 2 may run them: zeroed, voice_init,
+// voice_attach (place SEND, voice -1, instance 0 / 1, arena parts 0 / 1). False: a fault (BAD, the job ended).
+bool fx_states(int s) {
+  int u = s - kSlots;
+  const V3& x = g_v3[s];
+  const rmp_plugin* p = x.p;
+  for (int k = 0; k < 2; ++k) {
+    void* st = g_fxst[u][k];
+    memset(st, 0, g_slot[s].state_bytes);
+    for (int j = 0; j < 16; ++j) g_fx_p[u][k][j] = -1.0f;   // (the first block: every knob changed)
+    uint64_t pc = 0;
+    uint32_t us = 0;
+    rmp3_voice v;
+    v.shared = x.shared, v.shared_bytes = x.shared_bytes;
+    v.arena = x.voice_bytes && (uint32_t)k < x.states ? x.voices + (size_t)k * x.voice_bytes : nullptr;
+    v.arena_bytes = v.arena ? x.voice_bytes : 0;
+    v.slot = 64 + u, v.voice = -1, v.instance = k, v.place = RMP3_AT_SEND;
+    if (guarded([&] {
+          if (p->voice_init) p->voice_init(st);
+          if (x.p3->voice_attach) x.p3->voice_attach(st, &v);
+        }, &pc, &us)) {
+      char w[64], at[32];
+      fault_where(s, pc, at, sizeof at);
+      sniprintf(w, sizeof w, "crashed in voice_init / voice_attach at %s", at);
+      job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, w);
+      return false;
+    }
+  }
+  return true;
+}
+// UFX u leaves core 2 before its states, arena or image change: not live, then core 2 out of it (a render under way
+// ends; at most one effect block)
+void fx_stop(int u) {
+  __atomic_store_n(&g_fx_live[u], 0, __ATOMIC_SEQ_CST);
+  while (__atomic_load_n(&g_fx_busy[u], __ATOMIC_SEQ_CST)) {
+  }
+  g_fx_fault[u] = 0;
+}
+template <class F> struct FxCall {
+  F* f;
+  static void run(void* c) { (*((FxCall*)c)->f)(); }
+};
+// Core 2 (the send FX's core, after its block): UFX u in send slot sl (0 FX 1, 1 FX 2) over x[n], its wet stereo
+// return added into y. The knobs: k[2..5] (the slot's P2..P5) are the effect's P1..P4, in b->p. Silent unless live.
+bool fx_ready(int u) { return u >= 0 && u < kUfx && __atomic_load_n(&g_fx_live[u], __ATOMIC_ACQUIRE) && !muted(kSlots + u); }
+void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t* k) {
+  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return;
+  __atomic_store_n(&g_fx_busy[u], 1, __ATOMIC_SEQ_CST);
+  if (__atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) && !muted(kSlots + u)) {
+    int s = kSlots + u;
+    const rmp3_plugin* p3 = g_v3[s].p3;
+    void* st = g_fxst[u][sl];
+    uint32_t e = __atomic_load_n(&g_epoch, __ATOMIC_ACQUIRE);
+    static uint32_t s_epoch = 0;   // (core 2 only)
+    if (s_epoch != e) {
+      if (ex->barrier) ex->barrier();
+      s_epoch = e;
+    }
+    float p[16];
+    uint32_t ch = 0;
+    for (int j = 0; j < 16; ++j) {
+      p[j] = j < 4 ? (float)k[2 + j] : 0.0f;
+      if (p[j] != g_fx_p[u][sl][j]) ch |= 1u << j, g_fx_p[u][sl][j] = p[j];
+    }
+    for (int at = 0; at < n; at += 16) {   // blocks of 16 frames at most
+      int m = n - at < 16 ? n - at : 16;
+      float l[16], r[16];
+      rmp3_block b;
+      block_fill(&b, m, l, r, RMP3_AT_SEND);
+      b.flags |= RMP3_B_WET_ONLY;
+      b.in[0] = xin + at;
+      b.p = p, b.p_changed = at ? 0u : ch;
+      uint64_t pc = 0;
+      auto f = [&] { p3->render(st, &b); };
+      FxCall<decltype(f)> c{&f};
+      int bad = ex->guard ? ex->guard(FxCall<decltype(f)>::run, &c, &pc) : (f(), 0);
+      if (bad) {   // muted; the control core says why (idle)
+        g_fx_fault[u] = pc ? pc : 1;
+        __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);
+        break;
+      }
+      for (int i = 0; i < m; ++i) {
+        float a = l[i] == l[i] ? (l[i] > 1.0f ? 1.0f : l[i] < -1.0f ? -1.0f : l[i]) : 0.0f;
+        float c2 = r[i] == r[i] ? (r[i] > 1.0f ? 1.0f : r[i] < -1.0f ? -1.0f : r[i]) : 0.0f;
+        y[at + i][0] += a, y[at + i][1] += c2;
+      }
+    }
+  }
+  __atomic_store_n(&g_fx_busy[u], 0, __ATOMIC_SEQ_CST);
+}
+// the control core: a fault core 2 noted, in words
+void fx_faults() {
+  for (int u = 0; u < kUfx; ++u) {
+    uint64_t pc = g_fx_fault[u];
+    if (!pc || !strncmp(g_why[kSlots + u], "muted", 5)) continue;
+    char w[96], at[32];
+    fault_where(kSlots + u, pc == 1 ? 0 : pc, at, sizeof at);
+    sniprintf(w, sizeof w, "muted: crashed in render at %s", at);
+    copy(g_why[kSlots + u], w, sizeof g_why[0]);
+    core::log("um: UFX%d %s %s", u + 1, g_fxmap[u].id, w);
+    g_pub = true;
+  }
 }
 
 // ---- API 3: the table checked, the arena, setup()
 uint32_t host_caps() {
-  return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
+  return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | RMP3_CAP_EFFECT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
          (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u);
 }
 void caps_names(uint32_t c, char* b, int cap) {
@@ -2058,13 +2183,23 @@ bool arena_reserve(int s, uint32_t* need) {
   uint64_t sw = al(q->shared_want > q->shared_min ? q->shared_want : q->shared_min), vw = al(q->voice_want > q->voice_min ? q->voice_want : q->voice_min);
   uint64_t sm = al(q->shared_min), vm = al(q->voice_min);
   if (!has) sw = vw = sm = vm = 0;
+  if (s >= kSlots && !g_pool_bytes) { *need = 1; return false; }   // (an effect's states live in the pool)
   uint64_t lim = arena_limit(), room = g_pool_bytes - g_pool_used;
   uint64_t want = sw + states * vw, least = sm + states * vm;
   uint64_t sb, vb;
   if (want <= lim && want <= room) sb = sw, vb = vw;
   else if (least <= lim && least <= room) sb = sm, vb = vm;
   else { *need = (uint32_t)(least > 0xFFFFFFFFu ? 0xFFFFFFFFu : least); return false; }
-  uint64_t total = (sb + states * vb + 4095u) & ~(uint64_t)4095u;
+  uint64_t fxs = s >= kSlots ? al(g_slot[s].state_bytes) : 0;   // an effect's two states (send FX 1, 2) at the end
+  if (s >= kSlots && (2 * fxs + sb + states * vb > lim || 2 * fxs + sb + states * vb > room)) {
+    *need = (uint32_t)(2 * fxs + least);
+    return false;
+  }
+  uint64_t total = (sb + states * vb + 2 * fxs + 4095u) & ~(uint64_t)4095u;
+  if (s >= kSlots) {
+    g_fxst[s - kSlots][0] = g_pool + g_pool_used + sb + states * vb;
+    g_fxst[s - kSlots][1] = g_fxst[s - kSlots][0] + fxs;
+  }
   x.states = states;
   x.base = total ? g_pool + g_pool_used : nullptr;
   x.shared = sb ? x.base : nullptr;
@@ -2079,7 +2214,7 @@ bool v3_start(int s) {
   uint32_t need = 0;
   if (!arena_reserve(s, &need)) {
     uint64_t live = 0;   // the other slots' arenas: what a full reload keeps
-    for (int t = 0; t < kSlots; ++t)
+    for (int t = 0; t < kAll; ++t)
       if (t != s && g_v3[t].base) live += g_v3[t].zero_len;
     // the pool holds arenas no slot uses any more and the slot fits without them: start over (as the code's arena)
     if (need <= arena_limit() && g_pool_used > live && live + need <= g_pool_bytes) {
@@ -2133,14 +2268,17 @@ void arena_step() {
       return;
     }
   }
+  if (s >= kSlots && !fx_states(s)) return;   // (BAD: job_end ran)
   char w[64];
   sniprintf(w, sizeof w, "ready (API 3, arena %u KB: %u states)", (unsigned)(x.zero_len >> 10), (unsigned)x.states);
   job_end(s, RMP_SLOT_READY, p, g_slot[s].pkg, w);
+  if (s >= kSlots) __atomic_store_n(&g_fx_live[s - kSlots], 1, __ATOMIC_SEQ_CST);   // core 2 may run it from now
 }
 // Starts slot s's load, or settles it at once (empty, missing, shared). True when a job runs.
 bool job_begin(int s) {
-  const rmp_slot_entry& m = g_map.slot[s];
-  slot_stop(s);
+  const rmp_slot_entry& m = entry_of(s);
+  if (s >= kSlots) fx_stop(s - kSlots);
+  else slot_stop(s);
   g_v3[s] = V3{};   // (API 3: a fresh start: no table, no arena, not muted)
   __atomic_and_fetch(&g_muted, ~(1u << s), __ATOMIC_RELEASE);
   g_late[s] = 0, g_late_n[s] = 0;
@@ -2150,7 +2288,7 @@ bool job_begin(int s) {
   if (k < 0) {
     slot_set(s, RMP_SLOT_MISSING, nullptr, -1);
     copy(g_why[s], "missing: not installed", sizeof g_why[s]);
-    core::log("um: U%d %s %s: not installed", s + 1, m.id, vstr(m.version, b1));
+    core::log("um: %s%d %s %s: not installed", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1, m.id, vstr(m.version, b1));
     return false;
   }
   const Pkg& e = g_pkg[k];
@@ -2162,13 +2300,19 @@ bool job_begin(int s) {
               vstr(e.version, b2), vstr(e.compat, b2));
     return false;
   }
-  for (int t = 0; t < kSlots; ++t)   // the same package READY in another slot: its image
+  for (int t = 0; t < kAll; ++t)   // the same package READY in another slot: its image
     if (t != s && g_slot[t].st == RMP_SLOT_READY && g_slot[t].pkg == k && g_slot[t].crc == (e.crc ^ e.size)) {
+      if (const char* w = kind_wrong(s, g_v3[t].p3)) {
+        slot_set(s, RMP_SLOT_BAD, nullptr, k);
+        sniprintf(g_why[s], sizeof g_why[s], "bad: %s", w);
+        return false;
+      }
       if (g_v3[t].p3) {   // API 3: the image shared, the arena and setup() the slot's own
         V3& x = g_v3[s];
         x.p = g_slot[t].p, x.p3 = g_v3[t].p3, x.code = g_v3[t].code, x.code_bytes = g_v3[t].code_bytes;
         slot_set(s, RMP_SLOT_LOADING, nullptr, k);
-        core::log("um: U%d %s: shares U%d's image, its own arena", s + 1, m.id, t + 1);
+        core::log("um: %s%d %s: shares %s%d's image, its own arena", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1,
+                  m.id, t < kSlots ? "U" : "UFX", t < kSlots ? t + 1 : t - kSlots + 1);
         return v3_start(s);
       }
       slot_set(s, RMP_SLOT_READY, g_slot[t].p, k);
@@ -2273,7 +2417,7 @@ void job_step() {
   const rmp3_plugin* p3 = nullptr;
   char why[64];
   if (!v3_check(p, img, bytes, &p3, why, sizeof why)) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, why); return; }
-  if (p3 && p3->kind == RMP3_KIND_EFFECT) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "an effect (UFX1..UFX4), not a machine"); return; }
+  if (const char* w = kind_wrong(s, p3)) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, w); return; }
   {
     V3& x = g_v3[s];
     x.p = p, x.p3 = p3, x.code = img, x.code_bytes = bytes;
@@ -2520,6 +2664,17 @@ void publish() {
     j.put(",\"pre_ext\":"); j.str(p ? p->preset_ext : "");
     j.put("},");
   }
+  for (int u = 0; u < kUfx; ++u) {   // API 3's user effects (UFX1..UFX4), when one is assigned
+    int s = kSlots + u;
+    if (!g_fxmap[u].id[0]) continue;
+    j.put("{\"t\":\"ufx\","); j.num("ufx", (uint32_t)u + 1);
+    j.put(",\"id\":"); j.str(g_fxmap[u].id);
+    j.put(",\"state\":"); j.str(state_name(g_slot[s].st));
+    if (g_why[s][0]) { j.put(",\"why\":"); j.str(g_why[s]); }
+    j.put(",\"muted\":"); j.put(muted(s) ? "true" : "false");
+    j.put(","); j.num("arena", g_v3[s].zero_len);
+    j.put("},");
+  }
   j.put("{\"t\":\"plugins\","); j.num("n", (uint32_t)g_npkg);
   j.put(",\"prints\":"); j.str(g_prints_have ? "rytm" : g_prints_rytm ? "waiting" : "trigs");
   j.put(","); j.num("resolves", g_resolve_n);
@@ -2604,7 +2759,8 @@ void begin(const Exec* e, const char* d) {
   }
   for (int i = 0; i < kInst; ++i) g_istate[i] = (uint8_t*)um_heap(kStateMax), g_icur[i] = -1, g_ivi[i] = -1;
   for (int s = 0; s < kSlots; ++s) g_lbl_vi[s] = g_lbl_cur[s] = -1, g_lbl_ms[s] = 0, g_lbl_key[s] = 0;
-  for (int s = 0; s < kSlots; ++s) g_ans[s] = -1, g_slot[s] = Slot{RMP_SLOT_EMPTY, nullptr, -1, 0, 0, 0};
+  for (int s = 0; s < kSlots; ++s) g_ans[s] = -1;
+  for (int s = 0; s < kAll; ++s) g_slot[s] = Slot{RMP_SLOT_EMPTY, nullptr, -1, 0, 0, 0};
   for (int c = 0; c < kCores; ++c) g_vnow[c] = -1;
   rmp_preset_names_init(&g_pnames);
   for (int s = 0; s < kSlots; ++s) rmp_preset_index_init(&g_pix[s]), rmp_knobs_from_desc(&g_knobs[s], nullptr);
@@ -2631,6 +2787,8 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_note_off = on_note_off;
   core::hooks.user_render = on_render;
   core::hooks.user_render2 = on_render2;
+  core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)
+  core::fx::user_run = fx_run;
   core::hooks.slot_ask = on_ask;
   core::hooks.slot_assign = on_assign;
   core::hooks.project_seen = on_project_seen;
@@ -2658,7 +2816,8 @@ bool idle() {
   if (g_scan && !scan_wait()) { UMT("um.scan"); scan_step(); }
   else if (g_full) {
     for (int vi = 0; vi < core::kVoices; ++vi) voice_leave(vi);
-    for (int s = 0; s < kSlots; ++s) slot_set(s, g_map.slot[s].id[0] ? RMP_SLOT_LOADING : RMP_SLOT_EMPTY, nullptr, -1);
+    for (int u = 0; u < kUfx; ++u) fx_stop(u);   // (core 2 out of the effects before their images go)
+    for (int s = 0; s < kAll; ++s) slot_set(s, entry_of(s).id[0] ? RMP_SLOT_LOADING : RMP_SLOT_EMPTY, nullptr, -1);
     jf_close();
     g_job = -1;
     ex->reset();
@@ -2666,9 +2825,11 @@ bool idle() {
     g_data_used = 0;
     g_pool_used = 0;   // (API 3: the arenas start over with the code)
     g_jph = kJphImage;
-    for (int s = 0; s < kSlots; ++s) g_v3[s] = V3{};
+    for (int s = 0; s < kAll; ++s) g_v3[s] = V3{};
     g_full = false;
     g_need = (1u << kSlots) - 1;
+    for (int u = 0; u < kUfx; ++u)
+      if (g_fxmap[u].id[0]) g_need |= 1u << (kSlots + u);
   } else if (g_prints_pending) { UMT("um.prints"); prints_apply(); }
   else if (g_fresh && (int32_t)(core::now_ms() - g_fresh_until) >= 0) { UMT("um.inherit"); inherit_now(); }
   else if (g_resolve_save) {
@@ -2688,6 +2849,7 @@ bool idle() {
     pscan_step();
   } else did = scan_wait();
   { UMT("um.notes"); notes_overdue(); }
+  fx_faults();
   { UMT("um.upool"); if (upool_pass()) did = true; }
   if (g_pre_again && (int32_t)(core::now_ms() - g_pre_again_ms) >= 0 && !core::fmt::pending(g_pre_path)) {   // a preset written: the lists again
     g_pre_again = false;
@@ -2880,11 +3042,32 @@ bool command(const char* c, char* out, int cap) {
               (unsigned)g_arena_used, (unsigned)(ex ? ex->total : 0));
     return true;
   }
+  if (strncmp(c, "um=fx:", 6) == 0) {   // API 3: UFX<n> plays an installed effect (its newest version), or none ("-")
+    int u = c[6] - '1';
+    if (u < 0 || u >= kUfx || c[7] != ':') { sniprintf(out, cap, "usage: um=fx:<1..4>:<id|->"); return true; }
+    const char* id = c + 8;
+    rmp_slot_entry& m = g_fxmap[u];
+    if (!strcmp(id, "-")) {
+      m.id[0] = 0;
+    } else {
+      int k = find_pkg(id);
+      if (k < 0) { sniprintf(out, cap, "UFX%d: %s is not installed", u + 1, id); return true; }
+      copy(m.id, g_pkg[k].id, sizeof m.id);
+      m.version = g_pkg[k].version;
+      core::fx::UserFx& f = core::fx::user[u];   // the TYPE list's name and the kits' tag (send_fx.h)
+      copy(f.name, g_pkg[k].desc.name, sizeof f.name);
+      f.tag = core::fx::fx_tag(f.name);
+    }
+    if (!m.id[0]) core::fx::user[u] = core::fx::UserFx{0, ""};
+    g_need |= 1u << (kSlots + u);
+    sniprintf(out, cap, "UFX%d: %s", u + 1, m.id[0] ? m.id : "empty");
+    return true;
+  }
   if (strncmp(c, "um=reload:", 10) == 0) {   // API 3: load the slot again (a muted slot back, its states and arena fresh)
-    int s = c[10] - '1';
-    if (s < 0 || s >= kSlots || c[11]) { sniprintf(out, cap, "usage: um=reload:<1..5>"); return true; }
+    int s = c[10] == 'f' ? kSlots + (c[11] - '1') : c[10] - '1';   // um=reload:f<1..4>: UFX<n>
+    if (s < 0 || s >= kAll || (s >= kSlots && c[12]) || (s < kSlots && c[11])) { sniprintf(out, cap, "usage: um=reload:<1..5> or f<1..4>"); return true; }
     g_need |= 1u << s;
-    sniprintf(out, cap, "U%d: loading again%s", s + 1, muted(s) ? " (it was muted)" : "");
+    sniprintf(out, cap, "%s%d: loading again%s", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1, muted(s) ? " (it was muted)" : "");
     return true;
   }
   if (strncmp(c, "um=save:", 8) == 0) {   // a generic preset of what the slot's voice plays now
@@ -2992,6 +3175,11 @@ void publish_now() { g_pub = false; g_pub_ms = core::now_ms(); publish(); }
 const char* dir() { return g_dir; }
 uint32_t code_epoch() { return __atomic_load_n(&g_epoch, __ATOMIC_ACQUIRE); }
 SlotView slot_view(int s) {
+  if (s >= kSlots && s < kAll) {   // UFX1..UFX4: kSlots + u
+    const V3& x = g_v3[s];
+    return SlotView{g_slot[s].st, g_fxmap[s - kSlots].id, g_fxmap[s - kSlots].version, 0, "", 0, 0, 0, muted(s), x.p3 ? 3 : 0,
+                    x.zero_len, g_why[s]};
+  }
   rmp_desc d;
   const rmp_desc* p = slot_desc(s, &d);
   static char name[11];

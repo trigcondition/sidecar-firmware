@@ -89,36 +89,38 @@ static void __attribute__ ((noinline, noreturn)) ResumeWorker (void)
 // Plugin API 3: a fault inside a guarded plugin call on core 3 comes back here, at task level, as ResumeWorker does.
 static void __attribute__ ((noinline, noreturn)) ResumeControl (void)
 {
-	__builtin_longjmp (g_Guard.ControlJumpBuffer (), 1);
+	__builtin_longjmp (g_Guard.ControlJumpBuffer (CMultiCoreSupport::ThisCore ()), 1);
 }
 
 int __attribute__ ((noinline)) CGuard::ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC)
 {
-	if (CMultiCoreSupport::ThisCore () != 3 || m_bCtlArmed)
+	const unsigned c = CMultiCoreSupport::ThisCore ();
+	if ((c != 2 && c != 3) || m_bCtlArmed[c] || (c == 2 && m_bArmed[2]))	// (core 2 inside a voice: the voice's guard)
 	{
 		pFunc (pParam);
 		return 0;
 	}
-	m_pCtlPC = pPC;
-	if (__builtin_setjmp (m_CtlJmp))
+	m_pCtlPC[c] = pPC;
+	if (__builtin_setjmp (m_CtlJmp[c]))
 	{
-		m_bCtlArmed = FALSE;
-		*m_pCtlPC = m_nCtlPC;
+		const unsigned c2 = CMultiCoreSupport::ThisCore ();
+		m_bCtlArmed[c2] = FALSE;
+		*m_pCtlPC[c2] = m_nCtlPC[c2];
 		return 1;
 	}
-	m_bCtlArmed = TRUE;
+	m_bCtlArmed[c] = TRUE;
 	pFunc (pParam);
-	m_bCtlArmed = FALSE;
+	m_bCtlArmed[c] = FALSE;
 	return 0;
 }
 
 void CEngineExceptionHandler::Throw (unsigned nException, TAbortFrame *pFrame)
 {
 	unsigned nCore = CMultiCoreSupport::ThisCore ();
-	if (nCore == 3 && g_Guard.ControlArmed ())
+	if ((nCore == 2 || nCore == 3) && g_Guard.ControlArmed (nCore))
 	{
-		// a user plugin's control call faulted (API 3's guard): back into ControlCall, the slot muted there
-		g_Guard.NoteControlFault (pFrame->elr_el1);
+		// a user plugin's guarded call faulted (API 3's guard): back into ControlCall, the slot muted by its caller
+		g_Guard.NoteControlFault (nCore, pFrame->elr_el1);
 		u64 nSPSR = pFrame->spsr_el1, nStack = pFrame->sp_el1;		// read before the frame is dropped
 		asm volatile ("msr elr_el1, %0\n"
 			      "msr spsr_el1, %1\n"

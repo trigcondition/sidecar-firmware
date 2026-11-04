@@ -89,16 +89,17 @@ public:
 	void ArmOverrun (unsigned nVoice, unsigned nBlocks) { m_nOverVoice = nVoice; m_nOverBlocks = nBlocks; }
 	void ArmHang (unsigned nVoice)		{ m_nHangTest = nVoice + 1; }
 
-	// Plugin API 3 (core/user/um.h Exec::guard, docs/plugin-api-3-plan.md): a user plugin's call on the control core
-	// (core 3: init, setup, voice_init, params, note_on ...) guarded as a voice's render is: a fault inside it returns
-	// from the exception into ResumeControl (guard.cpp), which longjmps back into ControlCall: 1 then, *pPC the faulting
-	// address; the plugin's slot is muted by the caller and core 3 plays on. 0: it returned. On another core, or nested,
-	// the call runs unguarded (a fault there is fatal, as before).
+	// Plugin API 3 (core/user/um.h Exec::guard, docs/plugin-api-3-plan.md): a user plugin's call guarded as a voice's
+	// render is - on the control core (core 3: init, setup, voice_init, params, note_on ...) and on core 2 (a user
+	// effect's render in the send FX, after the block): a fault inside it returns from the exception into ResumeControl
+	// (guard.cpp), which longjmps back into ControlCall: 1 then, *pPC the faulting address; the caller mutes the
+	// plugin's slot and the core plays on. 0: it returned. On cores 0 and 1, or nested, the call runs unguarded (a
+	// fault there is fatal, as before).
 	int ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC);
-	boolean ControlArmed (void) const	{ return m_bCtlArmed; }
-	void **ControlJumpBuffer (void)		{ return m_CtlJmp; }
-	void NoteControlFault (u64 nPC)		{ m_nCtlPC = nPC; m_nCtlFaults++; }
-	unsigned ControlFaults (void) const	{ return m_nCtlFaults; }
+	boolean ControlArmed (unsigned nCore) const	{ return m_bCtlArmed[nCore & 3]; }
+	void **ControlJumpBuffer (unsigned nCore)	{ return m_CtlJmp[nCore & 3]; }
+	void NoteControlFault (unsigned nCore, u64 nPC)	{ m_nCtlPC[nCore & 3] = nPC; m_nCtlFaults++; }
+	unsigned ControlFaults (void) const		{ return m_nCtlFaults; }
 
 private:
 	void Mute (unsigned nVoice, const char *pWhy, const void *pMach, u32 nGen)
@@ -127,10 +128,10 @@ private:
 	volatile boolean m_bResumedOK[4] = {FALSE, FALSE, FALSE, FALSE};	// the worker back in EL1t, IRQs as before
 	const char *volatile m_pFatal = 0;
 	volatile unsigned m_nFaultTest = 0, m_nOverVoice = 0, m_nOverBlocks = 0, m_nHangTest = 0;
-	volatile boolean m_bCtlArmed = FALSE;	// core 3 is inside a guarded plugin call
-	void *m_CtlJmp[5];			// its __builtin_setjmp buffer
-	u64 *volatile m_pCtlPC = 0;		// where ControlCall puts the faulting address
-	volatile u64 m_nCtlPC = 0;
+	volatile boolean m_bCtlArmed[4] = {FALSE, FALSE, FALSE, FALSE};	// the core is inside a guarded plugin call
+	void *m_CtlJmp[4][5];			// its __builtin_setjmp buffer
+	u64 *volatile m_pCtlPC[4] = {0, 0, 0, 0};	// where ControlCall puts the faulting address
+	volatile u64 m_nCtlPC[4] = {0, 0, 0, 0};
 	volatile unsigned m_nCtlFaults = 0;
 };
 

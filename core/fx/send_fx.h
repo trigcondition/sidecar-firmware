@@ -135,6 +135,11 @@ extern void (*clock_listener)(uint8_t status, uint16_t spp);
 // The FX buses' insert chains (core/fx/insert.h, CORE_POLY builds; null without): FX slot s's return y[n] (stereo, before
 // its TYPE fade and the limits) through bus s's chain, in place. The send FX's core.
 extern void (*bus_insert)(int slot, float (*y)[2], int n);
+// Plugin API 3's user effects (core/user/um.cpp): UFX u (0..3) loaded and playing; its render in send slot `slot` over x
+// (mono), its wet stereo return added into y; k the slot's knobs (k[2..5] = the effect's P1..P4). Null: none (MISSING).
+extern bool (*user_ready)(int u);
+extern void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k);
+inline bool user_plays(int t) { return t >= kFirstUser && t < kFirstUser + 4 && user_ready && user_ready(t - kFirstUser); }
 // The slot that is the STUTTER, or -1: FX 1 if both are (FX 2 is then MISSING: one ring, one insert).
 inline int stutter_slot(const Control& c) {
   return !plays(kStutter) ? -1 : c.knob[0][0] == kStutter ? 0 : c.knob[1][0] == kStutter ? 1 : -1;
@@ -583,7 +588,9 @@ class SendFx {
     {
       int ss[kSlots], ns = 0;
       for (int s = 0; s < kSlots; ++s)
-        if ((plays(cur_[s]) && cur_[s] != kStutter) || (plays(c.knob[s][0]) && c.knob[s][0] != kStutter)) ss[ns++] = s;
+        if ((plays(cur_[s]) && cur_[s] != kStutter) || (plays(c.knob[s][0]) && c.knob[s][0] != kStutter) ||
+            user_plays(cur_[s]) || user_plays(c.knob[s][0]))
+          ss[ns++] = s;
       if (ns) Mix(stems, n, tg, ss, ns, xs);
       for (int k2 = 0; k2 < ns; ++k2) have[ss[k2]] = true;
       if (vsend)
@@ -595,7 +602,7 @@ class SendFx {
       if (want == kStutter && s != sslot) want = kOff;   // the other slot has it: this one silent (MISSING)
       bool same;
       int t = Step(s, want, n, c, &same);
-      if (!plays(t)) continue;   // off, an effect this build lacks, or waiting for its clear: silence
+      if (!plays(t) && !user_plays(t)) continue;   // off, an effect this build lacks, or waiting for its clear: silence
 #if RYTM_SENDFX_LARGE
       if (t == kStutter) {   // the insert: only its fade here, the DSP once below
         for (int i = 0; i < n; ++i) {
@@ -789,7 +796,9 @@ class SendFx {
       case kCloudSeed: st_[s].cloud.Process(x, n, y, k + 2, sr_, a_); break;
       case kTape: st_[s].tape.Process(x, n, y, k + 2, sr_, a_, c.clock); break;
 #endif
-      default: break;
+      default:   // a user effect (Plugin API 3, UFX1..UFX4): its plugin, wet only, on this core
+        if (user_plays(t) && user_run) user_run(t - kFirstUser, s, x, n, y, k);
+        break;
     }
   }
   // the send mix of slots ss[0..ns-1] (ns 1 or 2) into xs: each stem's level ramped linearly over the block

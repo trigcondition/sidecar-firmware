@@ -60,7 +60,8 @@ void rescan();              // the card's packages changed (the web's upload / d
 // Console: "um" (the list in the log), "um=rescan", "um=assign:<slot 1..5>:<id>" (the installed version, current
 // project), "um=clear:<slot>" (explicitly empty), "um=empty" (start this project empty: all five),
 // "um=put:<slot>:<id|->:<a.b.c>[:<name>]" (an imported slot list's entry; the package need not be installed).
-// "um=reload:<slot>" (API 3: load the slot again: a muted slot back, its states and arena fresh).
+// "um=reload:<slot>" (API 3: load the slot again: a muted slot back, its states and arena fresh; "f<n>": UFX<n>).
+// "um=fx:<n>:<id|->" (API 3: user effect slot UFX<n>, 1..4, plays the installed effect id, or none; in memory).
 // "um=save:<slot>:<name>" (a generic preset /PRESETS/<id>/<name>.txt of what the slot's last voice plays now: its
 // preset- and offset-role knobs, every knob but PRE when it has neither), "um=presets" (the card's /PRESETS changed:
 // every slot's list scanned again).
@@ -84,7 +85,7 @@ struct SlotView {
   uint32_t arena;        // the slot's arena, bytes (shared part + states x voice part)
   const char* why;       // the JSON's "why" ("" none)
 };
-SlotView slot_view(int s);  // s 0..4; state an rmp_slot_state
+SlotView slot_view(int s);  // s 0..4 (U1..U5), 5..8 (API 3's UFX1..UFX4); state an rmp_slot_state
 // The display's view (any core: published with the JSON, the same seqlock): the project and U1..U5 as the Rytm shows
 // them - the machine's name, "---" empty, "!NAME" missing / bad / no room, "..." loading. False before the first publish.
 struct UiView {

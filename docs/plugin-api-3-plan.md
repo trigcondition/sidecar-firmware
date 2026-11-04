@@ -73,6 +73,31 @@ A plugin of `out_channels = 2` on a voice routed OUT PRE or POST gets `out[1]` a
 is null and `RMP3_B_MONO_OUT` set: the plugin writes its mono mix. A mono plugin is unchanged (R = L). The NaN and
 level clip runs per channel. Not yet: poly instances of a stereo plugin render mono (their `out[1]` is null).
 
+### Phase 2: user effects (the send FX position)
+
+One ABI for machines and effects: an effect is an API 3 only package (`api 3`, `RMP3_KIND_EFFECT`); the same loader,
+checks, arena and guard as a machine. The load targets UFX1..UFX4 sit next to U1..U5 in core/user/um.cpp (indices 5..8,
+never in the Rytm's slot protocol). `um=fx:<n>:<id>` puts an installed effect in UFX`n` (in memory, the TYPE list's
+name and tag in `fx::user[]`); `um=fx:<n>:-` empties it, `um=reload:f<n>` loads it again. A machine slot refuses an
+effect and an effect slot a machine (BAD, in words). An effect gets two states, send FX 1 and send FX 2, set up on the
+control core before core 2 may run them (`voice_init`, `voice_attach` with place `RMP3_AT_SEND`, voice -1, instance
+0 / 1, an arena part each).
+
+The send FX (core/fx/send_fx.h) plays TYPE 64..67 through two hooks (`fx::user_ready`, `fx::user_run`): mono in
+(stems x send levels), stereo wet out, `RMP3_B_WET_ONLY`, in blocks of up to 16 frames, on core 2 after its block.
+The knobs: the send slot's P2..P5 are the effect's P1..P4, handed in `b->p` with `p_changed`. TYPE changes fade as for
+the built-in effects (the host's). The render is guarded on core 2 too (the Pi's guard takes core 2's calls outside a
+voice): a fault mutes the effect. `fx::state` says READY for a loaded effect whose tag matches the kit's.
+
+The example: plugins/ufx_pingpong, PINGPONG, a tempo-synced stereo ping-pong delay (MIT, written for this repo):
+TIME in the Rytm's tempo from the transport (1/16 .. 1 BAR), FDBK, TONE, WIDTH; its delay lines in the arena (1 s a
+side at least, 4 s wanted). core/tests/test_api3.cpp runs it through `SendFx::Process` on the host: no output until
+the echo, the first echo on the left at the tempo's 1/8, the feedback's on the right at twice that.
+
+Not yet: the INSERT, bus and master positions (part 8), the slot map file for UFX (`/.rytm/fxslots/` holds tag and
+name only; um's assignment is in memory), a fresh state on a TYPE change back to the same effect, a time limit on an
+effect's render on core 2 (only faults are caught).
+
 Tests: core/tests/test_api3.cpp (the probe plugin plugins/api3_test in six variants, kept built in
 core/tests/api3_pkgs), core/tests/test_api3_compat.cpp (below), tools/tests/test_rmp_api.c,
 tools/tests/test_rmp_pack.py `Api3Flags`.
@@ -118,3 +143,13 @@ Each: what the page says, what the engine does, why. Listed for the owner.
 9. **Also refused at load:** an API 1 / 2 table with a null `init` or `render` (it crashed before; now BAD), and
    function pointers outside the image's code part (an API 3 table only: an API 2 table is not checked further, so
    nothing that loaded before is refused).
+10. **Effects get `b->p` without `RMP3_CAP_BLOCK_P`.** The page makes block-rate parameters a capability for
+    modulation. A send-slot effect runs on core 2, where no control call can reach it, so its knobs come in the
+    block (the send slot's P2..P5 as P1..P4) and `params` is not called there. The host does not offer `BLOCK_P` to
+    machines yet (they still get `params`). This is the page's own design for modulation, used for one more reason.
+11. **UFX assignments are in memory** (`um=fx`), not yet in `/.rytm/fxslots/<project>.txt`: that file names an effect
+    by tag and name only, and the Rytm's kit stores the tag; resolving a tag to an installed package (as U1..U5's
+    fingerprints are) is the next step, with the web page.
+12. **An effect's state is not fresh on a TYPE change back.** The page says a TYPE change starts a fresh state.
+    `voice_init` is a control call and the send FX's TYPE changes on core 2; a fresh state needs a request from core 2
+    to core 3 and a fade that waits for it. For now an effect keeps its state (a delay's tail can come back).

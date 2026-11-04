@@ -22,6 +22,8 @@
 #include "check.h"
 #include "engine.h"
 #include "fx/out.h"
+#include "fx/send_fx.h"
+#include <memory>
 #include "hooks.h"
 #include "lfo.h"
 #include "rmp_api3.h"
@@ -139,7 +141,7 @@ int main() {
   Fs fs;
   CHECK(fs.begin() && fs.mkdir("/Samples") && fs.mkdir("/Plugins") && fs.mkdir("/.rytm/projects/A3"));
   put("/.rytm/project", "A3");
-  for (const char* n : {"api3_test", "api3_only", "api3_initcrash", "api3_needs", "api3_big", "api3_stereo"})
+  for (const char* n : {"api3_test", "api3_only", "api3_initcrash", "api3_needs", "api3_big", "api3_stereo", "ufx_pingpong"})
     put(std::string("/Plugins/") + n + ".rmp", slurp(std::string("tests/api3_pkgs/") + n + ".a64.rmp"));
   hooks.to_rytm = ::out;
   CHECK(engine_begin());
@@ -200,7 +202,7 @@ int main() {
   report(1, 1, 60, 0);
   f = block(1);
   CHECK(near(f[0], 0.5f) && near(f[5], 2.0f / 16));
-  CHECK(um::installed() == 6);   // (every probe package lists: they are machines; the BAD ones too until loaded)
+  CHECK(um::installed() == 6);   // (the effect is not a machine: not in the Rytm's list)   // (every probe package lists: they are machines; the BAD ones too until loaded)
 
   // ---- guarded calls: a fault in params mutes U1, U2 plays on
   report(0, 0, -1, 16);   // MODE zone 1: params() writes through a null pointer
@@ -278,6 +280,61 @@ int main() {
   CHECK(near(l[0], 0.5f) && near(l[9], 0.5f));   // the mono probe on PRE: out[1] null, R = L
   for (int k = 0; k < kBlock; ++k) CHECK(r[k] == l[k]);
   out::set_route(0, out::kTrk), out::set_route(6, out::kTrk);
+
+  // ---- a user effect: plugins/ufx_pingpong in UFX1, a send FX TYPE (64), on the send FX's DSP as core 2 runs it
+  CHECK(!fx::user_ready(0));
+  CHECK(fx::state(0) == fx::kStEmpty);
+  cmd("um=fx:1:fx.pingpong");
+  v = um::slot_view(5);
+  CHECK(v.state == RMP_SLOT_READY && v.api == 3 && !v.muted);
+  CHECK(fx::user_ready(0) && std::string(fx::user[0].name) == "PINGPONG" && fx::user[0].tag == fx::fx_tag("PINGPONG"));
+  CHECK(logged("um: UFX1 fx.pingpong: ready (API 3, arena 3004 KB: 2 states)") == 1);
+  // a machine is not an effect, an effect is not a machine
+  cmd("um=fx:2:rytm.api3_test");
+  CHECK(um::slot_view(6).state == RMP_SLOT_BAD && std::string(um::slot_view(6).why) == "bad: a machine (U1..U5), not an effect");
+  cmd("um=fx:2:-");
+  cmd("um=assign:5:fx.pingpong");
+  CHECK(um::slot_view(4).state == RMP_SLOT_BAD && std::string(um::slot_view(4).why) == "bad: an effect (UFX1..UFX4), not a machine");
+  {
+    auto sfx = std::make_unique<fx::SendFx>(48000.0f);
+    memset((void*)&fx::control, 0, sizeof fx::control);
+    fx::control.send[0][0] = 127;   // BD's send to FX 1
+    fx::control.knob[0][0] = fx::kFirstUser;   // FX 1's TYPE: UFX1
+    fx::control.knob[0][2] = 36, fx::control.knob[0][3] = 64, fx::control.knob[0][4] = 127, fx::control.knob[0][5] = 127;   // TIME 1/8, FDBK, TONE, WIDTH
+    CHECK(fx::state(0) == fx::kStReady);
+    const int kN = 26400, kAt = 1200;   // an impulse on BD's stem at frame 1200 (after the TYPE's fade-in)
+    std::vector<float> L(kN), R(kN);
+    float st[12][fx::kStems], o[12][2];
+    for (int i = 0; i < kN; i += 12) {
+      for (int j = 0; j < 12; ++j) {
+        for (int k = 0; k < fx::kStems; ++k) st[j][k] = 0.0f;
+        if (i + j == kAt) st[j][0] = 1.0f;
+      }
+      sfx->Process(st, 12, o, fx::control);
+      for (int j = 0; j < 12; ++j) L[i + j] = o[j][0], R[i + j] = o[j][1];
+    }
+    auto peak = [&](const std::vector<float>& y, int a, int b, int* at) {
+      float m = 0.0f;
+      for (int i = a; i < b; ++i) if (std::fabs(y[i]) > m) m = std::fabs(y[i]), *at = i;
+      return m;
+    };
+    float ticks, tick_us;
+    lfo::clock_now(&ticks, &tick_us);   // the tempo the transport hands the effect (150 BPM from above, kept when stopped)
+    const int d = (int)lroundf(12.0f * tick_us * 0.048f);   // 1/8: 12 ticks
+    CHECK(d > 9400 && d < 10000);   // (about 150 BPM: 9600 frames)
+    int at = -1, at2 = -1;
+    float before = peak(L, 0, kAt + d - 500, &at) + peak(R, 0, kAt + d - 500, &at);   // wet only: nothing until the echo
+    float l1 = peak(L, kAt + d - 500, kAt + d + 500, &at), r1 = peak(R, kAt + d - 500, kAt + d + 500, &at2);
+    CHECK(before < 1e-4f);
+    CHECK(l1 > 0.2f && std::abs(at - (kAt + d)) <= 2);   // the first echo on the left
+    CHECK(r1 < 0.05f * l1);
+    float r2 = peak(R, kAt + 2 * d - 500, kAt + 2 * d + 500, &at2);
+    CHECK(r2 > 0.2f * l1 && std::abs(at2 - (kAt + 2 * d)) <= 2);   // the feedback's echo on the right
+    printf("test_api3: PINGPONG echoes L %.3f at +%d, R %.3f at +%d\n", l1, at - kAt, r2, at2 - kAt);
+  }
+  // a reassign stops it on core 2 first; empty: MISSING again
+  cmd("um=fx:1:-");
+  CHECK(!fx::user_ready(0) && fx::state(0) == fx::kStMissing);
 
   // ---- the JSON says it
   um::publish_now();
