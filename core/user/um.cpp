@@ -1379,6 +1379,36 @@ void on_render(int vi, float* o) {
     o[k] = o[k] == o[k] ? (o[k] > 1.0f ? 1.0f : o[k] < -1.0f ? -1.0f : o[k]) : 0.0f;
 }
 
+// API 3, a voice on OUT PRE / POST: a stereo plugin (out_channels 2) writes L and R (true); anything else L (false: R = L).
+bool on_render2(int vi, float* l, float* r) {
+  int s = core::v[vi].user;
+  const rmp3_plugin* p3 = s >= 0 && s < kSlots ? g_v3[s].p3 : nullptr;
+  if (!p3 || p3->out_channels < 2 || g_cur[vi] != s || g_slot[s].st != RMP_SLOT_READY || (g_note_wait >> vi & 1) || muted(s)) {
+    on_render(vi, l);
+    return false;
+  }
+  uint32_t e = __atomic_load_n(&g_epoch, __ATOMIC_ACQUIRE);
+  if (g_voice_epoch[vi] != e) {
+    if (ex->barrier) ex->barrier();
+    g_voice_epoch[vi] = e;
+  }
+  uint32_t t0 = core::cycles();
+  {
+    VNow now(vi);
+    rmp3_block b;
+    block_fill(&b, core::kBlock, l, r, RMP3_AT_VOICE);
+    p3->render(g_vstate[vi], &b);
+  }
+  uint32_t dt = core::cycles() - t0;
+  __atomic_store_n(&g_cyc[vi][s], g_cyc[vi][s] + dt, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_blk[vi][s], g_blk[vi][s] + 1, __ATOMIC_RELAXED);
+  for (int k = 0; k < core::kBlock; ++k) {   // per channel: a NaN or a runaway level clipped
+    l[k] = l[k] == l[k] ? (l[k] > 1.0f ? 1.0f : l[k] < -1.0f ? -1.0f : l[k]) : 0.0f;
+    r[k] = r[k] == r[k] ? (r[k] > 1.0f ? 1.0f : r[k] < -1.0f ? -1.0f : r[k]) : 0.0f;
+  }
+  return true;
+}
+
 // ---- the map
 void map_file(char* out, int cap) {
   char fn[48];
@@ -1968,7 +1998,8 @@ void job_end(int s, rmp_slot_state st, const rmp_plugin* p, int pkg, const char*
 
 // ---- API 3: the table checked, the arena, setup()
 uint32_t host_caps() {
-  return RMP3_CAP_TRANSPORT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) | (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u);
+  return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
+         (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u);
 }
 void caps_names(uint32_t c, char* b, int cap) {
   static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages"};
@@ -2599,6 +2630,7 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_leave = on_leave;
   core::hooks.user_note_off = on_note_off;
   core::hooks.user_render = on_render;
+  core::hooks.user_render2 = on_render2;
   core::hooks.slot_ask = on_ask;
   core::hooks.slot_assign = on_assign;
   core::hooks.project_seen = on_project_seen;

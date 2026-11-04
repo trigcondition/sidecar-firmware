@@ -21,6 +21,7 @@
 
 #include "check.h"
 #include "engine.h"
+#include "fx/out.h"
 #include "hooks.h"
 #include "lfo.h"
 #include "rmp_api3.h"
@@ -95,6 +96,21 @@ static std::vector<float> block(int vi) {
   g_w = (g_w + kBlock) % 1024;
   return r;
 }
+static int16_t g_ring_r[1024][kVoices];
+static uint8_t g_stm[kVoices];
+// one block with the voices' R rows (the Pi's render): L and R of voice vi
+static void block2(int vi, std::vector<float>* l, std::vector<float>* r) {
+  g_t += 250;
+  host_fake_time(true, g_t);
+  um::pre_block();
+  render_voices(g_ring, 1024, g_w, 0, kVoices, g_mach, g_ring_r, g_stm);
+  l->assign(kBlock, 0.0f), r->assign(kBlock, 0.0f);
+  for (int k = 0; k < kBlock; ++k) {
+    (*l)[k] = g_ring[(g_w + k) % 1024][vi] / (0.7f * 32767.0f);
+    (*r)[k] = g_ring_r[(g_w + k) % 1024][vi] / (0.7f * 32767.0f);
+  }
+  g_w = (g_w + kBlock) % 1024;
+}
 static bool near(float a, float b) { return std::fabs(a - b) < 0.0005f; }
 static bool silent(const std::vector<float>& f) {
   for (float x : f) if (x != 0.0f) return false;
@@ -123,9 +139,9 @@ int main() {
   Fs fs;
   CHECK(fs.begin() && fs.mkdir("/Samples") && fs.mkdir("/Plugins") && fs.mkdir("/.rytm/projects/A3"));
   put("/.rytm/project", "A3");
-  for (const char* n : {"api3_test", "api3_only", "api3_initcrash", "api3_needs", "api3_big"})
+  for (const char* n : {"api3_test", "api3_only", "api3_initcrash", "api3_needs", "api3_big", "api3_stereo"})
     put(std::string("/Plugins/") + n + ".rmp", slurp(std::string("tests/api3_pkgs/") + n + ".a64.rmp"));
-  hooks.to_rytm = out;
+  hooks.to_rytm = ::out;
   CHECK(engine_begin());
   um::begin(host_um_exec());
   sysex({0xf0, 0x7d, 0x52, 0x54, 0x10, 'A', '3', 0xf7});
@@ -184,7 +200,7 @@ int main() {
   report(1, 1, 60, 0);
   f = block(1);
   CHECK(near(f[0], 0.5f) && near(f[5], 2.0f / 16));
-  CHECK(um::installed() == 5);   // (every probe package lists: they are machines; the BAD ones too until loaded)
+  CHECK(um::installed() == 6);   // (every probe package lists: they are machines; the BAD ones too until loaded)
 
   // ---- guarded calls: a fault in params mutes U1, U2 plays on
   report(0, 0, -1, 16);   // MODE zone 1: params() writes through a null pointer
@@ -241,6 +257,27 @@ int main() {
   report(2, 5, 60, 0);
   f = block(5);
   CHECK(near(f[0], 0.5f) && near(f[3], 0.5f) && near(f[4], 0.5f) && near(f[10], 1.0f / 16) && near(f[5], 6.0f / 16));
+
+  // ---- stereo: a plugin of out_channels 2 writes R on PRE / POST (here R = -L), a mono mix on TRK (out[1] null);
+  // a mono plugin on PRE plays R = L as before
+  cmd("um=assign:4:rytm.api3_stereo");
+  CHECK(um::slot_view(3).state == RMP_SLOT_READY);
+  report(3, 6, 60, 0);
+  std::vector<float> l, r;
+  block2(6, &l, &r);
+  CHECK(near(l[0], 0.5f) && near(l[9], 0.5f));   // TRK: mono
+  for (int k = 0; k < kBlock; ++k) CHECK(r[k] == l[k]);
+  out::set_route(6, out::kPre);
+  block2(6, &l, &r);
+  CHECK(near(l[0], 0.5f) && near(l[9], 0.25f));   // PRE: out[1] given
+  for (int k = 0; k < kBlock; ++k) CHECK(near(r[k], -l[k]));
+  CHECK(g_stm[6]);   // (the pair's real-stereo bit)
+  out::set_route(0, out::kPre);
+  report(0, 0, 60, 0);
+  block2(0, &l, &r);
+  CHECK(near(l[0], 0.5f) && near(l[9], 0.5f));   // the mono probe on PRE: out[1] null, R = L
+  for (int k = 0; k < kBlock; ++k) CHECK(r[k] == l[k]);
+  out::set_route(0, out::kTrk), out::set_route(6, out::kTrk);
 
   // ---- the JSON says it
   um::publish_now();

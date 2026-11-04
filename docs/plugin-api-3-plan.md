@@ -66,7 +66,14 @@ watchdog on core 0), and agents do not build kernels.
   gets part `vi`, poly instance `i` part `8 + i`; a state past `states` stays silent. Two slots of one package share
   the image and get an arena and a `setup` each. The arenas come back with the code's at a full reload.
 
-Tests: core/tests/test_api3.cpp (the probe plugin plugins/api3_test in five variants, kept built in
+### Phase 2: stereo
+
+A plugin of `out_channels = 2` on a voice routed OUT PRE or POST gets `out[1]` and writes both channels (a new hook,
+`user_render2`, beside `user_render`; core/voices.cpp keeps such a voice's R instead of copying L). On TRK, `out[1]`
+is null and `RMP3_B_MONO_OUT` set: the plugin writes its mono mix. A mono plugin is unchanged (R = L). The NaN and
+level clip runs per channel. Not yet: poly instances of a stereo plugin render mono (their `out[1]` is null).
+
+Tests: core/tests/test_api3.cpp (the probe plugin plugins/api3_test in six variants, kept built in
 core/tests/api3_pkgs), core/tests/test_api3_compat.cpp (below), tools/tests/test_rmp_api.c,
 tools/tests/test_rmp_pack.py `Api3Flags`.
 

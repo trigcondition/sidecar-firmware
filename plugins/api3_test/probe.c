@@ -11,7 +11,8 @@
 //   10 setup() calls / 16 (the shared part's counter)
 // P1 MODE in zones of 16: 0 plays, 1 params() faults, 2 params() runs ~2 ms (late), 3 note_on() faults.
 // Variants (Makefile V=): PROBE_ONLY an API 3 only table (api 3, no API 2 render); PROBE_INITCRASH init() faults;
-// PROBE_NEEDS needs the signal bus (no host has it yet); PROBE_BIG wants an arena past any slot's limit.
+// PROBE_NEEDS needs the signal bus (no host has it yet); PROBE_BIG wants an arena past any slot's limit;
+// PROBE_STEREO out_channels 2: on a stereo route R is -L.
 // MIT, Copyright 2026 trigcondition and contributors.
 #include "rmp/rmp_api3.h"
 
@@ -98,6 +99,8 @@ static void p_render3(void *st, const rmp3_block *b) {
   o[8] = (float)b->n / 16.0f;
   o[9] = b->out[1] ? 0.25f : 0.5f;
   o[10] = s->shared ? (float)s->shared[1] / 16.0f : 0.0f;
+  if (b->out[1])   /* a stereo route (PROBE_STEREO): R is L upside down */
+    for (int32_t i = 0; i < b->n; ++i) b->out[1][i] = -o[i];
 }
 
 static const rmp3_plugin g3 = {
@@ -113,7 +116,11 @@ static const rmp3_plugin g3 = {
 #else
   .voice_min = 65536, .voice_want = 262144,
 #endif
+#ifdef PROBE_STEREO
+  .out_channels = 2,
+#else
   .out_channels = 1,
+#endif
   .setup = p_setup, .voice_attach = p_attach, .render = p_render3,
 };
 
