@@ -86,9 +86,47 @@ static void __attribute__ ((noinline, noreturn)) ResumeWorker (void)
 	__builtin_longjmp (g_Guard.JumpBuffer (CMultiCoreSupport::ThisCore ()), 1);
 }
 
+// Plugin API 3: a fault inside a guarded plugin call on core 3 comes back here, at task level, as ResumeWorker does.
+static void __attribute__ ((noinline, noreturn)) ResumeControl (void)
+{
+	__builtin_longjmp (g_Guard.ControlJumpBuffer (), 1);
+}
+
+int __attribute__ ((noinline)) CGuard::ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC)
+{
+	if (CMultiCoreSupport::ThisCore () != 3 || m_bCtlArmed)
+	{
+		pFunc (pParam);
+		return 0;
+	}
+	m_pCtlPC = pPC;
+	if (__builtin_setjmp (m_CtlJmp))
+	{
+		m_bCtlArmed = FALSE;
+		*m_pCtlPC = m_nCtlPC;
+		return 1;
+	}
+	m_bCtlArmed = TRUE;
+	pFunc (pParam);
+	m_bCtlArmed = FALSE;
+	return 0;
+}
+
 void CEngineExceptionHandler::Throw (unsigned nException, TAbortFrame *pFrame)
 {
 	unsigned nCore = CMultiCoreSupport::ThisCore ();
+	if (nCore == 3 && g_Guard.ControlArmed ())
+	{
+		// a user plugin's control call faulted (API 3's guard): back into ControlCall, the slot muted there
+		g_Guard.NoteControlFault (pFrame->elr_el1);
+		u64 nSPSR = pFrame->spsr_el1, nStack = pFrame->sp_el1;		// read before the frame is dropped
+		asm volatile ("msr elr_el1, %0\n"
+			      "msr spsr_el1, %1\n"
+			      "mov sp, %2\n"
+			      "eret"
+			      :: "r" ((u64) &ResumeControl), "r" (nSPSR), "r" (nStack) : "memory");
+		__builtin_unreachable ();
+	}
 	if ((nCore == 1 || nCore == 2) && g_Guard.Armed (nCore))
 	{
 		g_Guard.NoteFault (nCore, pFrame->elr_el1);

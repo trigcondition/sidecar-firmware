@@ -112,6 +112,11 @@ float phase(int i);                  // the LFO's phase now, 0..1
 // (mod 2304, locked to the Rytm's song position while it plays, else on at the last tempo) and a tick's length in us.
 // False until tick() first ran (tests without the control loop).
 bool clock_now(float* ticks, float* tick_us);
+// Plugin API 3's transport (core/user/um.cpp pre_block): the clock as clock() keeps it - running (FA / FB .. FC), ticking
+// (an F8 seen), the latest tick's song position (24 ppqn since Start or an F2, -1 none) and when it came, the tempo, the
+// position tick() keeps (clock_now's), and counts of Start / Continue, Stop and song position messages since boot.
+struct ClockState { bool run, ticking; int32_t pos; uint32_t last_us; float tick_us, tp; uint32_t starts, stops, jumps; };
+void clock_state(ClockState* out);
 float out(int i);                    // its wave now, -1..1
 bool active(int i);                  // on a target with a nonzero depth
 

@@ -9,7 +9,9 @@
 #include "hooks.h"
 #include "platform.h"
 #include "pool/pool.h"
+#include "lfo.h"
 #include "rmp_api.h"
+#include "rmp_api3.h"
 #include "rmp_loader.h"
 #if CORE_MSAMP
 #include "../msamp/cardq.h"   // the package's reads on the card core (7z)
@@ -125,6 +127,43 @@ struct Slot {
   uint16_t fp;
 };
 Slot g_slot[kSlots];
+// ---- Plugin API 3 (sdk/rmp/rmp_api3.h, docs/plugin-api-3-plan.md): per slot its API 3 table, its image's code part,
+// its arena. Set by the load (job_step, the arena phase), cleared when the slot's assignment starts again (job_begin);
+// read by the render cores only while the slot is READY.
+struct V3 {
+  const rmp_plugin* p;     // the entry table (the arena phase's, until the slot is READY)
+  const rmp3_plugin* p3;   // null: a plain API 1 / 2 plugin
+  const uint8_t* code;     // the image's code part (the fault offsets: "+0x1234")
+  uint32_t code_bytes;
+  uint8_t* base;           // the arena: one block from the pool (null: none), zeroed by the arena phase
+  uint8_t* shared;         // ... the slot's shared part (null: 0 bytes)
+  uint8_t* voices;         // ... then states x voice_bytes
+  uint32_t shared_bytes, voice_bytes, states;
+  uint32_t zero_off, zero_len;   // the arena phase: zeroed so far, in all
+};
+V3 g_v3[kSlots];
+volatile uint32_t g_muted = 0;   // the guard muted the slot (bit s): a plugin call faulted, or ran late three times
+uint8_t g_late[kSlots];          // late control calls in a row (API 3 plugins: three mute)
+uint32_t g_late_n[kSlots];       // late control calls since the load (every plugin: the JSON's "late")
+uint8_t g_jph = 0;               // the load's phase: 0 the package, 1 the arena (zeroed in pieces, then setup())
+enum : uint8_t { kJphImage = 0, kJphArena = 1 };
+constexpr uint32_t kZeroStep = 256u << 10;     // the arena zeroed per idle step (the slot LOADING meanwhile)
+constexpr uint32_t kCallLateUs = 500;          // a control call's limit (the proposal's; the Mini's)
+constexpr uint32_t kSetupLateUs = 100000;      // init and setup: 100 ms
+// the arenas' pool (Exec::arena): a bump allocator, reset with the code's arena (a full reload)
+uint8_t* g_pool = nullptr;
+uint32_t g_pool_bytes = 0, g_pool_used = 0;
+rmp3_host g_h3;                  // what an API 2 or 3 plugin finds in rmp_host.reserved[RMP_H_V3]
+rmp_host g_host3;                // the host table of an API 3 only plugin (api 3)
+// the transport snapshots (pre_block): two, the render cores read the block's (g_xp_gen & 1)
+rmp3_transport g_xp[2];
+volatile uint32_t g_xp_gen = 0;
+constexpr uint32_t kLeadFrames = 385;   // the FIFO's 96 frames + the Rytm's measured 289-frame loop (the proposal's estimate)
+uint32_t g_xp_starts = 0, g_xp_stops = 0, g_xp_jumps = 0;
+int32_t g_xp_song = -1;
+// what a block hands a plugin that declares signals while the host has no bus (RMP3_CAP_BUS): silence in, a sink out
+float g_sig_zero[16];
+rmp3_sig_in g_sig_none[4];
 char g_why[kSlots][64];    // why the slot is not READY, in words (the web page's "why"; "" when READY / EMPTY / LOADING)
 uint32_t g_need = 0;       // slots to (re)load, bit s
 bool g_full = false;       // reset the arena and load every slot again
@@ -239,7 +278,7 @@ uint32_t prandom(uint32_t* s) {
   x ^= x << 13; x ^= x >> 17; x ^= x << 5;
   return *s = x;
 }
-const rmp_host* host_for(const rmp_plugin* p) { return p->api >= 2u ? &g_host2 : &g_host1; }
+const rmp_host* host_for(const rmp_plugin* p) { return p->api >= RMP_API3 ? &g_host3 : p->api >= 2u ? &g_host2 : &g_host1; }
 
 void copy(char* d, const char* s, int cap) {
   int i = 0;
@@ -544,6 +583,126 @@ struct VNow {                              // within a plugin call for voice vi
   ~VNow() { g_vnow[c] = was; }
 };
 
+// ---- Plugin API 3: the guarded control calls (Exec::guard). Every plugin call on the control core goes through
+// gcall: a fault leaves the call, the slot is muted (silent, no more calls) until it is loaded again, and the engine
+// plays on (before API 3 a fault there stopped the stream and rebooted the board). API 3 plugins are held to the
+// proposal's time limit too: a call over kCallLateUs three times in a row mutes the slot; an older plugin's late calls
+// are only counted (the JSON's "late"): it was never told the limit.
+template <class F> struct GThunk {
+  static void run(void* c) { (*(F*)c)(); }
+};
+// f() guarded: 0 returned, 1 faulted (*pc). *us its time.
+template <class F> int guarded(F f, uint64_t* pc, uint32_t* us) {
+  uint32_t t0 = core::now_us();
+  int r = 0;
+  if (ex && ex->guard) r = ex->guard(GThunk<F>::run, &f, pc);
+  else f();
+  *us = core::now_us() - t0;
+  return r;
+}
+// "+0x1234" inside the slot's code, else the address
+void fault_where(int s, uint64_t pc, char* b, int cap) {
+  const V3& x = g_v3[s];
+  uintptr_t c0 = (uintptr_t)x.code;
+  if (pc && c0 && pc >= c0 && pc < c0 + x.code_bytes) sniprintf(b, cap, "+0x%x", (unsigned)(pc - c0));
+  else sniprintf(b, cap, "0x%llx (outside its code)", (unsigned long long)pc);
+}
+void slot_mute(int s, const char* why) {
+  __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);
+  for (int vi = 0; vi < core::kVoices; ++vi)
+    if (g_cur[vi] == s) core::v[vi].live = false;
+  copy(g_why[s], why, sizeof g_why[s]);
+  core::log("um: U%d %s %s", s + 1, g_map.slot[s].id, why);
+  g_pub = true;
+}
+template <class F> bool gcall(int s, const char* what, F f) {
+  if (__atomic_load_n(&g_muted, __ATOMIC_ACQUIRE) >> s & 1) return false;
+  uint64_t pc = 0;
+  uint32_t us = 0;
+  char w[96], at[32];
+  if (guarded(f, &pc, &us)) {
+    fault_where(s, pc, at, sizeof at);
+    sniprintf(w, sizeof w, "muted: crashed in %s at %s", what, at);
+    slot_mute(s, w);
+    return false;
+  }
+  if (us <= kCallLateUs) {
+    g_late[s] = 0;
+    return true;
+  }
+  ++g_late_n[s];
+  if (g_v3[s].p3 && ++g_late[s] >= 3) {
+    sniprintf(w, sizeof w, "muted: %s ran %u us, three late calls in a row (limit %u)", what, (unsigned)us, (unsigned)kCallLateUs);
+    slot_mute(s, w);
+    return false;
+  }
+  return true;
+}
+bool muted(int s) { return s >= 0 && (__atomic_load_n(&g_muted, __ATOMIC_ACQUIRE) >> s & 1); }
+
+// ---- the calls themselves (null functions are allowed in an API 3 only table: nothing to call)
+// A state starts on slot s: zeroed, voice_init, then (API 3) voice_attach with its arena part. vi the voice, inst the
+// poly instance (-1: the voice's own state, arena state vi; else 8 + inst). False: the slot is muted, or the state has
+// no room in the arena (past its states: silent, as the proposal says).
+constexpr int kInstState0 = 8;
+bool state_room(int s, int inst, int vi) {
+  const V3& x = g_v3[s];
+  if (!x.p3) return true;
+  uint32_t idx = inst < 0 ? (uint32_t)vi : (uint32_t)(kInstState0 + inst);
+  return idx < x.states;
+}
+bool c_voice_init(int s, void* st, int vi, int inst) {
+  const Slot& sl = g_slot[s];
+  memset(st, 0, sl.state_bytes);
+  if (sl.p->voice_init && !gcall(s, "voice_init", [&] { sl.p->voice_init(st); })) return false;
+  const V3& x = g_v3[s];
+  if (x.p3 && x.p3->voice_attach) {
+    uint32_t idx = inst < 0 ? (uint32_t)vi : (uint32_t)(kInstState0 + inst);
+    rmp3_voice v;
+    v.shared = x.shared, v.shared_bytes = x.shared_bytes;
+    v.arena = x.voice_bytes && idx < x.states ? x.voices + (size_t)idx * x.voice_bytes : nullptr;
+    v.arena_bytes = v.arena ? x.voice_bytes : 0;
+    v.slot = s + 1, v.voice = vi, v.instance = inst, v.place = RMP3_AT_VOICE;
+    if (!gcall(s, "voice_attach", [&] { x.p3->voice_attach(st, &v); })) return false;
+  }
+  return true;
+}
+void c_vfn(int s, rmp_voice_fn f, void* st, const char* what) {
+  if (f) gcall(s, what, [&] { f(st); });
+}
+void c_params(int s, void* st, const float* q) {
+  const rmp_plugin* p = g_slot[s].p;
+  if (p->params) gcall(s, "params", [&] { p->params(st, q); });
+}
+void c_note_on(int s, void* st, float note, float vel) {
+  const rmp_plugin* p = g_slot[s].p;
+  if (p->note_on) gcall(s, "note_on", [&] { p->note_on(st, note, vel); });
+}
+void c_note_off(int s, void* st) {
+  const rmp_plugin* p = g_slot[s].p;
+  if (p->note_off) gcall(s, "note_off", [&] { p->note_off(st); });
+}
+
+// ---- the block (a render core)
+float g_sig_sink[kCores][4][16];   // signals a plugin writes while the host has no bus: dropped
+float* g_sig_sinkp[kCores][4];
+float g_sig_val[kCores][4];
+void block_fill(rmp3_block* b, int n, float* l, float* r, uint32_t place) {
+  int c = this_core();
+  memset(b, 0, sizeof *b);
+  b->size = sizeof *b;
+  b->n = n;
+  b->gen = __atomic_load_n(&g_xp_gen, __ATOMIC_ACQUIRE);
+  b->flags = r ? 0u : (uint32_t)RMP3_B_MONO_OUT;
+  b->out[0] = l, b->out[1] = r;
+  b->place = place;
+  b->transport = &g_xp[b->gen & 1];
+  b->sig_in = g_sig_none;
+  for (int k = 0; k < 4; ++k) g_sig_sinkp[c][k] = g_sig_sink[c][k];
+  b->sig_audio = g_sig_sinkp[c];
+  b->sig_value = g_sig_val[c];
+}
+
 void upool_drop(int vi) {   // the voice's pin and entry go
   UPool& u = g_up[vi];
   if (u.pcm && core::psram) core::psram->unpin(u.folder, u.file);
@@ -818,9 +977,9 @@ void note_fire(int vi) {   // a trig's held note_on, now
   const HeldNote& n = g_hn[vi];
   {
     VNow now(vi);
-    g_slot[s].p->note_on(g_vstate[vi], (float)n.note, (n.vel < 1 ? 1 : n.vel) / 127.0f);
+    c_note_on(s, g_vstate[vi], (float)n.note, (n.vel < 1 ? 1 : n.vel) / 127.0f);
   }
-  core::v[vi].live = true;
+  core::v[vi].live = !muted(s);
   if (n.held) core::log("um: trig voice %d U%d note %d (after its preset load: %u us)", vi, s + 1, n.note,
                         (unsigned)(core::now_us() - n.t));
 }
@@ -855,7 +1014,10 @@ void pre_apply(int vi, PreLoad& L, int n, bool cut, uint32_t t0) {
   else if (!rmp_load_entry_of(sl.p)) why = "the plugin has no load_entry";
   else {
     VNow now(vi);
-    if (rmp_load_entry_of(sl.p)(g_vstate[vi], g_rbuf, n, vals) != 0) why = "refused by the plugin";
+    int32_t r = -1;
+    rmp_load_entry_fn le = rmp_load_entry_of(sl.p);
+    if (!gcall(s, "load_entry", [&] { r = le(g_vstate[vi], g_rbuf, n, vals); })) why = "the plugin crashed (the slot is muted)";
+    else if (r != 0) why = "refused by the plugin";
   }
   if (why) {
     rmp_pv_failed(&g_pv[vi], L.entry);
@@ -872,7 +1034,7 @@ void pre_apply(int vi, PreLoad& L, int n, bool cut, uint32_t t0) {
   pv_params(vi, s, g_last_trig >> vi & 1, q);
   {
     VNow now(vi);
-    sl.p->params(g_vstate[vi], q);
+    c_params(s, g_vstate[vi], q);
   }
   core::log("um: preset voice %d U%d %d %s (%s%s, %u us)", vi, s + 1, (int)L.entry, name, L.sync ? "written back" : "played",
             cut ? ", cut at 4096 B" : "", (unsigned)(core::now_us() - t0));
@@ -1073,10 +1235,8 @@ void voice_leave(int vi) {
   g_cur[vi] = -1;
   pv_reset(vi);
   const Slot& sl = g_slot[s];
-  if (sl.st == RMP_SLOT_READY && sl.p) {   // without g_vnow: pool_info in voice_leave answers EMPTY
-    rmp_voice_fn f = rmp_voice_leave_of(sl.p);
-    if (f) f(g_vstate[vi]);
-  }
+  if (sl.st == RMP_SLOT_READY && sl.p)   // without g_vnow: pool_info in voice_leave answers EMPTY
+    c_vfn(s, rmp_voice_leave_of(sl.p), g_vstate[vi], "voice_leave");
   upool_drop(vi);
 }
 void inst_leave(int i) {   // E0: instance i's state leaves its slot
@@ -1084,10 +1244,7 @@ void inst_leave(int i) {   // E0: instance i's state leaves its slot
   if (s < 0) return;
   g_icur[i] = -1;
   const Slot& sl = g_slot[s];
-  if (sl.st == RMP_SLOT_READY && sl.p) {
-    rmp_voice_fn f = rmp_voice_leave_of(sl.p);
-    if (f) f(g_istate[i]);
-  }
+  if (sl.st == RMP_SLOT_READY && sl.p) c_vfn(s, rmp_voice_leave_of(sl.p), g_istate[i], "voice_leave");
 }
 void slot_stop(int s) {   // every voice on slot s leaves it (before its image changes)
   for (int vi = 0; vi < core::kVoices; ++vi)
@@ -1128,7 +1285,7 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
   if (note >= 0 && tag && (g_slot[s].st != RMP_SLOT_READY || tag != g_slot[s].fp)) lazy_tag(s, tag);
   if (g_cur[vi] >= 0 && g_cur[vi] != s) voice_leave(vi);
   Slot& sl = g_slot[s];
-  if (sl.st != RMP_SLOT_READY || !sl.p) {
+  if (sl.st != RMP_SLOT_READY || !sl.p || muted(s) || !state_room(s, -1, vi)) {   // (API 3: a state past the arena's: silent)
     x.live = false;
     return;
   }
@@ -1136,7 +1293,7 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
   if (note >= 0) {
     if (tag && tag != sl.fp) {   // the sound was made for another machine: silent until a matching trig
       if (g_mis & bit) return;
-      if (g_cur[vi] == s) sl.p->note_off(g_vstate[vi]);
+      if (g_cur[vi] == s) c_note_off(s, g_vstate[vi]);
       voice_leave(vi);
       g_mis |= bit;
       x.live = false;
@@ -1150,14 +1307,15 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
   void* st = g_vstate[vi];
   VNow now(vi);
   if (g_cur[vi] != s) {
-    memset(st, 0, sl.state_bytes);
     upool_drop(vi);   // before voice_init: a pool_info there asks afresh
-    sl.p->voice_init(st);
+    if (!c_voice_init(s, st, vi, -1)) {   // (zeroed there; a fault: the slot muted)
+      x.live = false;
+      return;
+    }
     g_cur[vi] = (int8_t)s;
     pv_reset(vi);
     g_pv_new |= bit;   // its next decision is a first one
-    rmp_voice_fn f = rmp_voice_enter_of(sl.p);
-    if (f) f(st);
+    c_vfn(s, rmp_voice_enter_of(sl.p), st, "voice_enter");
   }
   // presets (rmp_pv): what this report means for the voice's preset; a load runs from idle()
   if (note >= 0) g_last_trig |= bit;
@@ -1167,7 +1325,11 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
   pv_decide(vi, s, note >= 0, x.p);
   float q[16];
   pv_params(vi, s, note >= 0, q);
-  sl.p->params(st, q);
+  c_params(s, st, q);
+  if (muted(s)) {
+    x.live = false;
+    return;
+  }
   if (note >= 0) {
     bool held = g_pl[vi][0].on || g_pl[vi][1].on || (g_pv_wait >> vi & 1);
     g_hn[vi] = HeldNote{(uint8_t)note, (uint8_t)vel, held, core::now_us()};
@@ -1183,13 +1345,13 @@ void on_note_off(int vi) {
   int s = g_cur[vi];
   note_fire(vi);   // a held trig plays first
   VNow now(vi);
-  if (s >= 0 && g_slot[s].st == RMP_SLOT_READY && g_slot[s].p) g_slot[s].p->note_off(g_vstate[vi]);
+  if (s >= 0 && g_slot[s].st == RMP_SLOT_READY && g_slot[s].p) c_note_off(s, g_vstate[vi]);
 }
 // A render core: kBlock samples of voice vi (silence unless its slot plays it).
 void on_render(int vi, float* o) {
   int s = core::v[vi].user;
   const Slot& sl = g_slot[s < 0 ? 0 : s];
-  if (s < 0 || g_cur[vi] != s || sl.st != RMP_SLOT_READY || !sl.p || (g_note_wait >> vi & 1)) {
+  if (s < 0 || g_cur[vi] != s || sl.st != RMP_SLOT_READY || !sl.p || (g_note_wait >> vi & 1) || muted(s)) {
     for (int k = 0; k < core::kBlock; ++k) o[k] = 0.0f;
     return;
   }
@@ -1201,7 +1363,14 @@ void on_render(int vi, float* o) {
   uint32_t t0 = core::cycles();
   {
     VNow now(vi);
-    sl.p->render(g_vstate[vi], o, core::kBlock);
+    const rmp3_plugin* p3 = g_v3[s].p3;
+    if (p3) {   // API 3: one block of data (mono here: out[1] null)
+      rmp3_block b;
+      block_fill(&b, core::kBlock, o, nullptr, RMP3_AT_VOICE);
+      p3->render(g_vstate[vi], &b);
+    } else {
+      sl.p->render(g_vstate[vi], o, core::kBlock);
+    }
   }
   uint32_t dt = core::cycles() - t0;
   __atomic_store_n(&g_cyc[vi][s], g_cyc[vi][s] + dt, __ATOMIC_RELAXED);
@@ -1385,7 +1554,7 @@ void list_build() {   // the Rytm's list and the unique names, from g_pkg
     memset(e.name, 0, sizeof e.name);
     memcpy(e.name, e.desc.name, 10);
     e.renamed = false;
-    if (!e.ok || e.older) continue;   // (an older version: not in the Rytm's list)
+    if (!e.ok || e.older || (e.hflags & RMP_HF_EFFECT)) continue;   // (an older version, an effect: not in the Rytm's list)
     char base[11];
     memcpy(base, e.name, sizeof base);
     for (int k = 2;; ++k) {
@@ -1469,7 +1638,8 @@ void scan_check(Pkg& e, rmp_read_fn rd, void* ctx) {
   if (ok && rd(ctx, RMP_HEADER_BYTES + g_scan_info.entry_offset, t, 16)) {
     uint32_t magic, api;
     memcpy(&magic, t, 4); memcpy(&api, t + 4, 4); memcpy(&e.state, t + 8, 4); memcpy(&e.cpu, t + 12, 4);
-    if (magic != RMP_PLUGIN_MAGIC || api < RMP_API_MIN || api > RMP_API) { ok = false; scan_fail(e, "bad entry table"); }
+    uint32_t top = e.target == RMP_TARGET_A64 ? RMP_API_RMPA : RMP_API;   // (API 3: RMPA packages only)
+    if (magic != RMP_PLUGIN_MAGIC || api < RMP_API_MIN || api > top) { ok = false; scan_fail(e, "bad entry table"); }
   }
   if (ok && !rmp_manifest_read(&g_scan_info, rd, ctx, &e.desc)) { ok = false; scan_fail(e, "bad manifest"); }
   if (ok) rmp_manifest_labels(&g_scan_info, rd, ctx, &e.desc, &e.lbl);   // (none, or malformed: the static labels)
@@ -1792,12 +1962,157 @@ void job_end(int s, rmp_slot_state st, const rmp_plugin* p, int pkg, const char*
   slot_set(s, st, p, pkg);
   if (st != RMP_SLOT_READY) sniprintf(g_why[s], sizeof g_why[s], "%s: %s", st == RMP_SLOT_NO_ROOM ? "no room" : "bad", what);
   g_job = -1;
+  g_jph = kJphImage;
   core::log("um: U%d %s: %s", s + 1, g_map.slot[s].id, what);
+}
+
+// ---- API 3: the table checked, the arena, setup()
+uint32_t host_caps() {
+  return RMP3_CAP_TRANSPORT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) | (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u);
+}
+void caps_names(uint32_t c, char* b, int cap) {
+  static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages"};
+  b[0] = 0;
+  int n = 0;
+  for (int k = 0; k < 9; ++k)
+    if (c >> k & 1) n += sniprintf(b + n, cap - n, "%s%s", n ? ", " : "", kN[k]);
+}
+// The plugin's API 3 table (reserved[RMP_P_V3]) if it has one: inside its code part, its magic and size, every function
+// pointer of both tables inside the code, the counts in range, its needs met. False: refused (why).
+bool v3_check(const rmp_plugin* p, const uint8_t* code, uint32_t bytes, const rmp3_plugin** out, char* why, int cap) {
+  *out = nullptr;
+  uintptr_t c0 = (uintptr_t)code, c1 = c0 + bytes;
+  auto inside = [&](const void* q, uint64_t n) { uintptr_t a = (uintptr_t)q; return a >= c0 && n <= c1 - c0 && a <= c1 - n; };
+  auto fn_ok = [&](const void* f) { return !f || (inside(f, 4) && !((uintptr_t)f & 3)); };
+  const void* r = p->api >= 2u ? p->reserved[RMP_P_V3] : nullptr;
+  if (!r) {
+    if (p->api >= RMP_API3) { copy(why, "an API 3 table without its rmp3_plugin", cap); return false; }
+    return true;   // a plain API 1 / 2 plugin: as before
+  }
+  if (((uintptr_t)r & 7) || !inside(r, RMP3_PLUGIN_BYTES_A64)) { copy(why, "its rmp3_plugin is outside its code", cap); return false; }
+  const rmp3_plugin* q = (const rmp3_plugin*)r;
+  if (q->magic != RMP3_MAGIC || q->size < RMP3_PLUGIN_BYTES_A64 || !inside(q, q->size)) { copy(why, "bad rmp3_plugin (magic or size)", cap); return false; }
+  if (q->kind != RMP3_KIND_MACHINE && q->kind != RMP3_KIND_EFFECT) { copy(why, "bad rmp3_plugin kind", cap); return false; }
+  const void* fns[] = {(const void*)p->init, (const void*)p->voice_init, (const void*)p->note_on, (const void*)p->note_off,
+                       (const void*)p->params, (const void*)p->render, p->reserved[RMP_P_LOAD_ENTRY], p->reserved[RMP_P_VOICE_ENTER],
+                       p->reserved[RMP_P_VOICE_LEAVE], (const void*)q->setup, (const void*)q->voice_attach,
+                       (const void*)q->render, (const void*)q->view};
+  for (const void* f : fns)
+    if (!fn_ok(f)) { copy(why, "a function outside its code", cap); return false; }
+  if (!q->render) { copy(why, "its rmp3_plugin has no render", cap); return false; }
+  if (q->sig_out_n > 4 || q->sig_in_n > 4 || (q->sig_out_n && !inside(q->sig_out, 12u * q->sig_out_n)) ||
+      (q->sig_in_n && !inside(q->sig_in, 12u * q->sig_in_n))) { copy(why, "bad signal declarations", cap); return false; }
+  if (q->out_channels < 1 || q->out_channels > 2 || q->in_channels > 2 || q->aux_channels > 2 || q->states > kArenaStates ||
+      q->latency_frames > 4096) { copy(why, "channels, states or latency out of range", cap); return false; }
+  if (q->kind == RMP3_KIND_EFFECT && p->api < RMP_API3) { copy(why, "an effect must be API 3 only (api 3)", cap); return false; }
+  uint32_t miss = q->needs & ~host_caps();
+  if (miss) {
+    char n[48];
+    caps_names(miss, n, sizeof n);
+    sniprintf(why, cap, "needs %s", n);
+    return false;
+  }
+  *out = q;
+  return true;
+}
+// The slot's arena from the pool: shared part + states x voice part, each the plugin's want, else its min (64-byte
+// rounded), at most the per-slot limit. True: reserved (perhaps nothing), the arena phase next; false: no room.
+uint32_t arena_limit() { return g_pool_bytes / 4; }   // (the proposal's table: 16 / 32 / 64 MB a slot of 64 / 128 / 256)
+bool arena_reserve(int s, uint32_t* need) {
+  V3& x = g_v3[s];
+  const rmp3_plugin* q = x.p3;
+  uint32_t states = q->states ? q->states : q->kind == RMP3_KIND_EFFECT ? 2u : 8u;
+  auto al = [](uint64_t n) { return (n + 63u) & ~(uint64_t)63u; };
+  bool has = (host_caps() & RMP3_CAP_ARENA) && (q->wants | q->needs) & RMP3_CAP_ARENA;
+  uint64_t sw = al(q->shared_want > q->shared_min ? q->shared_want : q->shared_min), vw = al(q->voice_want > q->voice_min ? q->voice_want : q->voice_min);
+  uint64_t sm = al(q->shared_min), vm = al(q->voice_min);
+  if (!has) sw = vw = sm = vm = 0;
+  uint64_t lim = arena_limit(), room = g_pool_bytes - g_pool_used;
+  uint64_t want = sw + states * vw, least = sm + states * vm;
+  uint64_t sb, vb;
+  if (want <= lim && want <= room) sb = sw, vb = vw;
+  else if (least <= lim && least <= room) sb = sm, vb = vm;
+  else { *need = (uint32_t)(least > 0xFFFFFFFFu ? 0xFFFFFFFFu : least); return false; }
+  uint64_t total = (sb + states * vb + 4095u) & ~(uint64_t)4095u;
+  x.states = states;
+  x.base = total ? g_pool + g_pool_used : nullptr;
+  x.shared = sb ? x.base : nullptr;
+  x.voices = vb ? x.base + sb : nullptr;
+  x.shared_bytes = (uint32_t)sb, x.voice_bytes = (uint32_t)vb;
+  x.zero_off = 0, x.zero_len = (uint32_t)total;
+  g_pool_used += (uint32_t)total;
+  return true;
+}
+// After init (or sharing another slot's image): the arena, then the arena phase. False: the job ended (no room).
+bool v3_start(int s) {
+  uint32_t need = 0;
+  if (!arena_reserve(s, &need)) {
+    uint64_t live = 0;   // the other slots' arenas: what a full reload keeps
+    for (int t = 0; t < kSlots; ++t)
+      if (t != s && g_v3[t].base) live += g_v3[t].zero_len;
+    // the pool holds arenas no slot uses any more and the slot fits without them: start over (as the code's arena)
+    if (need <= arena_limit() && g_pool_used > live && live + need <= g_pool_bytes) {
+      g_full = true;
+      g_job = -1;
+      g_jph = kJphImage;
+      slot_set(s, RMP_SLOT_LOADING, nullptr, g_slot[s].pkg);
+      return false;
+    }
+    char w[64];
+    sniprintf(w, sizeof w, "the arena: needs %u KB, %u KB free, %u KB a slot", (unsigned)(need >> 10),
+              (unsigned)((g_pool_bytes - g_pool_used) >> 10), (unsigned)(arena_limit() >> 10));
+    job_end(s, RMP_SLOT_NO_ROOM, nullptr, g_slot[s].pkg, w);
+    return false;
+  }
+  g_job = s;
+  g_jph = kJphArena;
+  return true;
+}
+// One step of the arena phase: kZeroStep zeroed, or (all zeroed) setup() and READY.
+void arena_step() {
+  int s = g_job;
+  V3& x = g_v3[s];
+  if (x.zero_off < x.zero_len) {
+    uint32_t n = x.zero_len - x.zero_off < kZeroStep ? x.zero_len - x.zero_off : kZeroStep;
+    memset(x.base + x.zero_off, 0, n);
+    x.zero_off += n;
+    return;
+  }
+  const rmp_plugin* p = x.p;
+  const rmp3_plugin* q = x.p3;
+  if (q->setup) {
+    rmp3_setup su;
+    su.host = host_for(p), su.host3 = &g_h3;
+    su.shared = x.shared, su.shared_bytes = x.shared_bytes, su.voice_bytes = x.voice_bytes, su.states = x.states;
+    su.slot = s + 1;
+    int32_t r = 0;
+    uint64_t pc = 0;
+    uint32_t us = 0;
+    char w[64], at[32];
+    if (guarded([&] { r = q->setup(&su); }, &pc, &us)) {
+      fault_where(s, pc, at, sizeof at);
+      sniprintf(w, sizeof w, "crashed in setup at %s", at);
+      job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, w);
+      return;
+    }
+    if (r != 0) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "its setup() refused"); return; }
+    if (us > kSetupLateUs) {
+      sniprintf(w, sizeof w, "setup ran %u ms (limit %u)", (unsigned)(us / 1000), (unsigned)(kSetupLateUs / 1000));
+      job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, w);
+      return;
+    }
+  }
+  char w[64];
+  sniprintf(w, sizeof w, "ready (API 3, arena %u KB: %u states)", (unsigned)(x.zero_len >> 10), (unsigned)x.states);
+  job_end(s, RMP_SLOT_READY, p, g_slot[s].pkg, w);
 }
 // Starts slot s's load, or settles it at once (empty, missing, shared). True when a job runs.
 bool job_begin(int s) {
   const rmp_slot_entry& m = g_map.slot[s];
   slot_stop(s);
+  g_v3[s] = V3{};   // (API 3: a fresh start: no table, no arena, not muted)
+  __atomic_and_fetch(&g_muted, ~(1u << s), __ATOMIC_RELEASE);
+  g_late[s] = 0, g_late_n[s] = 0;
   if (!m.id[0]) { slot_set(s, RMP_SLOT_EMPTY, nullptr, -1); return false; }
   int k = find_slot(s);
   char b1[12], b2[12], b3[12];
@@ -1818,6 +2133,13 @@ bool job_begin(int s) {
   }
   for (int t = 0; t < kSlots; ++t)   // the same package READY in another slot: its image
     if (t != s && g_slot[t].st == RMP_SLOT_READY && g_slot[t].pkg == k && g_slot[t].crc == (e.crc ^ e.size)) {
+      if (g_v3[t].p3) {   // API 3: the image shared, the arena and setup() the slot's own
+        V3& x = g_v3[s];
+        x.p = g_slot[t].p, x.p3 = g_v3[t].p3, x.code = g_v3[t].code, x.code_bytes = g_v3[t].code_bytes;
+        slot_set(s, RMP_SLOT_LOADING, nullptr, k);
+        core::log("um: U%d %s: shares U%d's image, its own arena", s + 1, m.id, t + 1);
+        return v3_start(s);
+      }
       slot_set(s, RMP_SLOT_READY, g_slot[t].p, k);
       core::log("um: U%d %s: ready (shares U%d's image)", s + 1, m.id, t + 1);
       return false;
@@ -1841,6 +2163,7 @@ bool job_begin(int s) {
 // One step of the load: 8 KB read, or the placement and init().
 void job_step() {
   int s = g_job;
+  if (g_jph == kJphArena) { arena_step(); return; }
   const Pkg& e = g_pkg[g_slot[s].pkg];
 #if CORE_MSAMP
   if (g_jdrop) return;   // (the job before it: its file still closing)
@@ -1911,12 +2234,42 @@ void job_step() {
     job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "relocation failed (code and data more than 4 GB apart?)");
     return;
   }
-  if (p->magic != RMP_PLUGIN_MAGIC || p->api < RMP_API_MIN || p->api > RMP_API) {
+  if (p->magic != RMP_PLUGIN_MAGIC || p->api < RMP_API_MIN || p->api > RMP_API_RMPA || (p->api < RMP_API3 && (!p->init || !p->render))) {
     job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "bad relocation or entry table");
     return;
   }
+  // API 3: the table checked before any of its code runs
+  const rmp3_plugin* p3 = nullptr;
+  char why[64];
+  if (!v3_check(p, img, bytes, &p3, why, sizeof why)) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, why); return; }
+  if (p3 && p3->kind == RMP3_KIND_EFFECT) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "an effect (UFX1..UFX4), not a machine"); return; }
+  {
+    V3& x = g_v3[s];
+    x.p = p, x.p3 = p3, x.code = img, x.code_bytes = bytes;
+  }
   __atomic_add_fetch(&g_epoch, 1, __ATOMIC_RELEASE);
-  if (p->init(host_for(p)) != 0) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "its init() refused"); return; }
+  if (p->init) {   // guarded: a fault refuses the package, the engine plays on
+    int32_t r = 0;
+    uint64_t pc = 0;
+    uint32_t us = 0;
+    char at[32];
+    if (guarded([&] { r = p->init(host_for(p)); }, &pc, &us)) {
+      fault_where(s, pc, at, sizeof at);
+      sniprintf(why, sizeof why, "crashed in init at %s", at);
+      job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, why);
+      return;
+    }
+    if (r != 0) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "its init() refused"); return; }
+    if (p3 && us > kSetupLateUs) {
+      sniprintf(why, sizeof why, "init ran %u ms (limit %u)", (unsigned)(us / 1000), (unsigned)(kSetupLateUs / 1000));
+      job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, why);
+      return;
+    }
+  }
+  if (p3) {   // the arena and setup(): the arena phase (the slot LOADING meanwhile)
+    v3_start(s);
+    return;
+  }
   char b[12];
   core::log("um: U%d %s %s: ready (%u B code at 0x%x, %u B state a voice)", s + 1, e.id, vstr(e.version, b),
             (unsigned)bytes, (unsigned)(uintptr_t)img, (unsigned)e.state);
@@ -2112,6 +2465,12 @@ void publish() {
     j.put(",\"play_ver\":"); j.str(bp >= 0 && g_slot[s].st == RMP_SLOT_READY ? vstr(g_pkg[bp].version, vb) : "");
     j.put(",\"name\":"); j.str(p ? p->name : "");
     if (g_why[s][0]) { j.put(",\"why\":"); j.str(g_why[s]); }
+    if (g_slot[s].st == RMP_SLOT_READY) {   // API 3: the guard's mute, late calls, the plugin's API, its arena
+      j.put(",\"muted\":"); j.put(muted(s) ? "true" : "false");
+      j.put(","); j.num("late", g_late_n[s]);
+      j.put(","); j.num("api", g_v3[s].p3 ? 3u : g_slot[s].p ? g_slot[s].p->api : 0u);
+      j.put(","); j.num("arena", g_v3[s].zero_len);
+    }
     j.put(","); j.num("fp", g_slot[s].fp);
     uint32_t nb = 0, ns = g_slot[s].st == RMP_SLOT_READY ? cost_ns(s, &nb) : 0;
     j.put(","); j.num("ns", ns); j.put(","); j.num("blocks", nb);
@@ -2137,6 +2496,8 @@ void publish() {
   j.put(",\"project\":"); j.str(core::project[0] ? core::project : "_default");
   char t[96];
   sniprintf(t, sizeof t, ",\"arena\":[%u,%u],", (unsigned)(ex ? ex->total : 0), (unsigned)g_arena_used);
+  j.put(t);
+  sniprintf(t, sizeof t, "\"plugpool\":[%u,%u],", (unsigned)g_pool_bytes, (unsigned)g_pool_used);   // API 3: the arenas' pool
   j.put(t);
   j.num("state_limit", kStateMax);
   j.put(","); j.num("block_ns", (uint32_t)(core::kBlock * 1000000000ull / 48000));   // a voice block's real time
@@ -2219,6 +2580,19 @@ void begin(const Exec* e, const char* d) {
   for (int vi = 0; vi < core::kVoices; ++vi) rmp_pv_reset(&g_pv[vi]);
   g_host2.reserved[RMP_H_POOL_INFO] = RMP_FN(h_pool_info);   // API 2: the project's pool (the sample RAM's copies)
   g_host2.reserved[RMP_H_POOL_READ] = RMP_FN(h_pool_read);
+  // API 3: the arenas' pool, the host's table (in reserved[RMP_H_V3] of the API 2 table too: a dual plugin finds it
+  // there, its host->api still 2), an API 3 only plugin's host table, the first transport snapshot
+  g_pool_bytes = 0;
+  g_pool = e->arena ? e->arena(&g_pool_bytes) : nullptr;
+  if (!g_pool) g_pool_bytes = 0;
+  memset(&g_h3, 0, sizeof g_h3);
+  g_h3.magic = RMP3_MAGIC, g_h3.size = sizeof g_h3, g_h3.minor = RMP3_MINOR, g_h3.caps = host_caps();
+  g_h3.board = e->board, g_h3.cpu_mhz = 0, g_h3.arena_limit = arena_limit();
+  g_host2.reserved[RMP_H_V3] = &g_h3;
+  g_host3 = g_host2;
+  g_host3.api = RMP_API3;
+  for (rmp3_transport& t : g_xp) t = rmp3_transport{0, 120.0f, 20833.333f, 0.0f, -1, 0.0f, 0, kLeadFrames};
+  for (rmp3_sig_in& x : g_sig_none) x = rmp3_sig_in{g_sig_zero, 0.0f, 0};
   core::hooks.pool_changed = on_pool_changed;
   rmp_meta_init(&g_meta, core::random_seed() | 1u);
   core::hooks.user_report = on_report;
@@ -2233,8 +2607,9 @@ void begin(const Exec* e, const char* d) {
   core::ui::remote_slots(&kUiSlots);   // the USER SLOTS page on the box's screen
   project_reload();
   g_scan = 1;
-  core::log("um: user machines from %s (code arena %u KB, %u KB state a voice)", g_dir, (unsigned)(e->total >> 10),
-            (unsigned)(kStateMax >> 10));
+  core::log("um: user machines from %s (code arena %u KB, %u KB state a voice; API 3: arena pool %u KB, %s)", g_dir,
+            (unsigned)(e->total >> 10), (unsigned)(kStateMax >> 10), (unsigned)(g_pool_bytes >> 10),
+            e->guard ? "guarded calls" : "calls not guarded");
 }
 
 bool idle() {
@@ -2257,6 +2632,9 @@ bool idle() {
     ex->reset();
     g_arena_used = 0;
     g_data_used = 0;
+    g_pool_used = 0;   // (API 3: the arenas start over with the code)
+    g_jph = kJphImage;
+    for (int s = 0; s < kSlots; ++s) g_v3[s] = V3{};
     g_full = false;
     g_need = (1u << kSlots) - 1;
   } else if (g_prints_pending) { UMT("um.prints"); prints_apply(); }
@@ -2310,6 +2688,36 @@ bool idle() {
   return did;
 }
 
+// API 3: the block's transport snapshot (see um.h). The newest becomes the render cores' at the release store.
+void pre_block() {
+  if (!ex) return;
+  core::lfo::ClockState c;
+  core::lfo::clock_state(&c);
+  uint32_t g = g_xp_gen + 1;
+  rmp3_transport& t = g_xp[g & 1];
+  uint32_t since = core::now_us() - c.last_us;
+  bool clocked = c.ticking && since < 250000;
+  bool locked = c.run && clocked && c.pos >= 0;
+  float tu = c.tick_us > 100.0f ? c.tick_us : 20833.333f;
+  uint32_t f = (c.run ? (uint32_t)RMP3_T_RUNNING : 0u) | (clocked ? (uint32_t)RMP3_T_CLOCKED : 0u) | (locked ? (uint32_t)RMP3_T_LOCKED : 0u);
+  if (c.starts != g_xp_starts) f |= RMP3_T_START;
+  if (c.stops != g_xp_stops) f |= RMP3_T_STOP;
+  int32_t song = locked ? c.pos : -1;
+  // a song position message, or the position going back (a restart the Rytm sent no F2 for)
+  if (c.jumps != g_xp_jumps || (song >= 0 && g_xp_song >= 0 && song < g_xp_song)) f |= RMP3_T_JUMP;
+  g_xp_starts = c.starts, g_xp_stops = c.stops, g_xp_jumps = c.jumps, g_xp_song = song;
+  float frac = locked ? (float)since / tu : 0.0f;
+  t.flags = f;
+  t.tick_us = tu;
+  t.bpm = 60e6f / (24.0f * tu);
+  t.free_tick = c.tp;
+  t.song_tick = song;
+  t.song_frac = frac < 0.0f ? 0.0f : frac > 0.999f ? 0.999f : frac;
+  t.step16 = locked ? (uint32_t)c.pos / 6u : 0u;
+  t.lead_frames = kLeadFrames;
+  __atomic_store_n(&g_xp_gen, g, __ATOMIC_RELEASE);
+}
+
 void rescan() {
   if (g_scan) {
     g_scan_again = true;
@@ -2336,28 +2744,26 @@ bool inst_note_on(int vi, int i, float note, float vel) {
   int s = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
   if (i < 0 || i >= kInst || !g_istate[i] || s < 0 || s >= kSlots) return false;
   Slot& sl = g_slot[s];
-  if (sl.st != RMP_SLOT_READY || !sl.p || (g_mis >> vi & 1)) return false;
+  if (sl.st != RMP_SLOT_READY || !sl.p || (g_mis >> vi & 1) || muted(s) || !state_room(s, i, vi)) return false;
   void* st = g_istate[i];
   VNow now(vi);
   if (g_icur[i] != s || g_ivi[i] != vi) {   // a fresh state of the voice's machine
     inst_leave(i);
-    memset(st, 0, sl.state_bytes);
-    sl.p->voice_init(st);
+    if (!c_voice_init(s, st, vi, i)) return false;
     g_icur[i] = (int8_t)s, g_ivi[i] = (int8_t)vi;
-    rmp_voice_fn f = rmp_voice_enter_of(sl.p);
-    if (f) f(st);
+    c_vfn(s, rmp_voice_enter_of(sl.p), st, "voice_enter");
   }
   float q[16];
   pv_params(vi, s, true, q);   // the voice's params as its own state gets them (its preset's hold, the offsets)
-  sl.p->params(st, q);
-  sl.p->note_on(st, note, vel < 0.0f ? 0.0f : vel > 1.0f ? 1.0f : vel);
-  return true;
+  c_params(s, st, q);
+  c_note_on(s, st, note, vel < 0.0f ? 0.0f : vel > 1.0f ? 1.0f : vel);
+  return !muted(s);
 }
 void inst_note_off(int vi, int i) {
   if (i < 0 || i >= kInst || g_icur[i] < 0 || g_ivi[i] != vi) return;
   const Slot& sl = g_slot[g_icur[i]];
   VNow now(vi);
-  if (sl.st == RMP_SLOT_READY && sl.p) sl.p->note_off(g_istate[i]);
+  if (sl.st == RMP_SLOT_READY && sl.p) c_note_off(g_icur[i], g_istate[i]);
 }
 void inst_params(int vi) {
   int s = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
@@ -2366,7 +2772,7 @@ void inst_params(int vi) {
   pv_params(vi, s, false, q);
   VNow now(vi);
   for (int i = 0; i < kInst; ++i)
-    if (g_icur[i] == s && g_ivi[i] == vi) g_slot[s].p->params(g_istate[i], q);
+    if (g_icur[i] == s && g_ivi[i] == vi) c_params(s, g_istate[i], q);
 }
 void inst_stop(int vi) {
   for (int i = 0; i < kInst; ++i)
@@ -2375,7 +2781,8 @@ void inst_stop(int vi) {
 // A render core: instance i of voice vi, kBlock samples (silence when its state is not the voice's slot's)
 void inst_render(int vi, int i, float* o) {
   int s = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
-  if (i < 0 || i >= kInst || s < 0 || g_icur[i] != s || g_ivi[i] != vi || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p) {
+  if (i < 0 || i >= kInst || s < 0 || g_icur[i] != s || g_ivi[i] != vi || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p ||
+      muted(s)) {
     for (int k = 0; k < core::kBlock; ++k) o[k] = 0.0f;
     return;
   }
@@ -2386,7 +2793,14 @@ void inst_render(int vi, int i, float* o) {
   }
   {
     VNow now(vi);
-    g_slot[s].p->render(g_istate[i], o, core::kBlock);
+    const rmp3_plugin* p3 = g_v3[s].p3;
+    if (p3) {
+      rmp3_block b;
+      block_fill(&b, core::kBlock, o, nullptr, RMP3_AT_VOICE);
+      p3->render(g_istate[i], &b);
+    } else {
+      g_slot[s].p->render(g_istate[i], o, core::kBlock);
+    }
   }
   for (int k = 0; k < core::kBlock; ++k)   // a NaN or a runaway level: clipped
     o[k] = o[k] == o[k] ? (o[k] > 1.0f ? 1.0f : o[k] < -1.0f ? -1.0f : o[k]) : 0.0f;
@@ -2432,6 +2846,13 @@ bool command(const char* c, char* out, int cap) {
                 state_name(g_slot[s].st), rmp_src_name(g_notes.slot[s].src), (unsigned)g_notes.slot[s].fp);
     sniprintf(out, cap, "%d packages, project %s, code %u/%u B", g_npkg, core::project[0] ? core::project : "_default",
               (unsigned)g_arena_used, (unsigned)(ex ? ex->total : 0));
+    return true;
+  }
+  if (strncmp(c, "um=reload:", 10) == 0) {   // API 3: load the slot again (a muted slot back, its states and arena fresh)
+    int s = c[10] - '1';
+    if (s < 0 || s >= kSlots || c[11]) { sniprintf(out, cap, "usage: um=reload:<1..5>"); return true; }
+    g_need |= 1u << s;
+    sniprintf(out, cap, "U%d: loading again%s", s + 1, muted(s) ? " (it was muted)" : "");
     return true;
   }
   if (strncmp(c, "um=save:", 8) == 0) {   // a generic preset of what the slot's voice plays now
@@ -2543,8 +2964,10 @@ SlotView slot_view(int s) {
   const rmp_desc* p = slot_desc(s, &d);
   static char name[11];
   copy(name, p ? p->name : "", sizeof name);
+  const V3& x = g_v3[s];
+  int api = g_v3[s].p3 ? 3 : g_slot[s].p ? (int)g_slot[s].p->api : 0;
   return SlotView{g_slot[s].st, g_map.slot[s].id, g_map.slot[s].version, g_slot[s].fp, name, g_notes.slot[s].src,
-                  g_notes.slot[s].flags, g_notes.slot[s].fp};
+                  g_notes.slot[s].flags, g_notes.slot[s].fp, muted(s), api, x.zero_len, g_why[s]};
 }
 int installed() { return g_ninst; }
 uint8_t store_gen() { return g_meta.store_gen; }

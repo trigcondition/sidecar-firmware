@@ -81,6 +81,7 @@ struct Clock {
   float tick_us = 20833.3f;   // the tempo: 120 BPM until measured
   float tp = 0;               // the clock position now, in ticks mod kWrap
   bool start = false;         // a Start since the last tick (PLAY retrigs)
+  uint32_t starts = 0, stops = 0, jumps = 0;   // FA / FB, FC, F2 since boot (clock_state: API 3's transport flags)
 };
 Clock g_clk;
 
@@ -441,6 +442,10 @@ bool clock_now(float* ticks, float* tick_us) {
   *tick_us = g_clk.tick_us;
   return g_stats.ticks != 0;
 }
+void clock_state(ClockState* o) {
+  const Clock& c = g_clk;
+  *o = ClockState{c.run, c.ticking, c.pos, c.last_us, c.tick_us, c.tp, c.starts, c.stops, c.jumps};
+}
 
 CORE_COLD void clock(uint8_t status, uint16_t spp) {
   Clock& c = g_clk;
@@ -457,13 +462,13 @@ CORE_COLD void clock(uint8_t status, uint16_t spp) {
       break;
     }
     case 0xFA:
-      c.run = true, c.pos = -1, c.start = true;
+      c.run = true, c.pos = -1, c.start = true, ++c.starts;
       for (int i = 0; i < kLfos; ++i)
         if (g_set[i].retrig == kOnPlay) g_run[i].retrig = true;
       break;
-    case 0xFB: c.run = true; break;
-    case 0xFC: c.run = false; break;
-    case 0xF2: c.pos = (int32_t)spp * 6 - 1; break;
+    case 0xFB: c.run = true, ++c.starts; break;
+    case 0xFC: c.run = false, ++c.stops; break;
+    case 0xF2: c.pos = (int32_t)spp * 6 - 1, ++c.jumps; break;
     default: break;
   }
 }

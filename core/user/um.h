@@ -33,20 +33,34 @@ struct Exec {
   // RW memory for the images' writable parts (data + bss), 4096-aligned, within +-4 GB of the code (ADRP's reach);
   // reset together with the code. Null: a 4 MB block of um_heap (the Pi: code and data both in its low heap).
   uint8_t* (*data_alloc)(uint32_t bytes);
+  // ---- Plugin API 3 (sdk/rmp/rmp_api3.h, docs/plugin-api-3-plan.md); every field may be null / 0
+  // The slot arenas' pool: called once by begin(), one block reserved at boot (the Pi: plugram= MB before the pool RAM),
+  // 4096-aligned, *bytes its size. Null or 0 bytes: no arena (a plugin that needs RMP3_CAP_ARENA is BAD).
+  uint8_t* (*arena)(uint32_t* bytes);
+  // A plugin call on the control core, guarded: fn(ctx) runs; 0 when it returned, 1 when it faulted (a data or
+  // instruction abort, an undefined instruction: the call is left, *pc the faulting address). Null: unguarded (a fault
+  // is the board's, as before API 3).
+  int (*guard)(void (*fn)(void*), void* ctx, uint64_t* pc);
+  uint32_t board;                        // rmp3_host.board: 4 or 5 on a Pi, 0 elsewhere
 };
 
 constexpr int kSlots = 5;
 constexpr int kStore = 32;               // packages listed (the Rytm's list holds 32)
 constexpr uint32_t kStateMax = 65536;    // a voice's plugin state at most (the Teensy's is 16 KB without PSRAM)
+constexpr int kArenaStates = 40;         // API 3: an arena's states at most (8 voices + 32 poly instances)
 
 // Installs core::hooks' user and slot hooks, the arena, and queues the first scan and the current project's map.
 // dir: the packages' folder ("/Plugins").
 void begin(const Exec* ex, const char* dir = "/Plugins");
 bool idle();                // one bounded step of the work below; true when it did something
+// API 3: the control core, once before each render block (with the sequencer's pre_block): the block's transport
+// snapshot (rmp3_transport) for the render cores, from the LFOs' clock (core/lfo.h).
+void pre_block();
 void rescan();              // the card's packages changed (the web's upload / delete)
 // Console: "um" (the list in the log), "um=rescan", "um=assign:<slot 1..5>:<id>" (the installed version, current
 // project), "um=clear:<slot>" (explicitly empty), "um=empty" (start this project empty: all five),
 // "um=put:<slot>:<id|->:<a.b.c>[:<name>]" (an imported slot list's entry; the package need not be installed).
+// "um=reload:<slot>" (API 3: load the slot again: a muted slot back, its states and arena fresh).
 // "um=save:<slot>:<name>" (a generic preset /PRESETS/<id>/<name>.txt of what the slot's last voice plays now: its
 // preset- and offset-role knobs, every knob but PRE when it has neither), "um=presets" (the card's /PRESETS changed:
 // every slot's list scanned again).
@@ -63,7 +77,13 @@ int json_copy(char* out, int cap);
 void publish_now();         // the control core: the JSON again at once (the Mac's tests; idle() does it at most every 100 ms)
 const char* dir();
 // The tests' view.
-struct SlotView { int state; const char* id; uint32_t version; uint16_t fp; const char* name; int src; int flags; uint16_t want_fp; };
+struct SlotView {
+  int state; const char* id; uint32_t version; uint16_t fp; const char* name; int src; int flags; uint16_t want_fp;
+  bool muted;            // API 3's guard: a plugin call faulted (or ran late three times): silent until loaded again
+  int api;               // 1, 2, or 3 when the plugin has an API 3 table (dual or API 3 only); 0 none
+  uint32_t arena;        // the slot's arena, bytes (shared part + states x voice part)
+  const char* why;       // the JSON's "why" ("" none)
+};
 SlotView slot_view(int s);  // s 0..4; state an rmp_slot_state
 // The display's view (any core: published with the JSON, the same seqlock): the project and U1..U5 as the Rytm shows
 // them - the machine's name, "---" empty, "!NAME" missing / bad / no room, "..." loading. False before the first publish.

@@ -289,8 +289,11 @@ static void fixture() {
   }
 }
 
-static const uint32_t kGolden = 0xa68a7eb6;      // fnv(json + list + enums) of the old scan
-static const uint32_t kGoldenLog = 0xb8835fb2;   // fnv(its um log lines)
+// Plugin API 3 (2026-11) added the READY slots' "muted", "late", "api", "arena", the JSON's "plugpool" and the begin
+// line's arena pool: the old scan's values were 0xa68a7eb6 / 0xb8835fb2, and these are the same JSON and log with only
+// those added (compared field by field when they changed)
+static const uint32_t kGolden = 0x219acb4d;      // fnv(json + list + enums) of the old scan
+static const uint32_t kGoldenLog = 0x0f5d3fc0;   // fnv(its um log lines)
 
 int main() {
   char tmpl[] = "/tmp/core-umscan-XXXXXX";
