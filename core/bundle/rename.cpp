@@ -14,6 +14,7 @@
 #include "../lib/pools.h"
 #if CORE_POLY
 #include "../fx/insert.h"
+#include "../mod/scene.h"
 #include "../seq/seq.h"
 #include "../song/song.h"
 #endif
@@ -129,6 +130,7 @@ CORE_COLD int answer(bool yes) {
 #if CORE_POLY
   seq::project_leaving();
   ins::settings_due();
+  scene::save_due();
 #endif
   lfo::save_due();
   lfo::save();   // (as a project switch saves them: at once, its own small file)
@@ -197,7 +199,7 @@ CORE_COLD void tick(uint32_t ms) {
         // old project's folder (or write into one that has gone).
         bool pending = lfo::dirty() || pools::saving() || fmt::post_busy();
 #if CORE_POLY
-        pending = pending || ins::settings_dirty(nullptr);
+        pending = pending || ins::settings_dirty(nullptr) || scene::dirty();
 #endif
         if (pending && ms - s.flush_t0 < kFlushMs) return;
         if (pending)
@@ -220,6 +222,7 @@ CORE_COLD void tick(uint32_t ms) {
           lfo::rekey(s.to);
 #if CORE_POLY
           ins::rekey(s.to);
+          scene::rekey(s.to);
           seq::rekey(s.to);   // (its patterns too: phase 2)
 #endif
           finish();

@@ -276,6 +276,11 @@ CORE_COLD void restore_all() {
   g_vdirty = 0;
 }
 
+CORE_COLD void restore_morphs() {
+  for (Entry& e : used())
+    if (e.t && (e.morph_on || e.held)) restore(e);
+}
+
 CORE_COLD void voice_params(int vi, float* p, int np) {
 #if !CORE_MOD_LFO
   lfo::voice_params(vi, p, np, false);   // the rollback: the LFOs' own table

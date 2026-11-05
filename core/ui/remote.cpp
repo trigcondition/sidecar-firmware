@@ -15,6 +15,7 @@
 #include "keys.h"
 #include "lfo.h"
 #include "mod/mod.h"
+#include "mod/scene.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "poly.h"
@@ -1499,6 +1500,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       }
 #if CORE_POLY
       ins::kit_changed(b[0]);   // the inserts are per kit too (core/fx/insert.h)
+      scene::kit_changed(b[0]);   // and the scenes (core/mod/scene.h)
 #endif
 #if CORE_MSAMP
       gr::kit_changed(b[0]);   // GRANULAR's picks are per kit too

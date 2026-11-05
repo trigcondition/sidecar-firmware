@@ -46,5 +46,30 @@ uint16_t fader_played();
 void tick(uint32_t ms);                     // mod::tick, once a millisecond at most: the morph's values to the layer
 void reset();                               // tests: no locks, no A / B, the fader at 0
 
+// ---- the files (spec-050 2.8), as the LFOs' (core/lfo.h): per kit /.rytm/scene/<project>/kNNN.txt (kit 1..128), the
+// project's default /.rytm/scene/<project>.txt (a kit without its own file, and the scenes while the Rytm has named no
+// kit; the A4's only one: its state folder makes it /.a4/scene/<project>.txt). Read from the RAM store only (never the
+// card on the control core), written by idle_save a second after the last edit as one posted atomic write (queued when
+// over fmt::kPostMax). Text, one item a line, '#' comments:
+//   #sidecar scene 1
+//   AB 3 7          A, B (1..12, 0 none)
+//   F 8192          the fader (its last position, written with the next edit's save: a fader move alone is no edit)
+//   S 3             the selected scene
+//   L 3 V1:P3 6400  scene 3 locks V1's P3 at 50.0 (the value x 128)
+// A line this build does not read (an unknown name or keyword, a value out of range, a scene > 12, a 65th lock) locks
+// the file: what it can read is loaded, the file is never written again this session (1042), locked() says so.
+#if CORE_MSAMP
+void want_files();                          // the project's 129 paths into the coming store fill
+void rekey(const char* name);               // the scenes in memory are now name's (a rename moved the files)
+#endif
+void load();                                // the kit's file, else the project's, else none (the store only)
+bool save();                                // idle_save: true if it wrote (or settled a locked file)
+void kit_changed(int kit);                  // the Rytm's active kit (0..127): the old kit's edits saved, the new loaded
+void project_changed();                     // the old project's (kit's) edits saved (queued), the new loaded
+void save_due();                            // the unsaved edits due now (a rename's flush, a restart)
+bool dirty();
+bool locked();
+int kit();                                  // the kit the scenes are of, -1 none named
+
 }  // namespace scene
 }  // namespace core

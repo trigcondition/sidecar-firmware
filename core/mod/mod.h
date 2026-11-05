@@ -45,6 +45,7 @@ float base(Tid t);                                   // what t plays under a mor
 void end_tick();                                     // apply: write what changed, restore what left
 void flush_voices();                                 // the dirty voices' voice_params_changed, user machines every kUserMs
 void restore_all();                                  // every entry back to its base, every dirty voice flushed now
+void restore_morphs();                               // every entry the morph held last tick back to its base (a load)
 // the base hooks (control side)
 void voice_params(int vi, float* p, int np);         // voice_report: a live entry's base from p, p modulated
 uint8_t fx_knob(int slot, int knob, uint8_t v);      // fx::knob_filter: the value to play

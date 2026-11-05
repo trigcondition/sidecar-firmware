@@ -7,6 +7,7 @@
 #include "fx/insert.h"
 #include "keys.h"
 #include "lfo.h"
+#include "mod/scene.h"
 #include "seq/seq.h"
 #include "song/song.h"
 #if CORE_MSAMP
@@ -53,6 +54,7 @@ CORE_COLD bool engine_begin() {
     lfo::rekey(project);
 #if CORE_POLY
     ins::rekey(project);
+    scene::rekey(project);
 #endif
     project_fill_begin();
   }
@@ -146,6 +148,8 @@ CORE_COLD bool idle_save() {
 #if CORE_POLY
   if (leaving) ins::settings_due();
   if (T_("ins", ins::save())) return true;
+  if (leaving) scene::save_due();
+  if (T_("scene", scene::save())) return true;
 #endif
 #if CORE_POLY
   if (T_("keys", keys::save())) return true;
@@ -164,7 +168,7 @@ CORE_COLD bool idle_save() {
   }
   bool settled = !lfo::dirty() && !fx::card_dirty;
 #if CORE_POLY
-  settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved();
+  settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved() && !scene::dirty();
 #endif
   return T_("device", device::step(settled)) || ix;   // a change of state folder: the last write, behind all of the above
 }
