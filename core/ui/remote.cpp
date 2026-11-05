@@ -347,6 +347,7 @@ struct State {
   // locked last while it is held (the bottom bar shows its locked value), 0 none
   int scene_key = -1;
   uint16_t edit_tid = 0;
+  bool edit_refused = false;   // review: a knob with no target turned under the held scene key (NOT LOCKABLE)
   // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out): where
   // the pages shown by a shortcut came from, newest last - kBackStock the stock screen (NO closes the page), else the
   // page (s.voice) it was opened over; the MENU counts as SIDECAR (a page opened from the MENU goes back to SIDECAR, as
@@ -633,7 +634,8 @@ CORE_COLD void on_enc(int e, int delta, bool func) {
   if (const ExtraPage* x = extra_of(s.voice)) {
     if (e < 0 || e >= 8 || !(extra_encs(*x) >> e & 1)) return;
     if (!lock) x->enc(e, delta, func);
-    else if (mod::Tid t = x->enc_tid(e)) edit_lock(t, delta * (func ? 8 : 1), -1);
+    else if (mod::Tid t = x->enc_tid(e)) edit_lock(t, delta * (func ? 8 : 1), -1), s.edit_refused = false;
+    else s.edit_refused = true, s.edit_tid = 0;
     return;
   }
   if (s.voice < 0 || src_capable || e < 0 || e > 7) return;
@@ -649,6 +651,7 @@ CORE_COLD void on_enc(int e, int delta, bool func) {
     for (int i = 0; i < sc.n; ++i)
       if (sc.l[i].t == t) cur = (sc.l[i].v + 64) / 128;
     edit_lock(t, 0, step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func));
+    s.edit_refused = false;
     return;
   }
   int nv = step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func);
@@ -664,7 +667,7 @@ CORE_COLD void release_held() {
       if (x && x->key_up) x->key_up(c);
     }
   s.held_page = nullptr;
-  s.scene_key = -1, s.edit_tid = 0;
+  s.scene_key = -1, s.edit_tid = 0, s.edit_refused = false;
 }
 
 CORE_COLD bool key_held(int code) { return code >= 0 && code < 256 && (s.held_keys[code >> 5] >> (code & 31) & 1); }
@@ -673,7 +676,7 @@ CORE_COLD bool key_held(int code) { return code >= 0 && code < 256 && (s.held_ke
 CORE_COLD void on_key(int code, bool down) {
   if (!down) {   // 0.5.0: a release goes to the page that took its press (key_up), else nowhere
     if (code == s.scene_key) {   // EDIT's scene key let go
-      s.scene_key = -1, s.edit_tid = 0, s.input = true;
+      s.scene_key = -1, s.edit_tid = 0, s.edit_refused = false, s.input = true;
       return;
     }
     if (key_held(code)) {
@@ -685,7 +688,7 @@ CORE_COLD void on_key(int code, bool down) {
   }
   s.input = true;
   if (code >= 0 && code < 12 && edit_page(extra_of(s.voice))) {   // EDIT: a scene key
-    s.scene_key = code, s.edit_tid = 0;
+    s.scene_key = code, s.edit_tid = 0, s.edit_refused = false;
     return;
   }
   if (const ExtraPage* x = extra_of(s.voice))
@@ -910,6 +913,11 @@ CORE_COLD void frame(uint32_t ms) {
   } else {
     view.invalidate();   // the status pages are drawn whole; a voice page after them starts clean
     ssrc.draw(work, s.voice == -2 ? 1 : 0, at, n);
+  }
+  if (s.scene_key >= 0 && s.edit_refused && edit_page(x)) {   // EDIT: that knob names no target
+    char b[kTextLen + 1];
+    sniprintf(b, sizeof b, "S%d: NOT LOCKABLE", s.scene_key + 1);
+    footer(work, b);
   }
   if (s.scene_key >= 0 && s.edit_tid && edit_page(x)) {   // EDIT: the bottom bar shows the scene's locked value
     const scene::Scene& sc = scene::state().s[s.scene_key];
@@ -1406,8 +1414,10 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         int code = b[0] << 7 | b[1];
         // 0.5.0: a trig key another engine page takes now (MORPH's scenes, the LFO design view's steps), or the release
         // of one it took, is that page's, not the sequencer's (seq mode sends the trig keys on a seq track)
-        bool page_trig = !(x && !strcmp(x->title, "SEQ")) && code < 16 && s.open &&
-                         ((b[2] && (page_trigs(x) >> code & 1)) || (!b[2] && (key_held(code) || code == s.scene_key)));
+        // review: a release of a key a page holds is that page's whatever page shows now (SEQ too)
+        bool page_trig = code < 16 && s.open &&
+                         ((b[2] && !(x && !strcmp(x->title, "SEQ")) && (page_trigs(x) >> code & 1)) ||
+                          (!b[2] && (key_held(code) || code == s.scene_key)));
         if (!page_trig && seq::ui_key(code, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
@@ -1428,7 +1438,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       {
         const ExtraPage* x = s.open ? extra_of(s.voice) : nullptr;
         // rui1048: POLY CONFIG's knobs are its own, also in seq mode (seq::ui_enc takes every turn then)
-        if (!(x && !strcmp(x->title, "POLY")) && seq::ui_enc(b[0], (int)b[1] - 64, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
+        // review (0.5.0): MORPH's knobs, and a turn under EDIT's held scene key, are the page's too
+        bool own = (x && (!strcmp(x->title, "POLY") || !strcmp(x->title, "MORPH"))) || (s.scene_key >= 0 && edit_page(x));
+        if (!own && seq::ui_enc(b[0], (int)b[1] - 64, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
         }

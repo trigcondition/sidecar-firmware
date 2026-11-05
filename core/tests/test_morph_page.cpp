@@ -352,6 +352,89 @@ static void locked_value_shown_while_held() {
   printf("  locked_value_shown_while_held: EDIT / EDIT S3 in the header, the locked value in the bottom bar\n");
 }
 
+// ---- review: seq mode (a Sidecar seq track selected: 2D 01 08 1 t) sends every key and turn to the sequencer first
+static void seq_mode(bool on) { from_rytm(0x2D, 8, on ? 1 : 0, 0), tick(); }
+
+static void seq_mode_morph_knobs() {
+  open_page();
+  seq_mode(true);
+  ui::remote_show_page("MORPH");
+  tick();
+  CHECK(!strcmp(ui::remote_page_title(), "MORPH"));
+  turn(0, 2);                               // A: the fader, not the sequencer's
+  CHECK(scene::state().fader == 256);
+  tap(0x01);
+  turn(6, 1);                               // G: S2's Rytm scene lock
+  CHECK(lock_v(1, T("RYTM:SCN")) == 128);
+  CHECK(scene::lock(1, T("V1:P1"), 10 * 128));
+  down(0x01), turn(2, 1);                   // the list: C edits row 2 (V1:P1, after RYTM:SCN)
+  CHECK(lock_v(1, T("V1:P1")) == 11 * 128);
+  up(0x01);
+  CHECK(ui::morph_page_held() == -1);
+  seq_mode(false);
+  printf("  seq_mode_morph_knobs: in seq mode A, G and the list's knobs are MORPH's\n");
+}
+
+static void seq_mode_edit_lock() {
+  voice_page();
+  seq_mode(true);                           // (it shows SEQ: back to V1 from SIDECAR)
+  ui::remote_show_page("SIDECAR");
+  tick(), tap(0x41), tap(0x41), tick();
+  CHECK(ui::remote_stats().voice == 0);
+  scene::set_edit(true);
+  tick();
+  int k = enc_param(1);
+  down(0x02), turn(1, 2);
+  CHECK(lock_v(2, mod::tid(mod::kV, 0, k)) == 42 * 128);
+  up(0x02);
+  scene::set_edit(false);
+  seq_mode(false);
+  printf("  seq_mode_edit_lock: in seq mode a held scene key + a voice knob still locks\n");
+}
+
+static void release_while_seq_shown() {
+  open_page();
+  down(0x03);
+  tick(10);
+  CHECK(ui::morph_page_held() == 3);
+  ui::remote_show_page("SEQ");
+  tick();
+  up(0x03);                                 // released with SEQ shown: still MORPH's release
+  CHECK(ui::morph_page_held() == -1);
+  voice_page();
+  scene::set_edit(true);
+  tick();
+  down(0x02);
+  ui::remote_show_page("SEQ");
+  tick();
+  up(0x02);                                 // EDIT's scene key let go on SEQ
+  tick();
+  CHECK(!sent_has("EDIT S3"));
+  ui::remote_show_page("SIDECAR");
+  tick(), tap(0x41), tap(0x41), tick();
+  uint32_t edits = ui::remote_stats().edits;
+  turn(1, 1);                               // no scene key held any more: an edit, no lock
+  CHECK(ui::remote_stats().edits == edits + 1 && scene::state().s[2].n == 0);
+  scene::set_edit(false);
+  printf("  release_while_seq_shown: a held key's release reaches its page even with SEQ shown\n");
+}
+
+static void not_lockable_note() {
+  voice_page();
+  scene::set_edit(true);
+  core::ins::set_type(core::master::chain(0), core::master::slot(0), core::ins::kComp);
+  ui::mfx_page_set(0, false);
+  ui::remote_show_page("MASTER");
+  tick();
+  down(0x00), turn(4, 1);                   // E: the slot (a list, no target)
+  tick();
+  CHECK(sent_has("NOT LOCKABLE") && scene::state().s[0].n == 0);
+  up(0x00);
+  core::ins::set_type(core::master::chain(0), core::master::slot(0), 0);
+  scene::set_edit(false);
+  printf("  not_lockable_note: a knob with no target under a held scene key says NOT LOCKABLE\n");
+}
+
 int main() {
   hooks.to_rytm = out;
   at(g_us);
@@ -368,6 +451,10 @@ int main() {
   held_scene_key_turn_locks();
   edit_off_trigs_stock();
   locked_value_shown_while_held();
+  seq_mode_morph_knobs();
+  seq_mode_edit_lock();
+  release_while_seq_shown();
+  not_lockable_note();
   scene::reset();
   ui::remote_reset();
   printf("test_morph_page: ok\n");
