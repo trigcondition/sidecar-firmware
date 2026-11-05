@@ -8,6 +8,7 @@
 #include "md/md.h"   // the built-in MD's cost (poly_json)
 #include "lfo.h"
 #include "mod/mod.h"
+#include "mod/learn.h"
 #include "mod/scene.h"
 #include "device/device.h"
 #include "fx/insert.h"
@@ -236,7 +237,11 @@ bool poly_command(const char* p, char* out, int cap) {
          core::midim::command(p, out, cap) ||   // MIDI: "midim" (core/midim/midim.h)
          core::arp::command(p, out, cap);       // the arpeggiator: "arp" (core/arp/arp.h)
 }
-void keys_midi(int src, uint8_t st, uint8_t d1, uint8_t d2) { core::keys::midi(src, st, d1, d2); }
+// a USB-A device's (src 0..3) CC a MIDI-learn route has (core/mod/learn.h, ports 1..4): the route's, not the Rytm's
+void keys_midi(int src, uint8_t st, uint8_t d1, uint8_t d2) {
+  if (src >= 0 && src < 4 && core::learn::midi(src + 1, st, d1, d2)) return;
+  core::keys::midi(src, st, d1, d2);
+}
 void keys_source(int src, bool present, const char* name) { core::keys::source(src, present, name); }
 void keys_set_forward(void (*f)(uint8_t, uint8_t, uint8_t)) { core::keys::set_forward(f); }
 void midim_set_out(bool (*f)(int, const uint8_t*, int)) { core::midim::set_out(f); }
@@ -247,7 +252,11 @@ void midim_realtime(uint8_t status) { if (status != 0xF2) core::midim::realtime(
 void asamp_set_midi_out(bool (*f)(int, const uint8_t*, int)) { core::samp::asamp_set_midi_out(f); }
 bool keys_computer_on() { return core::keys::computer_on(); }
 const char* keys_line(char* b, int cap) { return core::keys::line(b, cap); }
-void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2) { core::lfo::midi_in(st, d1, d2); }
+void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2) {
+  core::lfo::midi_in(st, d1, d2);
+  core::learn::midi(0, st, d1, d2);   // the Rytm's own CCs: a MIDI-learn route's (port 0)
+}
+bool learn_command(const char* p, char* out, int cap) { return core::learn::command(p, out, cap); }
 bool lfo_command(const char* p, char* out, int cap) { return core::lfo::command(p, out, cap); }
 int lfo_json(char* out, int cap) { return core::lfo::json(out, cap); }
 bool mod_command(const char* p, char* out, int cap) { return core::mod::command(p, out, cap); }

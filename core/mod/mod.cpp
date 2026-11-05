@@ -9,6 +9,7 @@
 
 #include "fx/send_fx.h"
 #include "lfo.h"
+#include "mod/learn.h"
 #include "mod/rytm_out.h"
 #include "mod/scene.h"
 #include "platform.h"
@@ -262,6 +263,7 @@ static CORE_COLD void tick_body(uint32_t us) {
     if (g_source) g_source(us, dus);   // (tests)
     else lfo::waves(us, dus);         // the LFOs: the clock position, the waves, each one's offset
 #if CORE_POLY
+    learn::tick();                    // the MIDI-learn routes' offsets (core/mod/learn.h)
     scene::tick(now_ms());            // the morph: a value for each lock of A and B (core/mod/scene.h)
 #endif
     end_tick();

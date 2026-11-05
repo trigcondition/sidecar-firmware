@@ -77,6 +77,7 @@ bool lfo_command(const char* p, char* out, int cap);
 bool mod_command(const char* p, char* out, int cap);
 int mod_json(char* out, int cap);
 bool scene_command(const char* p, char* out, int cap);   // scene, scene=...: the morph scenes (core/mod/scene.h)
+bool learn_command(const char* p, char* out, int cap);   // learn, learn=...: the MIDI-learn routes (core/mod/learn.h)
 int scene_json(char* out, int cap);
 // Poly FM (core/poly.h): the Rytm's channel messages (its pads' notes: live chords), the console's `poly` (its stats;
 // false: not a poly command)

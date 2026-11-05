@@ -147,6 +147,7 @@ bool rd_fm(const Bytes& in, const Sniffed& s, char* why, int cap) { return lines
 bool sn_lfo(const Bytes& in, Sniffed* o) { return sniff_text(in, "lfo", o); }
 bool sn_ins(const Bytes& in, Sniffed* o) { return sniff_text(in, "ins", o); }
 bool sn_scene(const Bytes& in, Sniffed* o) { return sniff_text(in, "scene", o); }
+bool sn_learn(const Bytes& in, Sniffed* o) { return sniff_text(in, "learn", o); }
 bool sn_kits(const Bytes& in, Sniffed* o) { return sniff_text(in, "kits", o); }   // core/bundle/kits.h: kNNN.sks / .prv
 bool rd_kitlines(const Bytes& in, const Sniffed& s, char* why, int cap) {   // lfo.cpp / insert_card.cpp: '#' skipped
   return lines(in, s, 255, printable, why, cap);
@@ -346,6 +347,7 @@ const Format kFormats[] = {
     {"song", kProject, kJson, 1, 1, 1, sn_song, rd_song, nullptr, 0, nullptr, "/.rytm/songs/K/take-*.json", 64 * M},
     {"display", kSetting, kKeyValue, 1, 1, 1, sn_display, rd_kv, nullptr, 0, nullptr, "/.rytm/display.txt", 16 * K},
     {"keys", kSetting, kKeyValue, 1, 1, 1, sn_keys, rd_kv, nullptr, 0, nullptr, "/.rytm/keys.txt", 16 * K},
+    {"learn", kSetting, kText, 1, 1, 1, sn_learn, rd_kitlines, nullptr, 0, nullptr, "/.rytm/learn.txt", 16 * K},
     {"fxin", kSetting, kKeyValue, 1, 1, 1, sn_fxin, rd_kv, nullptr, 0, nullptr, "/.rytm/fxin.txt", 16 * K},
     {"sendfx", kSetting, kKeyValue, 1, 1, 1, sn_sendfx, rd_kv, nullptr, 0, nullptr, "/.rytm/sendfx.txt", 16 * K},
     {"wifi", kSetting, kKeyValue, 1, 1, 1, sn_wifi, rd_kv, nullptr, 0, nullptr, "/.rytm/wifi.txt", 16 * K},

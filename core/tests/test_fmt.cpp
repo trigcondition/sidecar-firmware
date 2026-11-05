@@ -125,7 +125,8 @@ int main() {
                       {"bundle", fmt::kExchange, 1}, {"library", fmt::kProject, 1}, {"library-log", fmt::kProject, 1},
                       {"library-state", fmt::kProject, 1}, {"samplepool", fmt::kProject, 1},
                       {"wtpool", fmt::kProject, 1}, {"instpool", fmt::kProject, 1}, {"poolused", fmt::kDerived, 1},
-                      {"slicemap", fmt::kProject, 2}, {"kits", fmt::kProject, 1}, {"scene", fmt::kProject, 1}};
+                      {"slicemap", fmt::kProject, 2}, {"kits", fmt::kProject, 1}, {"scene", fmt::kProject, 1},
+                      {"learn", fmt::kSetting, 1}};
   for (const Want& w : inv) {
     const fmt::Format* f = fmt::find(w.name);
     CHECK(f && f->cls == w.cls && f->current == w.current && f->sniff);

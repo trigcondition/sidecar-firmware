@@ -315,6 +315,7 @@ const Place kPlaces[] = {
     {"song", "/.rytm/songs/%s", 1},
     {"display", "/.rytm/display.txt", 0},
     {"keys", "/.rytm/keys.txt", 0},
+    {"learn", "/.rytm/learn.txt", 0},   // 0.5.0 (core/mod/learn.h)
     {"fxin", "/.rytm/fxin.txt", 0},
     {"sendfx", "/.rytm/sendfx.txt", 0},
     {"wifi", "/.rytm/wifi.txt", 0},

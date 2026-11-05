@@ -7,6 +7,7 @@
 #include "fx/insert.h"
 #include "keys.h"
 #include "lfo.h"
+#include "mod/learn.h"
 #include "mod/scene.h"
 #include "seq/seq.h"
 #include "song/song.h"
@@ -74,6 +75,7 @@ CORE_COLD bool engine_begin() {
 #if CORE_POLY
   seq::init();   // the Sidecar sequencer (core/seq/seq.h): its pattern buffers; its tracks and A01 once the store is full
   if (card_ok) keys::load();   // the Pi's own keyboards' routing (core/keys.h)
+  if (card_ok) learn::load();   // the MIDI-learn routes (core/mod/learn.h): a box setting
 #endif
 #if CORE_MSAMP
   if (card_ok) sdtest::load();   // the SD card test's last result (msamp/sdtest.h)
@@ -153,6 +155,7 @@ CORE_COLD bool idle_save() {
 #endif
 #if CORE_POLY
   if (T_("keys", keys::save())) return true;
+  if (T_("learn", learn::save())) return true;
   if (leaving) seq::save_due();
   if (T_("seq", seq::idle())) return true;   // the sequencer's pattern files: load, prefetch, save
   if (T_("song", song::idle())) return true;  // SONG RECORD: the journal, the song file, a load, a recovery (core/song/song.h)

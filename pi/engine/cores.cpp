@@ -668,6 +668,10 @@ void CEngineCores::Command (const char *p)
 	{
 		L->Write (From, LogNotice, "%s", Sc);
 	}
+	else if (char Le[600]; bridge::learn_command (p, Le, sizeof Le))	// learn, learn=...: MIDI learn (core/mod/learn.h)
+	{
+		L->Write (From, LogNotice, "%s", Le);
+	}
 	else if (sendfx_pi::Command (p))		// sendfx, sendfxout=, sendlvl=, sendknob= (sendfx_pi.h)
 	{
 	}
