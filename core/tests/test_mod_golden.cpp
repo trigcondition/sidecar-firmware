@@ -535,8 +535,10 @@ int main(int argc, char** argv) {
   CHECK(want.cp.size() == (size_t)kScenarios);
   int s = -1, c = -1;
   if (!g.same(want, &s, &c)) {
-    fprintf(stderr, "golden: scenario %d, checkpoint %d differs (-2: the stats; passes %d..%d); run --dump here and on dev and diff\n",
-            s, c, c * kEvery, c * kEvery + kEvery - 1);
+    if (c == -2) fprintf(stderr, "golden: scenario %d: its final lfo::stats() differ", s);
+    else if (c == -1) fprintf(stderr, "golden: scenario %d missing", s);
+    else fprintf(stderr, "golden: scenario %d, checkpoint %d differs (passes %d..%d)", s, c, c * kEvery, c * kEvery + kEvery - 1);
+    fprintf(stderr, "; run --dump here and on dev and diff\n");
     CHECK(false);
   }
   puts("test_mod_golden: ok");

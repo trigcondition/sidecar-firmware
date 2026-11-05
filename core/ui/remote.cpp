@@ -567,6 +567,7 @@ CORE_COLD void set_param(int vi, int k, int nv) {
   // a 0x03 PARAMS for the voice, its machine and every P (the edited one whole, the others as they are)
   uint8_t r[39] = {0xF0, 0x7D, 0x52, 0x54, 0x03, (uint8_t)(m | vi)};
   int n = 6;
+  uint32_t t0 = now_us();
   for (int i = 0; i < 16; ++i) {
     float p = i == k ? (float)nv : mod::base_of(vi, i, x.p[i]);   // an LFO's target: its base, not the modulated value
     int iv = (int)p;
@@ -576,6 +577,7 @@ CORE_COLD void set_param(int vi, int k, int nv) {
     r[n++] = (uint8_t)(fr < 0 ? 0 : fr > 127 ? 127 : fr);
   }
   r[n++] = 0xF7;
+  mod::note_lookup(now_us() - t0);
   s.self = true;
   voice_report(0x03, r, n);
   s.self = false;

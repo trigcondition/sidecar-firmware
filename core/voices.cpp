@@ -777,7 +777,11 @@ __attribute__((noinline)) CORE_COLD void voice_report(int cmd, const uint8_t* d,
 #if CORE_POLY
   seq::params_in(vi, x.p, np);         // seq-ux: a param the sequencer's step locked keeps its lock (core/seq/seq.h)
 #endif
-  lfo::voice_params(vi, x.p, np, cmd == 0x04);   // the Sidecar's LFOs on top (core/lfo.h)
+  {
+    uint32_t t0 = now_us();
+    lfo::voice_params(vi, x.p, np, cmd == 0x04);   // the Sidecar's LFOs on top (core/lfo.h), the bases into core/mod
+    mod::note_lookup(now_us() - t0);
+  }
   apply(x);
   if (was_fm && !x.fm) fms[vi].Leave(&x.voice, &x.mod);   // PLAITS gets its ROM bank back
 #if CORE_POLY

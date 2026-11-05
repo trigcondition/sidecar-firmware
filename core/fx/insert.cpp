@@ -520,7 +520,7 @@ bool command(const char* p, char* o, int cap) {
     int n = sniprintf(o, cap, "ins:");
     for (int c = 0; c < kChains && n < cap; ++c) {
       int a = control.type[c][0], b = control.type[c][1];
-      bool send = c < kVoices && (g_send_knob[c][0] || g_send_knob[c][1] || g_send_knob[c][2]);
+      bool send = c < kVoices && (control.send[c][0] || control.send[c][1] || control.send[c][2]);   // as it plays (a knob 0 + an offset is heard)
       if (!a && !b && !send && !eq_on(c)) continue;
       int k = sniprintf(o + n, cap - n, CORE_STR(" %s %s/%s%s"), kChainNames[c], kLabels[a].name, kLabels[b].name,
                         eq_on(c) ? "/EQ" : "");

@@ -46,18 +46,24 @@ void voice_params(int vi, float* p, int np);         // voice_report: a live ent
 uint8_t fx_knob(int slot, int knob, uint8_t v);      // fx::knob_filter: the value to play
 uint8_t fx_send(int track, int slot, uint8_t v);     // fx::send_filter: a track's send, the value to play
 float base_of(int vi, int k, float cur);             // a voice parameter's base, cur when unmodulated
+uint8_t knob_base(int slot, int knob);               // send FX knob 0..5 as the kit has it (fx::control.knob plays)
+uint8_t send_base(int track, int slot);              // a track's send as the kit has it (fx::control.send plays)
 void played(int vi, float out[16]);                  // the voice's values as they play (v[vi].p)
 void manual(Tid t, float v);                         // a Sidecar-side manual edit (spec-050 2.5; Phase 2: a stub)
 void fader_moved();                                  // clears every held flag (Phase 2: a stub)
 const Entry* find(Tid t);
-struct Stats { uint32_t ticks, voice_sets, user_calls, fx_sets, restores, seq_sets, rytm_out, worst_us; };
+// worst_us: the slowest whole tick(); flush_us: the slowest flush_voices (a user machine's params call is in it);
+// lookup_us: the slowest base lookup block a caller noted (note_lookup: seq's lock apply, a voice report, the remote
+// page's edit); dropped: offsets refused with the table full. All since the boot / reset().
+struct Stats { uint32_t ticks, voice_sets, user_calls, fx_sets, restores, seq_sets, rytm_out, worst_us, flush_us, lookup_us, dropped; };
+void note_lookup(uint32_t us);                       // a caller's base lookups (base_of / voice_params) took us
 const Stats& stats();
 // the console: "mod" -> "mod: 3 live: V1:P3 66.00 (base 60.00 off +6), FX1:P3 50 (base 40 off +10), I1:A2 +12 (offset)";
-// "mod=stats" -> the counts and worst_us (the slowest whole tick() in us, since the boot / a reset). False: not "mod..."
+// "mod=stats" -> the counts, worst_us, flush_us, lookup_us (Stats) and the entries' high-water mark. False: not "mod..."
 bool command(const char* p, char* out, int cap);
 int json(char* out, int cap);                        // "\"mod\":{\"live\":N,\"worst_us\":U,\"ticks\":..,...}"
 void reset();                                        // tests: no entries, the clock forgotten, the stats zero
-// tests: the sources tick() calls in place of the LFOs' (null: the LFOs)
+// tests: the sources tick() calls in place of the LFOs' (null: the LFOs; reset() clears it)
 void set_source_fn(void (*fn)(uint32_t us, uint32_t dus));
 
 }  // namespace mod

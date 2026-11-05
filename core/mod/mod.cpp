@@ -18,6 +18,16 @@ namespace mod {
 namespace {
 
 Entry g_e[kEntries];
+// one past the highest entry in use: every walk stops there (allocation is first free, so the LFOs' few entries sit at
+// the bottom and a lookup costs what 0.4.0's 16-entry table did, not kEntries)
+int g_hi = 0;
+struct Used {
+  Entry* b;
+  Entry* e;
+  Entry* begin() const { return b; }
+  Entry* end() const { return e; }
+};
+Used used() { return {g_e, g_e + g_hi}; }
 uint32_t g_last_us = 0;
 bool g_started = false;
 uint8_t g_vdirty = 0;   // voices whose v[vi].p moved: their machines take them (flush_voices)
@@ -29,7 +39,8 @@ CORE_COLD float clampf(float x, float lo, float hi) { return x < lo ? lo : x > h
 CORE_COLD int rnd0(float x) { return (int)(x + 0.5f); }   // x >= 0
 
 CORE_COLD Entry* find_e(Tid t) {
-  for (Entry& e : g_e)
+  if (!t) return nullptr;   // (a free entry's t is 0)
+  for (Entry& e : used())
     if (e.t == t) return &e;
   return nullptr;
 }
@@ -47,6 +58,7 @@ CORE_COLD void restore(Entry& e) {
     put(e.t, e.base);
   }
   e = Entry();
+  while (g_hi && !g_e[g_hi - 1].t) --g_hi;
 }
 
 }  // namespace
@@ -59,11 +71,12 @@ static struct FxHooks {
 CORE_COLD void set_source_fn(void (*fn)(uint32_t us, uint32_t dus)) { g_source = fn; }
 
 CORE_COLD void begin_tick() {
-  for (Entry& e : g_e) e.off = 0, e.live = 0;
+  for (Entry& e : used()) e.off = 0, e.live = 0;   // (a free entry's off is 0 already)
 }
 
 CORE_COLD void offset(int src, Tid t, float depth, float w) {
   (void)src;
+  if (!valid(t)) return;   // (0 or a target this build has not: never into a free entry)
   Entry* e = find_e(t);
   if (!e)
     for (Entry& f : g_e)
@@ -72,9 +85,13 @@ CORE_COLD void offset(int src, Tid t, float depth, float w) {
         e->t = t;
         e->base = base_now(t);
         e->applied = e->base;
+        if (e - g_e >= g_hi) g_hi = (int)(e - g_e) + 1;
         break;
       }
-  if (!e) return;   // (full: cannot happen with the LFOs alone)
+  if (!e) {   // full (cannot happen with the LFOs alone): counted, mod=stats
+    ++g_stats.dropped;
+    return;
+  }
   e->live = 1;
   e->off += depth * w;
 }
@@ -84,7 +101,7 @@ CORE_COLD void manual(Tid, float) {}
 CORE_COLD void fader_moved() {}
 
 CORE_COLD void end_tick() {
-  for (Entry& e : g_e) {
+  for (Entry& e : used()) {
     if (!e.t) continue;
     if (!e.live) {
       restore(e);
@@ -117,7 +134,18 @@ CORE_COLD void end_tick() {
   }
 }
 
+static CORE_COLD void flush_body();
+CORE_COLD void note_lookup(uint32_t us) {
+  if (us > g_stats.lookup_us) g_stats.lookup_us = us;
+}
+
 CORE_COLD void flush_voices() {
+  uint32_t t0 = now_us();
+  flush_body();
+  uint32_t d = now_us() - t0;
+  if (d > g_stats.flush_us) g_stats.flush_us = d;
+}
+static CORE_COLD void flush_body() {
   // the voices whose parameters moved: their machines take them (a user machine at most every kUserMs)
   uint32_t ms = now_ms();
   for (int vi = 0; vi < kVoices; ++vi) {
@@ -167,7 +195,7 @@ static CORE_COLD void tick_body(uint32_t us) {
 }
 
 CORE_COLD void restore_all() {
-  for (Entry& e : g_e)
+  for (Entry& e : used())
     if (e.t) restore(e);
   for (int vi = 0; vi < kVoices; ++vi)
     if (g_vdirty >> vi & 1) voice_params_changed(vi);
@@ -179,7 +207,7 @@ CORE_COLD void voice_params(int vi, float* p, int np) {
   lfo::voice_params(vi, p, np, false);   // the rollback: the LFOs' own table
   return;
 #endif
-  for (Entry& e : g_e) {
+  for (Entry& e : used()) {
     if (!e.t || kind_of(e.t) != kV || index_of(e.t) != (vi & 7) || param_of(e.t) >= np) continue;
     e.base = p[param_of(e.t)];
     float val = clampf(e.base + e.off, 0.0f, 127.99f);
@@ -205,6 +233,18 @@ CORE_COLD uint8_t fx_send(int track, int slot, uint8_t val) {
   int iv = rnd0(clampf(e->base + e->off, 0.0f, 127.0f));
   e->applied = (float)iv;
   return (uint8_t)iv;
+}
+
+CORE_COLD uint8_t knob_base(int slot, int knob) {
+  slot &= 1;
+  if (knob < 0 || knob > 5) return 0;
+  const Entry* e = knob >= 2 ? find_e(tid(kFx, slot, knob - 2)) : nullptr;
+  return e ? (uint8_t)e->base : fx::control.knob[slot][knob];
+}
+CORE_COLD uint8_t send_base(int track, int slot) {
+  if (track < 0 || track >= fx::kTracks) return 0;
+  const Entry* e = find_e(tid(kSnd, track, slot & 1));
+  return e ? (uint8_t)e->base : fx::control.send[track][slot & 1];
 }
 
 CORE_COLD float base_of(int vi, int k, float cur) {
@@ -234,10 +274,10 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   o[0] = 0;
   if (!p[3]) {
     int live = 0;
-    for (const Entry& e : g_e) live += e.t != 0;
+    for (const Entry& e : used()) live += e.t != 0;
     int n = sniprintf(o, cap, "mod: %d live", live);
     bool first = true;
-    for (const Entry& e : g_e) {
+    for (const Entry& e : used()) {
       if (!e.t || n >= cap - 1) continue;
       char nm[16], a[16], b[16], f[16];
       name(e.t, nm, sizeof nm);
@@ -259,9 +299,11 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   }
   if (!strcmp(p + 4, "stats")) {
     const Stats& s = g_stats;
-    sniprintf(o, cap, "mod: ticks %u voice_sets %u user_calls %u fx_sets %u restores %u worst_us %u", (unsigned)s.ticks,
-              (unsigned)s.voice_sets, (unsigned)s.user_calls, (unsigned)s.fx_sets, (unsigned)s.restores,
-              (unsigned)s.worst_us);
+    sniprintf(o, cap,
+              "mod: ticks %u voice_sets %u user_calls %u fx_sets %u restores %u dropped %u worst_us %u flush_us %u "
+              "lookup_us %u hi %d",
+              (unsigned)s.ticks, (unsigned)s.voice_sets, (unsigned)s.user_calls, (unsigned)s.fx_sets, (unsigned)s.restores,
+              (unsigned)s.dropped, (unsigned)s.worst_us, (unsigned)s.flush_us, (unsigned)s.lookup_us, g_hi);
     return true;
   }
   sniprintf(o, cap, "mod | mod=stats");
@@ -270,11 +312,12 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
 
 CORE_COLD int json(char* o, int cap) {
   int live = 0;
-  for (const Entry& e : g_e) live += e.t != 0;
+  for (const Entry& e : used()) live += e.t != 0;
   const Stats& s = g_stats;
-  int n = sniprintf(o, cap, "\"mod\":{\"live\":%d,\"worst_us\":%u,\"ticks\":%u,\"voice_sets\":%u,\"fx_sets\":%u,"
-                    "\"restores\":%u}", live, (unsigned)s.worst_us, (unsigned)s.ticks, (unsigned)s.voice_sets,
-                    (unsigned)s.fx_sets, (unsigned)s.restores);
+  int n = sniprintf(o, cap, "\"mod\":{\"live\":%d,\"worst_us\":%u,\"flush_us\":%u,\"lookup_us\":%u,\"ticks\":%u,"
+                    "\"voice_sets\":%u,\"fx_sets\":%u,\"restores\":%u,\"dropped\":%u}", live, (unsigned)s.worst_us,
+                    (unsigned)s.flush_us, (unsigned)s.lookup_us, (unsigned)s.ticks, (unsigned)s.voice_sets,
+                    (unsigned)s.fx_sets, (unsigned)s.restores, (unsigned)s.dropped);
   return n < 0 ? 0 : n;
 }
 
@@ -283,6 +326,7 @@ CORE_COLD const Stats& stats() { return g_stats; }
 
 CORE_COLD void reset() {
   for (Entry& e : g_e) e = Entry();
+  g_hi = 0, g_source = nullptr;
   g_started = false, g_last_us = 0, g_vdirty = 0;
   for (uint32_t& m : g_user_ms) m = 0;
   g_stats = Stats();

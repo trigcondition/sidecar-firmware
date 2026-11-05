@@ -485,6 +485,7 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
       if (ls->l[i].param < 16) want |= (uint16_t)(1u << ls->l[i].param), nv[ls->l[i].param] = lock_float(ls->l[i].value);
     if (want || L.on) {
       float p[16];
+      uint32_t t0 = now_us();   // the lookups' cost (mod=stats lookup_us): this runs before a render block
       for (int k = 0; k < 16; ++k) p[k] = mod::base_of(vi, k, x.p[k]);   // what plays without an LFO on it
       for (int k = 0; k < 16; ++k) {
         uint16_t bit = (uint16_t)(1u << k);
@@ -497,6 +498,7 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
       }
       L.on = want;
       mod::voice_params(vi, p, 16);   // an LFO on a locked param: the lock is its base
+      mod::note_lookup(now_us() - t0);
       memcpy(x.p, p, sizeof p);
       voice_params_changed(vi);
       ++st.locks_applied;

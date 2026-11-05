@@ -250,6 +250,55 @@ static void worst_us_covers_tick() {
   g_src = nullptr;
 }
 
+// ---- review fixes: the walks stop at the high-water mark; a bad id never lands; a full table counts; the bases for
+// SONG RECORD (mod::knob_base / send_base, fx::set_*_base through the filters)
+static void high_water_and_guards() {
+  start();
+  char o[400];
+  g_src = [](uint32_t, uint32_t) { mod::offset(0, tid(kV, 1, 3), 5, 1); mod::offset(1, tid(kV, 2, 3), 5, 1); };
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(mod::command("mod=stats", o, sizeof o) && strstr(o, " hi 2"));
+  g_src = [](uint32_t, uint32_t) { mod::offset(1, tid(kV, 2, 3), 5, 1); };   // the first leaves: entry 0 free, hi stays 2
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(mod::command("mod=stats", o, sizeof o) && strstr(o, " hi 2"));
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(mod::command("mod=stats", o, sizeof o) && strstr(o, " hi 0") && mod::base_of(2, 3, 9) == 9.0f);
+  g_src = [](uint32_t, uint32_t) { mod::offset(0, 0, 5, 1); mod::offset(0, tid(kV, 9, 0), 5, 1); mod::offset(0, tid(kKinds, 0, 0), 5, 1); };
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(mod::command("mod", o, sizeof o) && strstr(o, "mod: 0 live") && !mod::find(0));
+  g_src = [](uint32_t, uint32_t) {   // more targets than entries: the rest counted, never written
+    int n = 0;
+    for (int c = 0; c < 13; ++c)
+      for (int p = 0; p < 12; ++p) mod::offset(0, tid(kIns, c, p), 1, 1), ++n;
+    for (int vi = 0; vi < 8; ++vi)
+      for (int p = 0; p < 16; ++p) mod::offset(0, tid(kV, vi, p), 0, 1), ++n;
+  };
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(mod::stats().dropped == (uint32_t)(13 * 12 + 8 * 16 - mod::kEntries));
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  ins::reset();
+  mod::note_lookup(42);
+  CHECK(mod::stats().lookup_us == 42 && mod::json(o, sizeof o) > 0 && strstr(o, "\"lookup_us\":42") && strstr(o, "\"flush_us\":"));
+  printf("mod: the walks stop at the high-water mark; bad ids refused; a full table counted\n");
+}
+static void song_reads_bases() {
+  fx::control.knob[0][3] = 40;
+  sendfx_track(2, 30, 7);
+  start();
+  g_src = [](uint32_t, uint32_t) { mod::offset(0, tid(kFx, 0, 1), 20, 1); mod::offset(1, tid(kSnd, 2, 0), 10, 1); };
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(fx::control.knob[0][3] == 60 && fx::control.send[2][0] == 40);   // as they play
+  CHECK(mod::knob_base(0, 3) == 40 && mod::send_base(2, 0) == 30 && mod::send_base(2, 1) == 7 && mod::knob_base(0, 0) == fx::control.knob[0][0]);
+  fx::set_knob_base(0, 3, 50), fx::set_send_base(2, 0, 20);              // a replay's values: the bases, modulated on top
+  CHECK(fx::control.knob[0][3] == 70 && fx::control.send[2][0] == 30 && mod::knob_base(0, 3) == 50 && mod::send_base(2, 0) == 20);
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(fx::control.knob[0][3] == 50 && fx::control.send[2][0] == 20);  // left: the replayed bases, not the old ones
+  printf("mod: SONG RECORD's reads are the bases; its replay goes through the filters\n");
+}
+
 int main() {
   char tmpl[] = "/tmp/core_mod_XXXXXX";
   CHECK(mkdtemp(tmpl));
@@ -274,6 +323,8 @@ int main() {
   isnd_offset_saves_knob();
   console_lists_live();
   worst_us_covers_tick();
+  high_water_and_guards();
+  song_reads_bases();
   printf("test_mod: PASS\n");
   return 0;
 }

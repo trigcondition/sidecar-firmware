@@ -95,6 +95,12 @@ void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
 void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 static inline uint8_t send(int t, int s, uint8_t v) { return send_filter ? send_filter(t, s, v) : v; }
+CORE_COLD void set_knob_base(int s, int k, uint8_t v) {
+  if (s >= 0 && s < kSlots && k >= 0 && k < kKnobs) control.knob[s][k] = knob(s, k, v);
+}
+CORE_COLD void set_send_base(int t, int s, uint8_t v) {
+  if (t >= 0 && t < kTracks && s >= 0 && s < kSlots) control.send[t][s] = send(t, s, v);
+}
 
 CORE_COLD void clock_in(uint8_t status, uint16_t spp) {   // per MIDI realtime byte, control side: cold
   static int32_t pos = -1;   // the latest tick's song position (24 ppqn), -1 before the first after Start
