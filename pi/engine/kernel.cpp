@@ -18,6 +18,7 @@ static volatile unsigned s_nTempC;	// the SoC temperature as the stats line last
 #include "preset_pi.h"		// the display's JUNO / 6-OP FM preset pages
 #include "chopview_pi.h"		// the display's CHOP page
 #include "song_pi.h"		// the display's SONG page (core/song)
+#include "morph_pi.h"		// 0.5.0: the display's MORPH page (core/mod/scene.h)
 #include "voice_pi.h"		// the display's VOICE page, the Rytm's UP + T1..T5 (rui1036b)
 #include "insfx_pi.h"		// the display's INSERT FX page (fx-ins)
 #include "scope_pi.h"		// touch2: the display's SCOPE page (UP + T9)
@@ -2251,6 +2252,13 @@ void CKernel::Run (void)
 					insfx_pi::FillMaster (&s_MfxView);
 					sidecar_mfx_set (&s_MfxView);
 				}
+			}
+			{	// 0.5.0: the MORPH page, its view built on core 3 (morph_pi), the newest taken here
+				static sidecar_morph_view_t s_MorphView;
+				static unsigned s_nMorphSeen;
+				morph_pi::Want (sidecar_morph_shown (), sidecar_morph_top ());
+				if (sidecar_morph_shown () && morph_pi::View (&s_MorphView, &s_nMorphSeen))
+					sidecar_morph_set (&s_MorphView);
 			}
 			if (sidecar_wgview_shown ())		// the machine view: ~10 frames a second, redrawn only on a change
 			{

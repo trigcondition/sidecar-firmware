@@ -106,6 +106,11 @@ build/test_presetweb: test_presetweb.cpp ../presetweb.cpp ../presetweb.h $(CORE)
 	@mkdir -p build
 	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -DCORE_MSAMP=1 -I$(CORE)/host -I$(CORE) -I.. \
 	  -fsanitize=address,undefined -fno-sanitize-recover=all -o $@ test_presetweb.cpp ../presetweb.cpp $(CORE)/build/libcore.dylib -Wl,-rpath,$(abspath $(CORE)/build)
+# 0.5.0: the display's MORPH page view (morph_pi.cpp) from the scenes (core/mod/scene.h) on the core's Mac library
+build/test_morph_pi: test_morph_pi.cpp ../morph_pi.cpp ../morph_pi.h ../../ui/sidecar_morph.h $(CORE)/mod/scene.h check.h $(CORE)/build/libcore.dylib
+	@mkdir -p build
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -DCORE_POLY=1 -DCORE_MSAMP=1 -I$(CORE)/host -I$(CORE) -I.. \
+	  -fsanitize=address,undefined -fno-sanitize-recover=all -o $@ test_morph_pi.cpp ../morph_pi.cpp $(CORE)/build/libcore.dylib -Wl,-rpath,$(abspath $(CORE)/build)
 $(CORE)/build/libcore.dylib: $(wildcard $(CORE)/*.cpp $(CORE)/*/*.cpp $(CORE)/*.h $(CORE)/*/*.h)
 	@test -f $(CORE)/build/libengines.a || { echo "bundleweb: run 'make -C core engines' first"; exit 1; }
 	$(MAKE) -C $(CORE) lib

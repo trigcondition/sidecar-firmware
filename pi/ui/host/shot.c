@@ -12,6 +12,7 @@
 #include "../sidecar_voice.h"
 #include "../sidecar_insfx.h"
 #include "../sidecar_mfx.h"
+#include "../sidecar_morph.h"
 #include "../sidecar_song.h"
 #include "../sidecar_rec.h"
 #include "../sidecar_seqed.h"
@@ -309,6 +310,24 @@ static sidecar_wg_view_t s_Wg;
 static sidecar_voice_view_t s_Vv;
 // the MASTER FX page's view, as insfx_pi.cpp's FillMaster fills it
 static sidecar_mfx_view_t s_Mv;
+// 0.5.0: the MORPH page's made-up scenes (A 1, B 3, scene 3 selected with n locks, the longest names and values)
+static sidecar_morph_view_t s_Mo;
+static void morph_fake (int n, int top)
+{
+	static const char *const kN[] = {"V1:P3", "RYTM:PERF12", "MFX:LEV", "I8:A4", "RYTM:SCN", "X8:B3", "O8:WID", "V8:P16"};
+	static const char *const kV[] = {"64", "127", "100.5", "127.9", "12", "0", "64", "OFF"};
+	memset (&s_Mo, 0, sizeof s_Mo);
+	s_Mo.valid = 1, s_Mo.fader = 9000, s_Mo.a = 0, s_Mo.b = 2, s_Mo.sel = 2, s_Mo.top = (unsigned char) top;
+	for (int k = 0; k < SMO_SCENES; k++) s_Mo.nlocks[k] = (unsigned char) (k == 2 ? n : k == 0 ? 5 : k == 11 ? 64 : 0);
+	for (int i = top; i < n && s_Mo.nrows < SMO_ROWS; i++)
+	{
+		sidecar_morph_row_t *r = &s_Mo.row[s_Mo.nrows++];
+		snprintf (r->name, sizeof r->name, "%s", kN[i % 8]);
+		snprintf (r->value, sizeof r->value, "%s", kV[i % 8]);
+		r->lo = 0, r->hi = i % 8 == 4 ? 12 : 127, r->v = (unsigned char) (i * 13 % 128);
+	}
+	s_Mo.gen = (unsigned) (n * 1000 + top + 1);
+}
 static void mfx_slot (int i, int type, const char *n, const char *next, const char *l0, const char *v0, int send, int amp)
 {
 	sidecar_mfx_slot_t *x = &s_Mv.slot[i];
@@ -1342,6 +1361,17 @@ static void theme_run (int style, const char *pre)
 		mfx_fake (1); s_Mv.rep = 1; s_Mv.onmain = 3; s_Mv.gen++; sidecar_mfx_set (&s_Mv); run (2); shot ("mfx-through");
 		sidecar_ui_show (pg);
 		EXPECT (!sidecar_mfx_shown ());
+	}
+	// 0.5.0: the MORPH page - no locks, a full list, the last rows, the engine not there yet
+	{
+		int pg = sidecar_ui_page ();
+		sidecar_ui_show (20);
+		EXPECT (sidecar_morph_shown () && !sidecar_mfx_shown ());
+		morph_fake (0, 0); sidecar_morph_set (&s_Mo); run (2); shot ("morph-empty");
+		morph_fake (24, 0); sidecar_morph_set (&s_Mo); run (2); shot ("morph-locks");
+		morph_fake (24, 16); s_Mo.edit = 1; s_Mo.gen++; sidecar_morph_set (&s_Mo); run (2); shot ("morph-edit");
+		sidecar_ui_show (pg);
+		EXPECT (!sidecar_morph_shown ());
 	}
 	EXPECT (sidecar_insfx_voice () == 2);
 	{

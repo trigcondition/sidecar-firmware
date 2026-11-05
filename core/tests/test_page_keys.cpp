@@ -79,7 +79,7 @@ int main() {
 
   // ---- the Pi's routing: each code to its touchscreen page (sidecar_ui.h's numbers), SAMPLE none
   ui::remote_reset();
-  static const int want[15] = {-1, 0, 4, 5, 8, 9, 10, 11, 1, 12, 13, -1, 14, 15, -1};   // (4: VOICE, an analog track)
+  static const int want[15] = {-1, 0, 4, 5, 8, 9, 10, 11, 1, 12, 13, -1, 14, 15, 20};   // (4: VOICE, an analog track)
   uint32_t seen = 0, tseen = 0;
   voice_pi::Seen(&seen, &tseen);
   for (int c = 1; c <= 14; ++c) {

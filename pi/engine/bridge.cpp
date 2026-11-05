@@ -23,6 +23,7 @@
 #include "seq/seq.h"
 #include "song/song.h"
 #include "song_pi.h"
+#include "morph_pi.h"   // 0.5.0: the display's MORPH page
 #include "msamp/msamp.h"
 #include "pool/pcache.h"
 #include "pool/stream_budget.h"
@@ -175,6 +176,7 @@ void tick() {
   timed_tick("seq", [] { core::seq::tick(core::now_ms()); });        // the Sidecar sequencer: its LEDs, its 2E (core/seq/seq.h)
   timed_tick("song", [] { core::song::tick(core::now_ms()); });      // SONG RECORD (core/song/song.h)
   timed_tick("songview", [] { song_pi::Tick(); });                   // its view for the display's SONG page
+  timed_tick("morphview", [] { morph_pi::Tick(); });                 // 0.5.0: the display's MORPH page (scenes)
 #if SIDECAR_SEQED
   timed_tick("seqed", [] { seqed_pi::Tick(); });                     // the touch editor's view for the display (docs/TOUCH-EDITOR.md)
   timed_tick("rytmpat", [] { rytmpat_pi::Tick(); });                 // the Rytm pattern view: its dump fetched while the page is open

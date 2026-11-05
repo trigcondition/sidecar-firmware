@@ -18,13 +18,14 @@ namespace voice_pi {
 
 namespace {
 constexpr int kPgHome = 0, kPgSound = 1, kPgSeq = 4, kPgRytm = 5, kPgVoice = 8, kPgIns = 9, kPgSong = 10, kPgRec = 11,
-              kPgScope = 12, kPgStatus = 13, kPgProject = 14, kPgPool = 15;
+              kPgScope = 12, kPgStatus = 13, kPgProject = 14, kPgPool = 15, kPgMorph = 20;
 // the touchscreen's pages by the device table's names (ui/page_keys.h; sidecar_ui.h's page numbers); a name not here
 // (SAMPLE) is the Rytm's screen's alone. VOICE: VoicePage (the machine view or VOICE).
 struct TouchPage { const char* name; int page; };
 constexpr TouchPage kTouch[] = {{"HOME", kPgHome}, {"SEQ", kPgSeq}, {"PAT", kPgRytm}, {"VOICE", kPgVoice}, {"SET", kPgSound},
                                 {"INSERT FX", kPgIns}, {"REC", kPgRec}, {"SCOPE", kPgScope}, {"STATUS", kPgStatus},
-                                {"SONG", kPgSong}, {"PROJECT", kPgProject}, {"POOL", kPgPool}};
+                                {"SONG", kPgSong}, {"PROJECT", kPgProject}, {"POOL", kPgPool},
+                                {"MORPH", kPgMorph}};
 int touch_page(const char* name) {
   for (const TouchPage& t : kTouch) if (sc_streq(t.name, name)) return t.page;
   return -1;
@@ -257,7 +258,9 @@ void OwnPages() {
   const sc_keymap_t* m = sc_keymap();
   uint16_t own = 0;
   for (int i = 0; i < m->npages; ++i)
-    if (m->pages[i].rytm && m->pages[i].code < 16 && touch_page(m->pages[i].name) >= 0) own |= (uint16_t)(1u << m->pages[i].code);
+    // 0.5.0: MORPH stays the Rytm's too (its trig keys and knob are the scenes' controls there): UP + T14 shows both
+    if (m->pages[i].rytm && m->pages[i].code < 16 && touch_page(m->pages[i].name) >= 0 && !sc_streq(m->pages[i].rytm, "MORPH"))
+      own |= (uint16_t)(1u << m->pages[i].code);
   core::ui::remote_display_owns(own);
 }
 

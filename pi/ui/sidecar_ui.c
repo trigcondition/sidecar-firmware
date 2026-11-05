@@ -23,6 +23,7 @@
 #include "sidecar_voice.h"		// page 8: VOICE, the Rytm's selected track (rui1036b: UP + T4)
 #include "sidecar_insfx.h"		// page 9: INSERT FX, a voice's inserts and sends (fx-ins)
 #include "sidecar_mfx.h"		// MASTER FX
+#include "sidecar_morph.h"		// page 20: MORPH (0.5.0 scenes: the pads, a scene's locks, the crossfader)
 #include "sidecar_song.h"		// page 10: SONG, SONG RECORD's timeline (core/song)
 #include "sidecar_rec.h"		// page 11: REC, the Overbridge multitrack recorder (UP + T7, the home page's REC status)
 #include "sidecar_scope.h"		// page 12: SCOPE, an Overbridge channel's trace and the meters (UP + T9, VOICE's scope)
@@ -37,7 +38,7 @@
 
 enum { SEG_TAB, SEG_NOTES, SEG_OUT, SEG_MAC, SEG_VOICE, SEG_MACH, SEG_DRONE, SEG_SAVER, SEG_STYLE, SEG_LOOK, SEG_CLOCK, SEG_N };
 enum { PG_HOME, PG_SOUND, PG_FX, PG_ABOUT, PG_SEQ, PG_RYTM, PG_DISPLAY, PG_MACH, PG_VOICE, PG_INS, PG_SONG, PG_REC, PG_SCOPE, PG_STATUS, PG_PROJECT, PG_POOL,
-       PG_SERVICE, PG_CHOP, PG_PRESET, PG_MFX, PG_N };	// SERVICE (UX review T18): FIFO and the test drone, out of the musician's Sound page; the tab is called System: the CPU clock too
+       PG_SERVICE, PG_CHOP, PG_PRESET, PG_MFX, PG_MORPH, PG_N };	// SERVICE (UX review T18): FIFO and the test drone, out of the musician's Sound page; the tab is called System: the CPU clock too
 
 // the settings tabs; Pool: the POOL page (the three lists, sidecar_wgview.h), a page of its own
 #define N_TABS 6
@@ -372,6 +373,7 @@ static void show_page (int page)
 	sidecar_voice_show (page == PG_VOICE);
 	sidecar_insfx_show (page == PG_INS);
 	sidecar_mfx_show (page == PG_MFX);
+	sidecar_morph_show (page == PG_MORPH);
 	sidecar_song_show (page == PG_SONG);
 	sidecar_rec_show (page == PG_REC);
 	sidecar_scope_show (page == PG_SCOPE);
@@ -392,7 +394,7 @@ static void show_page (int page)
 	// machine view, SCOPE: VOICE; POOL: SET); never SET for a page that is not a setting
 	int nav = page == PG_HOME || page == PG_PROJECT || page == PG_STATUS ? NAV_HOME : page == PG_SEQ ? NAV_SEQ
 		: page == PG_RYTM ? NAV_PAT : page == PG_VOICE || page == PG_MACH || page == PG_SCOPE || page == PG_CHOP ? NAV_VOICE
-		: page == PG_INS || page == PG_MFX ? NAV_FX : page == PG_SONG ? NAV_SONG : page == PG_REC ? NAV_REC : set || page == PG_POOL || page == PG_PRESET ? NAV_SET : -1;
+		: page == PG_INS || page == PG_MFX || page == PG_MORPH ? NAV_FX : page == PG_SONG ? NAV_SONG : page == PG_REC ? NAV_REC : set || page == PG_POOL || page == PG_PRESET ? NAV_SET : -1;
 	s_nNavLit = nav;
 	for (int i = 0; i < NAV_N; i++) if (s_Nav[i]) th_key_check (s_Nav[i], i == nav);
 	if (!oled ())
@@ -497,6 +499,7 @@ static void kill_cb (lv_obj_t *o, int i, void *ud) { (void) o; (void) i; (void) 
 static void show_page (int page);
 static void ins_cb (lv_obj_t *o, int i, void *ud) { (void) o; (void) i; (void) ud; show_page (PG_INS); }	// fx-ins
 static void mfx_cb (lv_obj_t *o, int i, void *ud) { (void) o; (void) i; (void) ud; show_page (PG_MFX); }
+static void morph_cb (lv_obj_t *o, int i, void *ud) { (void) o; (void) i; (void) ud; show_page (PG_MORPH); }
 static void nav_cb (lv_obj_t *o, int i, void *ud)
 {
 	(void) o; (void) i;
@@ -739,9 +742,10 @@ static void oled_fx (lv_obj_t *pg)
 		}
 		label (p, x + bw - LU (5), LU (164) + dy, TH->f_micro, TH->dim, kSendName[t]);
 	}
-	th_key (p, LU (6), LU (176) + dy, LU (84), LU (20), "INSERTS", TH_KEY | TH_KEY_SMALL, ins_cb, 0);	// fx-ins: the INSERT FX page
-	th_key (p, LU (94), LU (176) + dy, LU (76), LU (20), "MASTER", TH_KEY | TH_KEY_SMALL, mfx_cb, 0);
-	label_w (p, LU (176), LU (182) + dy, LU (170) + dx, TH->f_micro, TH->faint, "KILL TAILS: STOP STOP");
+	th_key (p, LU (6), LU (176) + dy, LU (72), LU (20), "INSERTS", TH_KEY | TH_KEY_SMALL, ins_cb, 0);	// fx-ins: the INSERT FX page
+	th_key (p, LU (82), LU (176) + dy, LU (66), LU (20), "MASTER", TH_KEY | TH_KEY_SMALL, mfx_cb, 0);
+	th_key (p, LU (152), LU (176) + dy, LU (62), LU (20), "MORPH", TH_KEY | TH_KEY_SMALL, morph_cb, 0);	// 0.5.0: the scenes
+	label_w (p, LU (220), LU (182) + dy, LU (126) + dx, TH->f_micro, TH->faint, "KILL TAILS: STOP STOP");
 }
 
 static void oled_about (lv_obj_t *pg)
@@ -814,6 +818,8 @@ static void oled_build (lv_obj_t *scr)
 	sidecar_insfx_set_command (command);
 	sidecar_mfx_create (scr, 0);
 	sidecar_mfx_set_command (command);
+	sidecar_morph_create (scr, 0);
+	sidecar_morph_set_command (command);
 	sidecar_song_create (scr, 0, song_cmd);
 	sidecar_rec_create (scr, 0, rec_cmd);
 	sidecar_scope_create (scr, 0);
@@ -887,8 +893,9 @@ static void classic_fx (lv_obj_t *pg)
 	for (int k = 0; k < 2; k++)
 		s_FxName[k] = label (p, LU (12) + k * (LU (250) + dx / 4), LU (34), TH->f_big, k ? TH->ink : 0x1E7A3E, "-");
 	s_Kill = th_key (p, LU (614) + dx, LU (26), LU (150), LU (52), "Kill tails", TH_KEY_DANGER, kill_cb, 0);
-	th_key (p, LU (500) + dx, LU (26), LU (106), LU (25), "Inserts", TH_KEY, ins_cb, 0);	// fx-ins: the INSERT FX page
-	th_key (p, LU (500) + dx, LU (53), LU (106), LU (25), "Master", TH_KEY, mfx_cb, 0);
+	th_key (p, LU (500) + dx, LU (22), LU (106), LU (20), "Inserts", TH_KEY, ins_cb, 0);	// fx-ins: the INSERT FX page
+	th_key (p, LU (500) + dx, LU (44), LU (106), LU (20), "Master", TH_KEY, mfx_cb, 0);
+	th_key (p, LU (500) + dx, LU (66), LU (106), LU (20), "Morph", TH_KEY, morph_cb, 0);	// 0.5.0: the scenes
 	th_key_font (s_Kill, TH->f_title);
 	th_key_led (s_Kill, LED_RED + 15);
 	lv_obj_t *w = th_panel (p, LU (8), LU (88), LU (760) + dx, LU (208) + dy, "", TH_PANEL_WINDOW);
@@ -1079,6 +1086,8 @@ static void classic_build (lv_obj_t *scr)
 	sidecar_insfx_set_command (command);
 	sidecar_mfx_create (scr, LU (52));
 	sidecar_mfx_set_command (command);
+	sidecar_morph_create (scr, LU (52));
+	sidecar_morph_set_command (command);
 	sidecar_song_create (scr, LU (52), song_cmd);
 	sidecar_rec_create (scr, LU (52), rec_cmd);
 	sidecar_scope_create (scr, LU (52));
