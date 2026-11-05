@@ -138,6 +138,9 @@ void remote_src_log(bool on);  // 1027: log each 29 / 2A from the Rytm and each 
 // voice_report's hook (voices.cpp, after the report's P1..Pn are decoded, before they apply): the page's held edits for
 // voice vi on machine m (voice byte & 0x78).
 void remote_params(int vi, int m, float* p, int np);
+// 0.5.0 scenes (core/mod/scene.h): voice vi's P(k + 1) is a list cell on its page now (a model, a pattern: the morph
+// takes it whole, at halfway; spec-050 1.3 kV "built-in list knobs step")
+bool remote_is_list(int vi, int k);
 
 struct RemoteStats {
   uint32_t opens, closes, frames, tiles, rects, bytes, keepalives, keys, encs, edits, widgets, bad;

@@ -9,6 +9,7 @@
 
 #include "fx/send_fx.h"
 #include "lfo.h"
+#include "mod/scene.h"
 #include "platform.h"
 #include "voices.h"
 
@@ -38,12 +39,49 @@ void (*g_source)(uint32_t us, uint32_t dus) = nullptr;
 CORE_COLD float clampf(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
 CORE_COLD int rnd0(float x) { return (int)(x + 0.5f); }   // x >= 0
 
+// the entries by id (spec-050 1.4, Phase 2: 128 morph calls a tick): 512 slots, linear probing, entry + 1 (0 empty);
+// deletion shifts the run back (no tombstones). The walks still go in array order (the writes' order is 0.4.0's).
+constexpr int kIx = 512;
+uint16_t g_ix[kIx];
+CORE_COLD int ix_home(Tid t) { return (int)((uint32_t)t * 40503u >> 7) & (kIx - 1); }
 CORE_COLD Entry* find_e(Tid t) {
   if (!t) return nullptr;   // (a free entry's t is 0)
-  for (Entry& e : used())
-    if (e.t == t) return &e;
+  for (int i = ix_home(t); g_ix[i]; i = (i + 1) & (kIx - 1))
+    if (g_e[g_ix[i] - 1].t == t) return &g_e[g_ix[i] - 1];
   return nullptr;
 }
+CORE_COLD void ix_add(Entry& e) {
+  int i = ix_home(e.t);
+  while (g_ix[i]) i = (i + 1) & (kIx - 1);
+  g_ix[i] = (uint16_t)(&e - g_e + 1);
+}
+CORE_COLD void ix_del(Entry& e) {
+  int i = ix_home(e.t);
+  while (g_ix[i] && g_ix[i] != &e - g_e + 1) i = (i + 1) & (kIx - 1);
+  if (!g_ix[i]) return;
+  g_ix[i] = 0;
+  for (int j = (i + 1) & (kIx - 1); g_ix[j]; j = (j + 1) & (kIx - 1)) {
+    int h = ix_home(g_e[g_ix[j] - 1].t);   // moves back into the hole unless its home lies in (i, j]
+    bool stays = i <= j ? (h > i && h <= j) : (h > i || h <= j);
+    if (!stays) g_ix[i] = g_ix[j], g_ix[j] = 0, i = j;
+  }
+}
+// a new entry for t: the first free one (the order 0.4.0's table filled in, so the writes come in its order); its
+// base what plays now. Null: the table is full
+CORE_COLD Entry* alloc(Tid t) {
+  for (Entry& f : g_e)
+    if (!f.t) {
+      f.t = t;
+      f.base = base_now(t);
+      f.applied = f.base;
+      if (&f - g_e >= g_hi) g_hi = (int)(&f - g_e) + 1;
+      ix_add(f);
+      return &f;
+    }
+  return nullptr;
+}
+// what a target starts from this tick (spec-050 1.2): a held manual edit, the morph, else its base
+CORE_COLD float start_of(const Entry& e) { return e.held ? e.manual : e.morph_on ? e.morph : e.base; }
 
 // an entry that leaves: its target back to its base (an offset kind's offset to 0)
 CORE_COLD void restore(Entry& e) {
@@ -54,9 +92,10 @@ CORE_COLD void restore(Entry& e) {
     g_vdirty |= (uint8_t)(1u << index_of(e.t));
   } else if (is_offset(k)) {
     put(e.t, 0);
-  } else {
+  } else if (k == kFx || k == kSnd) {
     put(e.t, e.base);
-  }
+  }   // (kSeq kArp kLoop kRytm: nothing to put back - their writers take a value, not a state; Phases 3, 4)
+  ix_del(e);
   e = Entry();
   while (g_hi && !g_e[g_hi - 1].t) --g_hi;
 }
@@ -71,23 +110,14 @@ static struct FxHooks {
 CORE_COLD void set_source_fn(void (*fn)(uint32_t us, uint32_t dus)) { g_source = fn; }
 
 CORE_COLD void begin_tick() {
-  for (Entry& e : used()) e.off = 0, e.live = 0;   // (a free entry's off is 0 already)
+  for (Entry& e : used()) e.off = 0, e.live = 0, e.morph_on = 0;   // (a free entry's off is 0 already)
 }
 
 CORE_COLD void offset(int src, Tid t, float depth, float w) {
   (void)src;
   if (!valid(t)) return;   // (0 or a target this build has not: never into a free entry)
   Entry* e = find_e(t);
-  if (!e)
-    for (Entry& f : g_e)
-      if (!f.t) {   // first free: the order 0.4.0's table filled in, so the writes come in its order
-        e = &f;
-        e->t = t;
-        e->base = base_now(t);
-        e->applied = e->base;
-        if (e - g_e >= g_hi) g_hi = (int)(e - g_e) + 1;
-        break;
-      }
+  if (!e) e = alloc(t);
   if (!e) {   // full (cannot happen with the LFOs alone): counted, mod=stats
     ++g_stats.dropped;
     return;
@@ -96,7 +126,25 @@ CORE_COLD void offset(int src, Tid t, float depth, float w) {
   e->off += depth * w;
 }
 
-CORE_COLD void morph(Tid, float) {}
+CORE_COLD void morph(Tid t, float value) {
+  if (!valid(t)) return;
+  Entry* e = find_e(t);
+  if (!e) e = alloc(t);
+  if (!e) {
+    ++g_stats.dropped;
+    return;
+  }
+  e->live = 1, e->morph_on = 1, e->morph = value;
+}
+CORE_COLD void release(Tid t) {
+  Entry* e = find_e(t);
+  if (e && !e->live) restore(*e);
+}
+CORE_COLD float base(Tid t) {
+  if (is_offset(kind_of(t))) return knob_now(t);
+  const Entry* e = find_e(t);
+  return e ? e->base : base_now(t);
+}
 CORE_COLD void manual(Tid, float) {}
 CORE_COLD void fader_moved() {}
 
@@ -108,27 +156,39 @@ CORE_COLD void end_tick() {
       continue;
     }
     Kind k = kind_of(e.t);
+    bool sc = e.held || e.morph_on;   // (counted apart: the LFOs' stats line shows voice_sets / fx_sets)
+    float st = start_of(e);           // (e.base unless a morph or a held edit: then 0.4.0's expressions exactly)
     if (k == kV) {
-      float val = clampf(e.base + e.off, 0.0f, 127.99f);
+      float val = clampf(st + e.off, 0.0f, 127.99f);
       if (fabsf(val - e.applied) >= 1.0f / 256.0f) {
         put(e.t, val);
         e.applied = val;
         g_vdirty |= (uint8_t)(1u << index_of(e.t));
-        ++g_stats.voice_sets;
+        ++(sc ? g_stats.scene_sets : g_stats.voice_sets);
       }
     } else if (is_offset(k)) {   // the offset itself (the knob / a step lock is the base, where it is applied)
-      int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
+      // under a morph or a held edit: the offset that makes the knob play start + off (the writer clamps the sum)
+      float o = sc ? st + e.off - knob_now(e.t) : e.off;
+      int iv = (int)(o + (o < 0 ? -0.5f : 0.5f));
       if ((float)iv != e.applied) {
         put(e.t, (float)iv);
         e.applied = (float)iv;
-        ++g_stats.fx_sets;
+        ++(sc ? g_stats.scene_sets : g_stats.fx_sets);
       }
-    } else {
-      int iv = rnd0(clampf(e.base + e.off, 0.0f, 127.0f));
+    } else if (k == kFx || k == kSnd) {
+      int iv = rnd0(clampf(st + e.off, 0.0f, 127.0f));
       if ((float)iv != e.applied) {
         put(e.t, (float)iv);
         e.applied = (float)iv;
-        ++g_stats.fx_sets;
+        ++(sc ? g_stats.scene_sets : g_stats.fx_sets);
+      }
+    } else {   // kSeq kArp kLoop kRytm: an integer in the field's range
+      Range r = range(e.t);
+      int iv = rnd0(clampf(st + e.off, r.lo, r.hi));
+      if ((float)iv != e.applied) {
+        put(e.t, (float)iv);
+        e.applied = (float)iv;
+        ++g_stats.scene_sets;
       }
     }
   }
@@ -188,7 +248,9 @@ static CORE_COLD void tick_body(uint32_t us) {
     begin_tick();
     if (g_source) g_source(us, dus);   // (tests)
     else lfo::waves(us, dus);         // the LFOs: the clock position, the waves, each one's offset
-    /* Phase 2: scene::tick(ms); learn::tick(); */
+#if CORE_POLY
+    scene::tick(now_ms());            // the morph: a value for each lock of A and B (core/mod/scene.h)
+#endif
     end_tick();
   }
   flush_voices();
@@ -210,7 +272,7 @@ CORE_COLD void voice_params(int vi, float* p, int np) {
   for (Entry& e : used()) {
     if (!e.t || kind_of(e.t) != kV || index_of(e.t) != (vi & 7) || param_of(e.t) >= np) continue;
     e.base = p[param_of(e.t)];
-    float val = clampf(e.base + e.off, 0.0f, 127.99f);
+    float val = clampf(start_of(e) + e.off, 0.0f, 127.99f);   // (a morph plays on: the report moves the base only)
     p[param_of(e.t)] = val;
     e.applied = val;
   }
@@ -221,7 +283,7 @@ CORE_COLD uint8_t fx_knob(int slot, int knob, uint8_t val) {
   Entry* e = find_e(tid(kFx, slot & 1, knob - 2));
   if (!e) return val;
   e->base = val;
-  int iv = rnd0(clampf(e->base + e->off, 0.0f, 127.0f));
+  int iv = rnd0(clampf(start_of(*e) + e->off, 0.0f, 127.0f));
   e->applied = (float)iv;
   return (uint8_t)iv;
 }
@@ -230,7 +292,7 @@ CORE_COLD uint8_t fx_send(int track, int slot, uint8_t val) {
   Entry* e = find_e(tid(kSnd, track, slot & 1));
   if (!e) return val;
   e->base = val;
-  int iv = rnd0(clampf(e->base + e->off, 0.0f, 127.0f));
+  int iv = rnd0(clampf(start_of(*e) + e->off, 0.0f, 127.0f));
   e->applied = (float)iv;
   return (uint8_t)iv;
 }
@@ -300,10 +362,10 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   if (!strcmp(p + 4, "stats")) {
     const Stats& s = g_stats;
     sniprintf(o, cap,
-              "mod: ticks %u voice_sets %u user_calls %u fx_sets %u restores %u dropped %u worst_us %u flush_us %u "
-              "lookup_us %u hi %d",
-              (unsigned)s.ticks, (unsigned)s.voice_sets, (unsigned)s.user_calls, (unsigned)s.fx_sets, (unsigned)s.restores,
-              (unsigned)s.dropped, (unsigned)s.worst_us, (unsigned)s.flush_us, (unsigned)s.lookup_us, g_hi);
+              "mod: ticks %u voice_sets %u user_calls %u fx_sets %u scene_sets %u restores %u dropped %u worst_us %u "
+              "flush_us %u lookup_us %u hi %d",
+              (unsigned)s.ticks, (unsigned)s.voice_sets, (unsigned)s.user_calls, (unsigned)s.fx_sets,
+              (unsigned)s.scene_sets, (unsigned)s.restores, (unsigned)s.dropped, (unsigned)s.worst_us, (unsigned)s.flush_us, (unsigned)s.lookup_us, g_hi);
     return true;
   }
   sniprintf(o, cap, "mod | mod=stats");
@@ -326,6 +388,7 @@ CORE_COLD const Stats& stats() { return g_stats; }
 
 CORE_COLD void reset() {
   for (Entry& e : g_e) e = Entry();
+  memset(g_ix, 0, sizeof g_ix);
   g_hi = 0, g_source = nullptr;
   g_started = false, g_last_us = 0, g_vdirty = 0;
   for (uint32_t& m : g_user_ms) m = 0;

@@ -49,6 +49,7 @@ bool parse(const char* s, Tid* out);                // a name, any case; false w
 
 // ---- the kinds' base readers and writers (control side)
 float base_now(Tid t);       // a new entry's base: what plays now (v[vi].p[k], the FX knob, a send; 0 for an offset kind)
+float knob_now(Tid t);       // an offset kind's knob (or step lock) its offset is applied on; base_now for the others
 void put(Tid t, float v);    // the writer: the value (kV kFx kSnd), the offset rounded by the caller (kIns kIsnd kMfx
                              // kOut); kV only
                              // stores (the caller marks the voice dirty); the kinds without a writer yet: nothing

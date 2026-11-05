@@ -166,6 +166,24 @@ CORE_COLD float base_now(Tid t) {
   }
 }
 
+CORE_COLD float knob_now(Tid t) {
+  int i = index_of(t), p = param_of(t);
+  switch (kind_of(t)) {
+#if CORE_POLY
+    case kIns:   // the step lock when there is one (insert.cpp applies the offset on it), else the knob
+      if (p >= 8) return (float)ins::eq_param(i, (p - 8) & 3);
+      {
+        int l = ins::locked(i, (p >> 2) & 1, p & 3);
+        return (float)(l >= 0 ? l : ins::param(i, (p >> 2) & 1, p & 3));
+      }
+    case kIsnd: return (float)ins::send_knob(i, p);
+    case kMfx: return (float)(p ? master::control.mix[(p - 1) & 3] : master::control.lev);
+    case kOut: return (float)out::param(i, p % 3);
+#endif
+    default: return base_now(t);
+  }
+}
+
 CORE_COLD void put(Tid t, float val) {
   int i = index_of(t), p = param_of(t);
   switch (kind_of(t)) {

@@ -1170,6 +1170,12 @@ CORE_COLD void display_remote_page(int page) {
 
 }  // namespace
 
+CORE_COLD bool remote_is_list(int vi, int k) {
+  if (vi < 0 || vi >= kVoices || k < 0 || k > 15) return false;
+  const Page* p = page_for_voice(machine_of_voice(vi), vi);
+  return p && is_list(*p, k);
+}
+
 CORE_COLD void remote_sysex(const uint8_t* d, int len) {
   if (len < 7 || d[5] != 1 || d[len - 1] != 0xF7) { s.stats.bad++; return; }
   const uint8_t* b = d + 6;
