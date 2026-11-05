@@ -1,7 +1,8 @@
 // core/tests/test_scene.cpp - morph scenes (core/mod/scene.h, spec-050 section 2) on the modulation layer, on the fake
 // clock: the morph table (both sides, one side following the base, stepped targets at halfway with hysteresis, list
 // knobs), A == B, offset kinds, the fader's smoothing, the 64-lock limit, an A / B change within kEntries, the index;
-// a manual edit wins until the fader moves, the Rytm's reports never hold.
+// a manual edit wins until the fader moves, the Rytm's reports never hold; the QPERF knob as the fader (2D 01 0E) and the
+// Rytm's scene reported (0F) (plan-050 Task 47).
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +17,7 @@
 #include "fx/insert.h"
 #include "fx/master.h"
 #include "fx/send_fx.h"
+#include "hooks.h"
 #include "machines.h"
 #include "mod/mod.h"
 #include "mod/scene.h"
@@ -392,7 +394,7 @@ static void console_round_trip() {
   printf("scene: json %.160s...\n", js);
   CHECK(j.find("\"scene\":{\"a\":3,\"b\":7,\"fader\":8192,") == 0 && j.find("\"sel\":7,\"locked\":0,\"edit\":0,\"s\":[") != std::string::npos);
   CHECK(j.find("{\"n\":3,\"l\":[[\"V1:P3\",6400],[\"MFX:LEV\",12864]]}") != std::string::npos && j.find("{\"n\":5,") == std::string::npos);
-  CHECK(j.compare(j.size() - 3, 3, "]}}") == 0 || j.compare(j.size() - 2, 2, "]}") == 0);
+  CHECK(j.compare(j.size() - 11, 11, ",\"rscn\":-1}") == 0 && j.find("],\"src\":") != std::string::npos);   // Task 47
   for (int sc = 0; sc < scene::kScenes; ++sc) {   // 768 distinct locks, the longest names: RYTM:PERF.., MFX:MIX.., S1x:Fn
     scene::clear(sc);
     for (int k = 0; k < scene::kLocks; ++k) {
@@ -407,6 +409,112 @@ static void console_round_trip() {
   CHECK(n > 0 && n < (int)sizeof js);
   scene::reset();
   printf("scene: the console's lines round trip; the JSON\n");
+}
+
+// ---- plan-050 Task 47: the QPERF knob (2D 01 0E <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>), the Rytm's scene (0F)
+static void qp(int pos, int mask, int flags) {
+  const uint8_t m[] = {0xF0, 0x7D, 0x52, 0x54, 0x2D, 1, 0x0E, (uint8_t)(pos >> 7), (uint8_t)(pos & 0x7F),
+                       (uint8_t)(mask & 0x7F), (uint8_t)((mask >> 7) & 0x1F), (uint8_t)flags, 0xF7};
+  engine_sysex(m, (int)sizeof m);
+}
+static void qperf_sets_fader() {
+  scene_reset_with_base(40);
+  qp(255, 0, 2);
+  CHECK(scene::state().fader == 16383);
+  qp(0, 0, 2);
+  CHECK(scene::state().fader == 0);
+  qp(128, 0, 3);   // FUNC held: the same knob
+  CHECK(scene::state().fader == 128 * 16383 / 255);
+  run_ms(30);
+  CHECK(scene::fader_played() == 128 * 16383 / 255);
+  printf("scene: the QPERF report sets the fader (pos x 16383 / 255)\n");
+}
+static void qperf_ignored_until_moved() {
+  scene_reset_with_base(40);
+  fader_to(9000);
+  qp(0, 0, 0);   // the hello's: the knob has not sent since the Rytm booted
+  qp(77, 0, 0);
+  CHECK(scene::state().fader == 9000);
+  qp(77, 0, 2);
+  CHECK(scene::state().fader == 77 * 16383 / 255);
+  printf("scene: the QPERF position is ignored until flags bit 1 (moved since boot)\n");
+}
+static void qperf_smoothing_follows_interval() {
+  scene_reset_with_base(40);
+  qp(0, 0, 2);
+  run_ms(200);
+  // reports 16 ms apart, 4 positions each (257 fader counts): the played fader never jumps by a report's change,
+  // never stands still between reports
+  int last = scene::fader_played(), max_step = 0, flat = 0;
+  for (int k = 1; k <= 20; ++k) {
+    qp(4 * k, 0, 2);
+    for (int ms = 0; ms < 16; ++ms) {
+      run_ms(1);
+      int p = scene::fader_played();
+      max_step = p - last > max_step ? p - last : max_step;
+      flat += p == last;
+      last = p;
+    }
+  }
+  printf("scene: QPERF reports 16 ms apart: the largest 1 ms step %d (a report's change 257), %d flat ms\n", max_step,
+         flat);
+  CHECK(max_step <= 257 / 8 && flat == 0);
+  // 40 ms apart (a slow turn): smoothed over the interval, not 20 ms
+  last = scene::fader_played(), flat = 0;
+  for (int k = 21; k <= 26; ++k) {
+    qp(4 * k, 0, 2);
+    for (int ms = 0; ms < 40; ++ms) {
+      run_ms(1);
+      int p = scene::fader_played();
+      flat += k > 21 && p == last;
+      last = p;
+    }
+  }
+  printf("scene: QPERF reports 40 ms apart: %d flat ms\n", flat);
+  CHECK(flat <= 5);
+  // a page move after: the 20 ms of spec 2.4 again
+  scene::set_fader(0, scene::kConsole);
+  run_ms(21);
+  CHECK(scene::fader_played() == 0);
+  printf("scene: the QPERF fader is smoothed over the reports' interval (at least 20 ms)\n");
+}
+static std::vector<std::vector<uint8_t>> g_rytm;
+static void rytm_cap(const uint8_t* m, int n) { g_rytm.emplace_back(m, m + n); }
+static int ccs(uint8_t c) {
+  int k = 0;
+  for (const auto& o : g_rytm) k += o.size() == 3 && (o[0] & 0xF0) == 0xB0 && o[1] == c;
+  return k;
+}
+static void perf_follow_skips_knob_macros() {
+  scene_reset_with_base(40);
+  hooks.to_rytm = rytm_cap;
+  lock_ab(T("RYTM:PERF1"), 0, 127);   // macro 1: on the knob (the mask's bit 0), the Rytm moves it itself
+  lock_ab(T("RYTM:PERF2"), 0, 127);   // macro 2: not on the knob, the Sidecar follows
+  qp(0, 0x001, 2);
+  run_ms(10);
+  g_rytm.clear();
+  for (int pos = 0; pos <= 255; pos += 5) qp(pos, 0x001, 2), run_ms(17);
+  printf("scene: a QPERF sweep with PERF1 on the knob: CC 35 x %d, CC 36 x %d\n", ccs(35), ccs(36));
+  CHECK(ccs(35) == 0 && ccs(36) > 5);
+  scene::set_fader(0, scene::kConsole);   // another source: PERF1 followed again
+  run_ms(30);
+  CHECK(ccs(35) >= 1);
+  hooks.to_rytm = nullptr;
+  printf("scene: PERF follow skips the macros the QPERF knob moves while it is the fader\n");
+}
+static void scene_report_shown() {
+  scene::reset();
+  CHECK(scene::rytm_scene() < 0);
+  const uint8_t m[] = {0xF0, 0x7D, 0x52, 0x54, 0x2D, 1, 0x0F, 5, 0xF7};
+  engine_sysex(m, (int)sizeof m);
+  CHECK(scene::rytm_scene() == 5);
+  char js[16384];
+  int n = scene::json(js, sizeof js);
+  CHECK(n > 0 && strstr(js, "\"rscn\":5"));
+  const uint8_t off[] = {0xF0, 0x7D, 0x52, 0x54, 0x2D, 1, 0x0F, 0, 0xF7};
+  engine_sysex(off, (int)sizeof off);
+  CHECK(scene::rytm_scene() == 0);
+  printf("scene: the Rytm's scene (2D 01 0F) kept and in the JSON\n");
 }
 
 static void loaded() {
@@ -439,6 +547,11 @@ int main() {
   rytm_reports_never_hold();
   page_edit_holds_offset_kind();
   console_round_trip();
+  qperf_sets_fader();
+  qperf_ignored_until_moved();
+  qperf_smoothing_follows_interval();
+  perf_follow_skips_knob_macros();
+  scene_report_shown();
   printf("test_scene: PASS\n");
   return 0;
 }

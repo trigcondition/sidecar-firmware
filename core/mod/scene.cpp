@@ -21,9 +21,16 @@ namespace scene {
 namespace {
 
 State g_st;
-// the played fader: from g_from at g_set_ms to g_st.fader kSmoothMs later, linearly
+// the played fader: from g_from at g_set_ms to g_st.fader g_smooth_ms later, linearly
 int g_played = 0, g_from = 0;
 uint32_t g_set_ms = 0, g_now_ms = 0;
+uint32_t g_smooth_ms = kSmoothMs;   // this move's smoothing (the QPERF knob's: its reports' interval)
+int g_src = 0;                      // the fader's last source (Source), 0 none
+// the QPERF knob (Task 47): its macros, whether a position was taken, its last fader value and when
+uint16_t g_qp_mask = 0, g_qp_last = 0;
+bool g_qp_seen = false;
+uint32_t g_qp_ms = 0;
+int g_rscn = -1;                    // the Rytm's own scene as reported (2D 01 0F), -1 none
 bool g_upper = false;            // the stepped targets' side: B's (true) or A's; switched with 1/64 hysteresis
 int g_last_a = -1, g_last_b = -1;   // the A / B the layer's entries are of (an A / B change releases the old ones)
 // A's and B's locks merged: each target once, with its A value and its B value (-1: that side does not lock it)
@@ -215,22 +222,41 @@ CORE_COLD void set_sel(int n) {
   changed();
 }
 
-CORE_COLD void set_fader(uint16_t v, int source) {
-  (void)source;   // (whichever moved last wins: all sources set the same value)
+namespace {
+CORE_COLD void move_fader(uint16_t v, int source, uint32_t smooth_ms) {   // whichever moved last wins
   if (v > kFaderMax) v = kFaderMax;
   if (v == g_st.fader) return;
-  g_from = g_played, g_set_ms = now_ms();
+  g_from = g_played, g_set_ms = now_ms(), g_smooth_ms = smooth_ms;
   g_st.fader = v;
+  g_src = source;
   mod::fader_moved();   // a held manual edit lets go (spec-050 2.5)
 }
+}  // namespace
+
+CORE_COLD void set_fader(uint16_t v, int source) { move_fader(v, source, kSmoothMs); }
 
 CORE_COLD uint16_t fader_played() { return (uint16_t)g_played; }
+CORE_COLD int fader_source() { return g_src; }
+
+CORE_COLD void qperf(int pos, uint16_t mask, uint8_t flags) {
+  g_qp_mask = (uint16_t)(mask & 0xFFF);
+  if (!(flags & kQpMoved) || pos < 0 || pos > 255) return;   // the hello's report before the knob ever sent: no position
+  uint16_t v = (uint16_t)(pos * kFaderMax / 255);
+  if (g_qp_seen && v == g_qp_last) return;                   // FUNC or the mask changed: the fader stays where it is
+  uint32_t ms = now_ms(), gap = ms - g_qp_ms;
+  uint32_t sm = g_qp_seen && gap <= kQpSmoothMaxMs ? (gap > kSmoothMs ? gap : kSmoothMs) : kSmoothMs;
+  g_qp_seen = true, g_qp_last = v, g_qp_ms = ms;
+  move_fader(v, kQperf, sm);
+}
+CORE_COLD uint16_t qperf_mask() { return g_src == kQperf ? g_qp_mask : 0; }
+CORE_COLD void rytm_scene_seen(int n) { g_rscn = n >= 0 && n <= kScenes ? n : 0; }
+CORE_COLD int rytm_scene() { return g_rscn; }
 
 CORE_COLD void tick(uint32_t ms) {
   g_now_ms = ms;
   uint32_t el = ms - g_set_ms;
   int to = g_st.fader;
-  g_played = el >= kSmoothMs ? to : g_from + (to - g_from) * (int)el / (int)kSmoothMs;
+  g_played = el >= g_smooth_ms ? to : g_from + (to - g_from) * (int)el / (int)g_smooth_ms;
   float f = (float)g_played / (float)kFaderMax;
   constexpr float kH = 1.0f / 64.0f;
   if (g_st.a != g_last_a || g_st.b != g_last_b) {
@@ -268,6 +294,8 @@ CORE_COLD void tick(uint32_t ms) {
     float a = m.av >= 0 ? (float)m.av / 128.0f : 0, b = m.bv >= 0 ? (float)m.bv / 128.0f : 0;
     // the Rytm's own scene / macros (kRytm) have no base the Sidecar can read: a one-sided lock acts on its own half
     // only (its value, past halfway with the hysteresis) and leaves the Rytm alone on the other half
+    // a PERF macro the QPERF knob moves while it is the fader: the Rytm moves it itself (spec 2.7), not followed
+    if (k == mod::kRytm && mod::param_of(m.t) >= 1 && (qperf_mask() >> (mod::param_of(m.t) - 1) & 1)) continue;
     if (k == mod::kRytm && (m.av < 0 || m.bv < 0)) {
       if (m.bv < 0 ? !g_upper : g_upper) mod::morph(m.t, m.bv < 0 ? a : b);
       continue;
@@ -285,6 +313,9 @@ CORE_COLD void reset() {
   g_st.a = g_st.b = -1;
   g_played = g_from = 0;
   g_set_ms = now_ms(), g_now_ms = g_set_ms;
+  g_smooth_ms = kSmoothMs, g_src = 0;
+  g_qp_mask = g_qp_last = 0, g_qp_seen = false, g_qp_ms = 0;
+  g_rscn = -1;
   g_upper = false;
   g_last_a = g_last_b = -1;
   g_mn = 0, g_stale = true;
@@ -424,7 +455,7 @@ CORE_COLD int json(char* o, int cap) {
     n += sniprintf(o + n, cap - n, "]}");
   }
   if (n >= cap) return cap;
-  n += sniprintf(o + n, cap - n, "]}");
+  n += sniprintf(o + n, cap - n, CORE_STR("],\"src\":%d,\"rscn\":%d}"), g_src, g_rscn);
   return n >= cap ? cap : n;
 }
 CORE_COLD int kit() { return g_kit; }
@@ -482,7 +513,7 @@ CORE_COLD void load() {
     else ++bad;
   }
   if (bad && own) g_locked = true;
-  if (g_st.fader != was) g_from = g_played, g_set_ms = now_ms();   // a file's F: reached over 20 ms, never one tick (M2)
+  if (g_st.fader != was) g_from = g_played, g_set_ms = now_ms(), g_smooth_ms = kSmoothMs;   // a file's F: over 20 ms (M2)
   g_last_a = g_st.a, g_last_b = g_st.b;   // (restored above: nothing of the old A / B to release)
   g_upper = g_played >= kFaderMax / 2 + 1;
   log(CORE_STR("scene: %d lines from %s%s"), n, fn,

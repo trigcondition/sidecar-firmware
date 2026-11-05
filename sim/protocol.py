@@ -1332,10 +1332,33 @@ def decode_fxin_state(payload):
 SEQ_TICK, SEQ_STATE, SEQ_MASK, SEQ_PAGE_LEDS = 0x2C, 0x2D, 0x2E, 0x2F
 SEQ_TRANSPORT, SEQ_PATTERN, SEQ_SWITCH, SEQ_MUTES, SEQ_REC, SEQ_TEMPO, SEQ_SEQMODE, SEQ_POS = 1, 2, 3, 5, 6, 7, 8, 9
 SEQ_SCALE, SEQ_EDIT, SEQ_DIRTY, SEQ_FILL, SEQ_SOLO = 4, 0x0A, 0x0B, 0x0C, 0x0D
-# 0.5.0 (core/mod/rytm_out.h): host -> Rytm HOST_CMD 01 <op> ... (01 MUTE <set lo7> <set hi5> <clr lo7> <clr hi5>,
-# 02 SCENE <n>, 03 PERF <macro> <value>); the mod answers 2D 01 HOST_ACK <op> <status>. 0x5A proposed, confirmed in
-# plan-050 Task 47 (the flash); the hello's caps bit HOST_CMD_CAPS says the mod has it. 2D 01 0E QPERF, 0F SCENE: Task 47
+# 0.5.0 (core/mod/rytm_out.h; rytm-mods 0026 design.md "0.5.0"): host -> Rytm HOST_CMD 01 <op> ... (01 MUTE <set lo7>
+# <set hi5> <clr lo7> <clr hi5>, 02 SCENE <n 0..12, 0 off>, 03 PERF <macro 1..12> <value 0..127>), run by the stock
+# setters a CC 94 / 92 / 35.. reaches; the mod answers 2D 01 HOST_ACK <op> <status 0 done, 1 refused>; the hello's caps
+# bit HOST_CMD_CAPS says the mod has it. Rytm -> host 2D 01 SEQ_QPERF <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>:
+# the QUICK PERF knob 0..255, the macros on it (12 bits), flags bit 0 FUNC held, bit 1 the knob has sent since boot
+# (until then pos means nothing), bit 2 macros muted (0: not located); on a change, at most one per 8 ms, again after
+# each hello. 2D 01 SEQ_SCENE <n>: the Rytm's active scene 1..12, 0 none, on a change by any path and after each hello.
+# Both regardless of the 2E (sq reports).
 HOST_CMD, HOST_ACK, HOST_CMD_CAPS = 0x5A, 0x10, 16
+SEQ_QPERF, SEQ_SCENE = 0x0E, 0x0F
+HOST_MUTE, HOST_SCENE, HOST_PERF = 1, 2, 3
+
+
+def host_cmd(op, *b) -> bytes:
+    """HOST_CMD 01 <op> b..."""
+    return _msg(HOST_CMD, [op & 0x7F] + [x & 0x7F for x in b])
+
+
+def host_mute(set_mask, clr_mask) -> bytes:
+    return host_cmd(HOST_MUTE, set_mask & 0x7F, (set_mask >> 7) & 0x1F, clr_mask & 0x7F, (clr_mask >> 7) & 0x1F)
+
+
+def decode_qperf(b):
+    """2D 01 0E's bytes after the kind -> dict(pos, mask, flags), else None."""
+    if len(b) != 5:
+        return None
+    return dict(pos=b[0] << 7 | b[1], mask=b[2] | b[3] << 7, flags=b[4])
 SEQ_SILENT = 0x46
 SEQ_FLAG_NO_PIN = 4
 SEQ_EDIT_OPS = {1: "COPY PAT", 2: "PASTE PAT", 3: "CLEAR PAT", 4: "UNDO PAT", 5: "COPY TRK", 6: "PASTE TRK",

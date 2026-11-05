@@ -43,6 +43,20 @@ void set_ab(int a, int b);                  // -1 none; the fader does not move
 void set_sel(int n);
 void set_fader(uint16_t v, int source);     // 0..16383, absolute; a change frees every held target (mod::fader_moved)
 uint16_t fader_played();
+int fader_source();                         // the source that set the fader last (Source), 0 none since the reset
+
+// ---- the Rytm's QUICK PERF knob as the fader (spec-050 2.4.5, 5.1; plan-050 Task 47): the mod's 2D 01 0E report.
+// Absolute, left end = A, no pickup; ignored until the knob has sent since the Rytm booted (kQpMoved: before, its
+// position reads 0 whatever the knob says). Smoothed over the measured interval between reports (at least kSmoothMs,
+// at most kQpSmoothMaxMs; a first report after a pause: kSmoothMs), so a turn does not stair-step.
+constexpr uint8_t kQpFunc = 1, kQpMoved = 2, kQpMuted = 4;   // flags: FUNC held, moved since boot, macros muted
+constexpr uint32_t kQpSmoothMaxMs = 100;
+void qperf(int pos, uint16_t mask, uint8_t flags);   // pos 0..255, mask the PERF macros on the knob (bit m - 1)
+uint16_t qperf_mask();                      // those macros while the knob is the fader's source (PERF follow skips
+                                            // them: the Rytm moves them itself, spec 2.7), else 0
+// the Rytm's own scene as the mod reports it (2D 01 0F, on any change: its pads, CC 92, the host command, a kit load):
+void rytm_scene_seen(int n);                // 1..12, 0 none
+int rytm_scene();                           // the last one seen, -1 none since the reset (an older mod: never)
 void tick(uint32_t ms);                     // mod::tick, once a millisecond at most: the morph's values to the layer
 void reset();                               // tests: no locks, no A / B, the fader at 0
 
@@ -78,7 +92,8 @@ bool edit();
 // (0..16383), "scene=sel:N", "scene=lock:N:NAME:V" (V the target's value, 0..127.99, kept x 128), "scene=unlock:N:NAME",
 // "scene=clear:N", "scene=copy:N:M", "scene=edit:on|off"; each edit answers with the state. False: not "scene..."
 bool command(const char* p, char* out, int cap);
-// "\"scene\":{\"a\":A,\"b\":B,\"fader\":F,\"played\":P,\"sel\":S,\"locked\":0|1,\"edit\":0|1,\"s\":[{\"n\":N,\"l\":[[\"V1:P3\",6400],...]},...]}"
+// "\"scene\":{\"a\":A,\"b\":B,\"fader\":F,\"played\":P,\"sel\":S,\"locked\":0|1,\"edit\":0|1,\"s\":[{\"n\":N,\"l\":[[\"V1:P3\",6400],...]},...],\"src\":SRC,\"rscn\":R}"
+// (SRC the fader's last source, 0 none; R the Rytm's own scene 1..12, 0 none, -1 not reported)
 // (A, B, S, N 1-based, 0 none; only the scenes with locks): its length, cap when it did not fit (a 768-lock state fits 16 KB)
 int json(char* out, int cap);
 

@@ -17,6 +17,7 @@
 #include "lfo.h"
 #include "mod/mod.h"
 #include "mod/rytm_out.h"
+#include "mod/scene.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "platform.h"
@@ -2046,6 +2047,14 @@ CORE_COLD void on_state(const uint8_t* a, int n) {
     case kRec:
       if (n < 3) break;
       rec_live = a[1] != 0, rec_grid = a[2] != 0;
+      return;
+    case kQperf:     // 2D 01 0E <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>: the QUICK PERF knob (core/mod/scene.h)
+      if (n < 6) break;
+      scene::qperf(a[1] << 7 | a[2], (uint16_t)(a[3] | (a[4] & 0x1F) << 7), a[5]);
+      return;
+    case kSceneRep:  // 2D 01 0F <n>: the Rytm's own scene 1..12, 0 none
+      if (n < 2) break;
+      scene::rytm_scene_seen(a[1]);
       return;
     case kHostAck:   // 2D 01 10 <op> <status>: the mod command done (0) or refused (core/mod/rytm_out.h)
       if (n < 3) break;

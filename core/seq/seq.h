@@ -52,7 +52,8 @@ constexpr int kRytmTracks = 12;
 constexpr uint8_t kTickCmd = 0x2C, kStateCmd = 0x2D, kMaskCmd = 0x2E, kPageLedsCmd = 0x2F;
 enum : uint8_t { kTransport = 1, kPattern = 2, kSwitch = 3, kScale = 4, kMutes = 5, kRec = 6, kTempo = 7, kSeqMode = 8,
                  kPos = 9, kEdit = 10, kDirty = 11, kFill = 12, kSolo = 13,   // kSolo: fix1049 (rytm-mods 0026 1049)
-                 kHostAck = 16 };   // 0.5.0: the mod command's answer (core/mod/rytm_out.h); 14 QPERF, 15 SCENE: plan Task 47
+                 kQperf = 14, kSceneRep = 15,   // 0.5.0: the QUICK PERF knob, the Rytm's scene (core/mod/scene.h)
+                 kHostAck = 16 };   // 0.5.0: the mod command's answer (core/mod/rytm_out.h)
 // 2D 0A EDIT's ops (rytm-mods 0026 "1033"): the stock edit functions the Rytm ran (src 0) or seq mode's own gesture
 // (src 1: a host trig / PAGE held + FUNC + RECORD / STOP / PLAY)
 enum : uint8_t { kPCopy = 1, kPPaste, kPClear, kPUndo, kTCopy, kTPaste, kTClear, kTUndo, kGCopy, kGPaste, kGClear, kGUndo,
