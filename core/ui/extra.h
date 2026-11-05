@@ -29,7 +29,14 @@ struct ExtraPage {
   // kLed*), or false: stock (null: never)
   bool (*leds_now)(uint8_t c[16]);
   bool off_ring;   // UX review R3: not on the LEFT / RIGHT ring (in the page list only while it is the page shown)
+  // 0.5.0 (spec-050 2.6): the release of a key whose press `key` took (true), to the page that took it, also after the
+  // page changed; a hello or the page closing releases every key still held (the Rytm's releases are lost with the
+  // link). Null: releases dropped, as before (aggregate initialisation leaves it null on the other pages)
+  bool (*key_up)(int code);
 };
+#if CORE_UI_TOOLS
+void extra_test_page(const ExtraPage* p);   // tests: one more page at the end of the order (null: none)
+#endif
 // UX review R3 / N3 (page_menu.cpp): MENU (YES on SIDECAR: every page with its shortcut) and KEYS (every combo; also
 // while UP is held alone on the stock screen: rui1044's 49 1 4)
 extern const ExtraPage kMenuPage, kKeysPage, kWebUiPage;   // WEB UI: the MENU's row (remote_webui)

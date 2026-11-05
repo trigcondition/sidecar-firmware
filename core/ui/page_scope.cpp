@@ -349,9 +349,15 @@ UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kS
 UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kMenuPage, &kKeysPage, &kWebUiPage};   // the page order: LFO, REC (where shown), SCOPE last
 #endif
 
+#if CORE_UI_TOOLS
+const ExtraPage* test_page = nullptr;
 }  // namespace
-
+void extra_test_page(const ExtraPage* p) { test_page = p; }
+CORE_COLD int extra_pages() { return (int)(sizeof kPages / sizeof kPages[0]) + (test_page ? 1 : 0); }
+#else
+}  // namespace
 CORE_COLD int extra_pages() { return (int)(sizeof kPages / sizeof kPages[0]); }
+#endif
 // A box's pages: what each needs of the Rytm's side (device.h Feature). The rest draw from the engine alone: REC, SCOPE, LFO, MENU, WEB UI
 CORE_COLD bool extra_for_box(const char* title) {
   if (!device::foreign()) return true;
@@ -363,7 +369,13 @@ CORE_COLD bool extra_for_box(const char* title) {
     if (!strcmp(n.title, title)) return (device::active().features & n.f) != 0;
   return true;
 }
-CORE_COLD const ExtraPage& extra_page(int i) { return *kPages[i < 0 ? 0 : i >= extra_pages() ? extra_pages() - 1 : i]; }
+CORE_COLD const ExtraPage& extra_page(int i) {
+  constexpr int n = (int)(sizeof kPages / sizeof kPages[0]);
+#if CORE_UI_TOOLS
+  if (test_page && i >= n) return *test_page;
+#endif
+  return *kPages[i < 0 ? 0 : i >= n ? n - 1 : i];
+}
 
 #if CORE_UI_TOOLS
 // tests and the renderer: the scope's state from the outside

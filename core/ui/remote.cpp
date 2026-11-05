@@ -339,6 +339,9 @@ struct State {
   bool clock_set = false;
   bool map_over = false;     // rui1050: UP's map shown over the open page (49 1 5 1), map_back the page under it
   int map_back = -1;
+  // 0.5.0 (spec-050 2.6): the keys an engine page with key_up took at their press (bit c: code c), and that page
+  uint32_t held_keys[8] = {};
+  const ExtraPage* held_page = nullptr;
   // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out): where
   // the pages shown by a shortcut came from, newest last - kBackStock the stock screen (NO closes the page), else the
   // page (s.voice) it was opened over; the MENU counts as SIDECAR (a page opened from the MENU goes back to SIDECAR, as
@@ -604,11 +607,37 @@ CORE_COLD void on_enc(int e, int delta, bool func) {
   if (nv != cur) set_param(s.voice, k, nv);
 }
 
+// 0.5.0: every key still held goes up at the page that took it (a hello, the page closing: the releases are lost)
+CORE_COLD void release_held() {
+  const ExtraPage* x = s.held_page;
+  for (int c = 0; c < 256; ++c)
+    if (s.held_keys[c >> 5] >> (c & 31) & 1) {
+      s.held_keys[c >> 5] &= ~(1u << (c & 31));
+      if (x && x->key_up) x->key_up(c);
+    }
+  s.held_page = nullptr;
+}
+
+CORE_COLD bool key_held(int code) { return code >= 0 && code < 256 && (s.held_keys[code >> 5] >> (code & 31) & 1); }
+
 CORE_COLD void on_key(int code, bool down) {
-  if (!down) return;
+  if (!down) {   // 0.5.0: a release goes to the page that took its press (key_up), else nowhere
+    if (key_held(code)) {
+      s.held_keys[code >> 5] &= ~(1u << (code & 31));
+      s.input = true;
+      if (s.held_page && s.held_page->key_up) s.held_page->key_up(code);
+    }
+    return;
+  }
   s.input = true;
   if (const ExtraPage* x = extra_of(s.voice))
-    if (x->key && x->key(code)) return;
+    if (x->key && x->key(code)) {
+      if (x->key_up && code >= 0 && code < 256) {
+        if (s.held_page != x) release_held();
+        s.held_page = x, s.held_keys[code >> 5] |= 1u << (code & 31);
+      }
+      return;
+    }
   if (code == kKeyUp) return;   // fix1049: UP is the Sidecar's modifier (page_keys.h), no page arrow: LEFT / RIGHT step
   if (standalone(extra_of(s.voice)) && (code == kKeyLeft || code == kKeyRight || code == kKeyDown || code == kKeyPage))
     return;   // ux1027: no siblings
@@ -1249,6 +1278,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         s.open = false;
         s.nback = 0, s.via = -1;
         keys_map_drop(), s.map_over = false;   // (UP's map goes with the page)
+        release_held();                        // 0.5.0: and every key a page holds
 #if CORE_POLY
         seq::page_closed();   // seq-ux: a prompt, TRK + TRIG's view end with the page
         poly_page_closed();   // rui1048
@@ -1521,6 +1551,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         // no close (a splash over it would be ignored by the Rytm, which holds the page, while we stopped serving it).
         // What the hello invalidates on the Rytm's side is sent again, as after an open.
         s.sent_valid = false, s.mask_valid = false, s.echo_valid = false, s.leds_on = false, s.clock_set = false;
+        release_held();   // 0.5.0: a key held across the new link sends no release
         s.caps36 = (b[2] & 1) != 0, s.caps = b[2];
         mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
         core::log("rui: hello, Rytm up %d.%d s, caps %d, page opened %d ms ago: kept", up / 20, (up % 20) / 2, b[2],
@@ -1535,6 +1566,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       s.caps36 = (b[2] & 1) != 0, s.caps = b[2];
       mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
       keys_map_drop(), s.map_over = false;   // (a release lost with the link: no map left up)
+      release_held();                        // 0.5.0: and every key a page holds
       // A status popup goes with the old link. The pairing code's modal does not: it is owed until it has been on
       // this Rytm's screen, and a hello arriving while it was owed or up (the Rytm restarting, or saying hello again
       // after a silence) dropped it, so the code was never seen (audit 2026-10-26). It starts again, on this link.
