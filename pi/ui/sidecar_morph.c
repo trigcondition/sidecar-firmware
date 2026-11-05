@@ -76,8 +76,14 @@ static void row_cb (lv_obj_t *o, int v, void *ud)
 static void fader_cb (lv_obj_t *o, int v, void *ud)
 {
 	(void) o; (void) ud;
+	// live while dragging (absolute: spec-050 2.4), at most every 30 ms (each line is a console command on core 3),
+	// and always the value the finger lifts at
+	static uint32_t s_nAt;
+	uint32_t now = lv_tick_get ();
+	if (!(v & TH_RELEASED) && now - s_nAt < 30) return;
+	s_nAt = now;
 	char c[24];
-	lv_snprintf (c, sizeof c, "scene=fader:%d", v & 0xFFFF);	// live while dragging (absolute: spec-050 2.4)
+	lv_snprintf (c, sizeof c, "scene=fader:%d", v & 0xFFFF);
 	cmd (c);
 }
 

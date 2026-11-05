@@ -12,7 +12,9 @@
 namespace morph_pi {
 
 namespace {
-sidecar_morph_view_t g_buf[2];
+// review: a sequence lock - core 3 makes g_n odd, writes g_buf, makes it even again; core 0 copies while it is even and
+// unchanged across the copy (0: nothing published yet)
+sidecar_morph_view_t g_buf;
 volatile uint32_t g_n = 0;
 volatile bool g_want = false;
 volatile int g_top = 0;
@@ -55,18 +57,23 @@ void Tick() {
   uint32_t ms = core::now_ms();
   if (!g_want || ms - g_ms < 50) return;
   g_ms = ms;
+  sidecar_morph_view_t v;
+  FillView(&v, g_top);   // (built aside: the odd window is a copy long)
   uint32_t n = g_n;
-  FillView(&g_buf[(n / 2 + 1) & 1], g_top);
-  __atomic_store_n(&g_n, n + 2, __ATOMIC_RELEASE);   // the reader takes g_buf[(n / 2) & 1]
+  __atomic_store_n(&g_n, n + 1, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);   // odd before the view's bytes
+  memcpy(&g_buf, &v, sizeof v);
+  __atomic_store_n(&g_n, n + 2, __ATOMIC_RELEASE);
 }
 
 bool View(sidecar_morph_view_t* out, unsigned* seen) {
   for (int tries = 0; tries < 4; ++tries) {
     uint32_t a = __atomic_load_n(&g_n, __ATOMIC_ACQUIRE);
     if (a == 0 || a == *seen) return false;
-    memcpy(out, &g_buf[(a / 2) & 1], sizeof *out);
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    if (__atomic_load_n(&g_n, __ATOMIC_ACQUIRE) - a < 2) {
+    if (a & 1) continue;   // being written
+    memcpy(out, &g_buf, sizeof *out);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);   // the copy before the second look
+    if (__atomic_load_n(&g_n, __ATOMIC_RELAXED) == a) {
       *seen = a;
       return true;
     }
