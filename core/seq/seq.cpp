@@ -15,6 +15,7 @@
 #include "fx/out.h"
 #include "inst.h"
 #include "lfo.h"
+#include "mod/mod.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "platform.h"
@@ -484,7 +485,7 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
       if (ls->l[i].param < 16) want |= (uint16_t)(1u << ls->l[i].param), nv[ls->l[i].param] = lock_float(ls->l[i].value);
     if (want || L.on) {
       float p[16];
-      for (int k = 0; k < 16; ++k) p[k] = lfo::base_of(vi, k, x.p[k]);   // what plays without an LFO on it
+      for (int k = 0; k < 16; ++k) p[k] = mod::base_of(vi, k, x.p[k]);   // what plays without an LFO on it
       for (int k = 0; k < 16; ++k) {
         uint16_t bit = (uint16_t)(1u << k);
         if (want & bit) {
@@ -495,7 +496,7 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
         }
       }
       L.on = want;
-      lfo::voice_params(vi, p, 16, false);   // an LFO on a locked param: the lock is its base
+      mod::voice_params(vi, p, 16);   // an LFO on a locked param: the lock is its base
       memcpy(x.p, p, sizeof p);
       voice_params_changed(vi);
       ++st.locks_applied;

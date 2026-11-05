@@ -11,6 +11,7 @@
 #include "sysex.h"
 #include "ui/remote.h"
 #include "lfo.h"
+#include "mod/mod.h"
 #include "fx/insert.h"   // the voices' INSERT chains (CORE_POLY builds)
 #include "simd.h"
 #include "fx/out.h"      // the OUT route (CORE_POLY builds): PRE / POST voices render stereo
@@ -861,7 +862,7 @@ __attribute__((noinline)) CORE_COLD void voice_report(int cmd, const uint8_t* d,
   if (x.juno) {   // PAT steps through the project's JUNO list, if any; the
                   // knobs follow the sound's PAT (0x03), not a p-locked one (0x04)
     for (int i = 0; i < 6; ++i) {
-      int r = (int)lfo::base_of(vi, 1 + i, x.p[1 + i]);
+      int r = (int)mod::base_of(vi, 1 + i, x.p[1 + i]);
       juno_rytm[vi][i] = (uint8_t)(r < 0 ? 0 : r > 127 ? 127 : r);
     }
     juno_select(vi, (int)x.p[0], cmd == 0x03 || !was_juno, !was_juno);

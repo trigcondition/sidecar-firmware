@@ -14,6 +14,7 @@
 #include "hooks.h"
 #include "keys.h"
 #include "lfo.h"
+#include "mod/mod.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "poly.h"
@@ -560,14 +561,14 @@ CORE_COLD void set_param(int vi, int k, int nv) {
   V& x = v[vi];
   int m = machine_of_voice(vi);
   if (s.held_m[vi] != m) s.held[vi] = 0, s.held_m[vi] = (uint8_t)m;
-  if (!(s.held[vi] & (1u << k))) s.rytm_v[vi][k] = (uint8_t)(int)lfo::base_of(vi, k, x.p[k]);   // the Rytm's value until now
+  if (!(s.held[vi] & (1u << k))) s.rytm_v[vi][k] = (uint8_t)(int)mod::base_of(vi, k, x.p[k]);   // the Rytm's value until now
   s.held[vi] |= (uint16_t)(1u << k);
   s.held_v[vi][k] = (uint8_t)nv;
   // a 0x03 PARAMS for the voice, its machine and every P (the edited one whole, the others as they are)
   uint8_t r[39] = {0xF0, 0x7D, 0x52, 0x54, 0x03, (uint8_t)(m | vi)};
   int n = 6;
   for (int i = 0; i < 16; ++i) {
-    float p = i == k ? (float)nv : lfo::base_of(vi, i, x.p[i]);   // an LFO's target: its base, not the modulated value
+    float p = i == k ? (float)nv : mod::base_of(vi, i, x.p[i]);   // an LFO's target: its base, not the modulated value
     int iv = (int)p;
     iv = iv < 0 ? 0 : iv > 127 ? 127 : iv;
     int fr = (int)((p - iv) * 128.0f);
@@ -591,7 +592,7 @@ CORE_COLD void on_enc(int e, int delta, bool func) {
   s.touched = e;
   const Page* p = page_for_voice(machine_of_voice(s.voice), s.voice);
   if (!p || p->enc[e] == kNone) return;
-  int k = p->enc[e] & 15, cur = (int)lfo::base_of(s.voice, k, v[s.voice].p[k]);
+  int k = p->enc[e] & 15, cur = (int)mod::base_of(s.voice, k, v[s.voice].p[k]);
   if (is_list(*p, k)) delta = list_turn(e, delta);
   if (!delta) return;
   int nv = step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func);

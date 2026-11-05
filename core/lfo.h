@@ -21,6 +21,13 @@
 #include <stdint.h>
 
 #include "fx/send_fx.h"   // RYTM_SENDFX_LARGE
+#include "mod/target.h"
+
+// 0.5.0 (spec-050 1.1): the LFOs are a source of the modulation layer (core/mod): core/mod owns their targets, their
+// bases and the writes. CORE_MOD_LFO 0 keeps 0.4.0's own write path compiled (the rollback; removed in Phase 2).
+#ifndef CORE_MOD_LFO
+#define CORE_MOD_LFO 1
+#endif
 
 namespace core {
 namespace lfo {
@@ -69,12 +76,16 @@ constexpr int kPresets = 4;
 const char* preset_name(int which);
 
 // ---- the engine's hooks (control side)
-void tick(uint32_t us);                                 // every pass of the control loop
+// every pass of the control loop. 0.5.0: a forwarder to mod::tick (core/mod/mod.h) for one release (removed in 0.6.0):
+// the platforms call mod::tick; tests, the emulator lib (core_c_lfo_tick) and older callers keep meaning the same
+void tick(uint32_t us);
+void waves(uint32_t us, uint32_t dus);                  // mod::tick's source: the clock position, each LFO's offset
+mod::Tid tid_of(int target, int param);                 // an LFO target's id on the layer (0: OFF)
 void clock(uint8_t status, uint16_t spp);               // fx::clock_in's MIDI realtime / SPP (F8 FA FB FC F2)
 void midi_in(uint8_t status, uint8_t d1, uint8_t d2);   // the Rytm's channel messages: its notes (an FX target's TRIG)
-void voice_params(int vi, float* p, int np, bool trig); // voice_report: base = the report's P1..Pnp, p modulated
-uint8_t fx_knob(int slot, int knob, uint8_t v);         // take_sendfx: knob 0..5 of FX slot reported v; returns the value to play
-float base_of(int vi, int k, float cur);                // a voice parameter's base (the remote page's edits), cur when unmodulated
+void voice_params(int vi, float* p, int np, bool trig); // voice_report: the bases (mod::voice_params), a trig's retrig
+uint8_t fx_knob(int slot, int knob, uint8_t v);         // take_sendfx: knob 0..5 of FX slot reported v (mod::fx_knob)
+float base_of(int vi, int k, float cur);                // mod::base_of (the callers use it directly)
 void project_changed();                                 // the Rytm's project changed: the LFOs of the new one (card)
 void kit_changed(int kit);                              // the Rytm's active kit (0..127): its LFOs (card), when another
 int kit();                                              // the kit the settings are of (0..127), -1 unknown

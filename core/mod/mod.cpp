@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "lfo.h"
 #include "platform.h"
 #include "voices.h"
 
@@ -126,6 +127,12 @@ CORE_COLD void flush_voices() {
 }
 
 CORE_COLD void tick(uint32_t us) {
+#if !CORE_MOD_LFO
+  if (!g_source) {   // the rollback (core/lfo.h): the LFOs' own path
+    lfo::tick(us);
+    return;
+  }
+#endif
   if (!g_started) {
     g_started = true, g_last_us = us;
     return;
@@ -138,7 +145,9 @@ CORE_COLD void tick(uint32_t us) {
     g_last_us = us;
     ++g_stats.ticks;
     begin_tick();
-    if (g_source) g_source(us, dus);
+    if (g_source) g_source(us, dus);   // (tests)
+    else lfo::waves(us, dus);         // the LFOs: the clock position, the waves, each one's offset
+    /* Phase 2: scene::tick(ms); learn::tick(); */
     end_tick();
   }
   flush_voices();
@@ -153,6 +162,10 @@ CORE_COLD void restore_all() {
 }
 
 CORE_COLD void voice_params(int vi, float* p, int np) {
+#if !CORE_MOD_LFO
+  lfo::voice_params(vi, p, np, false);   // the rollback: the LFOs' own table
+  return;
+#endif
   for (Entry& e : g_e) {
     if (!e.t || kind_of(e.t) != kV || index_of(e.t) != (vi & 7) || param_of(e.t) >= np) continue;
     e.base = p[param_of(e.t)];
@@ -173,6 +186,9 @@ CORE_COLD uint8_t fx_knob(int slot, int knob, uint8_t val) {
 }
 
 CORE_COLD float base_of(int vi, int k, float cur) {
+#if !CORE_MOD_LFO
+  return lfo::base_of(vi, k, cur);   // the rollback: the LFOs' own table
+#endif
   const Entry* e = find_e(tid(kV, vi & 7, k & 15));
   return e ? e->base : cur;
 }

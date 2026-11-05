@@ -7,6 +7,7 @@
 #include "engine.h"
 #include "md/md.h"   // the built-in MD's cost (poly_json)
 #include "lfo.h"
+#include "mod/mod.h"
 #include "device/device.h"
 #include "fx/insert.h"
 #include "fx/master.h"
@@ -166,7 +167,7 @@ void tick() {
     uint32_t us = core::now_us() - t, w = core::ui::wave_take_us();   // (the overview by its own name: wave_idle's note)
     core::idle_note("remote", us > w ? us - w : 0);
   }
-  timed_tick("lfo", [] { core::lfo::tick(core::now_us()); });        // the Sidecar's LFOs (core/lfo.h): once a millisecond at most
+  timed_tick("mod", [] { core::mod::tick(core::now_us()); });        // the modulation layer (core/mod/mod.h): the LFOs, once a millisecond at most
   timed_tick("device", [] { core::device::tick(core::now_us()); });  // a box's envelopes (core/device/strip.h): the Rytm has none
   timed_tick("poly", [] { core::poly::tick(core::now_ms()); });      // poly FM: a held trig's time, a live chord's window (core/poly.h)
   timed_tick("seq", [] { core::seq::tick(core::now_ms()); });        // the Sidecar sequencer: its LEDs, its 2E (core/seq/seq.h)
