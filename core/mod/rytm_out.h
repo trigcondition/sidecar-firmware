@@ -26,8 +26,10 @@ constexpr uint32_t kSpacingMs = 5;
 void rytm_scene(int n);                          // the Rytm's scene 0..12 (0 off)
 void rytm_perf(int macro, int v);                // macro 1..12 to 0..127
 void rytm_mute(uint16_t set, uint16_t clr);      // the tracks in set muted, those in clr unmuted (bit k: track k + 1)
-void rytm_host_cmd(bool on);                     // the hello's caps: the mod command there (a refusal is forgotten)
+void rytm_host_cmd(bool on);                     // the hello's caps: the mod command there (a refusal is forgotten);
+                                                 // a hello is a new link: every value sent is forgotten
 void rytm_ack(int op, int status);               // 2D 01 10 <op> <status>
+void rytm_out_forget(int slot);                  // 0 the scene, 1..12 a macro: the value sent is no longer known
 void rytm_out_tick(uint32_t ms);                 // mod::tick: the values whose kSpacingMs has passed
 void rytm_out_reset();                           // tests (mod::reset): nothing sent, the CCs
 struct RytmOutStats { uint32_t cmds, ccs, refused, held; };   // held: a value replaced before its time came

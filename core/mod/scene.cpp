@@ -264,6 +264,12 @@ CORE_COLD void tick(uint32_t ms) {
       step = lists[vi] >> mod::param_of(m.t) & 1;
     }
     float a = m.av >= 0 ? (float)m.av / 128.0f : 0, b = m.bv >= 0 ? (float)m.bv / 128.0f : 0;
+    // the Rytm's own scene / macros (kRytm) have no base the Sidecar can read: a one-sided lock acts on its own half
+    // only (its value, past halfway with the hysteresis) and leaves the Rytm alone on the other half
+    if (k == mod::kRytm && (m.av < 0 || m.bv < 0)) {
+      if (m.bv < 0 ? !g_upper : g_upper) mod::morph(m.t, m.bv < 0 ? a : b);
+      continue;
+    }
     if (m.av < 0) a = mod::base(m.t);
     else if (m.bv < 0) b = mod::base(m.t);
     float val = step ? (g_upper ? b : a) : a + (b - a) * f;

@@ -87,7 +87,13 @@ CORE_COLD void rytm_mute(uint16_t set, uint16_t clr) {
   for (int k = 0; k < 12; ++k)
     if ((set | clr) >> k & 1) cc(ch_or(c.track_ch[k], k + 1), kMuteCc, set >> k & 1);
 }
-CORE_COLD void rytm_host_cmd(bool on) { g_cmd = on, g_said = false; }
+CORE_COLD void rytm_host_cmd(bool on) {
+  g_cmd = on, g_said = false;
+  for (Slot& s : g_s) s.sent = s.want = -1;   // (a Rytm restart: its scene and macros are its own again)
+}
+CORE_COLD void rytm_out_forget(int slot) {
+  if (slot >= 0 && slot < 13) g_s[slot].sent = g_s[slot].want = -1;
+}
 CORE_COLD void rytm_ack(int op, int status) {
   if (!status) return;
   ++g_st.refused;

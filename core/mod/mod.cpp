@@ -75,7 +75,10 @@ CORE_COLD Entry* alloc(Tid t) {
     if (!f.t) {
       f.t = t;
       f.base = base_now(t);
-      f.applied = f.base;
+      // a kind whose writer takes a value (kSeq kArp kLoop kRytm) has no state the layer can read: nothing applied yet,
+      // so its first value is always put (a RYTM:SCN lock at 0 goes out; rytm_out's own on-change check decides)
+      Kind k = kind_of(t);
+      f.applied = k == kSeq || k == kArp || k == kLoop || k == kRytm ? -1.0f : f.base;
       if (&f - g_e >= g_hi) g_hi = (int)(&f - g_e) + 1;
       ix_add(f);
       return &f;
@@ -97,6 +100,9 @@ CORE_COLD void restore(Entry& e) {
   } else if (k == kFx || k == kSnd) {
     put(e.t, e.base);
   }   // (kSeq kArp kLoop kRytm: nothing to put back - their writers take a value, not a state; Phases 3, 4)
+#if CORE_POLY
+  if (k == kRytm) rytm_out_forget(param_of(e.t));   // the Rytm may change it meanwhile: the next lock's value goes out
+#endif
   ix_del(e);
   e = Entry();
   while (g_hi && !g_e[g_hi - 1].t) --g_hi;

@@ -68,8 +68,33 @@ static void scn_fires_once_at_halfway() {
   CHECK(count({0xBD, 92, 5}) == 1 && count_cc(0xBD, 92) == 1);   // ch 14 (the auto channel)
   sweep(16383, 0, 200);
   run_ms(30);
-  CHECK(count({0xBD, 92, 0}) == 1 && count_cc(0xBD, 92) == 2);
-  printf("rytm out: RYTM:SCN fires once each way at halfway (CC 92 on ch 14)\n");
+  CHECK(count_cc(0xBD, 92) == 1);   // B only: below halfway the Rytm is left alone (never a scene the user chose, off)
+  sweep(0, 16383, 200);
+  run_ms(30);
+  CHECK(count({0xBD, 92, 5}) == 2);   // up again: sent again (the Rytm may have changed meanwhile)
+  printf("rytm out: a B-only RYTM:SCN fires at halfway on the way up, leaves the Rytm alone below\n");
+}
+
+// review M1: a lock at 0 goes out (a new entry has no value applied); both sides locked: one CC each way
+static void scn_zero_sent() {
+  fresh();
+  CHECK(scene::lock(0, T("RYTM:SCN"), 0) && scene::lock(1, T("RYTM:SCN"), 5 * 128));
+  scene::set_ab(0, 1);
+  run_ms(5);
+  CHECK(count({0xBD, 92, 0}) == 1 && g_out.size() == 1);   // A: scene off, at once
+  sweep(0, 16383, 100);
+  run_ms(30);
+  g_out.clear();
+  sweep(16383, 0, 100);
+  run_ms(30);
+  CHECK(count({0xBD, 92, 0}) == 1 && g_out.size() == 1);   // back to A: one BD 5C 00
+  fresh();
+  CHECK(scene::lock(0, T("RYTM:SCN"), 12 * 128) && scene::lock(1, T("RYTM:PERF2"), 0));
+  scene::set_ab(0, 0);   // A == B: both at their values
+  scene::lock(0, T("RYTM:PERF2"), 0);
+  run_ms(5);
+  CHECK(count({0xBD, 92, 12}) == 1 && count({0xBE, 36, 0}) == 1);   // scene 12 (CC 92 1..12 selects); PERF2 at 0 sent
+  printf("rytm out: a lock at 0 is sent; A 0 / B 5 sends one CC 92 = 0 back at A\n");
 }
 
 static void perf_follow_rate_limited() {
@@ -130,7 +155,7 @@ static void ack_refused_falls_back() {
   const uint8_t ack[] = {0xF0, 0x7D, 0x52, 0x54, 0x2D, 1, 0x10, 2, 1, 0xF7};   // 2D 01 10 <op 2> <status 1>
   engine_sysex(ack, (int)sizeof ack);
   CHECK(mod::rytm_out_stats().refused == 1);
-  CHECK(scene::lock(1, T("RYTM:SCN"), 3 * 128));
+  CHECK(scene::lock(0, T("RYTM:SCN"), 0) && scene::lock(1, T("RYTM:SCN"), 3 * 128));   // (both sides: B down to A)
   scene::set_ab(0, 1);
   sweep(0, 16383, 50);
   run_ms(30);
@@ -171,6 +196,7 @@ int main() {
   CHECK(engine_begin());
   hooks.to_rytm = out;
   scn_fires_once_at_halfway();
+  scn_zero_sent();
   perf_follow_rate_limited();
   host_cmd_replaces_ccs();
   mute_fallback_per_track_channel();
