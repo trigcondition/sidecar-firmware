@@ -26,6 +26,9 @@ inline Rect cell(int col, int row, int cols = 1, int rows = 1) {
 // The title bar: title on the left, `right` (may be null) and the page dots (page of npages) on the right, all in the
 // inverted bar as stock's (a clear column between the two parts).
 void header(Canvas& c, const char* title, int page, int npages, const char* right = nullptr);
+// 0.5.0 (spec-050 2.6): a tag every header shows in place of `right` while set ("EDIT S3": the scenes' EDIT; null or ""
+// none). The remote UI sets it before each frame.
+void header_tag(const char* tag);
 // The bottom bar: text on the left; v >= 0: a level box on the right (bipolar: from its centre).
 void footer(Canvas& c, const char* text, int v = -1, bool bipolar = false);
 // Text in up to n lines (slots slot..slot + n - 1, rows y, y + dy ..), broken at spaces so each line fits the screen at

@@ -33,6 +33,10 @@ struct ExtraPage {
   // page changed; a hello or the page closing releases every key still held (the Rytm's releases are lost with the
   // link). Null: releases dropped, as before (aggregate initialisation leaves it null on the other pages)
   bool (*key_up)(int code);
+  // 0.5.0 (spec-050 2.6, EDIT): the modulation target (core/mod/target.h Tid) encoder e edits now, 0 none: with a scene
+  // key held and the scenes' EDIT on, a turn of it locks that target into the scene instead of editing it. Null: the
+  // page locks nothing (its trig keys stay its own)
+  uint16_t (*enc_tid)(int e);
 };
 #if CORE_UI_TOOLS
 void extra_test_page(const ExtraPage* p);   // tests: one more page at the end of the order (null: none)

@@ -8,6 +8,10 @@
 #include <vector>
 
 #include "check.h"
+#include "fx/insert.h"
+#include "fx/master.h"
+#include "machines.h"
+#include "voices.h"
 #include "rui_png.h"
 #include "core.h"
 #include "mod/mod.h"
@@ -256,6 +260,98 @@ static void text_fit() {
   printf("  text_fit: every state drawn with S12, 64 locks, the longest names (TEXT-FIT checks at exit)\n");
 }
 
+// ---- Task 39: EDIT on the other Sidecar pages
+static bool sent_has(const char* s) {   // a text item the Rytm has now (the host's last commit)
+  uint8_t t[36 * ui::kTextSlots];
+  int n = ui::sent_texts(t, ui::kTextSlots);
+  for (int i = 0; i < n; ++i)
+    if (strstr((const char*)t + 36 * i + 4, s)) return true;
+  return false;
+}
+static void voice_page() {   // V1 a PLAITS voice (its report), the page open on it: SIDECAR, RIGHT x 2 (SYSTEM, V1)
+  ui::remote_reset();
+  ui::morph_page_reset();
+  scene::reset();
+  uint8_t m[39] = {0xF0, 0x7D, 0x52, 0x54, 0x03, (uint8_t)(kPlaits | 0)};
+  for (int k = 0; k < 16; ++k) m[6 + 2 * k] = 40, m[7 + 2 * k] = 0;
+  m[38] = 0xF7;
+  engine_sysex(m, 39);
+  from_rytm(0x30, 0, 1, 0);
+  tick();
+  tap(0x41), tap(0x41);
+  tick();
+  CHECK(ui::remote_stats().voice == 0);
+}
+static int enc_param(int e) {   // the voice page's encoder e: its P (0..15)
+  const ui::Page* p = ui::page_for_voice(kPlaits, 0);
+  CHECK(p && p->enc[e] != ui::kNone);
+  return p->enc[e] & 15;
+}
+
+static void held_scene_key_turn_locks() {
+  voice_page();
+  scene::set_edit(true);
+  tick();
+  CHECK((g_mask_trigs & 0x0FFF) == 0x0FFF && !(g_mask_trigs & 0xF000));   // T1..T12 the page's while EDIT is on
+  int k = enc_param(1);
+  uint32_t edits = ui::remote_stats().edits;
+  float before = v[0].p[k];
+  down(0x02), turn(1, 3);                   // T3 held + B: scene 3 locks V1's P, from the base (40) + 3
+  CHECK(lock_v(2, mod::tid(mod::kV, 0, k)) == 43 * 128);
+  turn(1, 1);                               // again: from the scene's lock
+  CHECK(lock_v(2, mod::tid(mod::kV, 0, k)) == 44 * 128);
+  CHECK(ui::remote_stats().edits == edits && v[0].p[k] == before);   // no set_param, the voice as it was
+  up(0x02);
+  turn(1, 1);                               // no scene key held: the page's own edit, as always
+  CHECK(ui::remote_stats().edits == edits + 1 && lock_v(2, mod::tid(mod::kV, 0, k)) == 44 * 128);
+  // MASTER: its LEV (H) while T1 is held: scene 1 locks MFX:LEV, the master's knob stays
+  core::ins::set_type(core::master::chain(0), core::master::slot(0), core::ins::kComp);   // a master slot: MASTER shown
+  ui::mfx_page_set(0, true);   // its EQ view: H the master's LEV
+  ui::remote_show_page("MASTER");
+  tick();
+  CHECK(ui::remote_page_title() && !strcmp(ui::remote_page_title(), "MASTER") && (g_mask_trigs & 0x0FFF) == 0x0FFF);
+  int lev = core::master::control.lev;
+  down(0x00), turn(7, 2);
+  CHECK(lock_v(0, mod::tid(mod::kMfx, 0, 0)) == (lev + 2) * 128 && core::master::control.lev == lev);
+  up(0x00);
+  core::ins::set_type(core::master::chain(0), core::master::slot(0), 0);
+  scene::set_edit(false);
+  printf("  held_scene_key_turn_locks: EDIT on, T3 held + a voice knob locks scene 3 (no set_param); MASTER's LEV\n");
+}
+
+static void edit_off_trigs_stock() {
+  voice_page();
+  CHECK(!(g_mask_trigs & 0xFFFF));          // EDIT off: the trig keys are the Rytm's on a voice page
+  int k = enc_param(1);
+  uint32_t edits = ui::remote_stats().edits;
+  down(0x02), turn(1, 1), up(0x02);         // (a T3 the Rytm would keep: nothing locks)
+  CHECK(scene::state().s[2].n == 0 && ui::remote_stats().edits == edits + 1);
+  (void)k;
+  printf("  edit_off_trigs_stock: EDIT off - no trig keys caught, a turn edits the voice\n");
+}
+
+static void locked_value_shown_while_held() {
+  voice_page();
+  scene::set_edit(true);
+  tick();
+  CHECK(sent_has("EDIT"));                  // every Sidecar page's header says EDIT while it is on
+  down(0x02);
+  tick();
+  CHECK(sent_has("EDIT S3"));
+  turn(1, 5);
+  tick();
+  char want[24];
+  snprintf(want, sizeof want, "S3 V1:P%d:45", enc_param(1) + 1);
+  CHECK(sent_has(want));                    // the bottom bar: the scene's locked value
+  up(0x02);
+  tick();
+  CHECK(!sent_has(want) && sent_has("EDIT") && !sent_has("EDIT S3"));
+  scene::set_edit(false);
+  tick();
+  CHECK(!sent_has("EDIT"));
+  printf("  locked_value_shown_while_held: EDIT / EDIT S3 in the header, the locked value in the bottom bar\n");
+}
+
 int main() {
   hooks.to_rytm = out;
   at(g_us);
@@ -269,6 +365,9 @@ int main() {
   func_yes_edit();
   leds();
   text_fit();
+  held_scene_key_turn_locks();
+  edit_off_trigs_stock();
+  locked_value_shown_while_held();
   scene::reset();
   ui::remote_reset();
   printf("test_morph_page: ok\n");

@@ -17,6 +17,7 @@
 #include "mod/mod.h"
 #include "mod/rytm_out.h"
 #include "mod/scene.h"
+#include "mod/target.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "poly.h"
@@ -342,6 +343,10 @@ struct State {
   // 0.5.0 (spec-050 2.6): the keys an engine page with key_up took at their press (bit c: code c), and that page
   uint32_t held_keys[8] = {};
   const ExtraPage* held_page = nullptr;
+  // 0.5.0 (spec-050 2.6, EDIT): the scene key (T1..T12: 0..11) held on a page that locks, -1 none; the target a turn
+  // locked last while it is held (the bottom bar shows its locked value), 0 none
+  int scene_key = -1;
+  uint16_t edit_tid = 0;
   // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out): where
   // the pages shown by a shortcut came from, newest last - kBackStock the stock screen (NO closes the page), else the
   // page (s.voice) it was opened over; the MENU counts as SIDECAR (a page opened from the MENU goes back to SIDECAR, as
@@ -590,10 +595,45 @@ CORE_COLD void set_param(int vi, int k, int nv) {
   s.stats.edits++;
 }
 
+// 0.5.0 (spec-050 2.6, EDIT): with the scenes' EDIT on, a voice page and the pages that name their knobs' targets
+// (ExtraPage::enc_tid: INSERT, MASTER) take T1..T12 too; a turn while one is held locks the knob's target into that
+// scene (from the scene's lock, else from the base) instead of editing it. The SEQ page keeps its trig keys (steps).
+CORE_COLD bool edit_page(const ExtraPage* x) {
+  if (!s.open || !scene::edit()) return false;
+  return x ? x->enc_tid != nullptr : s.voice >= 0 && !src_capable;
+}
+CORE_COLD uint16_t page_trigs(const ExtraPage* x) {
+  uint16_t t = x && x->trigs_now ? x->trigs_now() : 0;
+  return edit_page(x) ? (uint16_t)(t | 0x0FFF) : t;
+}
+// the scene key's lock of t moved by `units` (whole units of the target; lo..hi its range there), from the lock, else
+// from the base; the value a voice page's step gives when `voice_nv` >= 0
+CORE_COLD void edit_lock(mod::Tid t, int units, int voice_nv) {
+  const scene::Scene& sc = scene::state().s[s.scene_key];
+  int cur = -1;
+  for (int i = 0; i < sc.n; ++i)
+    if (sc.l[i].t == t) cur = sc.l[i].v;
+  int nv;
+  if (voice_nv >= 0) {
+    nv = voice_nv * 128;
+  } else {
+    mod::Range r = mod::range(t);
+    bool off = mod::is_offset(mod::kind_of(t));
+    int lo = off || r.lo < 0 ? 0 : (int)r.lo, hi = off || r.hi > 127 ? 127 : (int)r.hi;
+    int u = cur >= 0 ? (cur + 64) / 128 : (int)(mod::base(t) + 0.5f);
+    u += units;
+    nv = (u < lo ? lo : u > hi ? hi : u) * 128;
+  }
+  if (scene::lock(s.scene_key, t, (uint16_t)nv)) s.edit_tid = t;
+}
+
 CORE_COLD void on_enc(int e, int delta, bool func) {
   s.input = true;
+  const bool lock = s.scene_key >= 0 && edit_page(extra_of(s.voice));
   if (const ExtraPage* x = extra_of(s.voice)) {
-    if (e >= 0 && e < 8 && (extra_encs(*x) >> e & 1)) x->enc(e, delta, func);
+    if (e < 0 || e >= 8 || !(extra_encs(*x) >> e & 1)) return;
+    if (!lock) x->enc(e, delta, func);
+    else if (mod::Tid t = x->enc_tid(e)) edit_lock(t, delta * (func ? 8 : 1), -1);
     return;
   }
   if (s.voice < 0 || src_capable || e < 0 || e > 7) return;
@@ -603,6 +643,14 @@ CORE_COLD void on_enc(int e, int delta, bool func) {
   int k = p->enc[e] & 15, cur = (int)mod::base_of(s.voice, k, v[s.voice].p[k]);
   if (is_list(*p, k)) delta = list_turn(e, delta);
   if (!delta) return;
+  if (lock) {   // EDIT: the scene's lock, from its value (else the base), never the voice
+    mod::Tid t = mod::tid(mod::kV, s.voice, k);
+    const scene::Scene& sc = scene::state().s[s.scene_key];
+    for (int i = 0; i < sc.n; ++i)
+      if (sc.l[i].t == t) cur = (sc.l[i].v + 64) / 128;
+    edit_lock(t, 0, step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func));
+    return;
+  }
   int nv = step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func);
   if (nv != cur) set_param(s.voice, k, nv);
 }
@@ -616,12 +664,18 @@ CORE_COLD void release_held() {
       if (x && x->key_up) x->key_up(c);
     }
   s.held_page = nullptr;
+  s.scene_key = -1, s.edit_tid = 0;
 }
 
 CORE_COLD bool key_held(int code) { return code >= 0 && code < 256 && (s.held_keys[code >> 5] >> (code & 31) & 1); }
 
+
 CORE_COLD void on_key(int code, bool down) {
   if (!down) {   // 0.5.0: a release goes to the page that took its press (key_up), else nowhere
+    if (code == s.scene_key) {   // EDIT's scene key let go
+      s.scene_key = -1, s.edit_tid = 0, s.input = true;
+      return;
+    }
     if (key_held(code)) {
       s.held_keys[code >> 5] &= ~(1u << (code & 31));
       s.input = true;
@@ -630,6 +684,10 @@ CORE_COLD void on_key(int code, bool down) {
     return;
   }
   s.input = true;
+  if (code >= 0 && code < 12 && edit_page(extra_of(s.voice))) {   // EDIT: a scene key
+    s.scene_key = code, s.edit_tid = 0;
+    return;
+  }
   if (const ExtraPage* x = extra_of(s.voice))
     if (x->key && x->key(code)) {
       if (x->key_up && code >= 0 && code < 256) {
@@ -833,11 +891,17 @@ CORE_COLD void frame(uint32_t ms) {
   const ExtraPage* x = extra_of(s.voice);
   if (standalone(x)) at = 0, n = 1;   // ux1027: no siblings, no page dots
   tap_enable(x && x->tap);
+  char tag[12] = "";   // 0.5.0: EDIT on - every page's header says so, with the scene key held
+  if (scene::edit()) {
+    if (s.scene_key >= 0) sniprintf(tag, sizeof tag, "EDIT S%d", s.scene_key + 1);
+    else strcpy(tag, "EDIT");
+  }
+  header_tag(tag);
   int drawn = 1;
   if (p) {
-    char right[8];
+    char right[12];
     vsrc.vi = s.voice;
-    sniprintf(right, sizeof right, "%s", voice_label(s.voice));
+    sniprintf(right, sizeof right, "%s", tag[0] ? tag : voice_label(s.voice));
     drawn = view.draw(work, *p, vsrc, right, at, n);
     voice_footer(*p, voice_label(s.voice), vsrc, s.touched >= 0 ? s.touched : 0);
   } else if (x) {
@@ -846,6 +910,17 @@ CORE_COLD void frame(uint32_t ms) {
   } else {
     view.invalidate();   // the status pages are drawn whole; a voice page after them starts clean
     ssrc.draw(work, s.voice == -2 ? 1 : 0, at, n);
+  }
+  if (s.scene_key >= 0 && s.edit_tid && edit_page(x)) {   // EDIT: the bottom bar shows the scene's locked value
+    const scene::Scene& sc = scene::state().s[s.scene_key];
+    for (int i = 0; i < sc.n; ++i)
+      if (sc.l[i].t == s.edit_tid) {
+        char nm[16], val[8], b[kTextLen + 1];
+        mod::name(s.edit_tid, nm, sizeof nm);
+        morph_value_text(s.edit_tid, sc.l[i].v, val, sizeof val);
+        int n2 = sniprintf(b, sizeof b, "S%d %s:%s", s.scene_key + 1, nm, val);
+        footer(work, b, n2 <= 16 ? sc.l[i].v >> 7 : -1);
+      }
   }
   s.stats.widgets += (uint32_t)drawn;
   {   // the pairing code's modal goes on top of the page, and the page comes back whole when it goes
@@ -860,7 +935,7 @@ CORE_COLD void frame(uint32_t ms) {
   }
   bool sq = x && !strcmp(x->title, "SEQ");
   bool fn = sq || (x && !strcmp(x->title, "MORPH"));   // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides')
-  if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, x && x->trigs_now ? x->trigs_now() : 0, fn, sq && seq_data(),
+  if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, page_trigs(x), fn, sq && seq_data(),
                             !sq || seq_yes(), !sq || seq_updown());   // before the frame: the keys and knobs the page shows are its own from now on
   update_leds(x);
   if (!s.sent_valid) s.echo_valid = false;
@@ -1331,8 +1406,8 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         int code = b[0] << 7 | b[1];
         // 0.5.0: a trig key another engine page takes now (MORPH's scenes, the LFO design view's steps), or the release
         // of one it took, is that page's, not the sequencer's (seq mode sends the trig keys on a seq track)
-        bool page_trig = x && strcmp(x->title, "SEQ") && code < 16 &&
-                         ((b[2] && x->trigs_now && (x->trigs_now() >> code & 1)) || (!b[2] && key_held(code)));
+        bool page_trig = !(x && !strcmp(x->title, "SEQ")) && code < 16 && s.open &&
+                         ((b[2] && (page_trigs(x) >> code & 1)) || (!b[2] && (key_held(code) || code == s.scene_key)));
         if (!page_trig && seq::ui_key(code, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
