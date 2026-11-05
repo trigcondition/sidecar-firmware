@@ -73,6 +73,9 @@ int fxin_json(char* out, int cap);
 // console's `lfo`, `lfo=N:KEY:VALUE` (false: not an lfo command) and /status's "lfo":{...} (any core, plain reads).
 void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2);
 bool lfo_command(const char* p, char* out, int cap);
+// the modulation layer (core/mod/mod.h): "mod" (the live targets), "mod=stats"; "\"mod\":{...}" for /status
+bool mod_command(const char* p, char* out, int cap);
+int mod_json(char* out, int cap);
 // Poly FM (core/poly.h): the Rytm's channel messages (its pads' notes: live chords), the console's `poly` (its stats;
 // false: not a poly command)
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2);

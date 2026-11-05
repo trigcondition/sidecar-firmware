@@ -222,6 +222,34 @@ static void isnd_offset_saves_knob() {
   printf("mod: a voice's send to a bus: the offset plays, the INSERT file has the knob\n");
 }
 
+// ---- Task 6: the console, the JSON, the tick's cost
+static void console_lists_live() {
+  v[0].p[2] = 60;
+  start();
+  tick_one(6, 1, tid(kV, 0, 2));                            // V1:P3 60 + 6
+  char o[400];
+  CHECK(mod::command("mod", o, sizeof o));
+  printf("mod: console: %s\n", o);
+  CHECK(strstr(o, "mod: 1 live") && strstr(o, "V1:P3 66.00 (base 60.00 off +6)"));
+  CHECK(mod::command("mod=stats", o, sizeof o) && strstr(o, "ticks 1") && strstr(o, "voice_sets 1"));
+  CHECK(mod::command("mod=what", o, sizeof o) && strstr(o, "mod | mod=stats"));
+  CHECK(!mod::command("modx", o, sizeof o) && !mod::command("lfo", o, sizeof o));
+  int n = mod::json(o, sizeof o);
+  printf("mod: json %s\n", o);
+  CHECK(n > 0 && n < (int)sizeof o && !strncmp(o, "\"mod\":{\"live\":1,\"worst_us\":", 27) && strstr(o, "\"voice_sets\":1"));
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(mod::command("mod", o, sizeof o) && strstr(o, "mod: 0 live"));
+}
+static void worst_us_covers_tick() {
+  start();
+  g_src = [](uint32_t, uint32_t) { at(g_us + 300); };       // a source that takes 300 us (the fake clock)
+  at(g_us + 1000), mod::tick(now_us());
+  printf("mod: worst_us %u\n", mod::stats().worst_us);
+  CHECK(mod::stats().worst_us >= 300 && mod::stats().worst_us < 400);
+  g_src = nullptr;
+}
+
 int main() {
   char tmpl[] = "/tmp/core_mod_XXXXXX";
   CHECK(mkdtemp(tmpl));
@@ -244,6 +272,8 @@ int main() {
   track_send_follows_0x20_base();
   master_chain_slot_reachable();
   isnd_offset_saves_knob();
+  console_lists_live();
+  worst_us_covers_tick();
   printf("test_mod: PASS\n");
   return 0;
 }

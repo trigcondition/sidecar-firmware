@@ -660,6 +660,10 @@ void CEngineCores::Command (const char *p)
 	{
 		L->Write (From, LogNotice, "%s", Lo);
 	}
+	else if (char Mo[400]; bridge::mod_command (p, Mo, sizeof Mo))	// mod, mod=stats: the modulation layer (core/mod/mod.h)
+	{
+		L->Write (From, LogNotice, "%s", Mo);
+	}
 	else if (sendfx_pi::Command (p))		// sendfx, sendfxout=, sendlvl=, sendknob= (sendfx_pi.h)
 	{
 	}

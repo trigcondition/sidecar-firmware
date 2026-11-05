@@ -678,6 +678,14 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		pOut->Append (Lfo);
 	}
 	{
+		char Mo[160];			// the modulation layer: live targets, the tick's worst us and counts (core/mod/mod.h)
+		if (bridge::mod_json (Mo, sizeof Mo) > 0)
+		{
+			pOut->Append (",");
+			pOut->Append (Mo);
+		}
+	}
+	{
 		char Bb[128];			// the black box's counts (blackbox_pi.h)
 		blackbox_pi::Status (Bb, sizeof Bb);
 		pOut->Append (",\"blackbox\":");

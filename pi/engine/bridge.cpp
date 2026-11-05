@@ -249,6 +249,8 @@ const char* keys_line(char* b, int cap) { return core::keys::line(b, cap); }
 void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2) { core::lfo::midi_in(st, d1, d2); }
 bool lfo_command(const char* p, char* out, int cap) { return core::lfo::command(p, out, cap); }
 int lfo_json(char* out, int cap) { return core::lfo::json(out, cap); }
+bool mod_command(const char* p, char* out, int cap) { return core::mod::command(p, out, cap); }
+int mod_json(char* out, int cap) { return core::mod::json(out, cap); }
 int poly_json(char* out, int cap) {
   int n = core::seq::poly_json(out, cap);
   if (n > 0 && n + 2 < cap) {

@@ -52,6 +52,10 @@ void fader_moved();                                  // clears every held flag (
 const Entry* find(Tid t);
 struct Stats { uint32_t ticks, voice_sets, user_calls, fx_sets, restores, seq_sets, rytm_out, worst_us; };
 const Stats& stats();
+// the console: "mod" -> "mod: 3 live: V1:P3 66.00 (base 60.00 off +6), FX1:P3 50 (base 40 off +10), I1:A2 +12 (offset)";
+// "mod=stats" -> the counts and worst_us (the slowest whole tick() in us, since the boot / a reset). False: not "mod..."
+bool command(const char* p, char* out, int cap);
+int json(char* out, int cap);                        // "\"mod\":{\"live\":N,\"worst_us\":U,\"ticks\":..,...}"
 void reset();                                        // tests: no entries, the clock forgotten, the stats zero
 // tests: the sources tick() calls in place of the LFOs' (null: the LFOs)
 void set_source_fn(void (*fn)(uint32_t us, uint32_t dus));

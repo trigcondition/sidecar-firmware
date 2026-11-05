@@ -132,7 +132,14 @@ CORE_COLD void flush_voices() {
   }
 }
 
-CORE_COLD void tick(uint32_t us) {
+static CORE_COLD void tick_body(uint32_t us);
+CORE_COLD void tick(uint32_t us) {   // the whole tick timed (spec-050 1.5): stats().worst_us
+  uint32_t t0 = now_us();
+  tick_body(us);
+  uint32_t d = now_us() - t0;
+  if (d > g_stats.worst_us) g_stats.worst_us = d;
+}
+static CORE_COLD void tick_body(uint32_t us) {
 #if !CORE_MOD_LFO
   if (!g_source) {   // the rollback (core/lfo.h): the LFOs' own path
     lfo::tick(us);
@@ -209,6 +216,67 @@ CORE_COLD float base_of(int vi, int k, float cur) {
 }
 
 CORE_COLD void played(int vi, float out[16]) { memcpy(out, (const float*)v[vi & 7].p, 16 * sizeof(float)); }
+
+namespace {
+// a value for the console: kV with two decimals, the others whole (integer printf only: the Teensy shares this file)
+CORE_COLD int fmt_val(char* b, int cap, float x, bool frac, bool sign) {
+  int c = (int)(x * 100.0f + (x < 0 ? -0.5f : 0.5f));
+  const char* sg = c < 0 ? "-" : sign ? "+" : "";
+  int a = c < 0 ? -c : c;
+  if (frac) return sniprintf(b, cap, "%s%d.%02d", sg, a / 100, a % 100);
+  return sniprintf(b, cap, "%s%d", sg, (a + 50) / 100);
+}
+}  // namespace
+
+CORE_COLD bool command(const char* p, char* o, int cap) {
+  if (strncmp(p, "mod", 3) != 0 || (p[3] && p[3] != '=')) return false;
+  if (cap <= 0) return true;
+  o[0] = 0;
+  if (!p[3]) {
+    int live = 0;
+    for (const Entry& e : g_e) live += e.t != 0;
+    int n = sniprintf(o, cap, "mod: %d live", live);
+    bool first = true;
+    for (const Entry& e : g_e) {
+      if (!e.t || n >= cap - 1) continue;
+      char nm[16], a[16], b[16], f[16];
+      name(e.t, nm, sizeof nm);
+      Kind k = kind_of(e.t);
+      int w;
+      if (is_offset(k)) {
+        fmt_val(a, sizeof a, e.applied, false, true);
+        w = sniprintf(o + n, cap - n, "%s%s %s (offset)", first ? ": " : ", ", nm, a);
+      } else {
+        fmt_val(a, sizeof a, e.applied, k == kV, false), fmt_val(b, sizeof b, e.base, k == kV, false);
+        fmt_val(f, sizeof f, e.off, false, true);
+        w = sniprintf(o + n, cap - n, "%s%s %s (base %s off %s)", first ? ": " : ", ", nm, a, b, f);
+      }
+      first = false;
+      if (w < 0 || w >= cap - n) break;
+      n += w;
+    }
+    return true;
+  }
+  if (!strcmp(p + 4, "stats")) {
+    const Stats& s = g_stats;
+    sniprintf(o, cap, "mod: ticks %u voice_sets %u user_calls %u fx_sets %u restores %u worst_us %u", (unsigned)s.ticks,
+              (unsigned)s.voice_sets, (unsigned)s.user_calls, (unsigned)s.fx_sets, (unsigned)s.restores,
+              (unsigned)s.worst_us);
+    return true;
+  }
+  sniprintf(o, cap, "mod | mod=stats");
+  return true;
+}
+
+CORE_COLD int json(char* o, int cap) {
+  int live = 0;
+  for (const Entry& e : g_e) live += e.t != 0;
+  const Stats& s = g_stats;
+  int n = sniprintf(o, cap, "\"mod\":{\"live\":%d,\"worst_us\":%u,\"ticks\":%u,\"voice_sets\":%u,\"fx_sets\":%u,"
+                    "\"restores\":%u}", live, (unsigned)s.worst_us, (unsigned)s.ticks, (unsigned)s.voice_sets,
+                    (unsigned)s.fx_sets, (unsigned)s.restores);
+  return n < 0 ? 0 : n;
+}
 
 CORE_COLD const Entry* find(Tid t) { return t ? find_e(t) : nullptr; }
 CORE_COLD const Stats& stats() { return g_stats; }
