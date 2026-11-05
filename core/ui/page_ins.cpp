@@ -23,6 +23,7 @@
 #include "fx/out.h"
 #include "fx/send_fx.h"
 #include "machines.h"
+#include "mod/mod.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
 #include "ui/widgets.h"
@@ -270,7 +271,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
   const int l = list_turn(e, d);   // the slot, type, route, track and bus: lists; the rest values
   if (ip.eq) {   // ins1112: A HPF, B LPF, C LOW, D HIGH; G the bus (FUNC + G another track, as elsewhere)
     int ch = chain_now();
-    if (e < ins::kEqParams) ins::set_eq(ch, e, ins::eq_param(ch, e) + d * (func ? 8 : 1));
+    if (e < ins::kEqParams) ins::set_eq(ch, e, ins::eq_param(ch, e) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIns, ch, 8 + e));
     else if (e == 6) {
       if (func && !ip.bus) ip.track = clampi(track_now() + l, 0, 11), ip.manual = true;
       else ip.busel = clampi(ip.busel + l, 0, ins::kBuses - 1);
@@ -280,12 +281,15 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
   if (ip.out) {   // A OUT, B LEV, C PAN, D WID, E DEC (DSP SAMPLE)
     int vi = voice_now();
     if (e == 0) out::set_route(vi, clampi(out::control.route[vi] + l, 0, out::kRoutes - 1));
-    else if (e <= 3 || (e == 4 && dsp_sample_now())) out::set_param(vi, e - 1, out::param(vi, e - 1) + d * (func ? 8 : 1));
+    else if (e <= 3 || (e == 4 && dsp_sample_now())) {
+      out::set_param(vi, e - 1, out::param(vi, e - 1) + d * (func ? 8 : 1));
+      if (e <= 3) mod::manual_knob(mod::tid(mod::kOut, vi, e - 1));
+    }
     return;
   }
   int ch = chain_now(), t = ins::control.type[ch][ip.slot];
   if (e < 4) {
-    if (t) ins::set_param(ch, ip.slot, e, ins::param(ch, ip.slot, e) + d * (func ? 8 : 1));
+    if (t) ins::set_param(ch, ip.slot, e, ins::param(ch, ip.slot, e) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIns, ch, ip.slot * 4 + e));
     return;
   }
   switch (e) {
@@ -305,7 +309,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
       }
       break;
     case 7:
-      if (!ip.bus) ins::set_send(ch, ip.busel, ins::send_knob(ch, ip.busel) + d * (func ? 8 : 1));
+      if (!ip.bus) ins::set_send(ch, ip.busel, ins::send_knob(ch, ip.busel) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIsnd, ch, ip.busel));
       else if (ip.busel == 2 && l) ins::set_route3(l > 0);
       break;
     default: break;

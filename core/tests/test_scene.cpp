@@ -1,6 +1,7 @@
 // core/tests/test_scene.cpp - morph scenes (core/mod/scene.h, spec-050 section 2) on the modulation layer, on the fake
 // clock: the morph table (both sides, one side following the base, stepped targets at halfway with hysteresis, list
-// knobs), A == B, offset kinds, the fader's smoothing, the 64-lock limit, an A / B change within kEntries, the index.
+// knobs), A == B, offset kinds, the fader's smoothing, the 64-lock limit, an A / B change within kEntries, the index;
+// a manual edit wins until the fader moves, the Rytm's reports never hold.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +20,7 @@
 #include "mod/mod.h"
 #include "mod/scene.h"
 #include "mod/target.h"
+#include "ui/page.h"
 #include "ui/remote.h"
 
 using namespace core;
@@ -260,6 +262,90 @@ static void index_finds_after_deletes() {   // the 512-slot index: 200 targets i
   printf("scene: the target index finds every entry after deletes\n");
 }
 
+// ---- Task 8: a manual edit wins until the fader moves (spec-050 2.5); the Rytm's reports never hold
+static void msg3(uint8_t cmd, int a, int b, int c) {
+  const uint8_t m[] = {0xF0, 0x7D, 0x52, 0x54, cmd, 1, (uint8_t)a, (uint8_t)b, (uint8_t)c, 0xF7};
+  engine_sysex(m, (int)sizeof m);
+}
+static uint32_t g_ms = 1000;
+static void open_v1_page() {   // the remote page on V1 (PLAITS): its encoder B is HRM (P2)
+  ui::list_pacing(false);
+  msg3(0x30, 0, 1, 0);
+  ui::remote_tick(g_ms += 10);
+  for (int k = 0; k < 8 && ui::remote_stats().page != 1; ++k)
+    msg3(0x31, 0, 0x41, 1), msg3(0x31, 0, 0x41, 0), ui::remote_tick(g_ms += 30);
+  CHECK(ui::remote_stats().page == 1 && ui::remote_stats().voice == 0);
+}
+static void close_page() {
+  msg3(0x30, 0, 0, 1);
+  ui::list_pacing(true);
+}
+static void manual_wins_until_fader_moves() {
+  scene_reset_with_base(40);
+  report_p1(0x03, 0, 3);
+  v[0].p[1] = 40;
+  lock_ab(T("V1:P2"), 20, 100);
+  fader_to(8192);
+  CHECK(fabsf(v[0].p[1] - 60.0f) < 0.01f);
+  open_v1_page();
+  uint32_t before = ui::remote_stats().edits;
+  msg3(0x32, 1, 64 + 30, 0);   // B +30: HRM from its base 40 to 70, a page edit
+  ui::remote_tick(g_ms += 10);
+  CHECK(ui::remote_stats().edits > before);
+  CHECK(v[0].p[1] == 70.0f && mod::find(T("V1:P2"))->held == 1);
+  run_ms(5);
+  CHECK(v[0].p[1] == 70.0f && mod::find(T("V1:P2"))->base == 70.0f);   // the edit is the base too (its 0x03)
+  fader_to(8193);
+  CHECK(fabsf(v[0].p[1] - 60.0f) < 0.01f && mod::find(T("V1:P2"))->held == 0);   // the morph takes it again
+  close_page();
+  printf("scene: a page edit wins until the fader moves\n");
+}
+static void rytm_reports_never_hold() {
+  scene_reset_with_base(40);
+  report_p1(0x03, 0, 3);
+  v[0].p[1] = 40;
+  lock_ab(T("V1:P2"), 20, 100);
+  fader_to(8192);
+  float p[16];
+  for (int k = 0; k < 16; ++k) p[k] = v[0].p[k];
+  p[0] = 3, p[1] = 70;
+  report(0x04, 0, kPlaits, p);   // a trig with a p-lock
+  p[1] = 72;
+  report(0x03, 0, kPlaits, p);   // the Rytm's knob / its own LFO / its scene
+  run_ms(2);
+  const mod::Entry* e = mod::find(T("V1:P2"));
+  CHECK(e && e->held == 0 && e->base == 72.0f && fabsf(v[0].p[1] - 60.0f) < 0.01f);
+  // a 0x20 under an FX1:P3 lock: the base, never held
+  lock_ab(T("FX1:P3"), 10, 30);
+  run_ms(2);
+  const uint8_t sx[] = {0xF0, 0x7D, 0x52, 0x54, 0x20, 0x01, 12, 2, 30, 1, 10, 20, 50, 64, 0, 0, 0, 0, 0, 0xF7};
+  CHECK(fx::take_sendfx(sx, (int)sizeof sx));
+  run_ms(2);
+  e = mod::find(T("FX1:P3"));
+  CHECK(e && e->held == 0 && e->base == 50.0f && fx::control.knob[0][3] == 20);
+  printf("scene: the Rytm's 0x03 / 0x04 / 0x20 move the base, never hold\n");
+}
+static void page_edit_holds_offset_kind() {   // MFX:LEV: a console / page edit holds, a file load does not
+  scene_reset_with_base(40);
+  master::set_lev(100);
+  lock_ab(T("MFX:LEV"), 60, 120);
+  fader_to(8192);
+  CHECK(abs(master::played_lev() - 90) <= 1);
+  char o[200];
+  CHECK(master::command("mfx=lev:30", o, sizeof o));
+  run_ms(2);
+  CHECK(master::control.lev == 30 && master::played_lev() == 30 && mod::find(T("MFX:LEV"))->held == 1);
+  fader_to(8193);
+  CHECK(abs(master::played_lev() - 90) <= 1 && mod::find(T("MFX:LEV"))->held == 0);
+  // the knob set by a file's line (a kit / project load): not a manual edit
+  const char* w[] = {"MFX", "0", "RET", "40"};
+  master::from_line(w, 4);
+  run_ms(2);
+  CHECK(master::control.lev == 40 && mod::find(T("MFX:LEV"))->held == 0 && abs(master::played_lev() - 90) <= 1);
+  master::set_lev(100);
+  printf("scene: a console edit of an offset kind holds; a file load does not\n");
+}
+
 static void loaded() {
   for (int i = 0; i < 100000 && project_loading(); ++i) idle_save();
   CHECK(!project_loading());
@@ -286,6 +372,9 @@ int main() {
   sixty_fifth_lock_refused();
   ab_switch_full_scenes();
   index_finds_after_deletes();
+  manual_wins_until_fader_moves();
+  rytm_reports_never_hold();
+  page_edit_holds_offset_kind();
   printf("test_scene: PASS\n");
   return 0;
 }

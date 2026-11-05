@@ -7,6 +7,7 @@
 
 #include "fx/out_mix.h"
 #include "fx/send_fx.h"
+#include "mod/target.h"
 #include "platform.h"
 
 namespace core {
@@ -358,7 +359,7 @@ bool command(const char* p, char* o, int cap) {
     else if (same_ci(a, "src")) {
       if (!same_ci(b, "ret") && !same_ci(b, "mix")) return sniprintf(o, cap, "%s", kHelp), true;
       set_src(same_ci(b, "mix") ? kMix : kRet);
-    } else if (same_ci(a, "lev") && num(b) >= 0) set_lev(num(b));
+    } else if (same_ci(a, "lev") && num(b) >= 0) set_lev(num(b)), fx::edited(mod::tid(mod::kMfx, 0, 0));
     else if (same_ci(a, "trim") && trim_word(b) <= 0) set_trim(trim_word(b));
     else if (same_ci(a, "reset")) {
       for (int k = 0; k < kSlots; ++k) ins::set_type(chain(k), slot(k), ins::kOff);
@@ -374,7 +375,7 @@ bool command(const char* p, char* o, int cap) {
         for (int j = 0; j < ins::kEqParams; ++j)
           if (same_ci(b, kK[j])) k = j;
         if (k < 0 || num(v) < 0) return sniprintf(o, cap, "%s", kHelp), true;
-        ins::set_eq(kEqChain, k, num(v));
+        ins::set_eq(kEqChain, k, num(v)), fx::edited(mod::tid(mod::kIns, kEqChain, 8 + k));
       }
     } else if (i >= 0) {
       const int c = chain(i), s = slot(i);
@@ -385,9 +386,10 @@ bool command(const char* p, char* o, int cap) {
         ins::set_type(c, s, t);
         if (ins::control.type[c][s] != t)
           return sniprintf(o, cap, CORE_STR("mfx: %s: %d send TYPEs play on the master at most"), ins::type_name(t), kFxSlots), true;
-      } else if (same_ci(b, "mix") && num(v) >= 0) set_mix(i, num(v));
+      } else if (same_ci(b, "mix") && num(v) >= 0) set_mix(i, num(v)), fx::edited(mod::tid(mod::kMfx, 0, 1 + i));
       else if (same_ci(b, "pair")) set_pair(i, num(v) > 0);
-      else if ((b[0] == 'p' || b[0] == 'P') && b[1] >= '1' && b[1] <= '4' && !b[2] && num(v) >= 0) ins::set_param(c, s, b[1] - '1', num(v));
+      else if ((b[0] == 'p' || b[0] == 'P') && b[1] >= '1' && b[1] <= '4' && !b[2] && num(v) >= 0)
+        ins::set_param(c, s, b[1] - '1', num(v)), fx::edited(mod::tid(mod::kIns, c, s * 4 + b[1] - '1'));
       else return sniprintf(o, cap, "%s", kHelp), true;
     } else {
       return sniprintf(o, cap, "%s", kHelp), true;

@@ -3,6 +3,7 @@
 // no log (the caller logs the reply), no libc beyond string.h (the Pi's hosted side has none).
 #include "fx/send_fx.h"
 
+#include "mod/target.h"
 #include "platform.h"
 
 namespace core {
@@ -92,6 +93,7 @@ bool all_sound_off() {
 uint8_t (*knob_filter)(int slot, int knob, uint8_t v) = nullptr;
 uint8_t (*send_filter)(int track, int slot, uint8_t v) = nullptr;
 void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
+void (*manual_edit)(uint16_t tid, float v) = nullptr;
 void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 static inline uint8_t send(int t, int s, uint8_t v) { return send_filter ? send_filter(t, s, v) : v; }
@@ -337,7 +339,7 @@ CORE_COLD bool command(const char* p, char* r, int max) {
       return true;
     }
     for (int i = 0; i < kTracks; ++i)
-      if (all || i == t) control.send[i][s] = send(i, s, (uint8_t)v);
+      if (all || i == t) control.send[i][s] = send(i, s, (uint8_t)v), edited(mod::tid(mod::kSnd, i, s), (float)v);
     show(r, max);
     return true;
   }
@@ -358,7 +360,8 @@ CORE_COLD bool command(const char* p, char* r, int max) {
       put(r, max, 0, "sendknob=K:I:V (K 1|2, I 0 TYPE or 1..5, V 0..127)");
       return true;
     }
-    control.knob[s][i] = (uint8_t)v;
+    set_knob_base(s, i, (uint8_t)v);   // 0.5.0: through the knob filter (a live entry's base), a manual edit (spec-050 2.5)
+    if (i >= 2) edited(mod::tid(mod::kFx, s, i - 2), (float)v);
     show(r, max);
     return true;
   }

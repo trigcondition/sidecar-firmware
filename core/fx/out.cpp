@@ -6,6 +6,8 @@
 #include <string.h>
 
 #include "fx/out_measure.h"
+#include "fx/send_fx.h"
+#include "mod/target.h"
 #include "platform.h"
 #if CORE_MSAMP
 #include "pool/pcache.h"
@@ -290,6 +292,7 @@ bool command(const char* p, char* o, int cap) {
       return true;
     }
     set_param(vi, k, v);
+    if (k < 3) fx::edited(mod::tid(mod::kOut, vi, k));
   }
   int n = sniprintf(o, cap, "out: ");
   if (n > 0 && n < cap) voice_text(vi, o + n, cap - n);

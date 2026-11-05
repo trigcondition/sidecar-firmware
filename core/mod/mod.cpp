@@ -103,8 +103,12 @@ CORE_COLD void restore(Entry& e) {
 }  // namespace
 
 // the send FX's hook into the layer (fx/send_fx.h; its knob_filter is the LFOs', which forwards here), set before main
+static CORE_COLD void edited(uint16_t t, float v) {
+  if (v < 0) manual_knob(t);
+  else manual(t, v);
+}
 static struct FxHooks {
-  FxHooks() { fx::send_filter = fx_send; }
+  FxHooks() { fx::send_filter = fx_send, fx::manual_edit = edited; }
 } g_fx_hooks;
 
 CORE_COLD void set_source_fn(void (*fn)(uint32_t us, uint32_t dus)) { g_source = fn; }
@@ -145,8 +149,15 @@ CORE_COLD float base(Tid t) {
   const Entry* e = find_e(t);
   return e ? e->base : base_now(t);
 }
-CORE_COLD void manual(Tid, float) {}
-CORE_COLD void fader_moved() {}
+// spec-050 2.5: a Sidecar-side edit of a target the morph holds wins until the fader next moves (never a report's)
+CORE_COLD void manual(Tid t, float v) {
+  Entry* e = find_e(t);
+  if (!e || !e->morph_on) return;
+  e->held = 1, e->manual = v;
+}
+CORE_COLD void fader_moved() {
+  for (Entry& e : used()) e.held = 0;
+}
 
 CORE_COLD void end_tick() {
   for (Entry& e : used()) {
@@ -168,7 +179,8 @@ CORE_COLD void end_tick() {
       }
     } else if (is_offset(k)) {   // the offset itself (the knob / a step lock is the base, where it is applied)
       // under a morph or a held edit: the offset that makes the knob play start + off (the writer clamps the sum)
-      float o = sc ? st + e.off - knob_now(e.t) : e.off;
+      // (held: the edit is the knob itself, so the offset alone)
+      float o = e.morph_on && !e.held ? st + e.off - knob_now(e.t) : e.off;
       int iv = (int)(o + (o < 0 ? -0.5f : 0.5f));
       if ((float)iv != e.applied) {
         put(e.t, (float)iv);

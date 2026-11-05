@@ -53,8 +53,11 @@ float base_of(int vi, int k, float cur);             // a voice parameter's base
 uint8_t knob_base(int slot, int knob);               // send FX knob 0..5 as the kit has it (fx::control.knob plays)
 uint8_t send_base(int track, int slot);              // a track's send as the kit has it (fx::control.send plays)
 void played(int vi, float out[16]);                  // the voice's values as they play (v[vi].p)
-void manual(Tid t, float v);                         // a Sidecar-side manual edit (spec-050 2.5; Task 8)
-void fader_moved();                                  // clears every held flag (Task 8)
+// a Sidecar-side manual edit (spec-050 2.5: the pages, the console, the touchscreen, the web; never a report or a
+// file load): when the morph holds t this tick, the edit plays (v; an offset kind: its knob) until the fader moves
+void manual(Tid t, float v);
+inline void manual_knob(Tid t) { manual(t, knob_now(t)); }   // an offset kind's edit: its knob, now set
+void fader_moved();                                  // every held edit lets go (scene::set_fader)
 const Entry* find(Tid t);
 // worst_us: the slowest whole tick(); flush_us: the slowest flush_voices (a user machine's params call is in it);
 // lookup_us: the slowest base lookup block a caller noted (note_lookup: seq's lock apply, a voice report, the remote

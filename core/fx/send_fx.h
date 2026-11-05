@@ -138,6 +138,13 @@ extern uint8_t (*send_filter)(int track, int slot, uint8_t v);
 void set_knob_base(int slot, int knob, uint8_t v);
 void set_send_base(int track, int slot, uint8_t v);
 extern void (*clock_listener)(uint8_t status, uint16_t spp);
+// 0.5.0 (core/mod/mod.cpp sets it; null without): a Sidecar-side edit of a target (mod::Tid: the pages, the console,
+// the touchscreen and the web, never a report or a file load), so it wins over a scene's morph until the fader moves
+// (spec-050 2.5); v the value set, -1 an offset kind's (its knob, read there)
+extern void (*manual_edit)(uint16_t tid, float v);
+inline void edited(uint16_t tid, float v = -1) {
+  if (manual_edit) manual_edit(tid, v);
+}
 // The FX buses' insert chains (core/fx/insert.h, CORE_POLY builds; null without): FX slot s's return y[n] (stereo, before
 // its TYPE fade and the limits) through bus s's chain, in place. The send FX's core.
 extern void (*bus_insert)(int slot, float (*y)[2], int n);

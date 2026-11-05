@@ -10,6 +10,7 @@
 
 #include "fx/insert.h"
 #include "fx/master.h"
+#include "mod/mod.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
 #include "ui/widgets.h"
@@ -122,19 +123,19 @@ CORE_COLD void mfx_enc(int e, int d, bool func) {
   mp.touched = e;
   const int st = func ? 8 : 1, l = list_turn(e, d);   // the slot, type and switches: lists; the rest values
   if (mp.eq) {
-    if (e < ins::kEqParams) ins::set_eq(master::kEqChain, e, ins::eq_param(master::kEqChain, e) + d * st);
-    else if (e == 7) master::set_lev(master::control.lev + d * st);
+    if (e < ins::kEqParams) ins::set_eq(master::kEqChain, e, ins::eq_param(master::kEqChain, e) + d * st), mod::manual_knob(mod::tid(mod::kIns, master::kEqChain, 8 + e));
+    else if (e == 7) master::set_lev(master::control.lev + d * st), mod::manual_knob(mod::tid(mod::kMfx, 0, 0));
     return;
   }
   const int ch = master::chain(mp.slot), s = master::slot(mp.slot), t = ins::control.type[ch][s];
   if (e < 4) {
-    if (t) ins::set_param(ch, s, e, ins::param(ch, s, e) + d * st);
+    if (t) ins::set_param(ch, s, e, ins::param(ch, s, e) + d * st), mod::manual_knob(mod::tid(mod::kIns, ch, s * 4 + e));
   } else if (e == 4) {
     mp.slot = clampi(mp.slot + l, 0, master::kSlots - 1);
   } else if (e == 5) {
     if (l) ins::set_type(ch, s, master::next_type(mp.slot, t, l));
   } else if (e == 6) {
-    if (master::send_type(t)) master::set_mix(mp.slot, master::control.mix[mp.slot] + d * st);
+    if (master::send_type(t)) master::set_mix(mp.slot, master::control.mix[mp.slot] + d * st), mod::manual_knob(mod::tid(mod::kMfx, 0, 1 + mp.slot));
     else if (t == ins::kAmp && l) master::set_pair(mp.slot, l > 0);
   } else if (e == 7) {
     if (l) master::set_src(l > 0 ? master::kMix : master::kRet);

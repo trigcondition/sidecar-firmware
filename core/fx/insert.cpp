@@ -8,6 +8,7 @@
 #include "fx/master.h"
 #include "fx/out.h"
 #include "fx/send_fx.h"
+#include "mod/target.h"
 #include "platform.h"
 
 namespace core {
@@ -565,7 +566,7 @@ bool command(const char* p, char* o, int cap) {
       sniprintf(o, cap, "%s", kHelp);
       return true;
     }
-    set_send(c, bus, v);
+    set_send(c, bus, v), fx::edited(mod::tid(mod::kIsnd, c, bus));
     sniprintf(o, cap, CORE_STR("ins: %s send %d/%d/%d"), kChainNames[c], g_send_knob[c][0], g_send_knob[c][1], g_send_knob[c][2]);
     return true;
   }
@@ -587,7 +588,7 @@ bool command(const char* p, char* o, int cap) {
         sniprintf(o, cap, "%s", kHelp);
         return true;
       }
-      set_eq(c, k, v);
+      set_eq(c, k, v), fx::edited(mod::tid(mod::kIns, c, 8 + k));
     }
     const Labels& L = eq_labels();
     char v4[kEqParams][8];
@@ -624,7 +625,7 @@ bool command(const char* p, char* o, int cap) {
       sniprintf(o, cap, "%s", kHelp);
       return true;
     }
-    set_param(c, s, key[1] - '1', v);
+    set_param(c, s, key[1] - '1', v), fx::edited(mod::tid(mod::kIns, c, s * 4 + key[1] - '1'));
   } else {
     sniprintf(o, cap, "%s", kHelp);
     return true;

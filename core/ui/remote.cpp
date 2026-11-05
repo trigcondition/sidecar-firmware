@@ -558,6 +558,7 @@ CORE_COLD bool go_back() {
 }
 
 CORE_COLD void set_param(int vi, int k, int nv) {
+  mod::manual(mod::tid(mod::kV, vi, k), (float)nv);   // 0.5.0: a page edit wins over a scene's morph (spec-050 2.5)
   V& x = v[vi];
   int m = machine_of_voice(vi);
   if (s.held_m[vi] != m) s.held[vi] = 0, s.held_m[vi] = (uint8_t)m;
