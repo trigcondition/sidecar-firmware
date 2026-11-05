@@ -544,6 +544,17 @@ int main() {
   CHECK(um::json_copy(js, sizeof js) > 0);
   std::string j = js;
   CHECK(j.find("\"api\":3") != std::string::npos && j.find("\"plugpool\":[67108864,") != std::string::npos);
+  // the package list says each package's own API (a dual one's header says 2) and marks the effects
+  auto entry = [&](const char* id) {
+    size_t a = j.find(std::string("{\"t\":\"plugin\",\"id\":\"") + id + "\"");
+    CHECK(a != std::string::npos);
+    return j.substr(a, j.find('}', a) - a);
+  };
+  CHECK(entry("rytm.api3_test").find("\"api\":3") != std::string::npos && entry("rytm.api3_test").find("effect") == std::string::npos);
+  CHECK(entry("rytm.api3_initcrash").find("\"api\":3") != std::string::npos);
+  CHECK(entry("rytm.api3_only").find("\"api\":3") != std::string::npos);
+  CHECK(entry("fx.pingpong").find("\"api\":3,\"effect\":true") != std::string::npos);
+  CHECK(entry("fx.api3_fx").find("\"effect\":true") != std::string::npos);
   // ---- N5: a send slot's state not called for blocks: edges from before are not news, its own block's are
   {
     float x[12] = {0}, y[12][2];

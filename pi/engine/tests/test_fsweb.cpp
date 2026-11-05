@@ -420,6 +420,34 @@ int main() {
     CHECK(r.status == 422);
   }
 
+  // Plugin API 3 packages (core/tests/api3_pkgs: the probe machines, dual and API 3 only, the test effect and PINGPONG):
+  // each taken; one whose header's API 3 flags do not match its tables refused
+  {
+    const char* dir = "../../../core/tests/api3_pkgs";
+    const char* names[] = {"api3_test", "api3_only", "api3_initcrash", "api3_stereo", "api3_poly", "api3_fx", "ufx_pingpong"};
+    for (const char* n : names) {
+      std::vector<uint8_t> p3 = slurp((std::string(dir) + "/" + n + ".a64.rmp").c_str());
+      CHECK(!p3.empty());
+      std::string to = std::string("/Plugins/") + n + ".rmp";
+      r = upload(to.c_str(), p3);
+      if (r.status != 200) fprintf(stderr, "%s: %d %s\n", n, r.status, r.msg);
+      CHECK(r.status == 200);
+      CHECK(fsweb::check_package(B, to.c_str(), p3.size()) == nullptr);
+    }
+    std::vector<uint8_t> fx = slurp((std::string(dir) + "/api3_fx.a64.rmp").c_str());
+    uint32_t fl;
+    memcpy(&fl, fx.data() + 68, 4);   // rmp_header.flags (after magic 4, format 2, api 2, id 32, 7 words)
+    CHECK(fl & 0x2000u);              // RMP_HF_EFFECT
+    fl &= ~0x2000u;
+    memcpy(fx.data() + 68, &fl, 4);
+    r = upload("/Plugins/fxflags.rmp", fx);
+    CHECK(r.status == 422 && strstr(r.msg, "API 3 flags do not match"));
+    std::vector<uint8_t> api = slurp((std::string(dir) + "/api3_only.a64.rmp").c_str());
+    api[6] = 2;   // the header says api 2, the entry table 3
+    r = upload("/Plugins/apimix.rmp", api);
+    CHECK(r.status == 422 && strstr(r.msg, "entry table is not a plugin's"));
+  }
+
   // each entry's date and time (FatFs's fdate / ftime: "YYYY-MM-DD HH:MM", "" when none was written)
   {
     char t[20];

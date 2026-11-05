@@ -2824,7 +2824,9 @@ void publish() {
     const Pkg& e = g_pkg[i];
     j.put("{\"t\":\"plugin\",\"id\":"); j.str(e.id[0] ? e.id : "?");
     j.put(",\"ver\":"); j.str(vstr(e.version, vb));
-    j.put(","); j.num("size", e.size); j.put(","); j.num("api", e.api); j.put(","); j.num("image", e.image);
+    j.put(","); j.num("size", e.size); j.put(","); j.num("api", (e.hflags & RMP_HF_API3) ? 3u : (uint32_t)e.api);   // (a dual package's header says 2)
+    if (e.hflags & RMP_HF_EFFECT) j.put(",\"effect\":true");   // (API 3: a user effect, UFX1..UFX4; never a machine)
+    j.put(","); j.num("image", e.image);
     j.put(","); j.num("bss", e.bss); j.put(","); j.num("state", e.state); j.put(","); j.num("cpu", e.cpu);
     uint32_t ns = 0, nb = 0;   // measured: the slowest slot playing it
     for (int s = 0; s < kSlots; ++s)

@@ -458,6 +458,14 @@ def um():
                   "state": 4096, "cpu": cpu, "ns": 1830 + 900 * i if played else 0, "blocks": 52000 if played else 0,
                   "name": nm, "slots": [1] if nm == "GRAIN" else [2] if nm == "ACID" else [], "fit": True, "why": "",
                   "file": "/Plugins/%s.rmp" % id_.replace(".", "_"), "target": "a64", "fp": 1000 + i, "status": "ok"})
+    # Plugin API 3: a dual machine and a user effect (an effect is never offered for a U slot)
+    for id_, nm, eff in (("rytm.api3_test", "API3 TEST", False), ("fx.pingpong", "PINGPONG", True)):
+        e = {"t": "plugin", "id": id_, "ver": "1.0.0", "size": 4408, "api": 3, "image": 4096, "bss": 0, "state": 48, "cpu": 20,
+             "ns": 0, "blocks": 0, "name": nm, "slots": [], "fit": True, "why": "", "file": "/Plugins/%s.rmp" % id_.replace(".", "_"),
+             "target": "a64", "fp": 3000 + len(a), "status": "ok"}
+        if eff:
+            e["effect"] = True
+        a.append(e)
     fps = {id_: 1000 + i for i, (id_, _, _) in enumerate(names)}
     nms = {id_: nm for id_, nm, _ in names}
     for n in range(1, 6):
