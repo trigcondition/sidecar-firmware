@@ -104,10 +104,11 @@ struct MidiConfig {
                                // menu's order]; on by default (the Rytm's)
   uint8_t track_ch[kTracks];   // 1..16
   uint8_t fx_ch, auto_ch;      // 1..16 (auto: 14, learned from the PC the Rytm sends at PLAY)
-  uint8_t perf_ch;             // 0.5.0: the PERF channel 1..16 (15 the Rytm's default; GLOBAL X kGlobalPerfCh)
+  uint8_t perf_ch;             // 0.5.0: the PERF channel 1..16, 0 OFF (15 the Rytm's default; GLOBAL X kGlobalPerfCh)
 };
-// GLOBAL X's PERF CHANNEL byte: not located yet (plan-050 Task 12 Step 1, the emulator dump): -1 keeps the default 15
-constexpr int kGlobalPerfCh = -1;
+// GLOBAL X (0x6D) unpacked payload byte 27 = PERF CHANNEL - 1 (0..15), 0xff = OFF [measured, rytm-emu, OS 1.73 and 1.74:
+// notes scenes050]; byte 11 = AUTO CHANNEL - 1 [inferred: 0x0d with AUTO 14, not varied]
+constexpr int kGlobalPerfCh = 27, kGlobalAutoCh = 11;
 void config_default(MidiConfig* c);   // the Rytm's defaults (channels 1..12, FX 13, auto 14, PERF 15), not valid
 bool parse_global(const uint8_t* u, int n, MidiConfig* c);
 // the MIDI CONFIG as known now: the last GLOBAL dump's (song arming fetches it), else the defaults with the auto channel

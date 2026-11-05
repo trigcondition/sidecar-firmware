@@ -58,6 +58,7 @@ static std::vector<uint8_t> payload(int n, int seed) {
 static std::vector<uint8_t> global_payload(bool good) {
   uint8_t u[80] = {};
   for (int t = 0; t < 13; ++t) u[12 + t] = (uint8_t)t;
+  u[11] = 13, u[25] = u[26] = 0xff, u[27] = 14;   // AUTO 14, PERF 15 (the stock dump's bytes, rytm-emu: notes scenes050)
   u[32] = good ? 0 : 1;          // PARAM OUTPUT: NRPN / CC
   u[35] = 1, u[36] = 1, u[37] = good, u[38] = 1;
   u[44] = good, u[46] = good;    // ENCODER DEST, OUTPUT CH
@@ -298,13 +299,13 @@ static void test_json() {
     config_default(&d);
     CHECK(d.perf_ch == 15);
     unpack7(gp.data(), (int)gp.size(), u, sizeof u);
-    if (kGlobalPerfCh >= 0) {
-      u[kGlobalPerfCh] = 8;
-      CHECK(parse_global(u, 80, &d) && d.perf_ch == 9);
-    } else {
-      CHECK(parse_global(u, 80, &d) && d.perf_ch == 15);
-      printf("song: GLOBAL X's PERF CHANNEL byte not located yet (kGlobalPerfCh -1): PERF CCs on channel 15\n");
-    }
+    CHECK(kGlobalPerfCh == 27);
+    u[kGlobalPerfCh] = 8;
+    CHECK(parse_global(u, 80, &d) && d.perf_ch == 9);
+    u[kGlobalPerfCh] = 0xff;   // PERF CHANNEL OFF
+    CHECK(parse_global(u, 80, &d) && d.perf_ch == 0);
+    u[kGlobalAutoCh] = 12;     // AUTO CHANNEL 13
+    CHECK(parse_global(u, 80, &d) && d.auto_ch == 13);
   }
   printf("json: round trip, incremental read, journal recovery, base64, dumps, MIDI CONFIG ok\n");
 }

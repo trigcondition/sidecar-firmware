@@ -48,7 +48,10 @@ CORE_COLD void send(int slot, int v) {
   } else if (slot == 0) {
     cc(ch_or(c.auto_ch, 14), kSceneCc, v);
   } else {
-    cc(ch_or(c.perf_ch, 15), kPerfCc[slot - 1], v);
+    // the PERF channel as the Rytm's GLOBAL says; OFF, or no GLOBAL read yet: the auto channel, which the Rytm always
+    // takes a PERF CC on [measured, rytm-emu: notes scenes050] (a PERF channel guessed wrong is not taken at all)
+    int ch = c.valid && c.perf_ch >= 1 && c.perf_ch <= 16 ? c.perf_ch : ch_or(c.auto_ch, 14);
+    cc(ch, kPerfCc[slot - 1], v);
   }
 }
 CORE_COLD void offer(int slot, int v, uint32_t ms) {

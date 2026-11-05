@@ -93,7 +93,7 @@ static void scn_zero_sent() {
   scene::set_ab(0, 0);   // A == B: both at their values
   scene::lock(0, T("RYTM:PERF2"), 0);
   run_ms(5);
-  CHECK(count({0xBD, 92, 12}) == 1 && count({0xBE, 36, 0}) == 1);   // scene 12 (CC 92 1..12 selects); PERF2 at 0 sent
+  CHECK(count({0xBD, 92, 12}) == 1 && count({0xBD, 36, 0}) == 1);   // scene 12 (CC 92 1..12 selects); PERF2 at 0 sent
   printf("rytm out: a lock at 0 is sent; A 0 / B 5 sends one CC 92 = 0 back at A\n");
 }
 
@@ -103,18 +103,47 @@ static void perf_follow_rate_limited() {
   scene::set_ab(0, 1);
   run_ms(5);
   sweep(0, 16383, 100);
-  int n100 = count_cc(0xBE, 39);   // PERF4 = CC 39 on ch 15
+  int n100 = count_cc(0xBD, 39);   // PERF4 = CC 39; no GLOBAL read: on the auto channel (14)
   run_ms(40);
-  int last = -1, n = count_cc(0xBE, 39, &last);
+  int last = -1, n = count_cc(0xBD, 39, &last);
   printf("rytm out: PERF4 follow over a 100 ms sweep: %d messages (then %d), the last %d\n", n100, n, last);
   CHECK(n100 > 5 && n100 <= 21 && last == 127);
   int prev = -1;
   for (const Msg& o : g_out)
-    if (o.size() == 3 && o[0] == 0xBE && o[1] == 39) {
+    if (o.size() == 3 && o[0] == 0xBD && o[1] == 39) {
       CHECK((int)o[2] > prev);
       prev = o[2];
     }
   printf("rytm out: a macro follows at most every 5 ms, its last value sent\n");
+}
+
+// review M4 (rytm-emu, notes scenes050): the PERF channel as GLOBAL says; PERF OFF or none read: the auto channel;
+// CC 92 = 1..12 selects a scene, 0 clears
+static void perf_channel_from_global() {
+  song::MidiConfig c;
+  song::config_default(&c);
+  c.valid = true, c.perf_ch = 15;
+  song::set_midi_config(c);
+  fresh();
+  CHECK(scene::lock(0, T("RYTM:PERF1"), 100 * 128) && scene::lock(0, T("RYTM:SCN"), 7 * 128));
+  scene::set_ab(0, 0);
+  run_ms(5);
+  CHECK(count({0xBE, 35, 100}) == 1 && count({0xBD, 92, 7}) == 1);   // PERF on 15, the scene on the auto channel
+  c.perf_ch = 0;   // PERF CHANNEL OFF
+  song::set_midi_config(c);
+  fresh();
+  CHECK(scene::lock(0, T("RYTM:PERF1"), 100 * 128));
+  scene::set_ab(0, 0);
+  run_ms(5);
+  CHECK(count({0xBD, 35, 100}) == 1 && count_cc(0xBE, 35) == 0);   // OFF: the auto channel
+  fresh();
+  CHECK(scene::lock(0, T("RYTM:SCN"), 0));
+  scene::set_ab(0, 0);
+  run_ms(5);
+  CHECK(count({0xBD, 92, 0}) == 1);   // 0 clears the Rytm's scene
+  song::config_default(&c);
+  song::set_midi_config(c);
+  printf("rytm out: PERF on GLOBAL's PERF channel, else (OFF, not read) the auto channel\n");
 }
 
 static void host_cmd_replaces_ccs() {
@@ -198,6 +227,7 @@ int main() {
   scn_fires_once_at_halfway();
   scn_zero_sent();
   perf_follow_rate_limited();
+  perf_channel_from_global();
   host_cmd_replaces_ccs();
   mute_fallback_per_track_channel();
   ack_refused_falls_back();
