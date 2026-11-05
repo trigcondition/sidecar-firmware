@@ -216,6 +216,33 @@ static void fader_move_alone_not_dirty() {
   printf("scene file: a fader move alone does not make the file dirty\n");
 }
 
+// review M2: the fader's position goes out with a kit change (no edit needed); a kit's F is reached over 20 ms
+static void fader_saved_on_kit_change() {
+  kit(6);
+  lk(1, "V6:P1", 10);
+  scene::set_fader(0, scene::kConsole);
+  scene::save_due();
+  flush();
+  CHECK(rd("/.rytm/scene/SCM/k007.txt").find("F 0\n") != std::string::npos);
+  scene::set_fader(16383, scene::kConsole);
+  run_ms(30);
+  CHECK(!scene::dirty());
+  kit(7);   // away: kit 7's file gets its position
+  flush();
+  CHECK(rd("/.rytm/scene/SCM/k007.txt").find("F 16383\n") != std::string::npos);
+  CHECK(rd("/.rytm/scene/SCM/k008.txt") == "<none>");   // (kit 8: no file, no locks - no file for a position)
+  scene::set_fader(0, scene::kConsole);
+  run_ms(30);
+  CHECK(scene::fader_played() == 0);
+  kit(6);   // back: F 16383, the played fader smoothed to it
+  CHECK(scene::state().fader == 16383 && scene::fader_played() == 0);
+  run_ms(10);
+  CHECK(scene::fader_played() > 4000 && scene::fader_played() < 12000);
+  run_ms(15);
+  CHECK(scene::fader_played() == 16383);
+  printf("scene file: the fader's position saved at a kit change, a kit's F reached over 20 ms\n");
+}
+
 static void large_file_queued() {
   kit(3);
   for (int n = 0; n < scene::kScenes; ++n)
@@ -297,6 +324,7 @@ int main() {
   unknown_line_locks_file();
   save_mid_morph_stores_knobs();
   fader_move_alone_not_dirty();
+  fader_saved_on_kit_change();
   large_file_queued();
   kit_record_with_big_scene_file();
   store_entries_headroom();

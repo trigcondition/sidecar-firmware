@@ -71,6 +71,8 @@ int g_kit = -1;        // the kit the scenes are of (0..127), -1 none named
 int g_rytm_kit = -1;   // the Rytm's active kit as it last said (kit_changed)
 bool g_dirty = false, g_locked = false;
 uint32_t g_dirty_ms = 0;
+int g_file_fader = -1;
+bool g_said = false;     // a locked file's "not saved" logged (once a load, review L8)   // the F the kit's file has (loaded or saved), -1 none (review M2)
 constexpr uint32_t kTextMax = 20480;   // 768 locks of the longest names: ~18 KB
 char g_text[kTextMax];
 
@@ -117,7 +119,7 @@ CORE_COLD bool take_line(const char* b) {
     g_st.a = (int8_t)(a - 1), g_st.b = (int8_t)(c - 1);
   } else if (!strcmp(k, "F")) {
     if (!num(&p, &a) || a > kFaderMax) return false;
-    g_st.fader = (uint16_t)a, g_played = g_from = (int)a;
+    g_st.fader = (uint16_t)a, g_file_fader = (int)a;   // (load smooths the played fader to it)
   } else if (!strcmp(k, "S")) {
     if (!num(&p, &a) || a < 1 || a > kScenes) return false;
     g_st.sel = (int8_t)(a - 1);
@@ -425,7 +427,16 @@ CORE_COLD int json(char* o, int cap) {
   return n >= cap ? cap : n;
 }
 CORE_COLD int kit() { return g_kit; }
+// spec 2.8: the fader's position goes out with a kit change or a project leave, though a fader move alone is no edit (a
+// kit with a file or locks: a kit with neither gets no file for its position alone)
+static CORE_COLD bool fader_owed() {
+  if (g_locked) return false;
+  bool any = g_file_fader >= 0;
+  for (const Scene& sc : g_st.s) any = any || sc.n;
+  return any && g_st.fader != g_file_fader;
+}
 CORE_COLD void save_due() {
+  if (!g_dirty && fader_owed()) g_dirty = true;
   if (g_dirty) g_dirty_ms = now_ms() - 1000;
 }
 
@@ -439,6 +450,8 @@ CORE_COLD void want_files() {
 CORE_COLD void load() {
   mod::restore_morphs();   // the old scenes' targets back to their bases now (an A / B of full scenes stays in kEntries)
   clear_state();
+  const uint16_t was = g_st.fader;
+  g_file_fader = -1, g_said = false;
   g_locked = g_dirty = false;
   strcpy(g_proj, project);   // the scenes are this project's and the Rytm's kit's from now on
   g_kit = g_rytm_kit;
@@ -468,6 +481,7 @@ CORE_COLD void load() {
     else ++bad;
   }
   if (bad && own) g_locked = true;
+  if (g_st.fader != was) g_from = g_played, g_set_ms = now_ms();   // a file's F: reached over 20 ms, never one tick (M2)
   g_last_a = g_st.a, g_last_b = g_st.b;   // (restored above: nothing of the old A / B to release)
   g_upper = g_played >= kFaderMax / 2 + 1;
   log(CORE_STR("scene: %d lines from %s%s"), n, fn,
@@ -482,7 +496,8 @@ static CORE_COLD bool save_text(bool queue) {
   name_of(g_proj, fn, sizeof fn, g_kit);
   if (g_locked) {   // 1042
     g_dirty = false;
-    log(CORE_STR("scene: %s not saved: it has lines this build does not read (kept as it is)"), fn);
+    if (!g_said) log(CORE_STR("scene: %s not saved: it has lines this build does not read (kept as it is)"), fn);
+    g_said = true;
     return true;
   }
   uint32_t n = to_text();
@@ -501,12 +516,13 @@ static CORE_COLD bool save_text(bool queue) {
     memcpy(p, g_text, n);
     if (!fmt::post_end(fn, n)) return false;
   }
-  g_dirty = false;
+  g_dirty = false, g_file_fader = g_st.fader;
   return true;
 }
 CORE_COLD bool save() { return save_text(false); }
 
 CORE_COLD void project_changed() {
+  if (!g_dirty && fader_owed()) g_dirty = true;   // the fader's position too (spec 2.8)
   if (g_dirty) g_dirty_ms = now_ms() - 1000, save_text(true);   // the old one's edits first, into its own file
   load();
 }
