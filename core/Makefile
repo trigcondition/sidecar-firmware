@@ -170,6 +170,8 @@ print-src:
 	@echo "ENG_INC=$(ENG_INC)"
 	@echo "ENG_FLAGS=$(ENG_FLAGS)"
 	@echo "RMPSRC=$(RMPSRC)"
+	@echo "HOT_O3=$(HOT_O3)"
+	@echo "HOT_O3_ENG=$(HOT_O3_ENG)"
 .PHONY: print-src
 test: teensy-cfg $(patsubst %,%.run,$(filter-out $(TIMING_TESTS),$(ALL_TESTS))) $(TIMING_TESTS)
 	@set -e; for t in $(TIMING_TESTS); do ./$$t > $$t.log 2>&1 || { cat $$t.log; echo "FAILED: $$t"; exit 1; }; done
