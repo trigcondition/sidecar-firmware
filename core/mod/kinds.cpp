@@ -10,6 +10,7 @@
 #include "fx/insert.h"
 #include "fx/master.h"
 #include "fx/out.h"
+#include "mod/rytm_out.h"
 #endif
 
 namespace core {
@@ -198,6 +199,10 @@ CORE_COLD void put(Tid t, float val) {
     case kSnd: fx::control.send[i % fx::kTracks][p & 1] = (uint8_t)val; break;
     case kIsnd: ins::send_offset(i, p, (int)val); break;
     case kMfx: master::mod_offset(p, (int)val); break;
+    case kRytm:   // the Rytm's own scene / a PERF macro (spec-050 2.7: never the kit), on change, at most every 5 ms
+      if (p == 0) rytm_scene((int)val);
+      else rytm_perf(p, (int)val);
+      break;
 #endif
     default: break;
   }

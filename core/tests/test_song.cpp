@@ -291,6 +291,21 @@ static void test_json() {
   unpack7(gp.data(), (int)gp.size(), u, sizeof u);
   parse_global(u, 80, &c);
   CHECK((config_wrong(c) & 15) == 0);
+  // 0.5.0 parse_global_perf_ch: the PERF channel (core/mod/rytm_out.cpp's PERF CCs) - 15 by default; once GLOBAL X's byte
+  // is located (plan-050 Task 12 Step 1, the emulator) a dump saying 8 there is channel 9
+  {
+    MidiConfig d = {};
+    config_default(&d);
+    CHECK(d.perf_ch == 15);
+    unpack7(gp.data(), (int)gp.size(), u, sizeof u);
+    if (kGlobalPerfCh >= 0) {
+      u[kGlobalPerfCh] = 8;
+      CHECK(parse_global(u, 80, &d) && d.perf_ch == 9);
+    } else {
+      CHECK(parse_global(u, 80, &d) && d.perf_ch == 15);
+      printf("song: GLOBAL X's PERF CHANNEL byte not located yet (kGlobalPerfCh -1): PERF CCs on channel 15\n");
+    }
+  }
   printf("json: round trip, incremental read, journal recovery, base64, dumps, MIDI CONFIG ok\n");
 }
 

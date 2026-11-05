@@ -1332,6 +1332,10 @@ def decode_fxin_state(payload):
 SEQ_TICK, SEQ_STATE, SEQ_MASK, SEQ_PAGE_LEDS = 0x2C, 0x2D, 0x2E, 0x2F
 SEQ_TRANSPORT, SEQ_PATTERN, SEQ_SWITCH, SEQ_MUTES, SEQ_REC, SEQ_TEMPO, SEQ_SEQMODE, SEQ_POS = 1, 2, 3, 5, 6, 7, 8, 9
 SEQ_SCALE, SEQ_EDIT, SEQ_DIRTY, SEQ_FILL, SEQ_SOLO = 4, 0x0A, 0x0B, 0x0C, 0x0D
+# 0.5.0 (core/mod/rytm_out.h): host -> Rytm HOST_CMD 01 <op> ... (01 MUTE <set lo7> <set hi5> <clr lo7> <clr hi5>,
+# 02 SCENE <n>, 03 PERF <macro> <value>); the mod answers 2D 01 HOST_ACK <op> <status>. 0x5A proposed, confirmed in
+# plan-050 Task 47 (the flash); the hello's caps bit HOST_CMD_CAPS says the mod has it. 2D 01 0E QPERF, 0F SCENE: Task 47
+HOST_CMD, HOST_ACK, HOST_CMD_CAPS = 0x5A, 0x10, 16
 SEQ_SILENT = 0x46
 SEQ_FLAG_NO_PIN = 4
 SEQ_EDIT_OPS = {1: "COPY PAT", 2: "PASTE PAT", 3: "CLEAR PAT", 4: "UNDO PAT", 5: "COPY TRK", 6: "PASTE TRK",

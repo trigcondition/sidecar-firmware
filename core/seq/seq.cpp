@@ -16,6 +16,7 @@
 #include "inst.h"
 #include "lfo.h"
 #include "mod/mod.h"
+#include "mod/rytm_out.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "platform.h"
@@ -2045,6 +2046,10 @@ CORE_COLD void on_state(const uint8_t* a, int n) {
     case kRec:
       if (n < 3) break;
       rec_live = a[1] != 0, rec_grid = a[2] != 0;
+      return;
+    case kHostAck:   // 2D 01 10 <op> <status>: the mod command done (0) or refused (core/mod/rytm_out.h)
+      if (n < 3) break;
+      mod::rytm_ack(a[1], a[2]);
       return;
     case kTempo: {
       if (n < 4) break;

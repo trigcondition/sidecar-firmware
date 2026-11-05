@@ -1291,6 +1291,9 @@ void publish_lanes() {
 
 }  // namespace
 
+const MidiConfig& midi_config() { return eng().cfg; }
+void set_midi_config(const MidiConfig& c) { eng().cfg = c; }
+
 CORE_COLD const char* state_name(int s) {
   static const char* const k[] = {"off", "arming", "armed", "recording", "saving", "confirm", "restoring", "replay ready",
                                   "replaying", "loading", "undoing"};

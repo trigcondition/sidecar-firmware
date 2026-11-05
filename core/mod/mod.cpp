@@ -9,6 +9,7 @@
 
 #include "fx/send_fx.h"
 #include "lfo.h"
+#include "mod/rytm_out.h"
 #include "mod/scene.h"
 #include "platform.h"
 #include "voices.h"
@@ -264,6 +265,9 @@ static CORE_COLD void tick_body(uint32_t us) {
     scene::tick(now_ms());            // the morph: a value for each lock of A and B (core/mod/scene.h)
 #endif
     end_tick();
+#if CORE_POLY
+    rytm_out_tick(now_ms());          // the Rytm's scene / macros whose 5 ms have passed (core/mod/rytm_out.h)
+#endif
   }
   flush_voices();
 }
@@ -407,6 +411,9 @@ CORE_COLD void reset() {
   for (Entry& e : g_e) e = Entry();
   memset(g_ix, 0, sizeof g_ix);
   g_hi = 0, g_source = nullptr;
+#if CORE_POLY
+  rytm_out_reset();
+#endif
   g_started = false, g_last_us = 0, g_vdirty = 0;
   for (uint32_t& m : g_user_ms) m = 0;
   g_stats = Stats();

@@ -15,6 +15,7 @@
 #include "keys.h"
 #include "lfo.h"
 #include "mod/mod.h"
+#include "mod/rytm_out.h"
 #include "mod/scene.h"
 #include "machines.h"
 #include "midim/midim.h"
@@ -1521,6 +1522,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         // What the hello invalidates on the Rytm's side is sent again, as after an open.
         s.sent_valid = false, s.mask_valid = false, s.echo_valid = false, s.leds_on = false, s.clock_set = false;
         s.caps36 = (b[2] & 1) != 0, s.caps = b[2];
+        mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
         core::log("rui: hello, Rytm up %d.%d s, caps %d, page opened %d ms ago: kept", up / 20, (up % 20) / 2, b[2],
                   (int)(s.now_ms - s.open_ms));
         src_names_resend();
@@ -1531,6 +1533,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       s.src_track = -1, s.src_told = -1, s.splash = false, s.clock_set = false;
       tap_enable(false);
       s.caps36 = (b[2] & 1) != 0, s.caps = b[2];
+      mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
       keys_map_drop(), s.map_over = false;   // (a release lost with the link: no map left up)
       // A status popup goes with the old link. The pairing code's modal does not: it is owed until it has been on
       // this Rytm's screen, and a hello arriving while it was owed or up (the Rytm restarting, or saying hello again
