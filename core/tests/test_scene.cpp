@@ -346,6 +346,58 @@ static void page_edit_holds_offset_kind() {   // MFX:LEV: a console / page edit 
   printf("scene: a console edit of an offset kind holds; a file load does not\n");
 }
 
+// ---- Task 11: the console and /status (spec-050 2.10)
+static std::string say(const char* line) {
+  char o[600];
+  CHECK(scene::command(line, o, sizeof o));
+  return o;
+}
+static void console_round_trip() {
+  scene_reset_with_base(40);
+  CHECK(say("scene").find("scene: A 0 B 0 fader 0") == 0);
+  CHECK(say("scene=lock:3:V1:P3:50").find("S3 1 lock") != std::string::npos);
+  CHECK(scene::state().s[2].n == 1 && scene::state().s[2].l[0].t == T("V1:P3") && scene::state().s[2].l[0].v == 6400);
+  say("scene=lock:3:MFX:LEV:100.5");
+  CHECK(scene::state().s[2].l[1].t == T("MFX:LEV") && scene::state().s[2].l[1].v == 12864);
+  say("scene=lock:7:RYTM:SCN:5");
+  std::string s = say("scene=ab:3:7");
+  CHECK(s.find("A 3 B 7") != std::string::npos && scene::state().a == 2 && scene::state().b == 6);
+  CHECK(say("scene=fader:8192").find("fader 8192") != std::string::npos && scene::state().fader == 8192);
+  CHECK(say("scene=sel:7").find("sel 7") != std::string::npos && scene::state().sel == 6);
+  say("scene=copy:3:5");
+  CHECK(scene::state().s[4].n == 2);
+  CHECK(say("scene=unlock:5:V1:P3").find("S5 1 lock") != std::string::npos && scene::state().s[4].n == 1);
+  say("scene=clear:5");
+  CHECK(scene::state().s[4].n == 0);
+  CHECK(say("scene=edit:on").find("edit on") != std::string::npos && scene::edit());
+  say("scene=edit:off");
+  CHECK(!scene::edit());
+  for (const char* bad : {"scene=ab:13:1", "scene=lock:1:ZZ1:Q:3", "scene=fader:20000", "scene=lock:1:V1:P1:200",
+                          "scene=sel:0", "scene=unlock:9:V1:P1", "scene=edit:maybe", "scene=what"})
+    CHECK(say(bad).find("cannot") != std::string::npos);
+  for (int k = 0; k < 64; ++k) scene::lock(9, mod::tid(mod::kV, k / 16, k % 16), 0);
+  CHECK(say("scene=lock:10:FX1:P2:3").find("SCENE FULL") != std::string::npos);
+  char o[200];
+  CHECK(!scene::command("scenex", o, sizeof o) && !scene::command("mod", o, sizeof o));
+  // the JSON: the fields, the scenes with locks only, closed; a full 768-lock state fits 16 KB
+  static char js[16384];
+  int n = scene::json(js, sizeof js);
+  CHECK(n > 0 && n < (int)sizeof js);
+  std::string j(js, (size_t)n);
+  printf("scene: json %.160s...\n", js);
+  CHECK(j.find("\"scene\":{\"a\":3,\"b\":7,\"fader\":8192,") == 0 && j.find("\"sel\":7,\"locked\":0,\"edit\":0,\"s\":[") != std::string::npos);
+  CHECK(j.find("{\"n\":3,\"l\":[[\"V1:P3\",6400],[\"MFX:LEV\",12864]]}") != std::string::npos && j.find("{\"n\":5,") == std::string::npos);
+  CHECK(j.compare(j.size() - 3, 3, "]}}") == 0 || j.compare(j.size() - 2, 2, "]}") == 0);
+  for (int sc = 0; sc < scene::kScenes; ++sc)
+    for (int k = 0; k < scene::kLocks; ++k)
+      scene::lock(sc, k < 48 ? mod::tid(mod::kIns, k / 12 + sc % 9, k % 12) : mod::tid(mod::kRytm, 0, (k - 48) % 13), 16383);
+  n = scene::json(js, sizeof js);
+  printf("scene: json of the fullest state: %d bytes\n", n);
+  CHECK(n > 0 && n < (int)sizeof js);
+  scene::reset();
+  printf("scene: the console's lines round trip; the JSON\n");
+}
+
 static void loaded() {
   for (int i = 0; i < 100000 && project_loading(); ++i) idle_save();
   CHECK(!project_loading());
@@ -375,6 +427,7 @@ int main() {
   manual_wins_until_fader_moves();
   rytm_reports_never_hold();
   page_edit_holds_offset_kind();
+  console_round_trip();
   printf("test_scene: PASS\n");
   return 0;
 }

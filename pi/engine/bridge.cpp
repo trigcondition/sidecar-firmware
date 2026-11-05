@@ -8,6 +8,7 @@
 #include "md/md.h"   // the built-in MD's cost (poly_json)
 #include "lfo.h"
 #include "mod/mod.h"
+#include "mod/scene.h"
 #include "device/device.h"
 #include "fx/insert.h"
 #include "fx/master.h"
@@ -251,6 +252,8 @@ bool lfo_command(const char* p, char* out, int cap) { return core::lfo::command(
 int lfo_json(char* out, int cap) { return core::lfo::json(out, cap); }
 bool mod_command(const char* p, char* out, int cap) { return core::mod::command(p, out, cap); }
 int mod_json(char* out, int cap) { return core::mod::json(out, cap); }
+bool scene_command(const char* p, char* out, int cap) { return core::scene::command(p, out, cap); }
+int scene_json(char* out, int cap) { return core::scene::json(out, cap); }
 int poly_json(char* out, int cap) {
   int n = core::seq::poly_json(out, cap);
   if (n > 0 && n + 2 < cap) {

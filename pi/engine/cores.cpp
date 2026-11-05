@@ -664,6 +664,10 @@ void CEngineCores::Command (const char *p)
 	{
 		L->Write (From, LogNotice, "%s", Mo);
 	}
+	else if (char Sc[400]; bridge::scene_command (p, Sc, sizeof Sc))	// scene, scene=...: the morph scenes (core/mod/scene.h)
+	{
+		L->Write (From, LogNotice, "%s", Sc);
+	}
 	else if (sendfx_pi::Command (p))		// sendfx, sendfxout=, sendlvl=, sendknob= (sendfx_pi.h)
 	{
 	}

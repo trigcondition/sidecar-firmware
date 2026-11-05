@@ -71,5 +71,16 @@ bool dirty();
 bool locked();
 int kit();                                  // the kit the scenes are of, -1 none named
 
+// ---- the MORPH page's EDIT (spec-050 2.6: hold a scene key and turn a knob on any Sidecar page locks it; Phase 6)
+void set_edit(bool on);
+bool edit();
+// ---- the console and /status (spec-050 2.10): "scene" (the state), "scene=ab:A:B" (1..12, 0 none), "scene=fader:V"
+// (0..16383), "scene=sel:N", "scene=lock:N:NAME:V" (V the target's value, 0..127.99, kept x 128), "scene=unlock:N:NAME",
+// "scene=clear:N", "scene=copy:N:M", "scene=edit:on|off"; each edit answers with the state. False: not "scene..."
+bool command(const char* p, char* out, int cap);
+// "\"scene\":{\"a\":A,\"b\":B,\"fader\":F,\"played\":P,\"sel\":S,\"locked\":0|1,\"edit\":0|1,\"s\":[{\"n\":N,\"l\":[[\"V1:P3\",6400],...]},...]}"
+// (A, B, S, N 1-based, 0 none; only the scenes with locks): its length, cap when it did not fit (a 768-lock state fits 16 KB)
+int json(char* out, int cap);
+
 }  // namespace scene
 }  // namespace core

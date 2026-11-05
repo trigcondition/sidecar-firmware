@@ -140,8 +140,9 @@ void set_send_base(int track, int slot, uint8_t v);
 extern void (*clock_listener)(uint8_t status, uint16_t spp);
 // 0.5.0 (core/mod/mod.cpp sets it; null without): a Sidecar-side edit of a target (mod::Tid: the pages, the console,
 // the touchscreen and the web, never a report or a file load), so it wins over a scene's morph until the fader moves
-// (spec-050 2.5); v the value set, -1 an offset kind's (its knob, read there)
-extern void (*manual_edit)(uint16_t tid, float v);
+// (spec-050 2.5); v the value set, -1 an offset kind's (its knob, read there). An inline variable (one definition, no
+// .cpp): out.cpp, insert.cpp and master.cpp also link without send_fx.cpp (the Pi portable tests' test_ob_usb)
+inline void (*manual_edit)(uint16_t tid, float v) = nullptr;
 inline void edited(uint16_t tid, float v = -1) {
   if (manual_edit) manual_edit(tid, v);
 }

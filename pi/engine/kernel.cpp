@@ -686,6 +686,15 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		}
 	}
 	{
+		static char Sc[16384];		// the scenes: A / B, the fader, every lock (core/mod/scene.h; core 3's, plain reads)
+		int n = bridge::scene_json (Sc, sizeof Sc);
+		if (n > 0 && n < (int) sizeof Sc)
+		{
+			pOut->Append (",");
+			pOut->Append (Sc);
+		}
+	}
+	{
 		char Bb[128];			// the black box's counts (blackbox_pi.h)
 		blackbox_pi::Status (Bb, sizeof Bb);
 		pOut->Append (",\"blackbox\":");

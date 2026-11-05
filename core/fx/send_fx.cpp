@@ -93,7 +93,6 @@ bool all_sound_off() {
 uint8_t (*knob_filter)(int slot, int knob, uint8_t v) = nullptr;
 uint8_t (*send_filter)(int track, int slot, uint8_t v) = nullptr;
 void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
-void (*manual_edit)(uint16_t tid, float v) = nullptr;
 void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 static inline uint8_t send(int t, int s, uint8_t v) { return send_filter ? send_filter(t, s, v) : v; }

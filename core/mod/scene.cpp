@@ -234,7 +234,8 @@ CORE_COLD void tick(uint32_t ms) {
   if (g_st.a != g_last_a || g_st.b != g_last_b) {
     // the old scenes' targets that the new A / B do not lock: back to their bases before the new ones' entries are
     // allocated (spec-050 1.4: so an A / B change of full scenes stays within kEntries)
-    for (int old : {g_last_a, g_last_b}) {
+    const int olds[2] = {g_last_a, g_last_b};   // (no <initializer_list> on the Pi's hosted side)
+    for (int old : olds) {
       if (!ok_scene(old) || old == g_st.a || old == g_st.b) continue;
       const Scene& s = g_st.s[old];
       for (int i = 0; i < s.n; ++i)
@@ -285,6 +286,138 @@ CORE_COLD void reset() {
 
 CORE_COLD bool dirty() { return g_dirty; }
 CORE_COLD bool locked() { return g_locked; }
+
+// ---------------------------------------------------------------------------------------------------- console, JSON
+
+namespace {
+bool g_edit = false;
+// the next ':'-separated field of *pp into f (at most cap - 1 chars); false: none left
+CORE_COLD bool field(const char** pp, char* f, int cap) {
+  const char* p = *pp;
+  if (!p) return false;
+  int i = 0;
+  for (; *p && *p != ':'; ++p)
+    if (i < cap - 1) f[i++] = *p;
+  f[i] = 0;
+  *pp = *p == ':' ? p + 1 : nullptr;
+  return i > 0;
+}
+CORE_COLD int dec(const char* s, int lo, int hi) {   // a whole number lo..hi, else lo - 1
+  if (!*s) return lo - 1;
+  long v = 0;
+  for (; *s; ++s) {
+    if (*s < '0' || *s > '9' || v > 100000) return lo - 1;
+    v = v * 10 + (*s - '0');
+  }
+  return v < lo || v > hi ? lo - 1 : (int)v;
+}
+CORE_COLD int value128(const char* s) {   // "50", "50.5", "127.99": x 128, rounded; -1 bad
+  long w = 0, f = 0, fd = 1;
+  const char* p = s;
+  if (*p < '0' || *p > '9') return -1;
+  while (*p >= '0' && *p <= '9' && w < 1000) w = w * 10 + (*p++ - '0');
+  if (*p == '.')
+    for (++p; *p >= '0' && *p <= '9'; ++p)
+      if (fd < 10000) f = f * 10 + (*p - '0'), fd *= 10;
+  if (*p) return -1;
+  long v = (w * 128 * fd + f * 128 + fd / 2) / fd;
+  return v > kFaderMax ? -1 : (int)v;
+}
+CORE_COLD int state_line(char* o, int cap) {
+  int n = sniprintf(o, cap, CORE_STR("scene: A %d B %d fader %u (%d played) sel %d edit %s"), g_st.a + 1, g_st.b + 1,
+                    (unsigned)g_st.fader, g_played, g_st.sel + 1, g_edit ? "on" : "off");
+  bool first = true;
+  for (int i = 0; i < kScenes && n > 0 && n < cap; ++i) {
+    if (!g_st.s[i].n) continue;
+    n += sniprintf(o + n, cap - n, CORE_STR("%sS%d %d lock%s"), first ? ": " : ", ", i + 1, g_st.s[i].n, g_st.s[i].n == 1 ? "" : "s");
+    first = false;
+  }
+  if (g_locked && n > 0 && n < cap) n += sniprintf(o + n, cap - n, CORE_STR(" - SCENES LOCKED (NEWER FILE)"));
+  return n;
+}
+}  // namespace
+
+CORE_COLD void set_edit(bool on) { g_edit = on; }
+CORE_COLD bool edit() { return g_edit; }
+
+CORE_COLD bool command(const char* p, char* o, int cap) {
+  if (strncmp(p, "scene", 5) != 0 || (p[5] && p[5] != '=')) return false;
+  if (cap <= 0) return true;
+  o[0] = 0;
+  if (!p[5]) return state_line(o, cap), true;
+  const char* q = p + 6;
+  char k[8], a[8], b[12], c[12];
+  bool ok = field(&q, k, sizeof k);
+  bool full = false;
+  if (!ok) {
+  } else if (!strcmp(k, "ab")) {
+    int x = field(&q, a, sizeof a) ? dec(a, 0, kScenes) : -1, y = field(&q, b, sizeof b) ? dec(b, 0, kScenes) : -1;
+    ok = x >= 0 && y >= 0 && !q;
+    if (ok) set_ab(x - 1, y - 1);
+  } else if (!strcmp(k, "fader")) {
+    int x = field(&q, a, sizeof a) ? dec(a, 0, kFaderMax) : -1;
+    ok = x >= 0 && !q;
+    if (ok) set_fader((uint16_t)x, kConsole);
+  } else if (!strcmp(k, "sel") || !strcmp(k, "clear")) {
+    int x = field(&q, a, sizeof a) ? dec(a, 1, kScenes) : 0;
+    ok = x > 0 && !q;
+    if (ok && k[0] == 's') set_sel(x - 1);
+    else if (ok) clear(x - 1);
+  } else if (!strcmp(k, "copy")) {
+    int x = field(&q, a, sizeof a) ? dec(a, 1, kScenes) : 0, y = field(&q, b, sizeof b) ? dec(b, 1, kScenes) : 0;
+    ok = x > 0 && y > 0 && !q;
+    if (ok) copy(x - 1, y - 1);
+  } else if (!strcmp(k, "lock") || !strcmp(k, "unlock")) {   // N:NAME:V, NAME itself "V1:P3"
+    char nm[24], pn[12];
+    int x = field(&q, a, sizeof a) ? dec(a, 1, kScenes) : 0;
+    ok = x > 0 && field(&q, b, sizeof b) && field(&q, pn, sizeof pn);
+    mod::Tid t = 0;
+    if (ok) sniprintf(nm, sizeof nm, "%s:%s", b, pn), ok = mod::parse(nm, &t);
+    if (ok && k[0] == 'l') {
+      int v = field(&q, c, sizeof c) ? value128(c) : -1;
+      ok = v >= 0 && !q;
+      if (ok && !lock(x - 1, t, (uint16_t)v)) ok = false, full = true;
+    } else if (ok) {
+      ok = !q && unlock(x - 1, t);
+    }
+  } else if (!strcmp(k, "edit")) {
+    ok = field(&q, a, sizeof a) && !q && (!strcmp(a, "on") || !strcmp(a, "off"));
+    if (ok) set_edit(a[1] == 'n');
+  } else {
+    ok = false;
+  }
+  if (full) sniprintf(o, cap, CORE_STR("scene: SCENE FULL (%d locks)"), kLocks);
+  else if (!ok)
+    sniprintf(o, cap, CORE_STR("scene: cannot \"%s\" (scene=ab:A:B | fader:V | sel:N | lock:N:NAME:V | unlock:N:NAME | "
+                               "clear:N | copy:N:M | edit:on|off)"), p);
+  else state_line(o, cap);
+  return true;
+}
+
+CORE_COLD int json(char* o, int cap) {
+  int n = sniprintf(o, cap, CORE_STR("\"scene\":{\"a\":%d,\"b\":%d,\"fader\":%u,\"played\":%d,\"sel\":%d,\"locked\":%d,"
+                                     "\"edit\":%d,\"s\":["), g_st.a + 1, g_st.b + 1, (unsigned)g_st.fader, g_played,
+                    g_st.sel + 1, g_locked ? 1 : 0, g_edit ? 1 : 0);
+  bool first = true;
+  for (int i = 0; i < kScenes; ++i) {
+    const Scene& s = g_st.s[i];
+    if (!s.n) continue;
+    if (n < 0 || n >= cap) return cap;
+    n += sniprintf(o + n, cap - n, CORE_STR("%s{\"n\":%d,\"l\":["), first ? "" : ",", i + 1);
+    first = false;
+    for (int j = 0; j < s.n; ++j) {
+      char nm[16];
+      mod::name(s.l[j].t, nm, sizeof nm);
+      if (n >= cap) return cap;
+      n += sniprintf(o + n, cap - n, CORE_STR("%s[\"%s\",%u]"), j ? "," : "", nm, (unsigned)s.l[j].v);
+    }
+    if (n >= cap) return cap;
+    n += sniprintf(o + n, cap - n, "]}");
+  }
+  if (n >= cap) return cap;
+  n += sniprintf(o + n, cap - n, "]}");
+  return n >= cap ? cap : n;
+}
 CORE_COLD int kit() { return g_kit; }
 CORE_COLD void save_due() {
   if (g_dirty) g_dirty_ms = now_ms() - 1000;

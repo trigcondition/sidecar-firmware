@@ -19,7 +19,7 @@ build/%: %.cpp $(SRC) $(wildcard ../*.h) $(wildcard shim/circle/*.h) $(CORE)/fx/
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $< $(SRC)
 # the real ob_usb.cpp on a fake Circle (shim_ob/); copied, so its quoted includes find the shim's neighbours before the real ones
-build/test_ob_usb: test_ob_usb.cpp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h ../a4_in.cpp ../a4_in.h ../drift_src.h $(CORE)/device/a4.h ../output.cpp ../../../teensy/libraries/RytmHost/ob_block.h $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/device/device.h $(CORE)/fx/out.h $(wildcard shim_ob/*.h) $(wildcard shim_ob/circle/*.h) $(wildcard shim_ob/circle/usb/*.h) check.h
+build/test_ob_usb: test_ob_usb.cpp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h ../a4_in.cpp ../a4_in.h ../drift_src.h $(CORE)/device/a4.h ../output.cpp ../../../teensy/libraries/RytmHost/ob_block.h $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/device/device.h $(CORE)/fx/out.h $(CORE)/fx/out.cpp $(CORE)/fx/send_fx.h $(wildcard shim_ob/*.h) $(wildcard shim_ob/circle/*.h) $(wildcard shim_ob/circle/usb/*.h) check.h
 	@mkdir -p build/ob_src
 	cp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h build/ob_src/
 	$(CXX) -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all -Ibuild/ob_src -Ishim_ob -I.. -I../../../core -I../../../teensy/libraries/RytmHost -o $@ test_ob_usb.cpp build/ob_src/ob_usb.cpp build/ob_src/ob_follow.cpp ../a4_in.cpp ../output.cpp $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp -DOB_USB_TEST
