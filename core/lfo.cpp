@@ -39,7 +39,9 @@ namespace {
 UI_ROM_LFO const char kTargetNames[kTargets][4] = {"OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2"
 #if CORE_POLY
                                                   , "I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "B1", "B2", "B3",
-                                                  "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8"
+                                                  "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8",
+                                                  "M1", "M2", "MFX", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8",
+                                                  "S9", "S10", "S11", "S12", "X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8"
 #endif
 };
 UI_ROM_LFO const char kWaveNames[kWaves][7] = {"SINE", "TRI", "SAW+", "SAW-", "SQR", "S&H", "RND", "DESIGN"};
@@ -120,10 +122,18 @@ CORE_COLD bool is_voice(int t) { return t >= kTVoice && t < kTVoice + kVoices; }
 CORE_COLD bool is_fx(int t) { return t == kTFx || t == kTFx + 1; }
 #if CORE_POLY
 CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTOut; }   // fx-ins: never true without CORE_POLY
-CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTargets; }   // the OUT route's LEV PAN WID (core/fx/out.h)
+CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTMaster; }   // the OUT route's LEV PAN WID (core/fx/out.h)
+CORE_COLD bool is_mchain(int t) { return t == kTMaster || t == kTMaster + 1; }   // 0.5.0: M1 M2 (insert chains 11, 12)
+CORE_COLD bool is_mfx(int t) { return t == kTMfx; }                               // the master's LEV, MIX1..4
+CORE_COLD bool is_snd(int t) { return t >= kTSnd && t < kTSnd + 12; }             // a Rytm track's FX1 / FX2 send
+CORE_COLD bool is_isnd(int t) { return t >= kTIsnd && t < kTIsnd + 8; }           // a voice's sends to the buses
 #else
 CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTargets; }
 CORE_COLD bool is_out(int) { return false; }
+CORE_COLD bool is_mchain(int) { return false; }
+CORE_COLD bool is_mfx(int) { return false; }
+CORE_COLD bool is_snd(int) { return false; }
+CORE_COLD bool is_isnd(int) { return false; }
 #endif
 
 CORE_COLD void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
@@ -366,8 +376,10 @@ CORE_COLD int target_from_name(const char* s) {
 CORE_COLD int params_of(int t) {
   if (is_voice(t)) return 16;
   if (is_fx(t)) return 4;
-  if (is_ins(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
-  if (is_out(t)) return 3;
+  if (is_ins(t) || is_mchain(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
+  if (is_out(t) || is_isnd(t)) return 3;
+  if (is_mfx(t)) return 5;
+  if (is_snd(t)) return 2;
   return 0;
 }
 CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
@@ -381,16 +393,23 @@ CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
     if (l && l->label[p & 3] && *l->label[p & 3]) sniprintf(b, cap, "%s", l->label[p & 3]);
     else sniprintf(b, cap, CORE_STR("P%d"), (p & 3) + 2);
 #if CORE_POLY
-  } else if (is_ins(t) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
+  } else if ((is_ins(t) || is_mchain(t)) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
     sniprintf(b, cap, CORE_STR("Q%.3s"), ins::eq_labels().label[(p - 8) & 3]);
-  } else if (is_ins(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
-    int ty = ins::control.type[t - kTIns][(p >> 2) & 1];
+  } else if (is_ins(t) || is_mchain(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
+    int ty = ins::control.type[is_ins(t) ? t - kTIns : ins::kM0 + t - kTMaster][(p >> 2) & 1];
     const char* l = ins::labels(ty).label[p & 3];
     if (ty && l[0]) sniprintf(b, cap, CORE_STR("%c%.4s"), 'A' + ((p >> 2) & 1), l);
     else sniprintf(b, cap, CORE_STR("%cP%d"), 'A' + ((p >> 2) & 1), (p & 3) + 1);
   } else if (is_out(t)) {   // LEV PAN WID
     static const char* const kO[3] = {"LEV", "PAN", "WID"};
     sniprintf(b, cap, "%s", kO[p % 3]);
+  } else if (is_mfx(t)) {   // 0.5.0: the master's LEV, its slots' MIX
+    if (p % 5) sniprintf(b, cap, CORE_STR("MIX%d"), p % 5);
+    else sniprintf(b, cap, "LEV");
+  } else if (is_snd(t)) {   // a track's send to FX1 / FX2
+    sniprintf(b, cap, CORE_STR("F%d"), (p & 1) + 1);
+  } else if (is_isnd(t)) {   // a voice's send to bus 1..3
+    sniprintf(b, cap, CORE_STR("B%d"), p % 3 + 1);
 #endif
   } else {
     sniprintf(b, cap, "-");
@@ -500,6 +519,10 @@ CORE_COLD mod::Tid tid_of(int t, int p) {
   if (is_fx(t)) return mod::tid(mod::kFx, t - kTFx, p & 3);
   if (is_ins(t)) return mod::tid(mod::kIns, t - kTIns, p);   // I1..I8 B1..B3: chains 0..10; params 0..11
   if (is_out(t)) return mod::tid(mod::kOut, t - kTOut, p % 3);
+  if (is_mchain(t)) return mod::tid(mod::kIns, ins::kM0 + t - kTMaster, p);   // 0.5.0: M1 M2, chains 11 12
+  if (is_mfx(t)) return mod::tid(mod::kMfx, 0, p % 5);
+  if (is_snd(t)) return mod::tid(mod::kSnd, t - kTSnd, p & 1);
+  if (is_isnd(t)) return mod::tid(mod::kIsnd, t - kTIsnd, p % 3);
   return 0;
 }
 
@@ -622,6 +645,9 @@ CORE_COLD void tick(uint32_t us) {
       r.ph = ph;
       r.w = shaped(s, ph, r, cycle);
       if (!s.target) continue;
+#if CORE_POLY
+      if (s.target >= kTMaster) continue;   // (0.5.0's new targets: the layer's only, not this rollback path)
+#endif
       Tgt* e = find(s.target, s.param);
       if (!e)
         for (Tgt& f : g_t)
