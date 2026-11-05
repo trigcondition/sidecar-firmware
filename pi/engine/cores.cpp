@@ -319,6 +319,7 @@ void CEngineCores::Worker (unsigned nCore)
 		// ones after it render below
 		const int vc = (int) g_Guard.CurrentVoice (nCore);
 		unsigned v = g_Guard.Recover (nCore, bridge::machine_name (vc), bridge::machine_gen (vc));
+		um::render_fault ((int) v);	// (a user machine's slot muted, and the slots sharing its image: core 3)
 		for (unsigned s = 0; s < bridge::kBlock; s++) s_Block[s][v] = s_BlockR[s][v] = 0;
 		u64 nSPSel;
 		asm volatile ("mrs %0, spsel" : "=r" (nSPSel));

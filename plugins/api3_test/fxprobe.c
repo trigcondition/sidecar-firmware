@@ -1,7 +1,8 @@
 // plugins/api3_test/fxprobe.c - Plugin API 3's test effect (core/tests/test_api3.cpp; Makefile V=fx): an API 3 only
 // RMP3_KIND_EFFECT for the send position. P1 MODE in zones of 16 (b->p): 0 writes, on the left, frame 0 = 0.5 (it ran),
 // frame 1 = the block's edge flags (START 1, STOP 2, JUMP 4) / 16, frame 2 = n / 64, the rest of L and all of R 0;
-// 1 render faults; 2 render runs ~400 us (over its budget); 3 render never returns (a hang: not used by the tests).
+// 1 render faults; 2 render runs long (1.2 M loop steps: over its budget); 3 never returns (a hang); 4 runs ~30 ms and
+// returns (a render fx_stop gives up on); 5 runs a little (50 k loop steps: over a small budget, under the default).
 // MIT, Copyright 2026 trigcondition and contributors.
 #include "rmp/rmp_api3.h"
 
@@ -15,6 +16,10 @@ static void f_render(void *st, const rmp3_block *b) {
     for (volatile uint32_t i = 0; i < 1200000u; ++i) {}
   if (mode == 3)
     for (;;) {}
+  if (mode == 4)
+    for (volatile uint32_t i = 0; i < 40000000u; ++i) {}
+  if (mode == 5)
+    for (volatile uint32_t i = 0; i < 50000u; ++i) {}
   ++s->calls;
   for (int32_t i = 0; i < b->n; ++i) b->out[0][i] = 0.0f, b->out[1][i] = 0.0f;
   uint32_t e = b->transport->flags;

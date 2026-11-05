@@ -147,6 +147,7 @@ struct V3 {
   uint32_t cap;            // the arena block's size (>= zero_len: a reused block may be bigger)
   bool room_said;          // a poly instance past the arena's states was logged (once a load)
   uint32_t setup_calls;    // setup() calls that asked for more (RMP3_SETUP_MORE)
+  uint32_t setup_over;     // setup() calls over the limit (the second refuses)
 };
 V3 g_v3[kAll];
 volatile uint32_t g_muted = 0;   // the guard muted the slot (bit s): a plugin call faulted, or ran late three times
@@ -158,11 +159,20 @@ rmp_slot_entry g_fxmap[kUfx];
 uint8_t* g_fxst[kUfx][2];
 volatile uint8_t g_fx_live[kUfx], g_fx_busy[kUfx];
 volatile uint64_t g_fx_fault[kUfx];   // core 2's fault address (the control core words the why)
+volatile uint8_t g_fx_total[kUfx];
+volatile uint32_t g_render_faults = 0;   // voices whose render faulted (render_fault, any core): bit vi    // core 2 muted it as the dearest when its effects together were over their share
+uint32_t g_fx_lastgen[kUfx][2];       // the gen of each state's last call (N5: edges older than that are not news)
 volatile uint32_t g_fx_slow_us[kUfx]; // core 2: the render that took the effect over its budget (the why), 0 none
-uint8_t g_fx_over[kUfx];              // core 2: calls over budget in a row
-bool g_fx_dead[kUfx];                 // core 2 never left its render (fx_stop gave up): its states and arena never reused
-constexpr uint32_t kFxBudgetUs = 120; // an effect's render of 12..16 frames: about half a block (the proposal: under 30 us)
-constexpr int kFxOverMax = 16;        // calls over it in a row (a burst, a cold cache never mutes)
+uint8_t g_fx_over[kUfx][2];           // core 2: calls over budget in a row, per send slot
+volatile bool g_fx_dead[kUfx];        // core 2 never left its render (fx_stop gave up): its states and arena kept out of reuse
+volatile uint32_t g_fx_era[kUfx];     // bumped by each fx_stop: a render that began before it mutes nothing after it
+// an effect's render of 12..16 frames: about half a block (the proposal: under 30 us); and all of core 2's effects in a
+// block together (both send slots, every UFX): kFxTotalUs. um=fxbudget:<call>:<total> sets both (tests, the bench).
+uint32_t g_fx_budget_us = 120, g_fx_total_us = 150;
+constexpr int kFxOverMax = 16;        // calls (or blocks) over it in a row (a burst, a cold cache never mutes)
+// core 2's account of the block it is in (by the transport's gen): every effect's time, the frames, the overs in a row
+struct FxAcct { uint32_t gen, us, frames, us_u[kUfx], over; };
+FxAcct g_fxa;
 constexpr uint32_t kFxHugeUs = 2000;  // one call this long mutes at once: the FIFO's 2 ms
 constexpr uint32_t kFxStopWaitUs = 5000;   // fx_stop's wait for core 2 (then it gives up: core 3's block watchdog sees a hang)
 float g_fx_p[kUfx][2][16];            // the knobs last handed to each state (b->p_changed)
@@ -663,10 +673,11 @@ void slot_mute1(int s, const char* why) {
   core::log("um: %s%d %s %s", slot_pfx(s), slot_no(s), entry_of(s).id, why);
   g_pub = true;
 }
-// A fault mutes the slot and every slot sharing its image (its globals may be what the fault damaged)
-void slot_mute(int s, const char* why) {
+// A fault mutes the slot and every slot sharing its image (its globals may be what the fault damaged); a slow plugin
+// (late calls, an effect over budget) only its own slot: share false
+void slot_mute(int s, const char* why, bool share = true) {
   slot_mute1(s, why);
-  if (!g_slot[s].p) return;
+  if (!share || !g_slot[s].p) return;
   for (int t = 0; t < kAll; ++t)
     if (t != s && g_slot[t].p == g_slot[s].p && !(__atomic_load_n(&g_muted, __ATOMIC_ACQUIRE) >> t & 1)) {
       char w[64];
@@ -692,7 +703,7 @@ template <class F> bool gcall(int s, const char* what, F f) {
   ++g_late_n[s];
   if (g_v3[s].p3 && ++g_late[s] >= 3) {
     sniprintf(w, sizeof w, "muted: %s ran %u us, three late calls in a row (limit %u)", what, (unsigned)us, (unsigned)kCallLateUs);
-    slot_mute(s, w);
+    slot_mute(s, w, false);
     return false;
   }
   return true;
@@ -2119,16 +2130,23 @@ void fx_named(int u) {
 // ends; at most one effect block)
 void fx_stop(int u) {
   __atomic_store_n(&g_fx_live[u], 0, __ATOMIC_SEQ_CST);
+  __atomic_add_fetch(&g_fx_era[u], 1, __ATOMIC_SEQ_CST);   // (a render still under way mutes nothing of what comes next)
   uint32_t t0 = core::now_us();
   while (__atomic_load_n(&g_fx_busy[u], __ATOMIC_SEQ_CST)) {
-    if (core::now_us() - t0 > kFxStopWaitUs) {   // core 2 is stuck in its render: give up, never reuse its memory
+    if (g_fx_dead[u] || core::now_us() - t0 > kFxStopWaitUs) {   // stuck in its render: give up (once), keep its memory
       if (!g_fx_dead[u]) core::log("um: UFX%d %s: core 2 never left its render (%u ms): left behind", u + 1, g_fxmap[u].id,
                                    (unsigned)(kFxStopWaitUs / 1000));
       g_fx_dead[u] = true;
       break;
     }
   }
-  g_fx_fault[u] = 0, g_fx_slow_us[u] = 0, g_fx_over[u] = 0;
+  if (!__atomic_load_n(&g_fx_busy[u], __ATOMIC_SEQ_CST)) g_fx_dead[u] = false;   // (it came back: its memory is free again)
+  g_fx_fault[u] = 0, g_fx_slow_us[u] = 0, g_fx_over[u][0] = g_fx_over[u][1] = 0, g_fx_total[u] = 0;
+}
+bool fx_any_dead() {
+  for (int u = 0; u < kUfx; ++u)
+    if (g_fx_dead[u] && __atomic_load_n(&g_fx_busy[u], __ATOMIC_SEQ_CST)) return true;
+  return false;
 }
 template <class F> struct FxCall {
   F* f;
@@ -2137,11 +2155,42 @@ template <class F> struct FxCall {
 // Core 2 (the send FX's core, after its block): UFX u in send slot sl (0 FX 1, 1 FX 2) over x[n], its wet stereo
 // return added into y. The knobs: k[2..5] (the slot's P2..P5) are the effect's P1..P4, in b->p. Silent unless live.
 bool fx_ready(int u) { return u >= 0 && u < kUfx && __atomic_load_n(&g_fx_live[u], __ATOMIC_ACQUIRE) && !muted(kSlots + u); }
+// Core 2, after each effect call: the block's sum of every effect's time (N4). A block whose effects together ran over
+// kFxTotal (scaled by its frames) counts; kFxOverMax such blocks in a row mute the dearest effect of the last one.
+void fx_account(uint32_t gen, int u, uint32_t us, int n) {
+  FxAcct& a = g_fxa;
+  if (gen != a.gen) {   // a new block: the last one's verdict
+    if (a.frames) {
+      uint32_t share = g_fx_total_us * (a.frames > 12 ? a.frames : 12) / 12u;
+      if (a.us > share) {
+        if (++a.over >= kFxOverMax) {
+          int w = 0;
+          for (int k = 1; k < kUfx; ++k)
+            if (a.us_u[k] > a.us_u[w]) w = k;
+          g_fx_total[w] = 1;
+          g_fx_slow_us[w] = a.us_u[w] ? a.us_u[w] : 1;
+          __atomic_or_fetch(&g_muted, 1u << (kSlots + w), __ATOMIC_RELEASE);
+          a.over = 0;
+        }
+      } else {
+        a.over = 0;
+      }
+    }
+    a.gen = gen, a.us = 0, a.frames = 0;
+    for (uint32_t& x : a.us_u) x = 0;
+  }
+  a.us += us, a.us_u[u] += us;
+  if ((uint32_t)n > a.frames) a.frames = (uint32_t)n;
+}
 void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t* k) {
   if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return;
   __atomic_store_n(&g_fx_busy[u], 1, __ATOMIC_SEQ_CST);
   if (__atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) && !muted(kSlots + u)) {
     int s = kSlots + u;
+    const uint32_t era = __atomic_load_n(&g_fx_era[u], __ATOMIC_SEQ_CST);
+    // what this call learns about the effect counts only while it is still the same load (N2: a late return after
+    // fx_stop gave up mutes nothing of the next one)
+    auto same = [&] { return __atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) && __atomic_load_n(&g_fx_era[u], __ATOMIC_SEQ_CST) == era; };
     const rmp3_plugin* p3 = g_v3[s].p3;
     void* st = g_fxst[u][sl];
     uint32_t e = __atomic_load_n(&g_epoch, __ATOMIC_ACQUIRE);
@@ -2163,6 +2212,10 @@ void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t
     tr.flags &= ~(uint32_t)(RMP3_T_START | RMP3_T_STOP | RMP3_T_JUMP);
     tr0 = tr;
     static const uint32_t kEdge[3] = {RMP3_T_START, RMP3_T_STOP, RMP3_T_JUMP};
+    // a state not called for more than two blocks (its send slot played something else): older edges are not news
+    if (g - g_fx_lastgen[u][sl] > 2u)
+      for (int q = 0; q < 3; ++q) g_fx_ev[u][sl][q] = g_xp_ev[g & 1][q] - ((g_xp[g & 1].flags & kEdge[q]) ? 1u : 0u);
+    g_fx_lastgen[u][sl] = g;
     for (int q = 0; q < 3; ++q)
       if (g_xp_ev[g & 1][q] != g_fx_ev[u][sl][q]) tr0.flags |= kEdge[q], g_fx_ev[u][sl][q] = g_xp_ev[g & 1][q];
     uint32_t t0 = core::now_us();
@@ -2181,8 +2234,10 @@ void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t
       FxCall<decltype(f)> c{&f};
       int bad = ex->guard ? ex->guard(FxCall<decltype(f)>::run, &c, &pc) : (f(), 0);
       if (bad) {   // muted; the control core says why (idle)
-        g_fx_fault[u] = pc ? pc : 1;
-        __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);
+        if (same()) {
+          g_fx_fault[u] = pc ? pc : 1;
+          __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);
+        }
         break;
       }
       for (int i = 0; i < m; ++i) {
@@ -2191,29 +2246,35 @@ void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t
         y[at + i][0] += a, y[at + i][1] += c2;
       }
     }
-    // the budget (as the voices' guard): kFxOverMax calls over it in a row, or one call past the FIFO, mute the effect
-    uint32_t us = core::now_us() - t0, budget = kFxBudgetUs * (uint32_t)(n > 12 ? n : 12) / 12u;
-    if (us > budget) {
-      if (++g_fx_over[u] >= kFxOverMax || us >= kFxHugeUs) {
-        g_fx_slow_us[u] = us ? us : 1;
-        __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);
+    // the budget (as the voices' guard): kFxOverMax calls of this state over it in a row, or one call past the FIFO,
+    // mute the effect
+    uint32_t us = core::now_us() - t0, budget = g_fx_budget_us * (uint32_t)(n > 12 ? n : 12) / 12u;
+    if (same()) {
+      if (us > budget) {
+        if (++g_fx_over[u][sl] >= kFxOverMax || us >= kFxHugeUs) {
+          g_fx_slow_us[u] = us ? us : 1;
+          __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);
+        }
+      } else {
+        g_fx_over[u][sl] = 0;
       }
-    } else {
-      g_fx_over[u] = 0;
+      fx_account(g, u, us, n);
     }
   }
   __atomic_store_n(&g_fx_busy[u], 0, __ATOMIC_SEQ_CST);
 }
-// the control core: a fault core 2 noted, in words
+// the control core: a fault core 2 noted, in words (a fault mutes the slots sharing its image too)
 void fx_faults() {
   for (int u = 0; u < kUfx; ++u) {
     uint32_t slow = g_fx_slow_us[u];
     if (slow && strncmp(g_why[kSlots + u], "muted", 5)) {
       char w[96];
-      sniprintf(w, sizeof w, "muted: render ran %u us, over its budget (%u us a block)", (unsigned)slow, (unsigned)kFxBudgetUs);
-      copy(g_why[kSlots + u], w, sizeof g_why[0]);
-      core::log("um: UFX%d %s %s", u + 1, g_fxmap[u].id, w);
-      g_pub = true;
+      if (g_fx_total[u])
+        sniprintf(w, sizeof w, "muted: ran %u us, dearest over core 2's share (%u us)",
+                  (unsigned)slow, (unsigned)g_fx_total_us);
+      else
+        sniprintf(w, sizeof w, "muted: render ran %u us, over its budget (%u us a block)", (unsigned)slow, (unsigned)g_fx_budget_us);
+      slot_mute(kSlots + u, w, false);
       continue;
     }
     uint64_t pc = g_fx_fault[u];
@@ -2221,9 +2282,15 @@ void fx_faults() {
     char w[96], at[32];
     fault_where(kSlots + u, pc == 1 ? 0 : pc, at, sizeof at);
     sniprintf(w, sizeof w, "muted: crashed in render at %s", at);
-    copy(g_why[kSlots + u], w, sizeof g_why[0]);
-    core::log("um: UFX%d %s %s", u + 1, g_fxmap[u].id, w);
-    g_pub = true;
+    slot_mute(kSlots + u, w);
+  }
+  // voices whose render faulted on a render core (the board's guard: render_fault): their slot, and its sharers
+  uint32_t rf = __atomic_exchange_n(&g_render_faults, 0u, __ATOMIC_ACQ_REL);
+  for (int vi = 0; vi < core::kVoices; ++vi) {
+    if (!(rf >> vi & 1)) continue;
+    int s = g_cur[vi];
+    if (s < 0 || muted(s)) continue;
+    slot_mute(s, "muted: crashed in render (voice's guard)");
   }
 }
 
@@ -2347,7 +2414,8 @@ bool arena_reserve(int s, uint32_t* need) {
   uint8_t* base = nullptr;
   uint32_t cap = 0;
   auto pg = [](uint64_t n) { return (n + 4095u) & ~(uint64_t)4095u; };
-  if (want <= lim && (base = pool_take(pg(want), &cap))) sb = sw, vb = vw, total = pg(want);
+  if (!want) base = nullptr, cap = 0;   // (no arena: nothing taken, the free list untouched)
+  else if (want <= lim && (base = pool_take(pg(want), &cap))) sb = sw, vb = vw, total = pg(want);
   else if (least <= lim && (base = pool_take(pg(least), &cap))) sb = sm, vb = vm, total = pg(least);
   else if (least) { *need = (uint32_t)(least > 0xFFFFFFFFu ? 0xFFFFFFFFu : least); return false; }
   if (!total) base = nullptr, cap = 0;
@@ -2414,7 +2482,8 @@ void arena_step() {
       job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, w);
       return;
     }
-    if (us > kSetupLateUs) {
+    // over the limit: refused; one call up to twice the limit is forgiven (an interrupt or a card wait in the wall time)
+    if (us > 2 * kSetupLateUs || (us > kSetupLateUs && ++x.setup_over >= 2)) {
       sniprintf(w, sizeof w, "setup ran %u us (limit %u a call: return RMP3_SETUP_MORE)", (unsigned)us, (unsigned)kSetupLateUs);
       job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, w);
       return;
@@ -2462,7 +2531,7 @@ bool job_begin(int s) {
     return false;
   }
   for (int t = 0; t < kAll; ++t)   // the same package READY in another slot: its image
-    if (t != s && g_slot[t].st == RMP_SLOT_READY && g_slot[t].pkg == k && g_slot[t].crc == (e.crc ^ e.size)) {
+    if (t != s && g_slot[t].st == RMP_SLOT_READY && g_slot[t].pkg == k && g_slot[t].crc == (e.crc ^ e.size) && !muted(t)) {
       if (const char* w = kind_wrong(s, g_v3[t].p3)) {
         slot_set(s, RMP_SLOT_BAD, nullptr, k);
         sniprintf(g_why[s], sizeof g_why[s], "bad: %s", w);
@@ -2834,6 +2903,7 @@ void publish() {
     j.put(",\"state\":"); j.str(state_name(g_slot[s].st));
     if (g_why[s][0]) { j.put(",\"why\":"); j.str(g_why[s]); }
     j.put(",\"muted\":"); j.put(muted(s) ? "true" : "false");
+    j.put(",\"left_behind\":"); j.put(g_fx_dead[u] ? "true" : "false");
     j.put(","); j.num("arena", g_v3[s].zero_len);
     j.put("},");
   }
@@ -2976,7 +3046,9 @@ bool idle() {
   } else
 #endif
   if (g_scan && !scan_wait()) { UMT("um.scan"); scan_step(); }
-  else if (g_full) {
+  else if (g_full && fx_any_dead()) {   // (N2: core 2 is still in a left-behind effect: no reset under it)
+    did = false;
+  } else if (g_full) {
     for (int vi = 0; vi < core::kVoices; ++vi) voice_leave(vi);
     for (int u = 0; u < kUfx; ++u) fx_stop(u);   // (core 2 out of the effects before their images go)
     for (int s = 0; s < kAll; ++s) slot_set(s, entry_of(s).id[0] ? RMP_SLOT_LOADING : RMP_SLOT_EMPTY, nullptr, -1);
@@ -3045,6 +3117,9 @@ bool idle() {
   return did;
 }
 
+void render_fault(int vi) {
+  if (vi >= 0 && vi < core::kVoices) __atomic_or_fetch(&g_render_faults, 1u << vi, __ATOMIC_ACQ_REL);
+}
 // API 3: the block's transport snapshot (see um.h). The newest becomes the render cores' at the release store.
 void pre_block() {
   if (!ex) return;
@@ -3226,6 +3301,17 @@ bool command(const char* c, char* out, int cap) {
     __atomic_store_n(&core::fx::user[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
     g_need |= 1u << (kSlots + u);
     sniprintf(out, cap, "UFX%d: %s", u + 1, m.id[0] ? m.id : "empty");
+    return true;
+  }
+  if (strncmp(c, "um=fxbudget:", 12) == 0) {   // API 3: the effects' budgets, us a 12-frame block: one call, all of core 2's
+    unsigned a = 0, b = 0;
+    const char* q = c + 12;
+    while (*q >= '0' && *q <= '9') a = a * 10 + (unsigned)(*q++ - '0');
+    if (*q == ':') ++q;
+    while (*q >= '0' && *q <= '9') b = b * 10 + (unsigned)(*q++ - '0');
+    if (a) g_fx_budget_us = a;
+    if (b) g_fx_total_us = b;
+    sniprintf(out, cap, "effects: %u us a call, %u us all of core 2's a block", (unsigned)g_fx_budget_us, (unsigned)g_fx_total_us);
     return true;
   }
   if (strncmp(c, "um=reload:", 10) == 0) {   // API 3: load the slot again (a muted slot back, its states and arena fresh)

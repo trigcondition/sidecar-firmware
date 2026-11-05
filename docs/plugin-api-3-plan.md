@@ -57,9 +57,11 @@ watchdog on core 0), and agents do not build kernels.
   into it as it does for a render core); on the Mac, `sigsetjmp` and a signal handler (core/host/um_host.cpp). A fault
   mutes the slot (silent, no further calls, the JSON's `"muted":true` and `why` "muted: crashed in params at +0x84")
   and the engine plays on; `init` or `setup` faulting refuses the package (BAD). A fault also mutes every slot that
-  shares the faulting slot's image (its globals may be what the fault damaged). API 3 plugins are also held to the
+  shares the faulting slot's image (its globals may be what the fault damaged): a control call's, a voice's render
+  (the board's render guard tells um: `um::render_fault`) and an effect's on core 2; a load never shares a muted
+  slot's image. Late calls and slow effects mute only their own slot. API 3 plugins are also held to the
   time limits: a control call over 500 us three times in a row mutes the slot; `init`, and each `setup` call, over
-  1 ms refuses the package (decision 1: `setup` may return `RMP3_SETUP_MORE` and is called again from the next idle
+  1 ms refuses the package (one `setup` call up to 2 ms is forgiven: an interrupt in the wall time) (decision 1: `setup` may return `RMP3_SETUP_MORE` and is called again from the next idle
   step, so heavy work goes in pieces). `um=reload:<slot>` loads a slot again.
 - **The slot arena:** `Exec::arena` gives um one pool at boot (the Pi: `plugram=` MB from the heap before the pool
   RAM, default 64 / 128 / 256 MB on 2 / 4 / 8 GB, none under 2 GB; the Mac: 64 MB). A slot's arena is reserved when
@@ -102,8 +104,11 @@ TIME in the Rytm's tempo from the transport (1/16 .. 1 BAR), FDBK, TONE, WIDTH; 
 side at least, 4 s wanted). core/tests/test_api3.cpp runs it through `SendFx::Process` on the host: no output until
 the echo, the first echo on the left at the tempo's 1/8, the feedback's on the right at twice that.
 
-The effect's budget (as the voices' guard): its render is timed on core 2; 16 calls in a row over 120 us a 12-frame
-block (scaled by n), or one call over 2 ms, mute it ("muted: render ran 2400 us, over its budget"). The send FX's
+The effect's budget (as the voices' guard): its render is timed on core 2; 16 calls of one state (send slot) in a row
+over 120 us a 12-frame block (scaled by n), or one call over 2 ms, mute it ("muted: render ran 2400 us, over its
+budget"). All of core 2's effect calls in a block are summed too: 16 blocks in a row over 150 us mute the dearest
+effect of the last one. `um=fxbudget:<call>:<total>` sets both (tests, a bench on the Pi). A state not called for
+more than two blocks (its slot played another TYPE) takes no older edges. The send FX's
 transport snapshot is read once a call; its edges (START, STOP, JUMP) reach each of an effect's states exactly once,
 in the first sub-block, however core 2's send FX falls against the blocks (each snapshot carries the edges' running
 counts). A kit made for another effect (its tag) plays silence in that slot, not the effect UFX`n` holds; a user TYPE

@@ -56,6 +56,9 @@ bool idle();                // one bounded step of the work below; true when it 
 // API 3: the control core, once before each render block (with the sequencer's pre_block): the block's transport
 // snapshot (rmp3_transport) for the render cores, from the LFOs' clock (core/lfo.h).
 void pre_block();
+// API 3: a voice's render faulted (the board's render guard muted the voice): its slot, and every slot sharing the
+// slot's image, muted from the next idle step. Any core.
+void render_fault(int vi);
 void rescan();              // the card's packages changed (the web's upload / delete)
 // Console: "um" (the list in the log), "um=rescan", "um=assign:<slot 1..5>:<id>" (the installed version, current
 // project), "um=clear:<slot>" (explicitly empty), "um=empty" (start this project empty: all five),

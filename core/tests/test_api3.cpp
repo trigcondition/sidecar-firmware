@@ -443,7 +443,48 @@ int main() {
     for (int k = 0; k < 4; ++k) cmd("um=assign:5:rytm.api3_polyar"), cmd("um=assign:5:rytm.api3_test");
     CHECK(pool_used() == u0);
     CHECK(logged("is in pieces") == 0);   // (no full reload)
+    // N1: U5's block in the free list (U4's above it), a plugin without an arena in U5, then U5's old plugin again:
+    // its block reused, the pool's use unchanged
+    cmd("um=assign:5:rytm.api3_test");
+    cmd("um=assign:4:rytm.api3_polyar");
+    unsigned long u1 = pool_used();
+    cmd("um=assign:5:rytm.api3_poly");
+    CHECK(pool_used() == u1);
+    cmd("um=assign:5:rytm.api3_test");
+    CHECK(pool_used() == u1);
+    cmd("um=assign:4:rytm.api3_stereo");
   }
+
+  // ---- N3: a fault mutes the slots sharing the image, from every path; a reload never shares a muted image; late
+  // calls mute only their own slot
+  cmd("um=assign:1:rytm.api3_test");
+  cmd("um=assign:3:rytm.api3_test");
+  CHECK(logged("um: U3 rytm.api3_test: shares U1's image, its own arena") >= 1);
+  report(0, 0, 60, 16);   // U1's params() faults
+  CHECK(um::slot_view(0).muted && um::slot_view(2).muted);
+  CHECK(std::string(um::slot_view(2).why) == "muted: shares the image of U1, which faulted");
+  {
+    int before = logged("um: U1 rytm.api3_test: shares U3's image");
+    cmd("um=reload:1");   // U3 is muted: U1 loads a fresh image, not U3's
+    CHECK(logged("um: U1 rytm.api3_test: shares U3's image") == before);
+    CHECK(um::slot_view(0).state == RMP_SLOT_READY && !um::slot_view(0).muted && um::slot_view(2).muted);
+  }
+  cmd("um=reload:3");   // (now U3 shares U1's fresh image)
+  CHECK(!um::slot_view(2).muted);
+  host_fake_time(false, 0);   // three late params() on U1: U1 muted, U3 (same image) not
+  report(0, 0, 60, 0);
+  report(0, 0, -1, 32);
+  report(0, 0, -1, 32);
+  report(0, 0, -1, 32);
+  host_fake_time(true, g_t);
+  CHECK(um::slot_view(0).muted && !um::slot_view(2).muted);
+  cmd("um=reload:1");
+  report(0, 0, 60, 0);
+  um::render_fault(0);   // a fault in voice 0's render (the board's render guard): U1 and its sharer U3
+  idle_all();
+  CHECK(std::string(um::slot_view(0).why) == "muted: crashed in render (voice's guard)" && um::slot_view(2).muted);
+  cmd("um=reload:1");
+  cmd("um=reload:3");
 
   // ---- a user effect on core 2 (the hooks, as the send FX calls them): the transport's edges once per state, a
   // fault, a render over its budget, a render that never returns (fx_stop gives up, bounded)
@@ -503,6 +544,96 @@ int main() {
   CHECK(um::json_copy(js, sizeof js) > 0);
   std::string j = js;
   CHECK(j.find("\"api\":3") != std::string::npos && j.find("\"plugpool\":[67108864,") != std::string::npos);
+  // ---- N5: a send slot's state not called for blocks: edges from before are not news, its own block's are
+  {
+    float x[12] = {0}, y[12][2];
+    uint8_t k[6] = {65, 0, 0, 0, 0, 0};
+    auto run = [&](int sl) {
+      for (int i = 0; i < 12; ++i) y[i][0] = y[i][1] = 0.0f;
+      fx::user_run(1, sl, x, 12, y, k);
+    };
+    run(1);
+    lfo::clock(0xFA, 0);
+    um::pre_block();
+    um::pre_block();
+    um::pre_block();
+    um::pre_block();
+    run(1);
+    CHECK(near(y[0][0], 0.5f) && near(y[1][0], 0.0f));   // a Start three blocks ago: not news
+    lfo::clock(0xFC, 0);
+    um::pre_block();
+    run(1);
+    CHECK(near(y[1][0], 2.0f / 16));   // the Stop of its own block: delivered
+  }
+  // ---- N3 on core 2: UFX2 and UFX3 share an image; a fault in UFX2's render mutes UFX3 too
+  cmd("um=fx:3:fx.api3_fx");
+  CHECK(fx::user_ready(2));
+  {
+    float x[12] = {0}, y[12][2] = {};
+    uint8_t k[6] = {65, 0, 16, 0, 0, 0};
+    fx::user_run(1, 0, x, 12, y, k);
+    idle_all();
+    CHECK(!fx::user_ready(1) && !fx::user_ready(2));
+    CHECK(std::string(um::slot_view(7).why) == "muted: shares the image of UFX2, which faulted");
+  }
+  cmd("um=fx:3:-");
+  cmd("um=reload:f2");
+  // ---- N4: the budget per send slot (a slow slot 0 is not reset by a fast slot 1), and core 2's total
+  host_fake_time(false, 0);
+  {
+    float x[12] = {0}, y[12][2];
+    uint8_t slow[6] = {65, 0, 80, 0, 0, 0}, fast[6] = {65, 0, 0, 0, 0, 0};   // mode 5 (a little), mode 0
+    CHECK(cmd("um=fxbudget:1:1000000").find("1 us a call") != std::string::npos);
+    for (int i = 0; i < 40 && fx::user_ready(1); ++i) {
+      fx::user_run(1, 0, x, 12, y, slow);
+      fx::user_run(1, 1, x, 12, y, fast);
+    }
+    CHECK(!fx::user_ready(1));
+    idle_all();
+    CHECK(std::string(um::slot_view(6).why).find("muted: render ran ") == 0 &&
+          std::string(um::slot_view(6).why).find("over its budget (1 us a block)") != std::string::npos);
+    cmd("um=reload:f2");
+    cmd("um=fx:3:fx.pingpong");   // a second effect, so the dearest is chosen
+    CHECK(cmd("um=fxbudget:1000000:1").find("1 us all of core 2's") != std::string::npos);
+    for (int b = 0; b < 40 && fx::user_ready(1); ++b) {   // each block: UFX2 in both send slots (slow), UFX3 (fast)
+      um::pre_block();
+      fx::user_run(1, 0, x, 12, y, slow);
+      fx::user_run(1, 1, x, 12, y, slow);
+      fx::user_run(2, 0, x, 12, y, fast);
+    }
+    um::pre_block();
+    fx::user_run(2, 0, x, 12, y, fast);
+    CHECK(!fx::user_ready(1) && fx::user_ready(2));   // the dearest muted, the other plays on
+    idle_all();
+    CHECK(std::string(um::slot_view(6).why).find("muted: ran ") == 0 && std::string(um::slot_view(6).why).find("dearest over core 2's share (1 us)") !=
+          std::string::npos);
+    cmd("um=fxbudget:120:150");
+    cmd("um=fx:3:-");
+    cmd("um=reload:f2");
+  }
+  // ---- N2: a render fx_stop gives up on (~30 ms): the new load is not muted by its late return, the old one's memory
+  // is kept out of reuse until it is back, and the flag clears once it is
+  {
+    static float x[12], y[12][2];
+    static uint8_t k[6] = {65, 0, 64, 0, 0, 0};   // mode 4
+    CHECK(fx::user_ready(1));
+    std::thread t([] { fx::user_run(1, 0, x, 12, y, k); });
+    usleep(2000);
+    cmd("um=fx:2:-");
+    CHECK(logged("um: UFX2 fx.api3_fx: core 2 never left its render (5 ms): left behind") == 1);
+    cmd("um=fx:2:fx.api3_fx");   // (no second 5 ms wait: it is known to be left behind)
+    CHECK(um::slot_view(6).state == RMP_SLOT_READY);
+    um::publish_now();
+    static char js[16384];
+    CHECK(um::json_copy(js, sizeof js) > 0 && std::string(js).find("\"ufx\":2,\"id\":\"fx.api3_fx\",\"state\":\"READY\",\"muted\":false,\"left_behind\":true") != std::string::npos);
+    t.join();   // its late return: over 2 ms, but of the load before
+    CHECK(fx::user_ready(1) && !um::slot_view(6).muted);
+    cmd("um=reload:f2");   // back: no longer left behind
+    um::publish_now();
+    CHECK(um::json_copy(js, sizeof js) > 0 && std::string(js).find("\"ufx\":2,\"id\":\"fx.api3_fx\",\"state\":\"READY\",\"muted\":false,\"left_behind\":false") != std::string::npos);
+  }
+  host_fake_time(true, g_t);
+
   // ---- last (it leaves a thread spinning in the effect's code): a render that never returns. fx_stop gives up after
   // its bounded wait, the UFX is left behind (its memory never reused), and the control core goes on
   {
@@ -513,7 +644,7 @@ int main() {
     usleep(20000);
     host_fake_time(false, 0);
     cmd("um=fx:2:-");
-    CHECK(logged("um: UFX2 fx.api3_fx: core 2 never left its render (5 ms): left behind") == 1);
+    CHECK(logged("um: UFX2 fx.api3_fx: core 2 never left its render (5 ms): left behind") == 2);
     CHECK(!fx::user_ready(1));
   }
   printf("test_api3: PASS\n");
