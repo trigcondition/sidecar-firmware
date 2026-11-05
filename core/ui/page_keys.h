@@ -73,6 +73,8 @@ static const sc_page_key_t sc_rytm_mk2_pages[] = {
 	{7, "REC", "REC", ""},		{8, "SET", 0, ""},		{9, "SCOPE", "SCOPE", ""},
 	{10, "STATUS", "SIDECAR", ""},	{11, "SAMPLE", "SAMPLE", ", AGAIN: AUTO"},
 	{12, "PROJECT", "PROJECT", ""},	{13, "POOL", "POOL", ""},
+	{14, "MORPH", "MORPH", ""},	/* 0.5.0 (spec-050 2.6): needs the 0.5.0 flash's 0026 (UP + T14: rui.c forwards
+					   UP + T1..T13 today); until then the SIDECAR MENU's row */
 };
 static const sc_combo_t sc_rytm_mk2_combos[] = {
 	{"pages", "UP+YES", "SIDECAR (YES: MENU)", "YES PAGES", "TRK+YES", 0},

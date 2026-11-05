@@ -859,7 +859,8 @@ CORE_COLD void frame(uint32_t ms) {
     s.modal_shown = on;
   }
   bool sq = x && !strcmp(x->title, "SEQ");
-  if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, x && x->trigs_now ? x->trigs_now() : 0, sq, sq && seq_data(),
+  bool fn = sq || (x && !strcmp(x->title, "MORPH"));   // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides')
+  if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, x && x->trigs_now ? x->trigs_now() : 0, fn, sq && seq_data(),
                             !sq || seq_yes(), !sq || seq_updown());   // before the frame: the keys and knobs the page shows are its own from now on
   update_leds(x);
   if (!s.sent_valid) s.echo_valid = false;
@@ -1327,7 +1328,12 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
 #if CORE_POLY
       {   // the sequencer's trig keys and PAGE: in seq mode (the page open or not) and on its SEQ page
         const ExtraPage* x = s.open ? extra_of(s.voice) : nullptr;
-        if (seq::ui_key(b[0] << 7 | b[1], b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
+        int code = b[0] << 7 | b[1];
+        // 0.5.0: a trig key another engine page takes now (MORPH's scenes, the LFO design view's steps), or the release
+        // of one it took, is that page's, not the sequencer's (seq mode sends the trig keys on a seq track)
+        bool page_trig = x && strcmp(x->title, "SEQ") && code < 16 &&
+                         ((b[2] && x->trigs_now && (x->trigs_now() >> code & 1)) || (!b[2] && key_held(code)));
+        if (!page_trig && seq::ui_key(code, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
         }

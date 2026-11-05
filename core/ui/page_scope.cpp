@@ -342,11 +342,11 @@ CORE_COLD bool scope_key(int) { return false; }
 
 UI_ROM const ExtraPage kScopePage = {"SCOPE", nullptr, scope_draw, scope_enc, scope_key, 0x07, true, nullptr, nullptr};
 #if CORE_POLY && CORE_MSAMP
-UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kSampPage, &kAutoPage, &kSlotsPage, &kPoolPage, &kSeqPage, &kInsPage, &kMasterPage, &kSongPage, &kProjectPage, &kMenuPage, &kKeysPage, &kWebUiPage, &kPolyPage, &kChopPage, &kArpPage};   // SAMPLE (core/samp) where REC shows, USER SLOTS after AUTO (a box without the Rytm's pages: after SCOPE, the ring's last), POOL (core/lib/pools.h) after it; INSERT (fx-ins), SONG (core/song), PROJECT (bundles) last
+UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kSampPage, &kAutoPage, &kSlotsPage, &kPoolPage, &kSeqPage, &kInsPage, &kMasterPage, &kSongPage, &kProjectPage, &kMenuPage, &kKeysPage, &kWebUiPage, &kPolyPage, &kChopPage, &kArpPage, &kMorphPage};   // SAMPLE (core/samp) where REC shows, USER SLOTS after AUTO (a box without the Rytm's pages: after SCOPE, the ring's last), POOL (core/lib/pools.h) after it; INSERT (fx-ins), SONG (core/song), PROJECT (bundles) last
 #elif CORE_POLY
-UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kSlotsPage, &kSeqPage, &kInsPage, &kMasterPage, &kSongPage, &kMenuPage, &kKeysPage, &kWebUiPage, &kPolyPage, &kArpPage};   // USER SLOTS, SEQ (core/seq), INSERT (fx-ins), SONG (core/song) last: LEFT on SIDECAR
+UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kSlotsPage, &kSeqPage, &kInsPage, &kMasterPage, &kSongPage, &kMenuPage, &kKeysPage, &kWebUiPage, &kPolyPage, &kArpPage, &kMorphPage};   // USER SLOTS, SEQ (core/seq), INSERT (fx-ins), SONG (core/song) last: LEFT on SIDECAR
 #else
-UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kMenuPage, &kKeysPage, &kWebUiPage};   // the page order: LFO, REC (where shown), SCOPE last
+UI_ROM const ExtraPage* const kPages[] = {&kLfoPage, &kRecPage, &kScopePage, &kMenuPage, &kKeysPage, &kWebUiPage, &kMorphPage};   // the page order: LFO, REC (where shown), SCOPE last
 #endif
 
 #if CORE_UI_TOOLS

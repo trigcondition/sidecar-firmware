@@ -34,7 +34,7 @@ struct Entry {
 // tests hold the list to that rule (test_ui)
 UI_ROM const Entry kEntries[] = {
     {"POLY CONFIG", "POLY"}, {"ARP", "ARP"},         {"SAMPLE", "SAMPLE"},   {"AUTO SAMPLE", "AUTO"}, {"SONG", "SONG"},     {"REC", "REC"},
-    {"SCOPE", "SCOPE"},      {"LFO", "LFO"},         {"PROJECT", "PROJECT"},  {"STATUS", "SIDECAR"}, {"SYSTEM", "SYSTEM"},
+    {"SCOPE", "SCOPE"},      {"LFO", "LFO"},         {"MORPH", "MORPH"},     {"PROJECT", "PROJECT"},  {"STATUS", "SIDECAR"}, {"SYSTEM", "SYSTEM"},
     {"USER SLOTS", "USER SLOTS"}, {"WEB UI", "WEB UI"}, {"KEYS (ALL COMBOS)", nullptr},
 };
 constexpr int kAll = sizeof kEntries / sizeof kEntries[0];

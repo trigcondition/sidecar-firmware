@@ -142,6 +142,11 @@ bool remote_play_take(PlayInput* in);   // false: nothing since the last call
 extern const ExtraPage kRecPage;
 // ---- the LFO page (page_lfo.cpp, core/lfo.h): first of the pages drawn by code (LFO, REC, SCOPE)
 extern const ExtraPage kLfoPage;
+// ---- the MORPH page (page_morph.cpp, core/mod/scene.h, spec-050 2.6): the scenes, A / B, the fader, a scene's locks
+extern const ExtraPage kMorphPage;
+void morph_page_reset();   // the page's own state (holds, the question) cleared (tests)
+int morph_page_held();     // the scene key held on it (0..11), -1 none
+void morph_value_text(uint16_t tid, uint16_t v, char* b, int cap);   // a lock's value (x 128) as the page shows it
 #if CORE_POLY
 extern const ExtraPage kSeqPage;   // the Sidecar sequencer's page (page_seq.cpp, core/seq/seq.h)
 // fix1028: NOTE EDIT's roll (page_seq.cpp) gives each pitch its lane and, when the page has more pitches than lanes
