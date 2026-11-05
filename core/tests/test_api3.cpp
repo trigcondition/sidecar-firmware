@@ -26,6 +26,7 @@
 #include <memory>
 #include <thread>
 #include "hooks.h"
+#include "host_link.h"
 #include "lfo.h"
 #include "rmp_api3.h"
 #include "rmp_format.h"
@@ -39,7 +40,15 @@ using namespace core;
 #if defined(__aarch64__)
 static std::vector<std::string> g_log;
 static void sink(const char* s, int n) { g_log.emplace_back(s, (size_t)n); }
-static void out(const uint8_t*, int) {}
+static std::vector<std::vector<uint8_t>> g_msgs;   // what the engine sent the Rytm
+static void out(const uint8_t* m, int n) { g_msgs.emplace_back(m, m + n); }
+// a 0x21 TYPE list sent since g_msgs was cleared holds TYPE id with this name
+static bool listed(int id, const char* name) {
+  std::string want = std::string(1, (char)id) + name;
+  for (auto& m : g_msgs)
+    if (m.size() > 8 && m[4] == 0x21 && std::string(m.begin(), m.end()).find(want) != std::string::npos) return true;
+  return false;
+}
 static std::string slurp(const std::string& p) {
   FILE* f = fopen(p.c_str(), "rb");
   CHECK(f);
@@ -644,6 +653,39 @@ int main() {
     CHECK(um::json_copy(js, sizeof js) > 0 && std::string(js).find("\"ufx\":2,\"id\":\"fx.api3_fx\",\"state\":\"READY\",\"muted\":false,\"left_behind\":false") != std::string::npos);
   }
   host_fake_time(true, g_t);
+
+  // ---- the Rytm's TYPE list follows the UFX slots: an assign sends a fresh 0x21 with the effect at TYPE 64 (rate-
+  // limited, from the control path), an empty one without it; a project change keeps a loaded effect's name
+  {
+    cmd("um=fx:1:-");
+    g_t += 200000, host_fake_time(true, g_t);
+    sendfx_step();
+    g_msgs.clear();
+    cmd("um=fx:1:fx.pingpong");
+    g_t += 200000, host_fake_time(true, g_t);
+    CHECK(sendfx_step());
+    CHECK(listed(64, "PINGPONG"));
+    CHECK(!sendfx_step());   // (sent: nothing owed)
+    g_msgs.clear();
+    cmd("um=fx:1:-");
+    g_t += 200000, host_fake_time(true, g_t);
+    CHECK(sendfx_step() && !listed(64, "PINGPONG"));
+    for (auto& m : g_msgs) CHECK(m[4] != 0x21 || std::string(m.begin(), m.end()).find("PINGPONG") == std::string::npos);
+    cmd("um=fx:1:fx.pingpong");
+    g_t += 200000, host_fake_time(true, g_t);
+    sendfx_step();
+    g_msgs.clear();
+    Fs fs2;
+    CHECK(fs2.mkdir("/.rytm/projects/B3"));
+    sysex({0xf0, 0x7d, 0x52, 0x54, 0x10, 'B', '3', 0xf7});   // another project: its fxslots file names nothing
+    idle_all();
+    for (int i = 0; i < 20; ++i) g_t += 1000, host_fake_time(true, g_t), sendfx_step();
+    CHECK(!strcmp(core::project, "B3"));
+    CHECK(listed(64, "PINGPONG") && fx::user[0].tag == fx::fx_tag("PINGPONG"));
+    sysex({0xf0, 0x7d, 0x52, 0x54, 0x10, 'A', '3', 0xf7});
+    idle_all();
+    for (int i = 0; i < 20; ++i) g_t += 1000, host_fake_time(true, g_t), sendfx_step();
+  }
 
   // ---- last (it leaves a thread spinning in the effect's code): a render that never returns. fx_stop gives up after
   // its bounded wait, the UFX is left behind (its memory never reused), and the control core goes on

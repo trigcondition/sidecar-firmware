@@ -670,6 +670,7 @@ void slot_mute1(int s, const char* why) {
   for (int vi = 0; vi < core::kVoices; ++vi)
     if (g_cur[vi] == s) core::v[vi].live = false;
   copy(g_why[s], why, sizeof g_why[s]);
+  if (s >= kSlots) core::fx::list_changed();
   core::log("um: %s%d %s %s", slot_pfx(s), slot_no(s), entry_of(s).id, why);
   g_pub = true;
 }
@@ -2065,7 +2066,10 @@ void slot_set(int s, rmp_slot_state st, const rmp_plugin* p, int pkg) {
   sl.crc = pkg >= 0 && st == RMP_SLOT_READY ? g_pkg[pkg].crc ^ g_pkg[pkg].size : 0;
   sl.fp = st == RMP_SLOT_READY && pkg >= 0 ? g_pkg[pkg].fp : 0;
   g_pub = true;
-  if (s >= kSlots) return;   // (an effect: no cost row, no presets, nothing the Rytm asks for)
+  if (s >= kSlots) {   // (an effect slot: the Rytm's TYPE list and states again)
+    core::fx::list_changed();
+    return;
+  }   // (an effect: no cost row, no presets, nothing the Rytm asks for)
   cost_sum(s, &g_cyc0[s], &g_blk0[s]);   // the cost is measured from here
   g_mp = true;
   pre_slot(s);
@@ -2125,6 +2129,7 @@ void fx_named(int u) {
   __atomic_store_n(&f.tag, (uint16_t)0, __ATOMIC_RELEASE);
   copy(f.name, k >= 0 ? g_pkg[k].desc.name : "", sizeof f.name);
   __atomic_store_n(&f.tag, core::fx::fx_tag(f.name), __ATOMIC_RELEASE);
+  core::fx::list_changed();
 }
 // UFX u leaves core 2 before its states, arena or image change: not live, then core 2 out of it (a render under way
 // ends; at most one effect block)
@@ -3023,6 +3028,7 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_render2 = on_render2;
   core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)
   core::fx::user_run = fx_run;
+  core::fx::user_loaded = [](int u) { return u >= 0 && u < kUfx && g_slot[kSlots + u].st == RMP_SLOT_READY && g_fxmap[u].id[0] != 0; };
   core::hooks.slot_ask = on_ask;
   core::hooks.slot_assign = on_assign;
   core::hooks.project_seen = on_project_seen;

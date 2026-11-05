@@ -140,6 +140,12 @@ extern void (*bus_insert)(int slot, float (*y)[2], int n);
 extern bool (*user_ready)(int u);
 extern void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k);
 inline bool user_plays(int t) { return t >= kFirstUser && t < kFirstUser + 4 && user_ready && user_ready(t - kFirstUser); }
+// The TYPE list (0x21) changed under the Rytm: a user effect slot was assigned, emptied, loaded again, muted or
+// remapped (core/user/um.cpp). The host link sends the list, the labels and the states again (sendfx_step,
+// rate-limited) - the Rytm asks for the list only once.
+extern volatile bool list_dirty;
+extern bool (*user_loaded)(int u);   // UFX u holds a loaded effect (READY, muted or not): its name is kept (slots_load)
+inline void list_changed() { list_dirty = true; }
 // The slot that is the STUTTER, or -1: FX 1 if both are (FX 2 is then MISSING: one ring, one insert).
 inline int stutter_slot(const Control& c) {
   return !plays(kStutter) ? -1 : c.knob[0][0] == kStutter ? 0 : c.knob[1][0] == kStutter ? 1 : -1;

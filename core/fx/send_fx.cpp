@@ -95,6 +95,8 @@ uint8_t (*knob_filter)(int slot, int knob, uint8_t v) = nullptr;
 void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
 void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
 bool (*user_ready)(int u) = nullptr;
+volatile bool list_dirty = false;
+bool (*user_loaded)(int u) = nullptr;
 void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 
