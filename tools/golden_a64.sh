@@ -56,5 +56,7 @@ if ! cmp -s "$R/core/$B/Makefile.new" "$R/core/$B/Makefile" || ! cmp -s "$R/core
 fi
 mv "$R/core/$B/Makefile.new" "$R/core/$B/Makefile"
 cp "$R/core/$B/src.mk" "$R/core/$B/src.mk.used"
+# (a second make, serial, when the first fails: twice the link of a fresh build failed once with no message on Docker
+# Desktop's bind mount and passed when run again)
 docker run --rm --platform linux/arm64 -v "$R:$R" -w "$R/core" "$IMAGE" bash -c \
-  "make -s -k -f $B/Makefile -j\$(nproc) $B/test_mod_golden && $B/test_mod_golden $MODE"
+  "{ make -s -k -f $B/Makefile -j\$(nproc) $B/test_mod_golden || make -s -f $B/Makefile $B/test_mod_golden; } && $B/test_mod_golden $MODE"
