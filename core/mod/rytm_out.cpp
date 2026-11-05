@@ -18,6 +18,7 @@ struct Slot {
 Slot g_s[13];
 bool g_cmd = false;        // the mod command (the hello's caps), not refused since
 bool g_said = false;       // the refusal logged
+bool g_said_off = false;   // a track without a channel logged
 RytmOutStats g_st;
 
 CORE_COLD void sysex(const uint8_t* b, int n) {   // F0 7D 52 54 <kHostCmd> 01 b... F7
@@ -84,8 +85,14 @@ CORE_COLD void rytm_mute(uint16_t set, uint16_t clr) {
     return;
   }
   const song::MidiConfig& c = song::midi_config();
-  for (int k = 0; k < 12; ++k)
-    if ((set | clr) >> k & 1) cc(ch_or(c.track_ch[k], k + 1), kMuteCc, set >> k & 1);
+  for (int k = 0; k < 12; ++k) {
+    if (!((set | clr) >> k & 1)) continue;
+    if (c.track_ch[k] < 1 || c.track_ch[k] > 16) {   // the track's channel OFF: no CC 94 on another track's (review L4)
+      if (!g_said_off) log(CORE_STR("rytm: track %d has no MIDI channel: its mute not sent by CC"), k + 1), g_said_off = true;
+      continue;
+    }
+    cc(c.track_ch[k], kMuteCc, set >> k & 1);
+  }
 }
 CORE_COLD void rytm_host_cmd(bool on) {
   g_cmd = on, g_said = false;

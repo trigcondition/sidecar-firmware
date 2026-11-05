@@ -206,31 +206,36 @@ static void sixty_fifth_lock_refused() {
   printf("scene: the 65th lock is refused\n");
 }
 
-// 64 locks in each of scenes 0, 1, 2 on different targets, 8 LFO-like and 32 route-like targets from a source
-static void src_40(uint32_t, uint32_t) {
-  for (int i = 0; i < 40; ++i) mod::offset(i < 8 ? i : 8 + i, mod::tid(mod::kIns, i / 12, i % 12), 1, 0.5f);
+// review M3: an A / B change from two full scenes to two other full scenes, with 40 source entries: 40 + 4 x 64 = 296 >
+// kEntries 256 - only the old scenes' targets released before the new ones are allocated keep it in the table
+static void src_40(uint32_t, uint32_t) {   // 8 LFO-like and 32 route-like targets: I11..I13 (36) and O1:LEV..O4:LEV
+  for (int i = 0; i < 40; ++i)
+    mod::offset(i < 8 ? i : 8 + i, i < 36 ? mod::tid(mod::kIns, 10 + i / 12, i % 12) : mod::tid(mod::kOut, i - 36, 0), 1, 0.5f);
 }
-static Tid lock_target(int sc, int k) {   // scene 0: V1..V4's P1..P16, 1: V5..V8's, 2: I5..I10's
+static Tid lock_target(int sc, int k) {   // 0: V1..V4, 1: V5..V8, 2: I1..I5 (first 64), 3: I6..I10 + O5..O7 (64)
   if (sc == 0) return mod::tid(mod::kV, k / 16, k % 16);
   if (sc == 1) return mod::tid(mod::kV, 4 + k / 16, k % 16);
-  return mod::tid(mod::kIns, 4 + k / 12, k % 12);
+  if (sc == 2) return mod::tid(mod::kIns, k / 12, k % 12);
+  int n = 64 + k;   // I6:A1 .. (chains 5..9: 60 params), then O5..O7
+  return n < 120 ? mod::tid(mod::kIns, n / 12, n % 12) : mod::tid(mod::kOut, 4 + (n - 120) / 3, (n - 120) % 3);
 }
 static void ab_switch_full_scenes() {
   scene_reset_with_base(40);
   ins::reset();
   mod::set_source_fn(src_40);
-  for (int sc = 0; sc < 3; ++sc)
+  for (int sc = 0; sc < 4; ++sc)
     for (int k = 0; k < 64; ++k) CHECK(scene::lock(sc, lock_target(sc, k), (uint16_t)(30 * 128)));
   scene::set_ab(0, 1);
   run_ms(2);
-  CHECK(mod::find(lock_target(1, 5)) && mod::find(lock_target(0, 63)));
-  scene::set_ab(0, 2);
+  CHECK(mod::find(lock_target(1, 5)) && mod::find(lock_target(0, 63)) && mod::stats().dropped == 0);
+  scene::set_ab(2, 3);
   run_ms(2);
-  CHECK(mod::stats().dropped == 0);
-  CHECK(!mod::find(lock_target(1, 5)) && mod::find(lock_target(2, 63)));   // scene 1's targets back at their bases
   char o[200];
   mod::command("mod=stats", o, sizeof o);
-  printf("scene: an A / B change of full scenes: %s\n", o);
+  printf("scene: an A / B change of full scenes to other full scenes: %s\n", o);
+  CHECK(mod::stats().dropped == 0);   // (without the release: 296 entries wanted in one tick)
+  CHECK(!mod::find(lock_target(0, 5)) && !mod::find(lock_target(1, 63)) && mod::find(lock_target(2, 0)) &&
+        mod::find(lock_target(3, 63)));
   mod::set_source_fn(nullptr);
   ins::reset();
 }
@@ -388,9 +393,15 @@ static void console_round_trip() {
   CHECK(j.find("\"scene\":{\"a\":3,\"b\":7,\"fader\":8192,") == 0 && j.find("\"sel\":7,\"locked\":0,\"edit\":0,\"s\":[") != std::string::npos);
   CHECK(j.find("{\"n\":3,\"l\":[[\"V1:P3\",6400],[\"MFX:LEV\",12864]]}") != std::string::npos && j.find("{\"n\":5,") == std::string::npos);
   CHECK(j.compare(j.size() - 3, 3, "]}}") == 0 || j.compare(j.size() - 2, 2, "]}") == 0);
-  for (int sc = 0; sc < scene::kScenes; ++sc)
-    for (int k = 0; k < scene::kLocks; ++k)
-      scene::lock(sc, k < 48 ? mod::tid(mod::kIns, k / 12 + sc % 9, k % 12) : mod::tid(mod::kRytm, 0, (k - 48) % 13), 16383);
+  for (int sc = 0; sc < scene::kScenes; ++sc) {   // 768 distinct locks, the longest names: RYTM:PERF.., MFX:MIX.., S1x:Fn
+    scene::clear(sc);
+    for (int k = 0; k < scene::kLocks; ++k) {
+      Tid t = k < 13 ? mod::tid(mod::kRytm, 0, k) : k < 18 ? mod::tid(mod::kMfx, 0, k - 13) : k < 42 ? mod::tid(mod::kSnd, (k - 18) / 2, k % 2)
+                                                                                               : mod::tid(mod::kIsnd, (k - 42) / 3, (k - 42) % 3);
+      CHECK(scene::lock(sc, t, 16383));
+    }
+    CHECK(scene::state().s[sc].n == 64);
+  }
   n = scene::json(js, sizeof js);
   printf("scene: json of the fullest state: %d bytes\n", n);
   CHECK(n > 0 && n < (int)sizeof js);

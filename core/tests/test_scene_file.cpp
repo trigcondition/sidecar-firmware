@@ -193,6 +193,7 @@ static void save_mid_morph_stores_knobs() {
   flush();
   std::string rec = rd("/.rytm/kits/SCM/k001.sks");
   CHECK(rec.find("MFX 0 RET 101 ") != std::string::npos);
+  CHECK(rec.find("=scene\n") != std::string::npos && rec.find("L 1 MFX:LEV 7680\n") != std::string::npos);   // (L7)
   printf("scene file: a save mid-morph stores the knobs\n");
   for (int n = 0; n < scene::kScenes; ++n) scene::clear(n);
   scene::set_ab(-1, -1);

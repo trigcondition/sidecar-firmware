@@ -668,7 +668,7 @@ void CEngineCores::Command (const char *p)
 	{
 		L->Write (From, LogNotice, "%s", Sc);
 	}
-	else if (char Le[600]; bridge::learn_command (p, Le, sizeof Le))	// learn, learn=...: MIDI learn (core/mod/learn.h)
+	else if (static char Le[1600]; bridge::learn_command (p, Le, sizeof Le))	// (32 routes' listing)	// learn, learn=...: MIDI learn (core/mod/learn.h)
 	{
 		L->Write (From, LogNotice, "%s", Le);
 	}

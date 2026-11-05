@@ -129,8 +129,8 @@ CORE_COLD bool midi(int port, uint8_t st, uint8_t d1, uint8_t d2) {
   }
   int i = find(port, ch, d1);
   if (i >= 0) {
-    if (g_14[i]) g_msb[i] = d2, apply(i, (float)d2);
-    else g_msb[i] = d2, apply(i, (float)d2);
+    g_msb[i] = d2;   // (a 14-bit route's MSB alone: its 7 bits; the LSB that follows refines it)
+    apply(i, (float)d2);
     return true;
   }
   if (d1 >= 32 && d1 < 64 && (i = find(port, ch, d1 - 32)) >= 0) {   // the LSB of a route on CC n < 32: 14 bits

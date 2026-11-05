@@ -275,6 +275,7 @@ CORE_COLD void tick(uint32_t ms) {
     if (m.av < 0) a = mod::base(m.t);
     else if (m.bv < 0) b = mod::base(m.t);
     float val = step ? (g_upper ? b : a) : a + (b - a) * f;
+    if (step && k == mod::kV) val = (float)(int)(val + 0.5f);   // a list cell plays whole entries (review L13)
     mod::morph(m.t, val);
   }
 }
