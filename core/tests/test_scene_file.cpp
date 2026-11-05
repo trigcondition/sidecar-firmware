@@ -235,6 +235,30 @@ static void large_file_queued() {
   printf("scene file: a file over kPostMax goes through the queue, whole\n");
 }
 
+// Task 10: a 12 KB scene file (768 locks) through SAVE KIT / RELOAD KIT whole (kits.cpp: the record's limit kRecMax)
+static void kit_record_with_big_scene_file() {
+  kit(3);   // (large_file_queued's kit 4: 768 locks)
+  int n0 = 0;
+  for (int s = 0; s < scene::kScenes; ++s) n0 += scene::state().s[s].n;
+  CHECK(n0 == 768);
+  const uint8_t sv[12] = {0xF0, 0x7D, 0x52, 0x54, 0x4C, 1, (uint8_t)kits::kSave, 0, 4, 0, 4, 0xF7};
+  engine_sysex(sv, 12);
+  for (int i = 0; i < 20; ++i) idle_save(), card_core_turn();
+  flush();
+  std::string rec = rd("/.rytm/kits/SCM/k004.sks");
+  CHECK(rec.find("=scene\n") != std::string::npos);
+  for (int s = 0; s < scene::kScenes; ++s) scene::clear(s);
+  flush();
+  const uint8_t rl[12] = {0xF0, 0x7D, 0x52, 0x54, 0x4C, 1, (uint8_t)kits::kReload, 0, 4, 0, 4, 0xF7};
+  engine_sysex(rl, 12);
+  for (int i = 0; i < 20; ++i) idle_save(), card_core_turn();
+  flush();
+  int n = 0;
+  for (int s = 0; s < scene::kScenes; ++s) n += scene::state().s[s].n;
+  printf("scene file: a kit record with a %zu-byte scene section: %d locks back after RELOAD KIT\n", rec.size(), n);
+  CHECK(n == 768);
+}
+
 static void store_entries_headroom() {
   to_project("SCH");
   printf("scene file: a project's store: %d entries of kMaxEntries %d\n", store::entries(), store::kMaxEntries);
@@ -274,6 +298,7 @@ int main() {
   save_mid_morph_stores_knobs();
   fader_move_alone_not_dirty();
   large_file_queued();
+  kit_record_with_big_scene_file();
   store_entries_headroom();
   project_switch_saves_old();
   printf("test_scene_file: PASS\n");

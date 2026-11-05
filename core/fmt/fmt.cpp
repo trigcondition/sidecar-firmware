@@ -308,6 +308,7 @@ const Place kPlaces[] = {
     {"fm", "/.rytm/fm/%s.txt", 1},
     {"lfo", "lfo", 2},
     {"ins", "ins", 2},
+    {"scene", "scene", 2},   // 0.5.0 (core/mod/scene.h)
     {"kits", "kits", 2},   // core/bundle/kits.h: its folder (128); the records kNNN.sks / .prv, not path()'s .txt
     {"sqp", "/.rytm/seq/%s", 3},
     {"tracks", "/.rytm/seq/%s/tracks.txt", 1},

@@ -125,7 +125,7 @@ int main() {
                       {"bundle", fmt::kExchange, 1}, {"library", fmt::kProject, 1}, {"library-log", fmt::kProject, 1},
                       {"library-state", fmt::kProject, 1}, {"samplepool", fmt::kProject, 1},
                       {"wtpool", fmt::kProject, 1}, {"instpool", fmt::kProject, 1}, {"poolused", fmt::kDerived, 1},
-                      {"slicemap", fmt::kProject, 2}, {"kits", fmt::kProject, 1}};
+                      {"slicemap", fmt::kProject, 2}, {"kits", fmt::kProject, 1}, {"scene", fmt::kProject, 1}};
   for (const Want& w : inv) {
     const fmt::Format* f = fmt::find(w.name);
     CHECK(f && f->cls == w.cls && f->current == w.current && f->sniff);
@@ -165,6 +165,7 @@ int main() {
   }
   CHECK(!strcmp(fmt::path("lfo", "LIVE", 0, p, sizeof p), "/.rytm/lfo/LIVE/k001.txt"));
   CHECK(!strcmp(fmt::path("ins", "LIVE", 127, p, sizeof p), "/.rytm/ins/LIVE/k128.txt"));
+  CHECK(!strcmp(fmt::path("scene", "LIVE", 2, p, sizeof p), "/.rytm/scene/LIVE/k003.txt"));
   CHECK(!strcmp(fmt::path("sqp", "LIVE", 5, p, sizeof p), "/.rytm/seq/LIVE/p005.sqp"));
   CHECK(!strcmp(fmt::path("keys", nullptr, 0, p, sizeof p), "/.rytm/keys.txt"));
   CHECK(!strcmp(fmt::path("library", nullptr, 0, p, sizeof p), "/.rytm/library/index.bin"));
