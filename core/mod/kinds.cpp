@@ -3,7 +3,13 @@
 
 #include <string.h>
 
+#include "fx/send_fx.h"
 #include "platform.h"
+#include "voices.h"
+#if CORE_POLY
+#include "fx/insert.h"
+#include "fx/out.h"
+#endif
 
 namespace core {
 namespace mod {
@@ -143,6 +149,33 @@ CORE_COLD bool parse(const char* s, Tid* out) {
     }
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------------------------------- base, writer
+
+CORE_COLD float base_now(Tid t) {
+  int i = index_of(t), p = param_of(t);
+  switch (kind_of(t)) {
+    case kV: return v[i & 7].p[p & 15];
+    case kFx: return fx::control.knob[i & 1][2 + (p & 3)];
+    default: return 0;   // the offset kinds: the offset is on the knob (their base is read where it is applied)
+  }
+}
+
+CORE_COLD void put(Tid t, float val) {
+  int i = index_of(t), p = param_of(t);
+  switch (kind_of(t)) {
+    case kV: v[i & 7].p[p & 15] = val; break;
+    case kFx: fx::control.knob[i & 1][2 + (p & 3)] = (uint8_t)val; break;
+#if CORE_POLY
+    case kIns:   // fx-ins: params 0..7 slot A / B P1..P4, 8..11 the chain's POST EQ (ins1112)
+      if (p >= 8) ins::eq_lfo_offset(i, (p - 8) & 3, (int)val);
+      else ins::lfo_offset(i, (p >> 2) & 1, p & 3, (int)val);
+      break;
+    case kOut: out::lfo_offset(i, p % 3, (int)val); break;
+#endif
+    default: break;
+  }
 }
 
 }  // namespace mod

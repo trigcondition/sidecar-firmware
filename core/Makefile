@@ -157,7 +157,7 @@ TIMING_TESTS := $(addprefix $(B)/,test_bundle_stall test_library_stall test_load
 # The Teensy's configuration (no CORE_POLY, no CORE_MSAMP: no built-in MD), compiled for syntax only on the files the
 # MD change touched that build there today (voices.cpp, ui/remote.cpp, lfo.cpp and a few more already fail in that
 # configuration on integ-1028, unrelated: not listed); core/mod (spec-050 1.7: kV and kFx only there)
-TEENSY_CFG_SRC := md/md.cpp inst.cpp inst_alloc.cpp host_link.cpp notes.cpp ui/page_lfo.cpp livein/livein.cpp mod/kinds.cpp
+TEENSY_CFG_SRC := md/md.cpp inst.cpp inst_alloc.cpp host_link.cpp notes.cpp ui/page_lfo.cpp livein/livein.cpp mod/kinds.cpp mod/mod.cpp
 teensy-cfg:
 	@for f in $(TEENSY_CFG_SRC); do $(CXX) -std=c++17 -fsyntax-only -Wall -Wno-unused-parameter -I. -Ihost -I$(RMPSRC) -I../sdk $(ENG_INC) $(ENG_FLAGS) $$f || exit 1; done
 	@echo "teensy configuration: $(TEENSY_CFG_SRC) compile"
