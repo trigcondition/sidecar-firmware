@@ -84,6 +84,7 @@ CORE_SRC += $(wildcard $(CORE)/seq/*.cpp)   # the Sidecar sequencer (core/seq/se
 CORE_SRC += $(wildcard $(CORE)/song/*.cpp)  # SONG RECORD (core/song/song.h)
 CORE_SRC += $(wildcard $(CORE)/bundle/*.cpp)   # project bundles (core/bundle, docs/BUNDLES.md)
 CORE_SRC += $(wildcard $(CORE)/lib/*.cpp) $(wildcard $(CORE)/fmt/*.cpp)   # the source browser and pools (srclib), the sample library and sha256 (docs/LIBRARY.md), the format registry (core/fmt)
+CORE_SRC += $(wildcard $(CORE)/mod/*.cpp)   # the modulation layer (core/mod, spec-050 section 1)
 CORE_SRC += $(wildcard $(CORE)/store/*.cpp)   # the RAM store: one project's card files in RAM, filled by the card core (core/store/store.h)
 CORE_SRC += $(CORE)/rec/rec_names.cpp   # the recorder's sources, channel lists and take names (shared with the Sidecar Mini)
 CORE_SRC += $(CORE)/msamp/cardq.cpp $(wildcard $(CORE)/samp/*.cpp)   # the card queue (core/msamp/cardq.h); sampling, auto-sampler (core/samp)

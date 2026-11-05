@@ -20,6 +20,7 @@ make -s -C "$R/core" print-src > "$R/core/$B/src.mk"
 cat > "$R/core/$B/Makefile" <<'EOF'
 include build/a64/src.mk
 B := build/a64
+.DELETE_ON_ERROR:
 CXXFLAGS := -std=c++17 -O2 -DCORE_UI_TOOLS=1 -DCORE_POLY=1 -DCORE_MSAMP=1 -w -ffp-contract=fast -fno-math-errno -fsigned-char \
             -include string.h -include stdlib.h -I. -Ihost -I$(RMPSRC) -I../sdk $(ENG_INC) $(ENG_FLAGS) -DGOLDEN_A64 -MMD -MP
 CFLAGS := -std=c99 -O2 -ffp-contract=fast -fno-math-errno -fsigned-char -w -MMD -MP $(ENG_INC)
