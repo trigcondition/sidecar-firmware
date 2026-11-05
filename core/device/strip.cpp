@@ -80,12 +80,12 @@ void env_out(int voice, Voice& x) {
     int off = (int)((x.v[kCtlFltEnv] - 64.0f) * 2.0f * x.f);
     if (off != x.env) {
       x.env = off;
-      ins::lfo_offset(voice, kSlot, x.kind == ins::kEq ? kEqFreq : kLpCut, off);
+      ins::mod_offset(voice, kSlot, x.kind == ins::kEq ? kEqFreq : kLpCut, off);
     }
   }
   int lev = (int)(x.v[kCtlVol] * x.a), pan = (int)x.v[kCtlPan];
-  if (lev != x.lev) x.lev = lev, out::lfo_offset(voice, 0, lev - 100);
-  if (pan != x.pan) x.pan = pan, out::lfo_offset(voice, 1, pan - 64);
+  if (lev != x.lev) x.lev = lev, out::mod_offset(voice, 0, lev - 100);
+  if (pan != x.pan) x.pan = pan, out::mod_offset(voice, 1, pan - 64);
 }
 
 }  // namespace

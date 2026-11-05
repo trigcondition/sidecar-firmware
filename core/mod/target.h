@@ -48,8 +48,9 @@ const char* name(Tid t, char* b, int cap);          // "V3:P5"; "" when not vali
 bool parse(const char* s, Tid* out);                // a name, any case; false when this build has no such target
 
 // ---- the kinds' base readers and writers (control side)
-float base_now(Tid t);       // a new entry's base: what plays now (v[vi].p[k], the FX knob; 0 for an offset kind)
-void put(Tid t, float v);    // the writer: the value (kV kFx), the offset rounded by the caller (kIns kOut); kV only
+float base_now(Tid t);       // a new entry's base: what plays now (v[vi].p[k], the FX knob, a send; 0 for an offset kind)
+void put(Tid t, float v);    // the writer: the value (kV kFx kSnd), the offset rounded by the caller (kIns kIsnd kMfx
+                             // kOut); kV only
                              // stores (the caller marks the voice dirty); the kinds without a writer yet: nothing
 
 }  // namespace mod

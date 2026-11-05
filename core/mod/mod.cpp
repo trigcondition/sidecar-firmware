@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "fx/send_fx.h"
 #include "lfo.h"
 #include "platform.h"
 #include "voices.h"
@@ -49,6 +50,11 @@ CORE_COLD void restore(Entry& e) {
 }
 
 }  // namespace
+
+// the send FX's hook into the layer (fx/send_fx.h; its knob_filter is the LFOs', which forwards here), set before main
+static struct FxHooks {
+  FxHooks() { fx::send_filter = fx_send; }
+} g_fx_hooks;
 
 CORE_COLD void set_source_fn(void (*fn)(uint32_t us, uint32_t dus)) { g_source = fn; }
 
@@ -178,6 +184,15 @@ CORE_COLD void voice_params(int vi, float* p, int np) {
 CORE_COLD uint8_t fx_knob(int slot, int knob, uint8_t val) {
   if (knob < 2 || knob > 5) return val;
   Entry* e = find_e(tid(kFx, slot & 1, knob - 2));
+  if (!e) return val;
+  e->base = val;
+  int iv = rnd0(clampf(e->base + e->off, 0.0f, 127.0f));
+  e->applied = (float)iv;
+  return (uint8_t)iv;
+}
+
+CORE_COLD uint8_t fx_send(int track, int slot, uint8_t val) {
+  Entry* e = find_e(tid(kSnd, track, slot & 1));
   if (!e) return val;
   e->base = val;
   int iv = rnd0(clampf(e->base + e->off, 0.0f, 127.0f));

@@ -136,7 +136,7 @@ void set_param(int vi, int k, int v) {
   changed();
 }
 int param(int vi, int k) { return vi >= 0 && vi < kVoices && k >= 0 && k <= 3 ? g_knob[vi][k] : 0; }
-void lfo_offset(int vi, int k, int off) {
+void mod_offset(int vi, int k, int off) {
   if (vi < 0 || vi >= kVoices || k < 0 || k > 2) return;
   g_lfo[vi][k] = (int16_t)clampi(off, -127, 127);
   refresh(vi);

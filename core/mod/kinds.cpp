@@ -8,6 +8,7 @@
 #include "voices.h"
 #if CORE_POLY
 #include "fx/insert.h"
+#include "fx/master.h"
 #include "fx/out.h"
 #endif
 
@@ -158,6 +159,9 @@ CORE_COLD float base_now(Tid t) {
   switch (kind_of(t)) {
     case kV: return v[i & 7].p[p & 15];
     case kFx: return fx::control.knob[i & 1][2 + (p & 3)];
+#if CORE_POLY
+    case kSnd: return fx::control.send[i % fx::kTracks][p & 1];
+#endif
     default: return 0;   // the offset kinds: the offset is on the knob (their base is read where it is applied)
   }
 }
@@ -169,10 +173,13 @@ CORE_COLD void put(Tid t, float val) {
     case kFx: fx::control.knob[i & 1][2 + (p & 3)] = (uint8_t)val; break;
 #if CORE_POLY
     case kIns:   // fx-ins: params 0..7 slot A / B P1..P4, 8..11 the chain's POST EQ (ins1112)
-      if (p >= 8) ins::eq_lfo_offset(i, (p - 8) & 3, (int)val);
-      else ins::lfo_offset(i, (p >> 2) & 1, p & 3, (int)val);
+      if (p >= 8) ins::eq_mod_offset(i, (p - 8) & 3, (int)val);
+      else ins::mod_offset(i, (p >> 2) & 1, p & 3, (int)val);
       break;
-    case kOut: out::lfo_offset(i, p % 3, (int)val); break;
+    case kOut: out::mod_offset(i, p % 3, (int)val); break;
+    case kSnd: fx::control.send[i % fx::kTracks][p & 1] = (uint8_t)val; break;
+    case kIsnd: ins::send_offset(i, p, (int)val); break;
+    case kMfx: master::mod_offset(p, (int)val); break;
 #endif
     default: break;
   }

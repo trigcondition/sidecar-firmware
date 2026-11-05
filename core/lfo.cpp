@@ -137,7 +137,7 @@ CORE_COLD Tgt* find(int target, int param) {
 
 CORE_COLD float current(int target, int param) {   // a new target's base: what plays now
   if (is_voice(target)) return v[target - kTVoice].p[param & 15];
-  if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (lfo_offset), its base the knob
+  if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (mod_offset), its base the knob
   return fx::control.knob[target - kTFx][2 + (param & 3)];
 }
 #endif
@@ -289,9 +289,9 @@ CORE_COLD void restore(Tgt& e) {
     fx::control.knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)e.base;
   }
 #if CORE_POLY
-  else if (is_ins(e.target) && e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, 0);
-  else if (is_ins(e.target)) ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, 0);
-  else if (is_out(e.target)) out::lfo_offset(e.target - kTOut, e.param % 3, 0);
+  else if (is_ins(e.target) && e.param >= 8) ins::eq_mod_offset(e.target - kTIns, (e.param - 8) & 3, 0);
+  else if (is_ins(e.target)) ins::mod_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, 0);
+  else if (is_out(e.target)) out::mod_offset(e.target - kTOut, e.param % 3, 0);
 #endif
   e.state = 0;
 }
@@ -655,15 +655,15 @@ CORE_COLD void tick(uint32_t us) {
       } else if (is_ins(e.target)) {   // fx-ins: the offset itself (the knob / a step lock is the base, insert.cpp)
         int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
         if ((float)iv != e.applied) {
-          if (e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, iv);   // ins1112: the POST EQ
-          else ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, iv);
+          if (e.param >= 8) ins::eq_mod_offset(e.target - kTIns, (e.param - 8) & 3, iv);   // ins1112: the POST EQ
+          else ins::mod_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, iv);
           e.applied = (float)iv;
           ++g_stats.fx_sets;
         }
       } else if (is_out(e.target)) {   // the OUT route's LEV PAN WID: the offset on the knob (out.cpp)
         int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
         if ((float)iv != e.applied) {
-          out::lfo_offset(e.target - kTOut, e.param % 3, iv);
+          out::mod_offset(e.target - kTOut, e.param % 3, iv);
           e.applied = (float)iv;
           ++g_stats.fx_sets;
         }

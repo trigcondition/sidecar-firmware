@@ -44,6 +44,7 @@ void restore_all();                                  // every entry back to its 
 // the base hooks (control side)
 void voice_params(int vi, float* p, int np);         // voice_report: a live entry's base from p, p modulated
 uint8_t fx_knob(int slot, int knob, uint8_t v);      // fx::knob_filter: the value to play
+uint8_t fx_send(int track, int slot, uint8_t v);     // fx::send_filter: a track's send, the value to play
 float base_of(int vi, int k, float cur);             // a voice parameter's base, cur when unmodulated
 void played(int vi, float out[16]);                  // the voice's values as they play (v[vi].p)
 void manual(Tid t, float v);                         // a Sidecar-side manual edit (spec-050 2.5; Phase 2: a stub)

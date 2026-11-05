@@ -3,10 +3,16 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <string>
+
+#include <unistd.h>   // mkdtemp
 
 #include "check.h"
 #include "core.h"
+#include "fx/insert.h"
+#include "fx/master.h"
 #include "fx/out.h"
+#include "fx/send_fx.h"
 #include "mod/mod.h"
 #include "mod/target.h"
 
@@ -144,7 +150,89 @@ static void restore_all_flushes_now() {
   printf("mod: restore_all flushes a waiting user machine at once\n");
 }
 
+// ---- Task 5: the new writers (sends, master LEV / MIX, voice-to-bus sends) and the master chains' slots
+static void master_lev_offset_not_saved() {
+  master::set_lev(101);                                     // (100 alone is the default: no line)
+  start();
+  tick_one(20, 1, tid(kMfx, 0, 0));                         // MFX:LEV +20
+  CHECK(master::control.lev == 101 && master::played_lev() == 121);   // the render's gain target 121 / 100
+  char b[128];
+  CHECK(master::line(b, sizeof b) > 0 && strstr(b, "MFX 0 RET 101 "));   // the knob saved, never the offset
+  tick_one(-30, 1, tid(kMfx, 0, 2));                        // MFX:MIX2 -30 (a new tick: LEV left, back)
+  CHECK(master::played_lev() == 101 && master::played_mix(1) == master::control.mix[1] - 30 && master::control.mix[1] == 40);
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(master::played_mix(1) == 40);
+  printf("mod: MFX:LEV / MIX offsets play, the knobs are what is saved\n");
+}
+static void sendfx_track(int t, int s1, int s2) {           // a 0x20 for Rytm track t: its sends to FX1 / FX2
+  const uint8_t m[] = {0xF0, 0x7D, 0x52, 0x54, 0x20, 0x01, (uint8_t)t, (uint8_t)s1, (uint8_t)s2, 0xF7};
+  CHECK(fx::take_sendfx(m, (int)sizeof m));
+}
+static void track_send_follows_0x20_base() {
+  sendfx_track(0, 20, 0);
+  start();
+  tick_one(10, 1, tid(kSnd, 0, 0));                         // S1:F1 +10
+  CHECK(fx::control.send[0][0] == 30);
+  sendfx_track(0, 40, 5);                                   // the kit's send now 40: the base, still modulated
+  CHECK(fx::control.send[0][0] == 50 && fx::control.send[0][1] == 5 && mod::find(tid(kSnd, 0, 0))->base == 40.0f);
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(fx::control.send[0][0] == 40);
+  printf("mod: a track's send follows its 0x20 base under an offset\n");
+}
+static void master_chain_slot_reachable() {
+  ins::reset();
+  ins::set_param(ins::kM0, 0, 0, 60);
+  start();
+  tick_one(15, 1, tid(kIns, 11, 0));                        // M1:A1 +15
+  CHECK(ins::control.play[11][0][0] == 75);
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(ins::control.play[11][0][0] == 60);
+  printf("mod: the master chains' slots are targets (M1:A1)\n");
+}
+static void loaded() {
+  for (int i = 0; i < 100000 && project_loading(); ++i) idle_save();
+  CHECK(!project_loading());
+}
+static std::string g_card;
+static void isnd_offset_saves_knob() {
+  ins::reset();
+  ins::set_send(0, 0, 30);
+  start();
+  tick_one(15, 1, tid(kIsnd, 0, 0));                        // X1:B1 +15 on the knob 30
+  CHECK(ins::control.send[0][0] == 45 && ins::send_knob(0, 0) == 30);
+  char b[300];
+  CHECK(ins::command("ins", b, sizeof b) && strstr(b, "send 30/0/0"));   // the console shows the knob
+  for (int i = 0; i < 1100; ++i) tick_one(15, 1, tid(kIsnd, 0, 0));      // a second on: the INSERT file is due
+  for (int i = 0; i < 8; ++i) idle_save();
+  std::string f;
+  FILE* fp = fopen((g_card + "/.rytm/ins/MODT.txt").c_str(), "rb");
+  CHECK(fp);
+  for (int c; (c = fgetc(fp)) != EOF;) f += (char)c;
+  fclose(fp);
+  CHECK(f.find("SEND V1 30 0 0") != std::string::npos);
+  ins::set_send(0, 0, 50);                                  // the knob moved under the offset
+  CHECK(ins::control.send[0][0] == 65);
+  g_src = nullptr;
+  at(g_us + 1000), mod::tick(now_us());
+  CHECK(ins::control.send[0][0] == 50);
+  ins::reset();
+  printf("mod: a voice's send to a bus: the offset plays, the INSERT file has the knob\n");
+}
+
 int main() {
+  char tmpl[] = "/tmp/core_mod_XXXXXX";
+  CHECK(mkdtemp(tmpl));
+  g_card = tmpl;
+  CHECK(system(("mkdir -p '" + g_card + "/Samples'").c_str()) == 0);
+  host_set_card(tmpl);
+  host_fake_time(true, g_us);
+  CHECK(engine_begin());
+  const uint8_t proj[] = {0xF0, 0x7D, 0x52, 0x54, 0x10, 'M', 'O', 'D', 'T', 0xF7};
+  engine_sysex(proj, sizeof proj);
+  loaded();
   ids_and_names();
   base_is_what_plays_now();
   two_sources_sum_then_clamp_once();
@@ -152,6 +240,10 @@ int main() {
   sub_ms_passes_only_flush();
   user_machine_spacing();
   restore_all_flushes_now();
+  master_lev_offset_not_saved();
+  track_send_follows_0x20_base();
+  master_chain_slot_reachable();
+  isnd_offset_saves_knob();
   printf("test_mod: PASS\n");
   return 0;
 }

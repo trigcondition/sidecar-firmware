@@ -90,9 +90,11 @@ bool all_sound_off() {
 }
 
 uint8_t (*knob_filter)(int slot, int knob, uint8_t v) = nullptr;
+uint8_t (*send_filter)(int track, int slot, uint8_t v) = nullptr;
 void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
 void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
+static inline uint8_t send(int t, int s, uint8_t v) { return send_filter ? send_filter(t, s, v) : v; }
 
 CORE_COLD void clock_in(uint8_t status, uint16_t spp) {   // per MIDI realtime byte, control side: cold
   static int32_t pos = -1;   // the latest tick's song position (24 ppqn), -1 before the first after Start
@@ -132,8 +134,8 @@ CORE_COLD bool take_sendfx(const uint8_t* d, int len) {
   for (int i = 0; i < nb; ++i)
     if (b[i] > 0x7F) return false;
   if (t < kTracks) {
-    control.send[t][0] = b[0];
-    control.send[t][1] = b[1];
+    control.send[t][0] = send(t, 0, b[0]);   // a modulation on top (core/mod kSnd)
+    control.send[t][1] = send(t, 1, b[1]);
   } else if (t == kTracks) {
     for (int s = 0; s < kSlots; ++s)
       for (int j = 0; j < 3; ++j) {
@@ -329,7 +331,7 @@ CORE_COLD bool command(const char* p, char* r, int max) {
       return true;
     }
     for (int i = 0; i < kTracks; ++i)
-      if (all || i == t) control.send[i][s] = (uint8_t)v;
+      if (all || i == t) control.send[i][s] = send(i, s, (uint8_t)v);
     show(r, max);
     return true;
   }

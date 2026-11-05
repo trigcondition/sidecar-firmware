@@ -235,7 +235,7 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   sniprintf(val[6], 8, CORE_STR("%d"), ip.busel + 1);
   if (!ip.bus) {
     sniprintf(lab[7], 6, "SEND");
-    sniprintf(val[7], 8, CORE_STR("%d"), ins::control.send[ch][ip.busel]);
+    sniprintf(val[7], 8, CORE_STR("%d"), ins::send_knob(ch, ip.busel));
   } else {
     sniprintf(lab[7], 6, "ROUT");
     if (ip.busel == 2) sniprintf(val[7], 8, "%s", ins::control.route3 ? "POST" : "PRE");
@@ -255,8 +255,8 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
     sniprintf(b, sizeof b, CORE_STR("%s %c %s:%s"), ch < ins::kVoices ? voice_name(ch) : ins::chain_name(ch), 'A' + ip.slot, L.label[e], v);
     footer(c, b, ins::param(ch, ip.slot, e));
   } else if (e == 7 && !ip.bus) {
-    sniprintf(b, sizeof b, CORE_STR("%s SEND BUS %d:%d"), voice_name(ch), ip.busel + 1, ins::control.send[ch][ip.busel]);
-    footer(c, b, ins::control.send[ch][ip.busel]);
+    sniprintf(b, sizeof b, CORE_STR("%s SEND BUS %d:%d"), voice_name(ch), ip.busel + 1, ins::send_knob(ch, ip.busel));
+    footer(c, b, ins::send_knob(ch, ip.busel));
   } else if (!ip.bus && remote_track_machine(tr) == 0x7F) {
     footer(c, "ANALOG TRACK: NO SIDECAR VOICE");
   } else {
@@ -305,7 +305,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
       }
       break;
     case 7:
-      if (!ip.bus) ins::set_send(ch, ip.busel, ins::control.send[ch][ip.busel] + d * (func ? 8 : 1));
+      if (!ip.bus) ins::set_send(ch, ip.busel, ins::send_knob(ch, ip.busel) + d * (func ? 8 : 1));
       else if (ip.busel == 2 && l) ins::set_route3(l > 0);
       break;
     default: break;
