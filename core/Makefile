@@ -162,6 +162,15 @@ teensy-cfg:
 	@for f in $(TEENSY_CFG_SRC); do $(CXX) -std=c++17 -fsyntax-only -Wall -Wno-unused-parameter -I. -Ihost -I$(RMPSRC) -I../sdk $(ENG_INC) $(ENG_FLAGS) $$f || exit 1; done
 	@echo "teensy configuration: $(TEENSY_CFG_SRC) compile"
 .PHONY: teensy-cfg
+# the sources and flags of a test build, for tools/golden_a64.sh (the LFO golden built with the Pi's compiler flags)
+print-src:
+	@echo "CORE_SRC=$(CORE_SRC)"
+	@echo "ENG_SRC=$(ENG_SRC)"
+	@echo "ENG_C_SRC=$(ENG_C_SRC)"
+	@echo "ENG_INC=$(ENG_INC)"
+	@echo "ENG_FLAGS=$(ENG_FLAGS)"
+	@echo "RMPSRC=$(RMPSRC)"
+.PHONY: print-src
 test: teensy-cfg $(patsubst %,%.run,$(filter-out $(TIMING_TESTS),$(ALL_TESTS))) $(TIMING_TESTS)
 	@set -e; for t in $(TIMING_TESTS); do ./$$t > $$t.log 2>&1 || { cat $$t.log; echo "FAILED: $$t"; exit 1; }; done
 	@echo "ALL CORE TESTS PASS"
