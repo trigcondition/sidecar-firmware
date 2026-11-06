@@ -10,6 +10,8 @@ export default defineConfig({
   base: "/next/",
   plugins: [vue()],
   server: {
+    // web/lfo.js (the LFO logic the old page and the Mini's page share) lives one level up
+    fs: { allow: [".."] },
     proxy: {
       "/ws": { target, ws: true, changeOrigin: true, headers: { Origin: target } },
       // every HTTP endpoint of the Sidecar (pi/engine/web.cpp), with its origin (several need the same-origin check)

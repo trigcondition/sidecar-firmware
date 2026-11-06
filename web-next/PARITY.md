@@ -52,12 +52,12 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| Machine per voice (BD..CY/CB), "now" | `cmd notemach=V:NAME`; `ws:status` `machines[]` | ⬜ |
-| Drone voice / all / off | `cmd drone=`; `ws:status` `drone` | ⬜ |
+| Machine per voice (BD..CY/CB), "now" | `cmd notemach=V:NAME`; `ws:status` `machines[]` | ✅ |
+| Drone voice / all / off | `cmd drone=`; `ws:status` `drone` | ✅ |
 | Voice knobs (the touchscreen's VOICE page) | no source yet: a `voices` topic on the Pi (reserved) | ⬜ new Pi work |
-| LFO 1-8: target, parameter, wave, sync, retrig, rate, depth, DESIGN wave, live phase | `cmd lfo=...`; `ws:status` `lfo` | ⬜ |
-| User machines: list, slots U1-U5 assign / clear, memory, rescan, upload, delete, empty project, export / import slot list | `GET /um`; `cmd um=...`; `/fs/put` (chunked) | ⬜ |
-| Presets: JUNO and FM lists (rename, move, delete, save current), user machine presets | `GET /lists`; `cmd juno= / fm= / um=save`; `/fs/ls`, `/fs/mv`, `/fs/del` | ⬜ |
+| LFO 1-8: target, parameter, wave, sync, retrig, rate, depth, DESIGN wave, live phase | `cmd lfo=...`; `ws:status` `lfo` | 🔶 (all but drawing the DESIGN steps: presets only; `web/lfo.js` shared) |
+| User machines: list, slots U1-U5 assign / clear, memory, rescan, upload, delete, empty project, export / import slot list | `GET /um`; `cmd um=...`; `/fs/put` (chunked) | 🔶 (slots, assign, clear, packages, rescan; upload / delete / memory / empty / slot lists ⬜) |
+| Presets: JUNO and FM lists (rename, move, delete, save current), user machine presets | `GET /lists`; `cmd juno= / fm= / um=save`; `/fs/ls`, `/fs/mv`, `/fs/del` | 🔶 (JUNO / FM lists; user machine presets ⬜) |
 
 ## Mix
 

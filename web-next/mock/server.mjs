@@ -96,6 +96,8 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
       setTimeout(() => { w.join = psk === "wrong-pass" ? { state: "failed", reason: "wrong_password", left: 0 } : { state: "up", reason: "", left: 0 }; if (w.join.state === "up") { w.ssid = ssid; w.on = true; } }, 4000);
       return json(res, { ok: true });
     }
+    if (p === "/um") return json(res, dev.um());
+    if (p === "/lists") return json(res, { project: "SHARED SET", ...dev.lists, voices: dev.machines.map((m, v) => ({ v, m: m.toUpperCase(), pat: m === "juno" || m === "fm" ? 0 : -1 })) });
     if (p === "/midibridge") return json(res, { ...dev.status().midibridge, token: dev.bridge.on ? "mock-bridge-token" : "", client: "" });
     if (p === "/midibridge/set" && req.method === "POST") {
       const f = await body(req);

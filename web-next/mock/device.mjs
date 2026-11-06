@@ -46,6 +46,14 @@ export function createDevice() {
         { t: "OFF", p: [0, 0, 0, 0], l: ["", "", "", ""], v: ["", "", "", ""], mix: 127, pair: 0, send: 0 },
       ], peq: [0, 0, 64, 64], rep: 1, onmain: 0 },
     },
+    lfo: { n: 8, kit: 1, l: Array.from({ length: 8 }, (_, i) => ({ tgt: ["V2", "I1", "OFF", "OFF", "OFF", "OFF", "OFF", "OFF"][i], par: i === 1 ? 8 : 3, pn: i === 1 ? "EQ HPF" : "P4", np: i === 1 ? 12 : 16, wav: i === 1 ? 7 : 0, rate: i === 1 ? 8 : 60, rn: "", sync: i === 1 ? 1 : 0, trig: 0, dep: i < 2 ? 40 : 0, base: 64, des: "403" + "503".repeat(3) + "6f1".repeat(4) + "302".repeat(8), ph: 0 })) },
+    // user machines (pi/engine/tests/mock_web.py's sketch of /um)
+    plugins: [["sc.grain", "GRAIN", 400], ["sc.acid", "ACID", 120], ["sc.metal", "METAL", 90], ["sc.wobble", "WOBBLE", 200]],
+    slots: { 1: { id: "sc.grain", src: "sounds" }, 2: { id: "sc.acid", src: "saved" }, 3: { id: "", src: "none", unknown: true, want_name: "WOBB" }, 4: { id: "sc.metal", src: "inherited" }, 5: { id: "", src: "empty" } },
+    lists: {
+      juno: { total: 3, list: [{ slot: 0, name: "Brass", used: true, found: true }, { slot: 1, name: "Strings", used: true, found: true }, { slot: 2, name: "Gone pad", used: true, found: false }] },
+      fm: { total: 96, rom: true, list: [] },
+    },
     fx: [{ type: "RINGS", post: 1, send: [0, 40, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0] }, { type: "CLOUD", post: 0, send: [0, 0, 0, 30, 0, 0, 0, 60, 0, 0, 0, 0] }],
   };
 
@@ -97,6 +105,7 @@ export function createDevice() {
     library: { state: "ready", files: 1834, bytes: 2.1e9, hashed: 1834, pending: 0, pct: 100, dups: 3, missing: 0 },
     pair: { gate: "on", rng: true, clients: d.pairClients, sessions: 1, locked: false },
     ins: d.ins,
+    lfo: { ...d.lfo, l: d.lfo.l.map((l, i) => ({ ...l, rn: l.sync ? ["1/16", "1/8", "1/4", "1BAR"][i % 4] : "", ph: l.tgt === "OFF" ? 0 : Math.floor(((Date.now() - started) / (800 + 300 * i)) * 1000) % 1000 })) },
     fx: d.fx,
     midibridge: { on: d.bridge.on, state: d.bridge.on ? "waiting" : "off", port: 7320, osUpgrade: d.bridge.os, dataWrites: d.bridge.data, toRytm: 0, fromRytm: 0, drops: 0 },
   });
@@ -149,6 +158,12 @@ export function createDevice() {
     else if ((m = /^seqed=move:(\d+):(\d+):(\d+):(\d+):(\d+):(-?\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) { n[0] = +m[4]; n[2] = +m[5]; n[1] = +m[6]; } d.seq.gen++; }
     else if ((m = /^seq=swing:(\d+):(\d+)$/.exec(c))) { d.seq.swing = +m[2]; d.seq.gen++; }
     else if (/^ins=/i.test(c)) d.mixer(c);
+    else if ((m = /^lfo=([1-8]):off$/.exec(c))) d.lfo.l[+m[1] - 1].tgt = "OFF";
+    else if ((m = /^lfo=([1-8]):tgt:(\w+)$/.exec(c))) d.lfo.l[+m[1] - 1].tgt = m[2].toUpperCase();
+    else if ((m = /^lfo=([1-8]):(par|wav|sync|trig|rate|dep):(-?\d+)$/.exec(c))) d.lfo.l[+m[1] - 1][m[2]] = +m[3];
+    else if ((m = /^um=assign:([1-5]):(\S+)$/.exec(c)) && d.plugins.some((p) => p[0] === m[2])) d.slots[+m[1]] = { id: m[2], src: "saved" };
+    else if ((m = /^um=clear:([1-5])$/.exec(c))) d.slots[+m[1]] = { id: "", src: "empty" };
+    else if ((m = /^(juno|fm)=(ren|del|swap|save):(\d+)(?::(.*))?$/.exec(c))) d.listCmd(m[1], m[2], +m[3], m[4]);
     else if (/^(out=V\d:|mfx=)/i.test(c)) d.mixer(c);
   };
 
@@ -173,6 +188,27 @@ export function createDevice() {
     else if ((m = /^mfx=([1-4]):mix:(\d+)$/i.exec(c))) d.ins.mfx.s[+m[1] - 1].mix = +m[2];
     else if ((m = /^mfx=eq:(hpf|lpf|low|high):(\d+)$/i.exec(c))) d.ins.mfx.peq[EQK.indexOf(m[1])] = +m[2];
     else if (c === "mfx=eq:off") d.ins.mfx.peq = [0, 0, 64, 64];
+  };
+
+  d.um = () => {
+    const a = d.plugins.map(([id, name, cpu], i) => ({ t: "plugin", id, ver: "1.0.0", size: 9000 + i * 1000, name, cpu, fit: true, why: "", file: `/Plugins/${id.replace(".", "_")}.rmp`, slots: Object.entries(d.slots).filter(([, s]) => s.id === id).map(([n]) => +n), status: "ok" }));
+    for (let n = 1; n <= 5; n++) {
+      const s = d.slots[n], p = d.plugins.find((x) => x[0] === s.id);
+      a.push({ t: "slot", slot: n, id: s.id, ver: s.id ? "1.0.0" : "", state: p ? "READY" : s.id || s.unknown ? "MISSING" : "EMPTY", name: p ? p[1] : s.want_name ?? "", src: s.src, unknown: !!s.unknown, want_name: s.want_name ?? "", presets: p ? 2 : 0 });
+    }
+    a.push({ t: "plugins", n: d.plugins.length, project: "SHARED SET", dir: "/Plugins", scanning: false });
+    a.push({ t: "mem", k: "code", size: 8 << 20, used: 60000 }, { t: "mem", k: "state", size: 1 << 20, used: 65536 });
+    return a;
+  };
+  d.listCmd = (k, op, a, b) => {
+    const L = d.lists[k].list;
+    if (op === "ren" && L[a]) L[a].name = b ?? L[a].name;
+    else if (op === "del" && L[a]) L.splice(a, 1);
+    else if (op === "swap" && b !== undefined && L[a] && L[+b]) [L[a].name, L[+b].name] = [L[+b].name, L[a].name];
+    else if (op === "save") L.push({ slot: L.length, name: b || "saved", used: true, found: true });
+    L.forEach((x, i) => (x.slot = i));
+    d.lists[k].total = L.length || (k === "fm" ? 96 : 0);
+    if (k === "fm") d.lists.fm.rom = !L.length;
   };
 
   d.seqpos = () => {

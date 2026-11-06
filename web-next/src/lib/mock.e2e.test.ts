@@ -2,12 +2,13 @@
 // over a real socket on 127.0.0.1: the demo path without a Pi.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-// @ts-expect-error - a plain .mjs without types
-import { startMock } from "../../mock/server.mjs";
+import { startMock as startMockJs } from "../../mock/server.mjs";
 import { RequestError, SidecarClient, type WebSocketLike } from "./client";
 import { Pairing, type Storage } from "./pairing";
 import type { Status } from "./protocol";
 
+// (the mock is plain JS: its options typed here)
+const startMock = startMockJs as unknown as (o: { port: number; quiet: boolean; code: string }) => Promise<typeof mock>;
 let mock: { port: number; code: string; close: () => Promise<void> };
 const base = () => `http://127.0.0.1:${mock.port}`;
 const socket = (origin: string) => (url: string) => new WebSocket(url, { origin }) as unknown as WebSocketLike;
