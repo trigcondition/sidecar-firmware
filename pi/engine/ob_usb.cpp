@@ -115,6 +115,10 @@ static CUSBHCIRootPort *s_pRetryPort = 0;		// its root port: Circle's, it lives 
 static CUSBStandardHub *s_pRetryHub = 0;		// or the Pi 4's VL805 hub (BuiltInHub), which lives as long too
 static u32 NowMs (void) { return (u32) (CTimer::GetClockTicks64 () / (CLOCKHZ / 1000)); }	// wraps at 2^32 ms
 volatile boolean CObUsb::s_bActive = TRUE;
+#if RASPPI >= 5
+volatile boolean CObUsb::s_bFading = FALSE;
+volatile unsigned CObUsb::s_nFadeLeft = 0;
+#endif
 s32 *CObUsb::s_pCapBuf = 0;
 volatile unsigned CObUsb::s_nCapPos = 0;
 volatile unsigned CObUsb::s_nCapOutPos = 0;
@@ -1004,6 +1008,15 @@ void CObUsb::FillOut (u8 *pBuf, unsigned nBlocks)
 		}
 		if (g_Rec.wants_side ()) g_Rec.out_block (V, X, ob::kFramesPerBlock, LR, PR);	// the voices as rendered, the FX, the pairs
 		if (bridge::samp_wants_voices ()) bridge::samp_voices (V, ob::kFramesPerBlock, LR, X);	// the sampler's Sidecar voice (X: its FX, CHOP)
+#if RASPPI >= 5
+		if (s_bFading)					// FadeOut: every channel, a frame at a time
+			for (int f = 0; f < ob::kFramesPerBlock; f++)
+			{
+				float g = (float) s_nFadeLeft / FadeFrames;
+				if (s_nFadeLeft) s_nFadeLeft--;
+				for (int c = 0; c < ob::kChannels; c++) F[f][c] = (s32) (F[f][c] * g);
+			}
+#endif
 		for (int f = 0; f < ob::kFramesPerBlock; f++)
 		{
 			core::simd::be32 (pBlock + ob::kHeaderBytes + 4 * m_nOutCh * f, F[f], m_nOutCh);

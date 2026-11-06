@@ -199,6 +199,8 @@ int card_service(int n) {
   return k;
 }
 bool card_busy() { return core::cardq::busy(); }
+void save_flush(bool on) { core::idle_flush(on); }
+bool save_settled() { return core::idle_settled(); }
 bool samp_command(const char* p, char* out, int cap) {
   return core::samp::command(p, out, cap) || core::samp::asamp_command(p, out, cap);
 }
