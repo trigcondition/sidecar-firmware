@@ -192,6 +192,19 @@ describe("SidecarClient", () => {
     expect(d.backoffMs(1)).toBe(800); // 1000 * 0.8
   });
 
+  it("speeds a shared subscription up for a faster subscriber", async () => {
+    const c = make({ token: null });
+    c.connect();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+    await flush();
+    c.subscribe("seqpos", () => undefined, { ms: 250 });
+    c.subscribe("seqpos", () => undefined, { ms: 50 });
+    c.subscribe("seqpos", () => undefined, { ms: 500 });
+    const subs = ws.sent.filter((m) => m.type === "sub").map((m) => (m.payload as { ms?: number }).ms);
+    expect(subs).toEqual([250, 50]);
+  });
+
   it("unsubscribes when the last handler goes", async () => {
     const c = make({ token: null });
     c.connect();

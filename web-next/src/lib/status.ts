@@ -1,6 +1,5 @@
 // web-next/src/lib/status.ts - small readers over the /status JSON (the status topic), so pages don't each dig into it.
 // Every reader tolerates a missing member: older firmware, or the mock.
-import type { Status } from "./protocol";
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : null);
@@ -13,15 +12,13 @@ export function patternName(n: number | null | undefined): string {
   return `${"ABCDEFGH"[n >> 4]}${String((n & 15) + 1).padStart(2, "0")}`;
 }
 
-/** "A04 · 120.0 BPM · Playing", or "" when the status says nothing about the transport. */
-export function transportText(s: Status | null): string {
-  if (!s) return "";
-  const t = obj(s.transport) ?? obj(s.seq) ?? {};
-  const pat = patternName(num(t.pattern) ?? num(s.pattern));
-  const bpm = num(t.bpm) ?? num(s.bpm) ?? (num(t.bpm10) != null ? (num(t.bpm10) as number) / 10 : null);
-  const play = str(t.state) ?? (t.playing === true ? "playing" : t.playing === false ? "stopped" : null);
-  const parts = [pat, bpm != null ? `${bpm.toFixed(1)} BPM` : "", play ? play[0].toUpperCase() + play.slice(1) : ""];
-  return parts.filter(Boolean).join(" · ");
+/** "A04 · 120.0 BPM · Playing" from the "seqpos" topic, or "" when there is none (no core/seq in the build). */
+export function transportText(p: { transport?: number; pattern?: number; bpm10?: number } | null): string {
+  if (!p) return "";
+  const pat = patternName(p.pattern);
+  const bpm = p.bpm10 ? `${(p.bpm10 / 10).toFixed(1)} BPM` : "";
+  const play = ["Stopped", "Playing", "Paused"][p.transport ?? -1] ?? "";
+  return [pat, bpm, play].filter(Boolean).join(" · ");
 }
 
 export function uptimeText(sec: number | null | undefined): string {

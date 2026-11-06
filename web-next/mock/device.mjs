@@ -132,7 +132,7 @@ export function createDevice() {
   d.seqpos = () => {
     const stepMs = 60000 / 120 / 4;
     const pos = d.transport === 1 ? Math.floor(((Date.now() - d.playStart) / stepMs) * 1000) % (d.seq.length * 1000) : -1;
-    return { pos, track: d.seq.track, transport: d.transport };
+    return { pos, track: d.seq.track, transport: d.transport, pattern: d.seq.pattern, bpm10: d.seq.bpm10 };
   };
   return d;
 }

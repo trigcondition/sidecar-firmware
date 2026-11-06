@@ -12,13 +12,13 @@ import { usePrefs } from "./lib/usePrefs";
 import { transportText } from "./lib/status";
 
 usePrefs();
-const { state, paired, levels, status } = provideSidecar();
+const { state, paired, levels, status, seqpos } = provideSidecar();
 const tabs = routes.filter((r) => r.name);
 const masterLevel = computed(() => (levels.value ? Math.max(...levels.value.master) : 0));
 const conn = computed(() =>
   state.value === "open" ? (paired.value ? "Live" : "Live, not paired") : state.value === "connecting" ? "Connecting…" : state.value === "incompatible" ? "Incompatible" : "Offline",
 );
-const transport = computed(() => transportText(status.value));
+const transport = computed(() => transportText(seqpos.value));
 // the supply (/status "power".warn, pi/engine/power_state.h): on every page, Wi-Fi and the page suffer first
 const powerWarn = computed(() => {
   const w = (status.value as { power?: { warn?: string } } | null)?.power?.warn;

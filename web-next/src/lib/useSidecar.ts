@@ -5,6 +5,7 @@ import { SidecarClient, type ClientState } from "./client";
 import { Api } from "./api";
 import { Pairing } from "./pairing";
 import type { Hello, Levels, Status } from "./protocol";
+import type { SeqPos } from "./seq";
 
 export function wsUrl(loc: { protocol: string; host: string } = location): string {
   return `${loc.protocol === "https:" ? "wss:" : "ws:"}//${loc.host}/ws`;
@@ -17,6 +18,8 @@ export interface Sidecar {
   paired: Ref<boolean>;
   status: ShallowRef<Status | null>;
   levels: ShallowRef<Levels | null>;
+  /** the play head, pattern and tempo ("seqpos"; the header's pill), when the build serves it */
+  seqpos: ShallowRef<SeqPos | null>;
   lastError: Ref<string>;
   pair: (code: string) => Promise<void>;
   /** the HTTP endpoints without a topic (src/lib/api.ts), with this browser's pairing token */
@@ -44,6 +47,7 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     paired: ref(false),
     status: shallowRef<Status | null>(null),
     levels: shallowRef<Levels | null>(null),
+    seqpos: shallowRef<SeqPos | null>(null),
     lastError: ref(""),
     api: new Api({ token: () => pairing.current, onPairLost: () => void client.authenticate().catch(() => false) }),
     pairing,
@@ -57,12 +61,14 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     },
   };
   let offLevels: (() => void) | null = null;
+  let offPos: (() => void) | null = null;
   const offs = [
     client.on("state", (v) => (s.state.value = v)),
     client.on("hello", (h) => {
       s.hello.value = h;
       // levels only from a server that serves them (the Pi's later topic; the mock has it)
       if (h.topics.includes("levels") && !offLevels) offLevels = client.subscribe<Levels>("levels", (l) => (s.levels.value = l), { ms: 40 });
+      if (h.topics.includes("seqpos") && !offPos) offPos = client.subscribe<SeqPos>("seqpos", (p) => (s.seqpos.value = p), { ms: 250 });
     }),
     client.on("paired", (p) => (s.paired.value = p)),
     client.on("error", (e) => (s.lastError.value = `${e.code} ${e.msg}`)),
@@ -72,6 +78,7 @@ export function provideSidecar(url = wsUrl()): Sidecar {
   onScopeDispose(() => {
     offs.forEach((f) => f());
     offLevels?.();
+    offPos?.();
     client.close();
   });
   provide(KEY, s);

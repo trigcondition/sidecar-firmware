@@ -163,6 +163,10 @@ export class SidecarClient {
       sub = { ms: opts.ms, handlers: new Set() };
       this.subs.set(topic, sub);
       if (this.stateValue === "open") this.request("sub", { topics: [topic], ms: opts.ms }).catch(() => undefined);
+    } else if (opts.ms !== undefined && (sub.ms === undefined || opts.ms < sub.ms)) {
+      // a second subscriber that needs it faster: the shared subscription speeds up (it stays so until all leave)
+      sub.ms = opts.ms;
+      if (this.stateValue === "open") this.request("sub", { topics: [topic], ms: opts.ms }).catch(() => undefined);
     }
     sub.handlers.add(handler as Handler<unknown>);
     return () => {

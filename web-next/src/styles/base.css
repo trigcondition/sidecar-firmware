@@ -78,6 +78,9 @@ input[type="range"] { padding: 0; accent-color: var(--accent); }
   outline-offset: 2px;
 }
 
+/* a page heading takes focus on navigation (router.ts) for screen readers; it is not a control: no ring */
+h1[tabindex="-1"]:focus { outline: none !important; }
+
 .skip {
   position: absolute;
   left: -999px;

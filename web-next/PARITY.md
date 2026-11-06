@@ -30,7 +30,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 | Feature | Data | Status |
 |---|---|---|
 | Connection state, host, uptime | ws hello + `ws:status` `host`, `uptime` | ✅ |
-| Pattern · BPM · play state pill | `ws:seqpos` / `ws:seq` (`pattern`, `bpm10`, `transport`) | 🔶 (Pi topic new: needs the device test) |
+| Pattern · BPM · play state pill | `ws:seqpos` (`pattern`, `bpm10`, `transport`) | ✅ (Pi topic new: needs the device test) |
 | Signal tide | `ws:levels` master | 🔶 (Pi topic new) |
 | Pairing: resume, code entry, stale pairing, "show it on the Rytm" | `POST /pair`, `/pair/resume`, `/pair/status`, `/pair/show` | 🔶 (resume, code entry, show; the 5 s re-check while unpaired ⬜) |
 | Box strip (boxes, roles) and the box name instead of "Rytm" | `ws:status` `boxes[]` (`feat` bits gate pages) | 🔶 (the name on Home; the strip and the `feat` gating ⬜) |
@@ -73,15 +73,15 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| Piano roll of the shown seq track, pages, play head | `ws:seq` (the touch editor's view), `ws:seqpos` | ⬜ |
-| Track chips (the seq tracks), choose the shown one | `cmd seqed=show:T` (also moves the touchscreen's shown track) | ⬜ |
-| Add / delete / move / length / velocity, undo / redo | `cmd seqed=add|del|move|len|vel|undo|redo:...` | ⬜ |
-| Chord stamp, strum, humanise | `cmd seqed=chord|strum|human:...` | ⬜ |
-| Poly per track: voices, alloc, unison, detune, spread | `cmd seq=poly:...`; `ws:status` `poly`, `inst` | ⬜ |
-| Pattern: key, scale, QNT, seed | `cmd seq=key|seed`; `ws:status` `seqx` | ⬜ |
-| Per track: speed, direction, random notes, seed mod | `cmd seq=spd|dir|rnd|smod`; `ws:status` `seqx.t[]` | ⬜ |
+| Piano roll of the shown seq track, pages, play head | `ws:seq` (the touch editor's view), `ws:seqpos` | ✅ (keyboard cursor, spoken cell, large cells) |
+| Track chips (the seq tracks), choose the shown one | `cmd seqed=show:T` (also moves the touchscreen's shown track) | ✅ |
+| Add / delete / move / length / velocity, undo / redo | `cmd seqed=add|del|move|len|vel|undo|redo:...` | ✅ (no drag yet: keys, the note panel) |
+| Chord stamp, strum, humanise | `cmd seqed=chord|strum|human:...` | 🔶 (chord stamp; strum, humanise ⬜) |
+| Poly per track: voices, alloc, unison, detune, spread | `cmd seq=poly:...`; `ws:status` `poly`, `inst` | ✅ (the instance count line ⬜) |
+| Pattern: key, scale, QNT, seed | `cmd seq=key|seed`; `ws:status` `seqx` | 🔶 (key, scale, QNT; seed ⬜) |
+| Per track: speed, direction, random notes, seed mod | `cmd seq=spd|dir|rnd|smod`; `ws:status` `seqx.t[]` | 🔶 (speed, direction; random notes, seed mod ⬜) |
 | Step editor: ratchet / arp, FX 1/2, random notes, lock condition, slide | `cmd seq=rtrg|fx|rndstep|lcond|slide`; `ws:status` `seqx.t[].x[]` | ⬜ |
-| Swing | `cmd seq=swing:T:N`; `ws:seq` `swing` | ⬜ |
+| Swing | `cmd seq=swing:T:N`; `ws:seq` `swing` | ✅ |
 
 ## Morph
 
