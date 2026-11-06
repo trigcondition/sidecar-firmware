@@ -42,15 +42,17 @@ async function send(c: string) {
 // the window: pages of 16 steps (one on a phone, two where there is room), 24 pitches
 const narrow = ref(typeof matchMedia === "function" && matchMedia("(max-width: 40rem)").matches);
 // large cells: 8 steps by 12 pitches, rows 2.75 rem (44 px touch targets); a "page" is then 8 steps
+// a phone: always 44 px both ways, 16 steps a page that scroll sideways (the "Large cells" choice is for wider screens)
 const large = ref(false);
-const pageSteps = computed(() => (large.value ? 8 : 16));
+const big = computed(() => large.value || narrow.value);
+const pageSteps = computed(() => (large.value && !narrow.value ? 8 : 16));
 const page = ref(0);
 const perView = computed(() => (narrow.value || large.value ? 1 : Math.min(2, view.value?.pages ?? 1)));
 const count = computed(() => Math.min(pageSteps.value * perView.value, Math.max(1, (view.value?.length ?? 16) - page.value * pageSteps.value)));
 const first = computed(() => page.value * pageSteps.value);
 const pagesOf = computed(() => Math.ceil((view.value?.length ?? 16) / pageSteps.value));
-const ROWS = computed(() => (large.value ? 12 : 24));
-watch(large, () => {
+const ROWS = computed(() => (big.value ? 12 : 24));
+watch(big, () => {
   page.value = 0;
   if (view.value) top.value = pitchWindow(view.value.notes, ROWS.value, view.value.defaults?.note ?? 60);
 });
@@ -202,7 +204,7 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           <button type="button" :disabled="first + count >= view.length" @click="scroll(0, 1)">Steps ›</button>
           <button type="button" @click="scroll(1, 0)">Octave up</button>
           <button type="button" @click="scroll(-1, 0)">Octave down</button>
-          <Segmented label="Cell size" :options="[{ value: false, text: 'Normal' }, { value: true, text: 'Large cells' }]" :model-value="large" @update:model-value="(v: boolean) => (large = v)" />
+          <Segmented v-if="!narrow" label="Cell size" :options="[{ value: false, text: 'Normal' }, { value: true, text: 'Large cells' }]" :model-value="large" @update:model-value="(v: boolean) => (large = v)" />
         </div>
         <PianoRoll
           :notes="view.notes"
@@ -210,7 +212,8 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           :count="count"
           :top="top"
           :rows="ROWS"
-          :row-rem="large ? 2.75 : 1.5"
+          :row-rem="big ? 2.75 : 1.5"
+          :cell-rem="narrow ? 2.75 : undefined"
           :play="head"
           :draw="draw && paired"
           :selected="selected"

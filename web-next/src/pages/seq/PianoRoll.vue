@@ -17,6 +17,7 @@ const props = defineProps<{
   selected: SeqNote | null;
   length: number; // the track's length in steps
   rowRem?: number; // a row's height (1.5 rem; 2.75 for the large cells: 44 px targets)
+  cellRem?: number; // a step's least width (a phone: 2.75 rem, 44 px; the roll then scrolls sideways, the keys stay)
 }>();
 const emit = defineEmits<{
   select: [SeqNote | null];
@@ -55,6 +56,16 @@ const spoken = computed(() => {
   const where = `Step ${c.step + 1}, ${noteName(c.pitch)}`;
   if (!n) return `${where}: empty${props.draw ? "" : " (drawing is off)"}`;
   return `${where}: note${isSel(n) ? ", selected" : ""}, velocity ${n.vel}, ${+(n.len / SUB).toFixed(2)} steps${n.step !== c.step ? `, from step ${n.step + 1}` : ""}`;
+});
+
+// the keyboard cursor kept in sight when the roll scrolls sideways
+const rollEl = ref<HTMLElement | null>(null);
+watch(() => cur.value.step, (s) => {
+  const r = rollEl.value, g = r?.querySelector<HTMLElement>(".grid");
+  if (!r || !g || r.scrollWidth <= r.clientWidth) return;
+  const w = g.offsetWidth / props.count, x0 = g.offsetLeft + (s - props.first) * w, keys = g.offsetLeft;
+  if (x0 < r.scrollLeft + keys) r.scrollLeft = x0 - keys;
+  else if (x0 + w > r.scrollLeft + r.clientWidth) r.scrollLeft = x0 + w - r.clientWidth;
 });
 
 function move(ds: number, dp: number) {
@@ -114,6 +125,7 @@ function tap(e: PointerEvent) {
 
 <template>
   <div
+    ref="rollEl"
     class="roll"
     tabindex="0"
     role="application"
@@ -126,7 +138,7 @@ function tap(e: PointerEvent) {
     <div class="keys" aria-hidden="true">
       <div v-for="p in pitches" :key="p" class="key" :class="{ black: isBlack(p), c: p % 12 === 0 }" :style="{ height: `${rowRem ?? 1.5}rem` }">{{ p % 12 === 0 || p === top ? noteName(p) : "" }}</div>
     </div>
-    <div class="grid">
+    <div class="grid" :style="cellRem ? { minWidth: `${count * cellRem}rem` } : undefined">
       <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :style="{ height: `${rows * (rowRem ?? 1.5)}rem` }" @pointerdown="tap">
         <rect v-for="(p, i) in pitches" :key="'r' + p" x="0" :y="i * RH" :width="W" :height="RH" :class="isBlack(p) ? 'row-b' : 'row-w'" />
         <line v-for="s in count + 1" :key="'s' + s" :x1="(s - 1) * CW" :x2="(s - 1) * CW" y1="0" :y2="H" :class="(first + s - 1) % 4 === 0 ? 'beat' : 'tick'" vector-effect="non-scaling-stroke" />
@@ -172,14 +184,14 @@ function tap(e: PointerEvent) {
 </template>
 
 <style scoped>
-.roll { display: grid; grid-template-columns: 3rem 1fr; gap: 0 0.25rem; border-radius: var(--radius-control); }
+.roll { display: grid; grid-template-columns: 3rem 1fr; gap: 0 0.25rem; border-radius: var(--radius-control); overflow-x: auto; overscroll-behavior-x: contain; }
 .roll:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.keys { display: flex; flex-direction: column; }
+.keys { display: flex; flex-direction: column; position: sticky; left: 0; z-index: 1; background: var(--card); }
 .key { height: 1.5rem; font-size: var(--text-min); color: var(--label); display: flex; align-items: center; justify-content: flex-end; padding-right: 0.25rem; border-bottom: 1px solid var(--border); }
 .key.black { background: color-mix(in srgb, var(--card) 70%, var(--bg)); }
 .key.c { color: var(--text); font-weight: 700; }
 .grid { min-width: 0; display: flex; flex-direction: column; }
-.grid svg { width: 100%; display: block; touch-action: manipulation; }
+.grid svg { width: 100%; display: block; touch-action: pan-x pan-y; }
 .row-w { fill: var(--card); }
 .row-b { fill: color-mix(in srgb, var(--card) 60%, var(--bg)); }
 .tick { stroke: var(--border); stroke-width: 1; }
