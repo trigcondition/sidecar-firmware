@@ -93,11 +93,11 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| Record / arm / stop, timer, free space, mode, bits, destination, take name | `cmd rec=...`; `ws:status` `rec`, `stor` | ⬜ |
-| 25 channels with peak meters, select all / none, card load | `cmd rec=ch:`; `ws:status` `rec.ch`, `rec.peak` | ⬜ |
-| Warnings (drops, silence, not mounted) and the card line | `ws:status` `rec` | ⬜ |
-| Takes list (SD and drives), sort, play on MAIN, download, delete | `GET /fs/ls`, `/fs/get`; `POST /fs/del`; `cmd play=...`; `ws:status` `play` | ⬜ |
-| Sampler and auto-sampler | `cmd samp= / asamp=`; `ws:status` `samp`, `asamp` | ⬜ |
+| Record / arm / stop, timer, free space, mode, bits, destination, take name | `cmd rec=...`; `ws:status` `rec`, `stor` | ✅ (the Sidecar's settings are the truth: no page-side copy) |
+| 25 channels with peak meters, select all / none, card load | `cmd rec=ch:`; `ws:status` `rec.ch`, `rec.peak` | ✅ (the A4's channel names ⬜) |
+| Warnings (drops, silence, not mounted) and the card line | `ws:status` `rec` | ✅ (and the 70 % confirm) |
+| Takes list (SD and drives), sort, play on MAIN, download, delete | `GET /fs/ls`, `/fs/get`; `POST /fs/del`; `cmd play=...`; `ws:status` `play` | ✅ |
+| Sampler and auto-sampler | `cmd samp= / asamp=`; `ws:status` `samp`, `asamp` | ✅ |
 
 ## Library
 

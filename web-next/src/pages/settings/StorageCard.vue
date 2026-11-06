@@ -39,7 +39,7 @@ async function run(c: string) {
         <span>{{ v.state }}<template v-if="v.fs"> · {{ v.fs }}</template></span>
         <span v-if="v.totalMB"><span class="num">{{ gb(v.freeMB) }}</span> of {{ gb(v.totalMB) }} GB free</span>
         <span v-if="v.model" class="small">{{ v.model }}</span>
-        <button v-if="v.name !== 'SD' && v.state === 'ok'" type="button" :disabled="!paired" @click="eject(v.name)">Eject</button>
+        <button v-if="v.name !== 'SD' && v.state === 'mounted'" type="button" :disabled="!paired" @click="eject(v.name)">Eject</button>
       </li>
     </ul>
     <div v-if="sd">

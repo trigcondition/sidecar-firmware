@@ -97,6 +97,23 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
       return json(res, { ok: true });
     }
     if (p === "/um") return json(res, dev.um());
+    // the card (mock/fs.mjs; fsweb.h's answers)
+    const text = (t, status = 200) => { res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" }); res.end(t); };
+    const qp = url.searchParams;
+    if (p === "/fs/ls") { const r = dev.fs.ls(qp.get("path") ?? "/"); return typeof r === "string" ? text(r) : json(res, r); }
+    if (p === "/fs/get") { const b = dev.fs.get(qp.get("path") ?? "", +(qp.get("off") ?? 0), Math.min(65536, +(qp.get("len") ?? 65536))); if (!b) return text("404 not found\n", 404); res.writeHead(200, { "Content-Type": "application/octet-stream" }); return res.end(b); }
+    if (p === "/fs/del" && req.method === "POST") return text(dev.fs.del(qp.get("path") ?? ""));
+    if (p === "/fs/mkdir" && req.method === "POST") return text(dev.fs.mkdir(qp.get("path") ?? "", qp.get("p") === "1"));
+    if (p === "/fs/mv" && req.method === "POST") return text(dev.fs.mv(qp.get("path") ?? "", qp.get("to") ?? ""));
+    if (p === "/fs/put" && req.method === "POST") {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const raw = Buffer.concat(chunks), ct = req.headers["content-type"] ?? "";
+      const bd = /boundary=(.+)$/.exec(ct)?.[1];
+      let data = raw;
+      if (bd) { const s = raw.indexOf("\r\n\r\n") + 4, e = raw.lastIndexOf(Buffer.from(`\r\n--${bd}`)); data = raw.subarray(s, e); }
+      return text(dev.fs.put(qp.get("path") ?? "", +(qp.get("off") ?? 0), +(qp.get("total") ?? 0), data));
+    }
     if (p === "/lists") return json(res, { project: "SHARED SET", ...dev.lists, voices: dev.machines.map((m, v) => ({ v, m: m.toUpperCase(), pat: m === "juno" || m === "fm" ? 0 : -1 })) });
     if (p === "/midibridge") return json(res, { ...dev.status().midibridge, token: dev.bridge.on ? "mock-bridge-token" : "", client: "" });
     if (p === "/midibridge/set" && req.method === "POST") {

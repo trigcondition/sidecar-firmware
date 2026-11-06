@@ -2,6 +2,8 @@
 // members the app reads; web-next/PARITY.md), the console commands that change it, the stats lines the real engine logs
 // once a second (the Home tiles read them), and a sequencer view (pi/engine/seqview_json.h's shape).
 
+import { createFs } from "./fs.mjs";
+
 const MACHINES = ["plaits", "juno", "daisy", "dsps", "dd", "fm"];
 export const TRACKS = ["BD", "SD", "RS/CP", "BT", "LT", "MT/HT", "CH/OH", "CY/CB"];
 
@@ -46,6 +48,13 @@ export function createDevice() {
         { t: "OFF", p: [0, 0, 0, 0], l: ["", "", "", ""], v: ["", "", "", ""], mix: 127, pair: 0, send: 0 },
       ], peq: [0, 0, 64, 64], rep: 1, onmain: 0 },
     },
+    fs: createFs(),
+    // the recorder (recorder.h / rec_pi.cpp's /status "rec"), playback (rec_play.h) and the samplers (core/samp)
+    rec: { state: 0, arm: false, ready: true, frames: 0, startedAt: 0, take: "jam_2026-11-06_1840", prefix: "", vol: "SD", volOk: 1, freeKnown: 1, freeMB: 28120, totalMB: 30436,
+      bits: 24, ch: [0, 3, 4], speedKBps: 21_000, speedMeasured: 1, drops: 0, silence: 0, outShort: 0, error: "", abandoned: 0, writes: 0, cardKBps: 0, needKBps: 0, worstWriteMs: 0, ringMs: 4000, ringMax: 0, ringSlots: 64, bytes: 0 },
+    play: { state: 0, take: "", ch: "", posMs: 0, lenMs: 0, level: 0, startedAt: 0, error: "" },
+    samp: { state: 0, ms: 0, bpm: 0, wav: "", nSlices: 0, error: "", startedAt: 0 },
+    asamp: { state: 0, done: 0, total: 0, label: "", sfz: "", written: 0, loops: 0, error: "", startedAt: 0 },
     lfo: { n: 8, kit: 1, l: Array.from({ length: 8 }, (_, i) => ({ tgt: ["V2", "I1", "OFF", "OFF", "OFF", "OFF", "OFF", "OFF"][i], par: i === 1 ? 8 : 3, pn: i === 1 ? "EQ HPF" : "P4", np: i === 1 ? 12 : 16, wav: i === 1 ? 7 : 0, rate: i === 1 ? 8 : 60, rn: "", sync: i === 1 ? 1 : 0, trig: 0, dep: i < 2 ? 40 : 0, base: 64, des: "403" + "503".repeat(3) + "6f1".repeat(4) + "302".repeat(8), ph: 0 })) },
     // user machines (pi/engine/tests/mock_web.py's sketch of /um)
     plugins: [["sc.grain", "GRAIN", 400], ["sc.acid", "ACID", 120], ["sc.metal", "METAL", 90], ["sc.wobble", "WOBBLE", 200]],
@@ -98,9 +107,12 @@ export function createDevice() {
     blank: false,
     power: { known: true, warn: "", maxCurrent: 3000, uvNow: false, uvBoot: false, throttledNow: false, cappedNow: false, note: "" },
     wifi: { mode: "sta", chip: "ok", stored: !!d.wifi.ssid, on: d.wifi.on, connected: d.wifi.on && !!d.wifi.ssid, networks: d.wifi.networks.length, join: d.wifi.join.state },
-    rec: { state: 0, arm: false, ready: true, frames: 0, freeMB: 28120, totalMB: 30436, freeKnown: true, vol: "SD", volOk: true, bits: 24, ch: [0, 1], peak: Array(25).fill(0) },
+    rec: d.recStatus(),
+    play: d.playStatus(),
+    samp: { ...d.samp, ms: d.samp.state === 2 ? Date.now() - d.samp.startedAt : d.samp.ms },
+    asamp: d.asampStatus(),
     fxin: d.fxin,
-    stor: { vols: [{ name: "SD", state: "ok", fs: "exFAT", freeMB: 28120, totalMB: 30436, link: "", model: "", pulls: 0 }], exfat: true, bench: { state: "idle" } },
+    stor: { vols: [{ name: "SD", state: "mounted", fs: "exFAT", freeMB: 28120, totalMB: 30436, link: "", model: "", pulls: 0 }, { name: "USB", state: "mounted", fs: "exFAT", freeMB: 51200, totalMB: 61440, link: "USB 3", model: "SanDisk", pulls: 0 }], exfat: true, bench: { state: "idle" } },
     sdtest: d.sdtest,
     library: { state: "ready", files: 1834, bytes: 2.1e9, hashed: 1834, pending: 0, pct: 100, dups: 3, missing: 0 },
     pair: { gate: "on", rng: true, clients: d.pairClients, sessions: 1, locked: false },
@@ -158,6 +170,7 @@ export function createDevice() {
     else if ((m = /^seqed=move:(\d+):(\d+):(\d+):(\d+):(\d+):(-?\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) { n[0] = +m[4]; n[2] = +m[5]; n[1] = +m[6]; } d.seq.gen++; }
     else if ((m = /^seq=swing:(\d+):(\d+)$/.exec(c))) { d.seq.swing = +m[2]; d.seq.gen++; }
     else if (/^ins=/i.test(c)) d.mixer(c);
+    else if (/^(rec|play|samp|asamp)=/.test(c)) d.recCmd(c);
     else if ((m = /^lfo=([1-8]):off$/.exec(c))) d.lfo.l[+m[1] - 1].tgt = "OFF";
     else if ((m = /^lfo=([1-8]):tgt:(\w+)$/.exec(c))) d.lfo.l[+m[1] - 1].tgt = m[2].toUpperCase();
     else if ((m = /^lfo=([1-8]):(par|wav|sync|trig|rate|dep):(-?\d+)$/.exec(c))) d.lfo.l[+m[1] - 1][m[2]] = +m[3];
@@ -188,6 +201,59 @@ export function createDevice() {
     else if ((m = /^mfx=([1-4]):mix:(\d+)$/i.exec(c))) d.ins.mfx.s[+m[1] - 1].mix = +m[2];
     else if ((m = /^mfx=eq:(hpf|lpf|low|high):(\d+)$/i.exec(c))) d.ins.mfx.peq[EQK.indexOf(m[1])] = +m[2];
     else if (c === "mfx=eq:off") d.ins.mfx.peq = [0, 0, 64, 64];
+  };
+
+  // ---- the recorder, playback and the samplers
+  const STEREO = new Set([0, 21, 22, 23, 24]);
+  const CHN = ["MASTER", "MAIN_L", "MAIN_R", "BD", "SD", "RS-CP", "BT", "LT", "MT-HT", "CH-OH", "CY-CB", "IN_L", "IN_R", "V_BD", "V_BT", "V_SD", "V_LT", "V_CH-OH", "V_MT-HT", "V_CY-CB", "V_RS-CP", "FX1", "FX2", "PRE", "POST"];
+  const stamp = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}_${String(t.getHours()).padStart(2, "0")}${String(t.getMinutes()).padStart(2, "0")}`; };
+  d.recStatus = () => {
+    const r = d.rec, live = r.state === 2;
+    const frames = live ? Math.floor(((Date.now() - r.startedAt) / 1000) * 48000) : r.frames;
+    const need = r.ch.reduce((a, id) => a + (STEREO.has(id) ? 2 : 1), 0) * (r.bits / 8) * 48000 / 1024;
+    const peak = Array.from({ length: 25 }, (_, id) => (r.ch.includes(id) && r.state ? Math.round(300 + 500 * Math.random()) : 0));
+    return { ...r, frames, peak, needKBps: Math.round(need), writes: live ? Math.floor(frames / 48000) * 12 : r.writes, cardKBps: live ? 19_800 : r.cardKBps, worstWriteMs: live ? 41 : r.worstWriteMs, bytes: live ? Math.round((frames / 48000) * need) : r.bytes, ringMax: live ? 6 : 0 };
+  };
+  d.playStatus = () => {
+    const p = d.play;
+    if (p.state !== 2) return p;
+    const pos = Date.now() - p.startedAt;
+    if (pos >= p.lenMs) { p.state = 0; return p; }
+    return { ...p, posMs: pos, level: 60 + Math.round(30 * Math.random()) };
+  };
+  d.asampStatus = () => {
+    const a = d.asamp;
+    if (a.state === 1) {
+      a.done = Math.min(a.total, Math.floor((Date.now() - a.startedAt) / 700));
+      a.label = `C${2 + Math.floor(a.done / 3)} v100`;
+      if (a.done >= a.total) Object.assign(a, { state: 3, sfz: "fm_0.sfz", written: a.total, loops: 0, label: "" });
+    }
+    return a;
+  };
+  d.recCmd = (c) => {
+    const r = d.rec;
+    let m;
+    if ((m = /^rec=ch:(none|[\d,]+)$/.exec(c)) && r.state === 0) r.ch = m[1] === "none" ? [] : m[1].split(",").map(Number).filter((x) => x >= 0 && x < 25);
+    else if ((m = /^rec=bits:(16|24)$/.exec(c)) && r.state === 0) r.bits = +m[1];
+    else if ((m = /^rec=name:([A-Za-z0-9_-]{0,24})$/.exec(c)) && r.state === 0) r.prefix = m[1];
+    else if ((m = /^rec=vol:(\w+)$/.exec(c)) && r.state === 0) { r.vol = m[1]; r.volOk = d.status().stor.vols.some((v) => v.name === m[1] && v.state === "mounted") ? 1 : 0; }
+    else if (c === "rec=start" && r.state === 0 && r.ch.length) Object.assign(r, { state: 2, arm: false, startedAt: Date.now(), take: `${r.prefix || "SHARED_SET"}_${stamp()}` });
+    else if (c === "rec=arm" && r.state === 0 && r.ch.length) Object.assign(r, { state: 1, arm: true });
+    else if (c === "rec=stop") {
+      if (r.state === 2) {
+        r.frames = Math.floor(((Date.now() - r.startedAt) / 1000) * 48000);
+        d.fs.addTake(r.vol === "SD" ? "/Recordings" : `/${r.vol}/Recordings`, r.take, r.ch.map((id) => CHN[id]));
+      }
+      r.state = 0;
+    } else if ((m = /^play=start:(?:(\w+):)?([^/]+)\/(\d+)$/.exec(c)) && r.state !== 2) {
+      const base = m[1] ? `/${m[1]}/Recordings` : "/Recordings";
+      const f = [...d.fs.files.keys()].find((k) => k.startsWith(`${base}/${m[2]}/${String(m[3]).padStart(2, "0")}_`));
+      if (f) Object.assign(d.play, { state: 2, take: (m[1] ? `${m[1]}:` : "") + m[2], ch: f.slice(f.lastIndexOf("/") + 4, -4), lenMs: 30_000, posMs: 0, startedAt: Date.now(), error: "" });
+    } else if (c === "play=stop") d.play.state = 0;
+    else if (c === "samp=arm") Object.assign(d.samp, { state: 2, startedAt: Date.now(), error: "" });
+    else if (c === "samp=stop" && d.samp.state === 2) Object.assign(d.samp, { state: 5, ms: Date.now() - d.samp.startedAt, bpm: 120, wav: "SHARED SET/samp_001.wav", nSlices: 8 });
+    else if (c === "asamp=start") Object.assign(d.asamp, { state: 1, done: 0, total: 15, startedAt: Date.now(), sfz: "", error: "" });
+    else if (c === "asamp=cancel" && d.asamp.state === 1) d.asamp.state = 5;
   };
 
   d.um = () => {
