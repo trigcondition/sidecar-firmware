@@ -545,7 +545,8 @@ size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size
 		if (s_pView == 0) return 0;
 		seqed_pi::View (s_pView, &s_nSeen);		// (a copy only when it changed)
 		if (Topic == wsproto::kSeq) return seqjson::view (*s_pView, pOut, nMax);
-		return seqjson::pos (seqed_pi::Playhead (), s_pView->valid ? s_pView->track : -1, s_pView->transport, pOut, nMax);
+		return seqjson::pos (seqed_pi::Playhead (), s_pView->valid ? s_pView->track : -1, s_pView->transport,
+				     s_pView->valid ? s_pView->pattern : -1, s_pView->bpm10, pOut, nMax);
 	}
 #endif
 	case wsproto::kLog:

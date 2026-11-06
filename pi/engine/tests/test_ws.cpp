@@ -443,8 +443,8 @@ static void test_topics ()
 	for (int k = 0; k < SEQED_STEPS; k++) { v->locks[k] = 12; v->cond[k] = 1; v->xstep[k] = 31; v->rt_cnt[k] = 8; v->rt_mode[k] = 3; v->fx_cmd[k] = 15; v->fx_val[k] = -128; v->lcond[k] = 64; v->arpl[k] = 65535; }
 	n = seqjson::view (*v, buf, 40 * 1024);
 	CHECK (n > 0 && wsjson::valid_object (buf, n));
-	CHECK (seqjson::pos (12345, 8, 1, buf, 100) > 0 && std::string (buf) == "{\"pos\":12345,\"track\":8,\"transport\":1}");
-	CHECK (seqjson::pos (-1, -1, 0, buf, 100) > 0 && std::string (buf) == "{\"pos\":-1,\"track\":-1,\"transport\":0}");
+	CHECK (seqjson::pos (12345, 8, 1, 3, 1200, buf, 100) > 0 && std::string (buf) == "{\"pos\":12345,\"track\":8,\"transport\":1,\"pattern\":3,\"bpm10\":1200}");
+	CHECK (seqjson::pos (-1, -1, 0, -1, 0, buf, 100) > 0 && std::string (buf) == "{\"pos\":-1,\"track\":-1,\"transport\":0,\"pattern\":-1,\"bpm10\":0}");
 	CHECK (seqjson::view (*v, buf, 100) == 0);		// does not fit: 0
 	delete v;
 

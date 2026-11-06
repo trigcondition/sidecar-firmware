@@ -78,13 +78,16 @@ inline size_t view (const sidecar_seq_view_t &v, char *pOut, size_t max)
 	return w.ok ? w.n : 0;
 }
 
-// The play head (seqed_pi::Playhead: steps x 1000, -1 stopped) and the transport, for the "seqpos" topic
-inline size_t pos (int pos_x1000, int track, int transport, char *pOut, size_t max)
+// The play head (seqed_pi::Playhead: steps x 1000, -1 stopped), the transport, the pattern and the tempo, for the
+// "seqpos" topic (small: every page's header shows the pattern and the tempo from it)
+inline size_t pos (int pos_x1000, int track, int transport, int pattern, int bpm10, char *pOut, size_t max)
 {
 	wsproto::Writer w (pOut, max);
 	w.s ("{\"pos\":"); i (w, pos_x1000);
 	w.s (",\"track\":"); i (w, track);
 	w.s (",\"transport\":"); i (w, transport);
+	w.s (",\"pattern\":"); i (w, pattern);
+	w.s (",\"bpm10\":"); i (w, bpm10);
 	w.s ("}");
 	return w.ok ? w.n : 0;
 }

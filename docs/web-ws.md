@@ -95,7 +95,7 @@ connection (1008). Requests are limited to a burst of 20, then 20 a second (429 
 | `status` | exactly what `GET /status` answers (the same function, `CWebServer::StatusJson`) | when it differs from the last push, at most every `ms`; unchanged for 10 s: sent anyway |
 | `levels` | master and 12 strip peaks (below) | every `ms` (33..1000, default 40); unchanged: at least once a second |
 | `seq` | the touch pattern editor's view of the shown seq track (below) | when it changed, at most every `ms` (100..10000, default 250) |
-| `seqpos` | `{"pos":steps x 1000 (-1 stopped),"track":T,"transport":0 stop 1 play 2 pause}` | every `ms` (33..1000, default 50) when it moved |
+| `seqpos` | `{"pos":steps x 1000 (-1 stopped),"track":T,"transport":0 stop 1 play 2 pause,"pattern":N,"bpm10":tempo x 10}` | every `ms` (33..1000, default 50) when it moved |
 | `log` | `{"from":N,"to":M,"gap":bool,"text":"..."}`: the console log's new bytes, as `GET /log` | when there are new bytes, at most every `ms` (250..10000, default 500), up to 8 KB a push |
 
 Each topic's range is in the hello (`"rates":{"status":[250,1000],"levels":[33,40],...}`, fastest and default), and
