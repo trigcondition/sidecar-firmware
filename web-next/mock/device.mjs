@@ -211,6 +211,11 @@ export function createDevice() {
     if (k === "fm") d.lists.fm.rom = !L.length;
   };
 
+  // a few ordinary lines, so the log view has more than the once-a-second ones (generic, as a boot writes them)
+  for (const l of ["==== rytm-pi engine ==== Sidecar 0.4.2 (mock000), CPU 1800 MHz", "sidecar: USB-C class compliant, 12 x 12 + MIDI",
+    "rytmob: Analog Rytm MKII attached, Overbridge streaming", "web: listening on sidecar-mock.local", "um: 4 packages in /Plugins, U1..U5 resolved",
+    "seq: pattern A04, seq tracks T9 T10", "lib: 1834 files indexed, 3 duplicates"]) d.addLog(l);
+
   d.seqpos = () => {
     const stepMs = 60000 / 120 / 4;
     const pos = d.transport === 1 ? Math.floor(((Date.now() - d.playStart) / stepMs) * 1000) % (d.seq.length * 1000) : -1;
