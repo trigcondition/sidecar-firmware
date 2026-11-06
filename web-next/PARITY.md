@@ -87,7 +87,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| Scenes and MORPH | waits for the 0.5.0 scenes merge | ✅ placeholder |
+| Scenes and MORPH: 12 pads, A / B, the fader, a scene's locks (value, add, remove), copy, clear, EDIT | `ws:status` `scene` (0.5.0, core/mod/scene.h); `cmd scene=ab|fader|sel|lock|unlock|clear|copy|edit` | ✅ against the mock and the 0.5.0 spec; a 0.4.x Sidecar shows "comes with 0.5.0" |
 
 ## Rec
 

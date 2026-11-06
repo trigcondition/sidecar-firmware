@@ -114,6 +114,7 @@ export function createDevice() {
     usbMode: d.usbMode,
     cpu: { setting: "max", mhz: 1800, budgetUs: 340 },
     machines: d.machines,
+    scene: sceneJson(d.scene),
     src: TRACKS.map((t, i) => ({ m: i < 8 ? d.machines[i].toUpperCase() : "RYTM", vb: i })).concat([{ m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }]),
     version: "0.4.2",
     commit: "mock000",
@@ -179,6 +180,7 @@ export function createDevice() {
     else if ((m = /^fifo=(\d+)$/.exec(c))) d.fifoTarget = Math.max(24, Math.min(480, +m[1]));
     else if ((m = /^usbmode=(class|overbridge|cmdline)$/.exec(c))) d.usbMode = { ...d.usbMode, set: m[1] === "cmdline" ? "class" : m[1], runs: m[1] === "overbridge" ? "overbridge" : "class", shown: m[1] === "overbridge" ? "box" : "sidecar" };
     else if ((m = /^notemach=(\d):(\w+)$/.exec(c)) && MACHINES.includes(m[2])) d.machines[+m[1]] = m[2];
+    else if (c.startsWith("scene=")) sceneCommand(d.scene, c);
     else if ((m = /^voicepick=(-?\d+)$/.exec(c))) d.voiceTrack = +m[1] >= 0 && +m[1] < 12 ? +m[1] : 4;
     else if ((m = /^drone=(\d|all|off)$/.exec(c))) d.drone = m[1] === "off" ? -1 : m[1] === "all" ? 8 : +m[1];
     else if ((m = /^screensaver=(\d+)$/.exec(c))) d.screensaver = +m[1];
@@ -395,6 +397,9 @@ export function createDevice() {
   // the "voices" topic (pi/engine/voiceview_json.h): the touchscreen's VOICE page for the picked track (voicepick=T;
   // the Rytm's selected track otherwise: T5 here). Tracks 1..8 are the voices, the rest the Rytm's own
   d.voiceTrack = 4;
+  // the morph scenes (0.5.0, core/mod/scene.h): two scenes with locks, 1 on A, 2 on B, the fader a third of the way
+  d.scene = { a: 0, b: 1, fader: 5461, sel: 0, edit: false, src: 1, rscn: 0,
+    s: Array.from({ length: 12 }, (_, i) => (i === 0 ? [["V1:P3", 1280], ["V2:P1", 15360], ["MFX:LEV", 12800]] : i === 1 ? [["V1:P3", 15360], ["V2:P1", 2560], ["O1:PAN", 4096]] : i === 4 ? [["RYTM:PERF2", 8192]] : [])) };
   d.voices = () => voiceView(d.voiceTrack, d.voiceTrack < 8 ? d.machines[d.voiceTrack] : null);
   d.seqpos = () => {
     const stepMs = 60000 / 120 / 4;
@@ -438,4 +443,24 @@ function voiceView(track, mach) {
       mod: [2, 0, 8, 0, 32, 0], car: 21, fbSrc: 5, fbDst: 5, out: [99, 78, 96, 64, 90, 82], freq: ["1.00", "14.0", "1.00", "1.00", "1.00", "3.00"] };
   if (mach === "daisy") v.daisy = { model: 0, ratio: [100, 276, 540, 893, 1334, 1863], ring: [240, 200, 170, 130, 90, 60] };
   return v;
+}
+
+// the scene console (core/mod/scene.cpp command): what the app sends
+function sceneCommand(s, c) {
+  let m;
+  const at = (n) => s.s[+n - 1];
+  if ((m = /^scene=ab:(\d+):(\d+)$/.exec(c)) && +m[1] <= 12 && +m[2] <= 12) { s.a = +m[1] - 1; s.b = +m[2] - 1; }
+  else if ((m = /^scene=fader:(\d+)$/.exec(c))) { s.fader = Math.min(16383, +m[1]); s.src = 3; }
+  else if ((m = /^scene=sel:(\d+)$/.exec(c)) && at(m[1])) s.sel = +m[1] - 1;
+  else if ((m = /^scene=clear:(\d+)$/.exec(c)) && at(m[1])) s.s[+m[1] - 1] = [];
+  else if ((m = /^scene=copy:(\d+):(\d+)$/.exec(c)) && at(m[1]) && at(m[2])) s.s[+m[2] - 1] = at(m[1]).map((l) => [...l]);
+  else if ((m = /^scene=edit:(on|off)$/.exec(c))) s.edit = m[1] === "on";
+  else if ((m = /^scene=lock:(\d+):([A-Z]+\d*:[A-Z]+\d*):([\d.]+)$/i.exec(c)) && at(m[1])) {
+    const l = at(m[1]), name = m[2].toUpperCase(), v = Math.min(16383, Math.round(+m[3] * 128)), i = l.findIndex((x) => x[0] === name);
+    if (i >= 0) l[i][1] = v; else if (l.length < 64) l.push([name, v]);
+  } else if ((m = /^scene=unlock:(\d+):([A-Z]+\d*:[A-Z]+\d*)$/i.exec(c)) && at(m[1])) s.s[+m[1] - 1] = at(m[1]).filter((x) => x[0] !== m[2].toUpperCase());
+}
+function sceneJson(s) {
+  return { a: s.a + 1, b: s.b + 1, fader: s.fader, played: s.fader, sel: s.sel + 1, locked: 0, edit: s.edit ? 1 : 0,
+    s: s.s.map((l, i) => ({ n: i + 1, l })).filter((x) => x.l.length), src: s.src, rscn: s.rscn };
 }

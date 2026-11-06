@@ -63,6 +63,14 @@ describe("against the mock server", () => {
     expect(views[0]).toMatchObject({ track: 4, mode: "fm" });
     await c.command("voicepick=2");
     await until(() => views.some((v) => v.track === 2 && v.mode === "daisy"));
+    // scenes: a lock, A / B and the fader come back on /status
+    await c.command("scene=lock:3:v4:p2:50.5");
+    await c.command("scene=ab:3:1");
+    await c.command("scene=fader:16383");
+    await until(() => seen.some((s) => {
+      const sc = (s as Record<string, any>).scene;
+      return sc?.a === 3 && sc.b === 1 && sc.fader === 16383 && sc.s.some((x: { n: number; l: [string, number][] }) => x.n === 3 && x.l[0][0] === "V4:P2" && x.l[0][1] === 6464);
+    }));
     c.close();
   });
 
