@@ -40,7 +40,6 @@ const sel = ref(0);
       </select>
       <SaveState :state="drone.state.value" :msg="drone.msg.value" />
     </div>
-    <p class="small">The voices' own knobs (as the touchscreen's VOICE page) need a "voices" topic from the Sidecar: planned.</p>
   </Card>
 </template>
 

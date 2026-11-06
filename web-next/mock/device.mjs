@@ -179,6 +179,7 @@ export function createDevice() {
     else if ((m = /^fifo=(\d+)$/.exec(c))) d.fifoTarget = Math.max(24, Math.min(480, +m[1]));
     else if ((m = /^usbmode=(class|overbridge|cmdline)$/.exec(c))) d.usbMode = { ...d.usbMode, set: m[1] === "cmdline" ? "class" : m[1], runs: m[1] === "overbridge" ? "overbridge" : "class", shown: m[1] === "overbridge" ? "box" : "sidecar" };
     else if ((m = /^notemach=(\d):(\w+)$/.exec(c)) && MACHINES.includes(m[2])) d.machines[+m[1]] = m[2];
+    else if ((m = /^voicepick=(-?\d+)$/.exec(c))) d.voiceTrack = +m[1] >= 0 && +m[1] < 12 ? +m[1] : 4;
     else if ((m = /^drone=(\d|all|off)$/.exec(c))) d.drone = m[1] === "off" ? -1 : m[1] === "all" ? 8 : +m[1];
     else if ((m = /^screensaver=(\d+)$/.exec(c))) d.screensaver = +m[1];
     else if ((m = /^brightness=(\d+)$/.exec(c))) d.brightness = Math.max(5, Math.min(100, +m[1]));
@@ -391,6 +392,10 @@ export function createDevice() {
     if ((m = /^seq=(spd|dir):(\d+):/.exec(c)) && +m[2] === d.seq.track + 1) { d.seq.speed = row(m[2])?.spd ?? 0; d.seq.dir = row(m[2])?.dir ?? 0; d.seq.gen++; }
   };
 
+  // the "voices" topic (pi/engine/voiceview_json.h): the touchscreen's VOICE page for the picked track (voicepick=T;
+  // the Rytm's selected track otherwise: T5 here). Tracks 1..8 are the voices, the rest the Rytm's own
+  d.voiceTrack = 4;
+  d.voices = () => voiceView(d.voiceTrack, d.voiceTrack < 8 ? d.machines[d.voiceTrack] : null);
   d.seqpos = () => {
     const stepMs = 60000 / 120 / 4;
     const pos = d.transport === 1 ? Math.floor(((Date.now() - d.playStart) / stepMs) * 1000) % (d.seq.length * 1000) : -1;
@@ -413,4 +418,24 @@ function seqView() {
     rnd: [0, 1, 0], seed: 0, seedFixed: false, editPage: -1, noteEdit: { on: false, step: -1, pitch: -1, sel: 0 },
     notes, steps: [[4, 2, 0, 0, 0, 0, 0, 0, 0, 0], [12, 0, 1, 2, 3, 0, 0, 0, 0, 0]],
   };
+}
+
+// a VOICE view in voiceview_json.h's shape, its panel by the machine
+const LONG = { plaits: "PLAITS", juno: "JUNO 106", daisy: "DAISYSP", dsps: "DSP SAMPLE", dd: "DRUMS", fm: "6-OP FM" };
+const LABELS = {
+  plaits: ["LEV", "TUN", "HARM", "TIMB", "MORF", "DEC", "LPG", "MODL"], juno: ["LEV", "TUN", "CUT", "RES", "ENV", "ATK", "DEC", "PWM"],
+  daisy: ["LEV", "TUN", "STR", "BRI", "DMP", "POS", "MODL", "EXC"], dsps: ["LEV", "TUN", "STRT", "END", "LOOP", "ATK", "DEC", "SMP"],
+  dd: ["LEV", "TUN", "DEC", "TONE", "SNAP", "DRV", "", ""], fm: ["LEV", "TUN", "PAT", "ALG", "FB", "BRI", "DEC", "VEL"],
+};
+function voiceView(track, mach) {
+  const v = {
+    valid: true, track, machine: mach ? 12 + Object.keys(LONG).indexOf(mach) : 2, sidecar: !!mach, name: mach ? LONG[mach] : "SD CLASSIC",
+    val: [100, 64, 40, 88, 20, 72, 64, 10], label: mach ? LABELS[mach] : ["LEV", "TUN", "DEC", "SWD", "TIC", "RTG", "", ""],
+    pattern: 3, locks: [], trig: [], mode: mach === "fm" ? "fm" : mach === "daisy" ? "daisy" : "plain", gen: 7 + track,
+  };
+  if (mach === "fm")
+    v.fm = { name: "E.PIANO 1", alg: 4, fb: 6, cols: 3, levels: 2, col: [0, 0, 1, 1, 2, 2], lev: [0, 1, 0, 1, 0, 1],
+      mod: [2, 0, 8, 0, 32, 0], car: 21, fbSrc: 5, fbDst: 5, out: [99, 78, 96, 64, 90, 82], freq: ["1.00", "14.0", "1.00", "1.00", "1.00", "3.00"] };
+  if (mach === "daisy") v.daisy = { model: 0, ratio: [100, 276, 540, 893, 1334, 1863], ring: [240, 200, 170, 130, 90, 60] };
+  return v;
 }

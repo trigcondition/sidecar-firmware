@@ -13,9 +13,9 @@ import { createDevice } from "./device.mjs";
 
 const PROTO = 1, WINDOW = 4, MAX_MS = 10000, MAX_MSG = 4096, BURST = 20, REFILL_MS = 50;
 // the Pi's (ws_session.h kRate): fastest, default, longest silence of an unchanged topic
-const RATE = { status: [250, 1000, 10000], levels: [33, 40, 1000], seq: [100, 250, 10000], seqpos: [33, 50, 1000], log: [250, 500, 10000] };
+const RATE = { status: [250, 1000, 10000], levels: [33, 40, 1000], seq: [100, 250, 10000], seqpos: [33, 50, 1000], log: [250, 500, 10000], voices: [100, 200, 10000] };
 const TOPICS = Object.keys(RATE);
-const LATER = ["usbMode", "voices", "scenes"];
+const LATER = ["usbMode", "scenes"];
 const NOT_PAIRED = "not paired: pair this browser first (the code is on the Rytm's screen)";
 // what GET needs no pairing for (web.cpp's Open)
 const OPEN = new Set(["/", "/index.html", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume", "/pair/show"]);
@@ -41,7 +41,7 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
   const levels = () => {
     const t = (Date.now() - started) / 1000, m = 0.35 + 0.3 * Math.sin(t * 1.3) + 0.15 * Math.random();
     const r = (x) => Math.round(Math.max(0, Math.min(1, x)) * 1000) / 1000;
-    return { master: [r(m), r(m * 0.95)], strips: Array.from({ length: 12 }, (_, i) => (i >= 8 && i <= 10 ? null : r(m * (0.4 + 0.6 * Math.abs(Math.sin(t + i)))))) };
+    return { master: [r(m), r(m * 0.95)], strips: Array.from({ length: 12 }, (_, i) => r(m * (0.4 + 0.6 * Math.abs(Math.sin(t + i))))) };
   };
   const json = (res, obj, status = 200) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
   const body = (req) => new Promise((ok) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => ok(new URLSearchParams(b))); });
@@ -173,6 +173,7 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
       if (topic === "levels") return levels();
       if (topic === "seq") return dev.seq;
       if (topic === "seqpos") return dev.seqpos();
+      if (topic === "voices") return dev.voices();
       const since = s.logAt < 0 ? Math.max(0, dev.logTotal - 8192) : s.logAt;
       const l = dev.logSince(since);
       const out = { from: l.from, to: l.to, gap: s.logAt >= 0 && l.from > since, text: l.text };

@@ -3,10 +3,11 @@
 <script setup lang="ts">
 import { computed, ref, useId, watch } from "vue";
 
-const props = withDefaults(defineProps<{ label: string; modelValue: number; min?: number; max?: number; disabled?: boolean; format?: (v: number) => string }>(), {
+const props = withDefaults(defineProps<{ label: string; modelValue: number; min?: number; max?: number; disabled?: boolean; readonly?: boolean; format?: (v: number) => string }>(), {
   min: 0,
   max: 127,
   disabled: false,
+  readonly: false,
   format: undefined,
 });
 const emit = defineEmits<{ "update:modelValue": [number]; commit: [number] }>();
@@ -34,7 +35,17 @@ const ticks = Array.from({ length: 28 }, (_, i) => {
 </script>
 
 <template>
-  <div class="knob">
+  <div v-if="readonly" class="knob" role="img" :aria-label="`${label} ${text}`">
+    <div class="dial">
+      <svg viewBox="0 0 48 48" aria-hidden="true">
+        <circle v-for="(t, i) in ticks" :key="i" :cx="t.x" :cy="t.y" r="1.3" :class="t.f <= frac + 0.001 ? 'on' : 'off'" />
+        <line x1="24" y1="24" x2="24" y2="9" :transform="`rotate(${angle} 24 24)`" />
+      </svg>
+    </div>
+    <span class="label" aria-hidden="true">{{ label }}</span>
+    <span class="num" aria-hidden="true">{{ text }}</span>
+  </div>
+  <div v-else class="knob">
     <div class="dial">
       <svg viewBox="0 0 48 48" aria-hidden="true">
         <circle v-for="(t, i) in ticks" :key="i" :cx="t.x" :cy="t.y" r="1.3" :class="t.f <= frac + 0.001 ? 'on' : 'off'" />

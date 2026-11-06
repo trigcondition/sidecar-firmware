@@ -54,8 +54,15 @@ describe("against the mock server", () => {
     const e = await c.command("midibridge=on").catch((x) => x);
     expect(e).toBeInstanceOf(RequestError);
     expect(e.code).toBe(403);
-    const sub = await c.request("sub", { topics: ["status", "voices", "nope"], ms: 1 });
-    expect(sub).toEqual({ topics: ["status"], later: ["voices"], unknown: ["nope"], ms: 250 });
+    const sub = await c.request("sub", { topics: ["status", "scenes", "nope"], ms: 1 });
+    expect(sub).toEqual({ topics: ["status"], later: ["scenes"], unknown: ["nope"], ms: 250 });
+    // the VOICE page follows voicepick=
+    const views: { track?: number; mode?: string }[] = [];
+    c.subscribe<{ track?: number; mode?: string }>("voices", (v) => views.push(v), { ms: 100 });
+    await until(() => views.length >= 1);
+    expect(views[0]).toMatchObject({ track: 4, mode: "fm" });
+    await c.command("voicepick=2");
+    await until(() => views.some((v) => v.track === 2 && v.mode === "daisy"));
     c.close();
   });
 

@@ -6,6 +6,7 @@ import LfoCard from "./voices/LfoCard.vue";
 import MachinesCard from "./voices/MachinesCard.vue";
 import PresetsCard from "./voices/PresetsCard.vue";
 import VoiceGrid from "./voices/VoiceGrid.vue";
+import VoiceView from "./voices/VoiceView.vue";
 import { RequestError } from "../lib/client";
 import { coalescer } from "../lib/coalesce";
 import type { Lfos } from "../lib/lfo";
@@ -24,6 +25,7 @@ function send(c: string) {
 
 <template>
   <h1 class="title" tabindex="-1">Voices</h1>
+  <VoiceView />
   <VoiceGrid />
   <Card label="Modulation">
     <p v-if="!lfos">This build reports no LFOs.</p>

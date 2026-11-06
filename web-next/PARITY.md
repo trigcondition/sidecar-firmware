@@ -36,7 +36,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 | Box strip (boxes, roles) and the box name instead of "Rytm" | `ws:status` `boxes[]` (`feat` bits gate pages) | ✅ (the strip on Home; `feat` hides send FX, POOL, projects, user slots, IN L/R, "show on the Rytm") |
 | Power warning banner | `ws:status` `power.warn` | ✅ |
 | Clock sync at load | `POST /time` | ✅ (once paired) |
-| Build check (page older than the kernel) | ws hello `version` | ➖ until the Pi serves /next/ (then the page's build against the hello's) |
+| Build check (page older than the kernel) | ws hello `version` | ➖ the Pi serves /next/ from the card now (`npm run card`); the build-against-kernel check is still to do |
 
 ## Home
 
@@ -54,7 +54,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 |---|---|---|
 | Machine per voice (BD..CY/CB), "now" | `cmd notemach=V:NAME`; `ws:status` `machines[]` | ✅ |
 | Drone voice / all / off | `cmd drone=`; `ws:status` `drone` | ✅ |
-| Voice knobs (the touchscreen's VOICE page) | no source yet: a `voices` topic on the Pi (reserved) | ⬜ new Pi work |
+| Voice knobs (the touchscreen's VOICE page): machine, P1..P8, the FM / DAISYSP / MULTISAMPLE panel, track pick | `ws:voices`; `cmd voicepick=T` | ✅ (shown, turned on the Rytm; p-locks: not on the Pi yet) |
 | LFO 1-8: target, parameter, wave, sync, retrig, rate, depth, DESIGN wave, live phase | `cmd lfo=...`; `ws:status` `lfo` | 🔶 (all but drawing the DESIGN steps: presets only; `web/lfo.js` shared) |
 | User machines: list, slots U1-U5 assign / clear, memory, rescan, upload, delete, empty project, export / import slot list | `GET /um`; `cmd um=...`; `/fs/put` (chunked) | 🔶 (slots, assign, clear, packages, rescan; upload / delete / memory / empty / slot lists ⬜) |
 | Presets: JUNO and FM lists (rename, move, delete, save current), user machine presets | `GET /lists`; `cmd juno= / fm= / um=save`; `/fs/ls`, `/fs/mv`, `/fs/del` | 🔶 (JUNO / FM lists; user machine presets ⬜) |
@@ -63,7 +63,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| 12 strips V1-V8, B1-B3, M: machine, level number, meter | `ws:status` `machines`, `ins`; `ws:levels` (buses: no meter source yet) | ✅ (voice level `out=Vn:lev`, master `mfx=lev`) |
+| 12 strips V1-V8, B1-B3, M: machine, level number, meter | `ws:status` `machines`, `ins`; `ws:levels` (each voice: OUT pair or own TRK; B1-B3: the send FX buses) | ✅ (voice level `out=Vn:lev`, master `mfx=lev`) |
 | Insert EQ curve per strip, insert FX chip | `ws:status` `ins.c[]` (`s`, `peq`) | ✅ editable: POST EQ, inserts A/B with P1-P4, route, pan, width, sends (`ins=`, `out=`) |
 | Send FX 1/2: type, PRE/POST, 12 sends; kill tails | `ws:status` `fx[]`; `cmd killfx` | ✅ |
 | Master FX: bypass, source, level, trim, 4 slots (type, P1-P4, mix, pair), limiter GR | `cmd mfx=...`; `ws:status` `ins.mfx` | ✅ (pair ⬜) |
@@ -73,7 +73,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| Piano roll of the shown seq track, pages, play head | `ws:seq` (the touch editor's view), `ws:seqpos` | ✅ (keyboard cursor, spoken cell, large cells) |
+| Piano roll of the shown seq track, pages, play head | `ws:seq` (the touch editor's view), `ws:seqpos` | ✅ (keyboard cursor, spoken cell, large cells; a phone: 44 px cells both ways, the roll scrolls sideways) |
 | Track chips (the seq tracks), choose the shown one | `cmd seqed=show:T` (also moves the touchscreen's shown track) | ✅ |
 | Add / delete / move / length / velocity, undo / redo | `cmd seqed=add|del|move|len|vel|undo|redo:...` | ✅ (no drag yet: keys, the note panel) |
 | Chord stamp, strum, humanise | `cmd seqed=chord|strum|human:...` | ✅ (strum and humanise over the steps on screen) |
