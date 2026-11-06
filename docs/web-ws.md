@@ -97,6 +97,7 @@ connection (1008). Requests are limited to a burst of 20, then 20 a second (429 
 | `seq` | the touch pattern editor's view of the shown seq track (below) | when it changed, at most every `ms` (100..10000, default 250) |
 | `seqpos` | `{"pos":steps x 1000 (-1 stopped),"track":T,"transport":0 stop 1 play 2 pause,"pattern":N,"bpm10":tempo x 10}` | every `ms` (33..1000, default 50) when it moved |
 | `log` | `{"from":N,"to":M,"gap":bool,"text":"..."}`: the console log's new bytes, as `GET /log` | when there are new bytes, at most every `ms` (250..10000, default 500), up to 8 KB a push |
+| `voices` | the touchscreen's VOICE page for the selected track (below) | when it changed, at most every `ms` (100..10000, default 200) |
 
 Each topic's range is in the hello (`"rates":{"status":[250,1000],"levels":[33,40],...}`, fastest and default), and
 the hello's `topics` lists only what this build serves (`seq` / `seqpos` need core/seq in the tree; the rest are
@@ -115,9 +116,19 @@ the hello's `topics` lists only what this build serves (`seq` / `seqpos` need co
 `chord`, `strum`, `human`, `undo`, `redo`; docs/TOUCH-EDITOR.md) sent as `cmd`. `seqed=show:T` picks the shown track:
 it is one shown track for the touchscreen and the web together.
 
-Reserved for later (a `sub` lists them under `later`): `usbMode`, `voices`, `levels`, `scenes`, `log`. `/status` is
-~12 KB on a unit today, so the next step is to split the parts a page watches closely (`usbMode`, `voices`, `levels`)
-into topics of their own with faster intervals and leave `status` slow.
+### `voices` (the touchscreen's VOICE page)
+
+`voice_pi::Fill` (the view the VOICE page draws, `pi/ui/sidecar_voice.h`) as JSON, `pi/engine/voiceview_json.h`:
+`track` (0..11), `machine`, `sidecar` (a Sidecar machine, else the Rytm's own sound), `name`, `val` and `label` (P1..P8
+with the Rytm's labels; an unused one has an empty label), `pattern`, `locks` / `trig` (per step; empty on the Pi for
+now: the Rytm's pattern dump is the display's), `mode` (`plain`, `fm`, `multi`, `daisy`) with that machine's panel
+(`fm`: patch name, algorithm, feedback, the operators' grid places, modulation bits, carriers, output levels and
+frequencies; `multi`: instrument, key zones, keys sounding; `daisy`: model, the modes' ratios x 100 and ring times),
+`gen`. No scope and no level: the input tap is the display's own (reading it would steal its entries), and the
+meters are `levels`. The track is the Rytm's selected one, or the one `voicepick=T` picked (`-1`: follow the Rytm
+again), one pick for the touchscreen and the web together.
+
+Reserved for later (a `sub` lists them under `later`): `usbMode`, `scenes`.
 
 ### `levels`
 
@@ -137,8 +148,11 @@ What the header's "signal tide" and the Mix page's meters draw:
   the web does not steal the touchscreen's meters, whoever reads them feeds `g_PeakFan` (`pi/engine/peak_fan.h`) and
   takes its own share: the display, the stats line and each of the two web connections. Core 0 only; the render path
   is unchanged; nothing is read while no client subscribes.
-- Known gaps: a voice on its own TRK output has no peak there (the output stage measures the OUT mixer's voices only),
-  so its strip reads 0; B1..B3 are `null` (no bus meter yet); the master is one value (L = R).
+- A voice's strip is the larger of its OUT pair and its own TRK output (`Output::TakeTrkPeaks`, only the web reads
+  it). B1 and B2 are each send FX's own return, B3 the dry bus's input (`sendfx_pi::TakeBusPeaks`, written on core 2
+  after its block). Both go through `g_PeakFan` as the rest. Cost (host bench): the TRK peaks +0.01..0.04 % of a core
+  (output unchanged bit for bit), the bus peaks ~0.012 % (an estimated 0.03..0.05 % on the Pi 5). A build without send
+  FX would send `null` for B1..B3. The master is one value (L = R).
 - Flow control as for every topic: within the window of 4 the newest peaks go; a slow client simply sees fewer frames.
   At 25 Hz the window is the bottleneck only above ~160 ms round trip, where fewer frames is the right answer.
 - Not changed-only: silence is pushed too (as zeros), at most once a second while everything is 0.
@@ -179,9 +193,10 @@ clients at the default 1 s that is two `/status` builds a second, as the old pag
 The server's first message:
 
 ```json
-{"type":"hello","payload":{"proto":1,"server":"sidecar","version":"0.4.2","topics":["status"],
- "later":["usbMode","voices","levels","scenes","log"],"caps":["auth","sub","unsub","cmd","ping","ack"],
- "auth":"token","window":4,"maxMsg":4096,"minMs":250,"maxMs":10000}}
+{"type":"hello","payload":{"proto":1,"server":"sidecar","version":"0.4.2",
+ "topics":["status","levels","seq","seqpos","log","voices"],"later":["usbMode","scenes"],
+ "caps":["auth","sub","unsub","cmd","ping","ack"],"auth":"token","window":4,"maxMsg":4096,"minMs":250,"maxMs":10000,
+ "rates":{"status":[250,1000],"levels":[33,40],"seq":[100,250],"seqpos":[33,50],"log":[250,500],"voices":[100,200]}}}
 ```
 
 - `proto` is the major: a change that an old client would misread (a renamed member, another meaning) raises it, and
@@ -192,16 +207,23 @@ The server's first message:
 
 ## Serving the new app from the Pi
 
-Not wired in yet. The skeleton builds to ~112 KB of JS (44 KB gzipped), 6 KB of CSS (2 KB) and 47 KB of woff2 fonts
-(`web-next/`, `npm run build`, `base: "/next/"`): ~95 KB over the wire; the old page is ~130 KB raw (the kernel holds
-it raw and gzipped). Two ways, to decide when
-the design lands:
+From the card: `GET /next/<file>` reads `SD:/.rytm/www-next/<file>` (`pi/engine/webnext_path.h`; `/next` and `/next/`
+are `index.html`). No kernel growth, and an app update needs no kernel.
 
-1. Built in, as the old page: `build.sh` embeds `web-next/dist` gzipped (a few files as `hosted/web_next_*.h`) and
-   `GetContent` serves `/next/`, `/next/assets/*` from them. Budget: keep the gzipped bundle under ~100 KB, so the
-   kernel grows less than the old page did. Needs Node in the Docker build (or a committed `dist`).
-2. From the card: `/.rytm/www-next/` served read-only by `GetContent` under `/next/`, updated with the content zip.
-   No kernel growth, an app update without a kernel; one more path the open set must name.
+- The `.gz` sibling is sent when there is one (`Content-Encoding: gzip`), else the file itself.
+- `/next/assets/*` (Vite's hashed names) are cached for good (`immutable`); everything else is `no-cache`, so a new
+  build shows on the next load.
+- Names: `A-Z a-z 0-9 - _ . /` only, no part starting with a dot, 120 characters at most; anything else is 404. A file
+  larger than the answer buffer (192 KB) is a 500 and a log line. `/fs` cannot reach `/.rytm`, so nothing can be put
+  there over the network.
+- `/next` is in the open set (`web.cpp` `Open`): it is static and holds nothing of the device. `/ws` is reached from
+  `/next/` on the same origin. The app uses hash routes (`/next/#/seq`), so the Pi needs no fallback to `index.html`.
 
-Either way `/next/*` joins the open set in `web.cpp` (it is static and has nothing of the device in it), and `/ws` is
-reached from `/next/` on the same origin.
+Putting it on the card (the card in a reader, or the Pi's own card while it is off):
+
+```
+cd web-next && npm run build && npm run card -- /Volumes/<the card>
+```
+
+`scripts/card.mjs` replaces `.rytm/www-next/` as a whole, gzips the text files (about 164 KB in all, the largest file
+51 KB) and stops on a name the Pi would refuse. The fonts' and Vue's licences ship in `licenses/` (THIRD_PARTY_LICENSES).
