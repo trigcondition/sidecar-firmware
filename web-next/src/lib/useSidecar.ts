@@ -2,6 +2,7 @@
 // created in App.vue and handed to the pages with provide / inject.
 import { inject, onScopeDispose, provide, ref, shallowRef, type InjectionKey, type Ref, type ShallowRef } from "vue";
 import { SidecarClient, type ClientState } from "./client";
+import { Api } from "./api";
 import { Pairing } from "./pairing";
 import type { Hello, Levels, Status } from "./protocol";
 
@@ -18,6 +19,11 @@ export interface Sidecar {
   levels: ShallowRef<Levels | null>;
   lastError: Ref<string>;
   pair: (code: string) => Promise<void>;
+  /** the HTTP endpoints without a topic (src/lib/api.ts), with this browser's pairing token */
+  api: Api;
+  pairing: Pairing;
+  /** a command; resolves when the Sidecar took it, rejects with its refusal (RequestError) */
+  cmd: (c: string) => Promise<void>;
 }
 
 const KEY: InjectionKey<Sidecar> = Symbol("sidecar");
@@ -39,6 +45,11 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     status: shallowRef<Status | null>(null),
     levels: shallowRef<Levels | null>(null),
     lastError: ref(""),
+    api: new Api({ token: () => pairing.current, onPairLost: () => void client.authenticate().catch(() => false) }),
+    pairing,
+    async cmd(c: string) {
+      await client.command(c);
+    },
     async pair(code: string) {
       await pairing.pair(code);
       // paired either way; if the socket is down right now, the token goes out when it is back

@@ -88,9 +88,9 @@ describe("against the mock server", () => {
       if (m.type === "pub") pubs.push(m.seq);
     });
     await new Promise((ok) => ws.on("open", ok));
-    ws.send(JSON.stringify({ type: "sub", id: 1, payload: { topics: ["status"], ms: 250 } }));
-    // the status changes ~3 times a second (uptime, a level every 700 ms): 6+ pushes in 2.6 s without the window
-    await new Promise((r) => setTimeout(r, 2600));
+    ws.send(JSON.stringify({ type: "sub", id: 1, payload: { topics: ["levels"] } }));
+    // the levels change every push (40 ms): ~25 pushes in a second without the window
+    await new Promise((r) => setTimeout(r, 1000));
     const held = pubs.length;
     expect(held).toBe(4);
     ws.send(JSON.stringify({ type: "ack", seq: pubs[pubs.length - 1] }));

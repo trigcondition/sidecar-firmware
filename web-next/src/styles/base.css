@@ -30,7 +30,7 @@ body {
   font-weight: 500;
 }
 
-.num, .title { font-family: var(--font-dot); font-weight: 700; }
+.num, .title { font-family: var(--font-dot); font-weight: 900; }
 .accent { color: var(--accent); text-shadow: var(--accent-glow); }
 .warm { color: var(--warm); }
 

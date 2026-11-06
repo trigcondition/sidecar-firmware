@@ -19,6 +19,10 @@
   --warm: #ffb35c;             /* the second accent: sidechain, warnings */
   --focus: #ffd166;            /* the focus ring, both themes */
   --on-accent: #050607;        /* text on an accent fill */
+  --accent-tint: rgba(108, 194, 255, 0.1);  /* a selected item's fill (with a check mark and a thicker outline) */
+  --warm-tint: rgba(255, 179, 92, 0.16);
+  --warm-border: #8a6a3e;      /* a warm card's edge (decorative) */
+  --tide-bg: #0a1520;          /* the header band behind the signal tide */
 
   --radius-card: 0.875rem;     /* 14px */
   --radius-control: 0.5625rem; /* 9px */
@@ -51,6 +55,10 @@
   --warm: #ffd166;
   --focus: #ffd166;
   --on-accent: #000000;
+  --accent-tint: transparent;
+  --warm-tint: transparent;
+  --warm-border: #ffffff;
+  --tide-bg: #000000;
 }
 
 /* the text-size setting (usePrefs.ts) */

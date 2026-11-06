@@ -1,6 +1,6 @@
 /* web-next/src/styles/fonts.css - the two typefaces, bundled (the Pi serves offline: no font CDN at runtime).
  * woff2 only (every browser the app targets reads it), the latin subset only: Space Grotesk 400/500/700 for the UI,
- * Doto 400/700 (dot matrix) for numbers and titles. ~47 KB in all. Both SIL OFL 1.1 (public/licenses/). Another
+ * Doto 600/900 (dot matrix) for numbers and titles. ~47 KB in all. Both SIL OFL 1.1 (public/licenses/). Another
  * script (a translated UI) would need its subset added here. */
 @font-face {
   font-family: "Space Grotesk";
@@ -29,16 +29,16 @@
 @font-face {
   font-family: "Doto";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 600;
   font-display: swap;
-  src: url("../../node_modules/@fontsource/doto/files/doto-latin-400-normal.woff2") format("woff2");
+  src: url("../../node_modules/@fontsource/doto/files/doto-latin-600-normal.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Doto";
   font-style: normal;
-  font-weight: 700;
+  font-weight: 900;
   font-display: swap;
-  src: url("../../node_modules/@fontsource/doto/files/doto-latin-700-normal.woff2") format("woff2");
+  src: url("../../node_modules/@fontsource/doto/files/doto-latin-900-normal.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }

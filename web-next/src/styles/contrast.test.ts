@@ -47,7 +47,7 @@ const pairs: [string, string, number][] = [
   ["label", "bg", TEXT], ["label", "card", TEXT],
   ["accent", "bg", TEXT], ["accent", "card", TEXT],
   ["warm", "bg", TEXT], ["warm", "card", TEXT],
-  ["on-accent", "accent", TEXT],
+  ["on-accent", "accent", TEXT], ["on-accent", "warm", TEXT], ["bg", "text", TEXT],
   ["control-border", "bg", UI], ["control-border", "card", UI],
   ["focus", "bg", UI], ["focus", "card", UI],
 ];
