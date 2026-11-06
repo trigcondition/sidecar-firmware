@@ -75,7 +75,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 |---|---|---|
 | Piano roll of the shown seq track, pages, play head | `ws:seq` (the touch editor's view), `ws:seqpos` | ✅ (keyboard cursor, spoken cell, large cells; a phone: 44 px cells both ways, the roll scrolls sideways) |
 | Track chips (the seq tracks), choose the shown one | `cmd seqed=show:T` (also moves the touchscreen's shown track) | ✅ |
-| Add / delete / move / length / velocity, undo / redo | `cmd seqed=add|del|move|len|vel|undo|redo:...` | ✅ (no drag yet: keys, the note panel) |
+| Add / delete / move / length / velocity, undo / redo | `cmd seqed=add|del|move|len|vel|undo|redo:...` | ✅ (drag a note to move it, by its end to stretch it, while drawing; keys; the note panel) |
 | Chord stamp, strum, humanise | `cmd seqed=chord|strum|human:...` | ✅ (strum and humanise over the steps on screen) |
 | Poly per track: voices, alloc, unison, detune, spread | `cmd seq=poly:...`; `ws:status` `poly`, `inst` | ✅ |
 | Pattern: key, scale, QNT, seed | `cmd seq=key|seed`; `ws:status` `seqx` | ✅ |

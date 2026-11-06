@@ -1,10 +1,11 @@
 <!-- web-next/src/pages/seq/PianoRoll.vue - the shown seq track's notes over a window of steps and pitches, the play head,
-     a velocity lane. Pointer: a tap on a note selects it; on an empty cell it adds a note while drawing is on.
+     a velocity lane. Pointer: a tap on a note selects it; on an empty cell it adds a note while drawing is on; while
+     drawing is on a note drags to another step or pitch, or by its end to another length (a ghost shows where it goes).
      Keyboard (the roll takes focus): arrows move the cursor, Enter adds or selects, Delete removes the selected note,
      Shift+arrows move it, + / - its velocity, [ / ] its length; the cell under the cursor is spoken. -->
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { SUB, isBlack, noteAt, noteName, type SeqNote } from "../../lib/seq";
+import { SUB, dragResult, grabsEnd, isBlack, noteAt, noteName, type DragMode, type SeqNote } from "../../lib/seq";
 
 const props = defineProps<{
   notes: SeqNote[];
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   nudge: [SeqNote, dStep: number, dPitch: number];
   vel: [SeqNote, delta: number];
   len: [SeqNote, delta: number];
+  lenTo: [SeqNote, len: number];
   scroll: [dPitch: number, dStep: number];
 }>();
 
@@ -109,6 +111,55 @@ function key(e: KeyboardEvent) {
   if (k === "Escape" && sel) return handled(), emit("select", null);
 }
 
+// the pointer: a press on a note while drawing starts a drag (moved past a few pixels: a drag, else a tap)
+interface Drag { n: SeqNote; mode: DragMode; x0: number; y0: number; cw: number; rh: number; moved: boolean; id: number }
+let drag: Drag | null = null;
+const ghost = ref<{ step: number; micro: number; pitch: number; len: number } | null>(null);
+function cellOf(e: PointerEvent, svg: SVGSVGElement) {
+  const r = svg.getBoundingClientRect();
+  const fx = ((e.clientX - r.left) / r.width) * props.count, fy = ((e.clientY - r.top) / r.height) * props.rows;
+  return { r, step: props.first + Math.floor(fx), sub: Math.round((props.first + fx) * SUB), pitch: props.top - Math.floor(fy) };
+}
+function down(e: PointerEvent) {
+  const svg = e.currentTarget as SVGSVGElement;
+  const c = cellOf(e, svg);
+  const n = props.draw && e.button === 0 ? noteAt(props.notes, c.step, c.pitch) : undefined;
+  if (!n) return tap(e);
+  drag = { n, mode: grabsEnd(n, c.sub) ? "len" : "move", x0: e.clientX, y0: e.clientY, cw: c.r.width / props.count, rh: c.r.height / props.rows, moved: false, id: e.pointerId };
+  svg.setPointerCapture?.(e.pointerId);
+}
+function moveTo(e: PointerEvent) {
+  if (!drag || e.pointerId !== drag.id) return;
+  const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+  if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+  drag.moved = true;
+  const r = dragResult(drag.n, drag.mode, dx / drag.cw, dy / drag.rh, props.length), n = drag.n;
+  ghost.value = !r ? { step: n.step, micro: n.micro, pitch: n.pitch, len: n.len }
+    : "len" in r ? { step: n.step, micro: n.micro, pitch: n.pitch, len: r.len }
+    : { step: n.step + r.ds, micro: n.micro, pitch: n.pitch + r.dp, len: n.len };
+}
+function up(e: PointerEvent) {
+  if (!drag || e.pointerId !== drag.id) return;
+  const d = drag;
+  drag = null;
+  ghost.value = null;
+  if (!d.moved) {
+    cur.value = { step: d.n.step, pitch: d.n.pitch };
+    return emit("select", isSel(d.n) ? null : d.n);
+  }
+  const r = dragResult(d.n, d.mode, (e.clientX - d.x0) / d.cw, (e.clientY - d.y0) / d.rh, props.length);
+  if (!r) return;
+  if ("len" in r) emit("lenTo", d.n, r.len);
+  else {
+    emit("nudge", d.n, r.ds, r.dp);
+    cur.value = { step: d.n.step + r.ds, pitch: d.n.pitch + r.dp };
+  }
+}
+function cancel() {
+  drag = null;
+  ghost.value = null;
+}
+
 function tap(e: PointerEvent) {
   const svg = e.currentTarget as SVGSVGElement;
   const r = svg.getBoundingClientRect();
@@ -139,7 +190,7 @@ function tap(e: PointerEvent) {
       <div v-for="p in pitches" :key="p" class="key" :class="{ black: isBlack(p), c: p % 12 === 0 }" :style="{ height: `${rowRem ?? 1.5}rem` }">{{ p % 12 === 0 || p === top ? noteName(p) : "" }}</div>
     </div>
     <div class="grid" :style="cellRem ? { minWidth: `${count * cellRem}rem` } : undefined">
-      <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :style="{ height: `${rows * (rowRem ?? 1.5)}rem` }" @pointerdown="tap">
+      <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :class="{ drawing: draw }" :style="{ height: `${rows * (rowRem ?? 1.5)}rem` }" @pointerdown="down" @pointermove="moveTo" @pointerup="up" @pointercancel="cancel">
         <rect v-for="(p, i) in pitches" :key="'r' + p" x="0" :y="i * RH" :width="W" :height="RH" :class="isBlack(p) ? 'row-b' : 'row-w'" />
         <line v-for="s in count + 1" :key="'s' + s" :x1="(s - 1) * CW" :x2="(s - 1) * CW" y1="0" :y2="H" :class="(first + s - 1) % 4 === 0 ? 'beat' : 'tick'" vector-effect="non-scaling-stroke" />
         <rect
@@ -152,6 +203,16 @@ function tap(e: PointerEvent) {
           rx="3"
           :class="['note', { sel: isSel(n), muted: n.flags & 1 }]"
           :style="{ opacity: 0.45 + (0.55 * n.vel) / 127 }"
+        />
+        <rect
+          v-if="ghost"
+          :x="x(ghost.step * SUB + ghost.micro)"
+          :y="y(ghost.pitch) + 3"
+          :width="Math.max(4, (ghost.len / SUB) * CW - 2)"
+          :height="RH - 6"
+          rx="3"
+          class="ghost"
+          vector-effect="non-scaling-stroke"
         />
         <line v-if="play !== null && play >= first && play < first + count" :x1="x(play * SUB)" :x2="x(play * SUB)" y1="0" :y2="H" class="head" vector-effect="non-scaling-stroke" />
         <rect
@@ -199,6 +260,9 @@ function tap(e: PointerEvent) {
 .note { fill: var(--accent); }
 .note.sel { fill: var(--text); stroke: var(--focus); stroke-width: 3; opacity: 1 !important; }
 .note.muted { fill: var(--control-border); }
+/* while drawing, a press on a note is the note's (a drag), not the page's scroll */
+.drawing .note { touch-action: none; cursor: grab; }
+.ghost { fill: none; stroke: var(--focus); stroke-width: 2; stroke-dasharray: 4 3; pointer-events: none; }
 .head { stroke: var(--warm); stroke-width: 2; }
 .cursor { fill: none; stroke: var(--focus); stroke-width: 3; }
 .lane { height: 3rem; border-top: 1px solid var(--border); }

@@ -1,6 +1,7 @@
 // web-next/src/lib/seq.test.ts - the sequencer's helpers and the exact command lines (docs/TOUCH-EDITOR.md).
 import { describe, expect, it } from "vitest";
 import { cmd, isBlack, noteAt, noteName, parseView, pitchWindow, playStep, trackName } from "./seq";
+import { dragResult, grabsEnd } from "./seq";
 
 describe("seq", () => {
   it("parses the wire's note arrays", () => {
@@ -58,5 +59,24 @@ describe("seq", () => {
     expect(playStep({ pos: 4500, track: 9, transport: 1 }, 9)).toBe(4.5);
     expect(playStep({ pos: 4500, track: 8, transport: 1 }, 9)).toBeNull();
     expect(playStep({ pos: -1, track: 9, transport: 0 }, 9)).toBeNull();
+  });
+});
+
+describe("dragging a note", () => {
+  const n = { step: 4, micro: 0, pitch: 60, vel: 100, len: 96, flags: 0 };
+  it("moves by whole cells inside the track", () => {
+    expect(dragResult(n, "move", 2.4, -1.6, 32)).toEqual({ ds: 2, dp: 2 });
+    expect(dragResult(n, "move", 0.3, 0.2, 32)).toBeNull();
+    expect(dragResult(n, "move", -9, 0, 32)).toEqual({ ds: -4, dp: 0 });
+    expect(dragResult(n, "move", 40, 0, 32)).toEqual({ ds: 27, dp: 0 });
+  });
+  it("stretches by quarter steps", () => {
+    expect(dragResult(n, "len", 1.1, 0, 32)).toEqual({ len: 192 });
+    expect(dragResult(n, "len", -5, 0, 32)).toEqual({ len: 24 });
+    expect(dragResult(n, "len", 0.1, 0, 32)).toBeNull();
+  });
+  it("grabs the end in its last part", () => {
+    expect(grabsEnd(n, 4 * 96 + 90)).toBe(true);
+    expect(grabsEnd(n, 4 * 96 + 20)).toBe(false);
   });
 });

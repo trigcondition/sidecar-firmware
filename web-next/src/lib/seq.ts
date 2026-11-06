@@ -121,3 +121,19 @@ export function playStep(p: SeqPos | null, track: number): number | null {
   if (!p || p.pos < 0 || p.track !== track) return null;
   return p.pos / 1000;
 }
+
+/** A drag on a note in the piano roll (dx, dy: how far the pointer went, in cells; y down): "move" by whole steps and
+ * pitches (its micro offset kept), "len" its end in quarter steps (a quarter step at least). Kept inside the track
+ * (length steps) and 0..127. null: it did not get anywhere. */
+export type DragMode = "move" | "len";
+export function dragResult(n: SeqNote, mode: DragMode, dx: number, dy: number, length: number):
+  { ds: number; dp: number } | { len: number } | null {
+  if (mode === "len") {
+    const q = SUB / 4, len = Math.max(q, Math.round((n.len + dx * SUB) / q) * q);
+    return len === n.len ? null : { len };
+  }
+  const s2 = Math.max(0, Math.min(length - 1, n.step + Math.round(dx))), p2 = Math.max(0, Math.min(127, n.pitch - Math.round(dy)));
+  return s2 === n.step && p2 === n.pitch ? null : { ds: s2 - n.step, dp: p2 - n.pitch };
+}
+/** Whether a press at stepSub (in 1/96 step) grabs the note's end (its last quarter, at least a third of a step). */
+export const grabsEnd = (n: SeqNote, stepSub: number) => stepSub >= n.step * SUB + n.micro + n.len - Math.max(SUB / 3, n.len / 4);

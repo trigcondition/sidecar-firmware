@@ -224,6 +224,7 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           @nudge="nudge"
           @vel="stepVel"
           @len="stepLen"
+          @len-to="setLen"
           @scroll="scroll"
         />
         <p class="small">{{ view.notes.length }} notes. <template v-if="!draw">Drawing is off: taps only select.</template></p>
