@@ -1,73 +1,37 @@
-<!-- web-next/src/pages/Settings.vue - the display settings that exist now: theme and text size (per device). -->
+<!-- web-next/src/pages/Settings.vue - the Sidecar's settings (web-next/PARITY.md "Settings"), one card each. -->
 <script setup lang="ts">
-import { nextTick } from "vue";
-import { TEXT_SIZES, THEMES, usePrefs, type TextSize, type Theme } from "../lib/usePrefs";
-
-const { theme, textSize } = usePrefs();
-const themeName: Record<Theme, string> = { standard: "Standard", contrast: "High contrast" };
-
-// arrow keys move within a radio group (the ARIA pattern), Tab leaves it
-function arrows<T>(e: KeyboardEvent, list: T[], cur: T, set: (v: T) => void) {
-  const d = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
-  if (!d) return;
-  e.preventDefault();
-  const group = e.currentTarget as HTMLElement; // (gone from the event once it has been handled)
-  const next = list[(list.indexOf(cur) + d + list.length) % list.length];
-  set(next);
-  nextTick(() => group.querySelector<HTMLElement>('[aria-checked="true"]')?.focus());
-}
+import AboutCard from "./settings/AboutCard.vue";
+import AccessCard from "./settings/AccessCard.vue";
+import AudioCard from "./settings/AudioCard.vue";
+import BridgeCard from "./settings/BridgeCard.vue";
+import DisplayCard from "./settings/DisplayCard.vue";
+import LookCard from "./settings/LookCard.vue";
+import StorageCard from "./settings/StorageCard.vue";
+import UsbCard from "./settings/UsbCard.vue";
+import WifiCard from "./settings/WifiCard.vue";
 </script>
 
 <template>
-  <section class="card" aria-labelledby="h">
-    <h1 id="h" class="title" tabindex="-1">Settings</h1>
-
-    <h2 id="h-theme" class="label">Theme</h2>
-    <div
-      role="radiogroup"
-      aria-labelledby="h-theme"
-      class="row"
-      @keydown="arrows(($event as KeyboardEvent), THEMES, theme, (v: Theme) => (theme = v))"
-    >
-      <button
-        v-for="t in THEMES"
-        :key="t"
-        type="button"
-        role="radio"
-        class="pill"
-        :aria-checked="theme === t"
-        :tabindex="theme === t ? 0 : -1"
-        @click="theme = t"
-      >
-        {{ themeName[t] }}
-      </button>
+  <h1 class="title" tabindex="-1">Settings</h1>
+  <div class="grid">
+    <div class="col">
+      <LookCard />
+      <AudioCard />
+      <UsbCard />
+      <DisplayCard />
+      <StorageCard />
     </div>
-
-    <h2 id="h-size" class="label">Text size</h2>
-    <div
-      role="radiogroup"
-      aria-labelledby="h-size"
-      class="row"
-      @keydown="arrows(($event as KeyboardEvent), TEXT_SIZES, textSize, (v: TextSize) => (textSize = v))"
-    >
-      <button
-        v-for="s in TEXT_SIZES"
-        :key="s"
-        type="button"
-        role="radio"
-        class="pill"
-        :aria-checked="textSize === s"
-        :tabindex="textSize === s ? 0 : -1"
-        @click="textSize = s"
-      >
-        {{ s }}&nbsp;%
-      </button>
+    <div class="col">
+      <WifiCard />
+      <AccessCard />
+      <BridgeCard />
+      <AboutCard />
     </div>
-    <p class="small">Kept on this device. Later also per user on the Sidecar.</p>
-  </section>
+  </div>
 </template>
 
 <style scoped>
-.row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
-.pill { background: var(--card); }
+.title { font-size: 1.75rem; margin: 0.5rem 0 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: 0 1.25rem; align-items: start; }
+.col { min-width: 0; }
 </style>

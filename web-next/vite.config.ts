@@ -12,8 +12,13 @@ export default defineConfig({
   server: {
     proxy: {
       "/ws": { target, ws: true, changeOrigin: true, headers: { Origin: target } },
-      "/status": { target, changeOrigin: true },
-      "/pair": { target, changeOrigin: true, headers: { Origin: target } },
+      // every HTTP endpoint of the Sidecar (pi/engine/web.cpp), with its origin (several need the same-origin check)
+      ...Object.fromEntries(
+        ["/status", "/health", "/log", "/pair", "/time", "/wifi", "/midibridge", "/um", "/lists", "/pool", "/presets", "/bundle", "/usb", "/fs", "/blackbox", "/cmd"].map((p) => [
+          p,
+          { target, changeOrigin: true, headers: { Origin: target, Referer: `${target}/` } },
+        ]),
+      ),
     },
   },
   build: { target: "es2020", assetsInlineLimit: 0, sourcemap: false },

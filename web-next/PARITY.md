@@ -116,14 +116,14 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 | Feature | Data | Status |
 |---|---|---|
 | Theme, text size | per device | ✅ |
-| Audio: MIDI notes, output main / tracks, IN L/R (FX return), computer audio, FIFO target | `cmd notes= out= fxin= mac= fifo=`; `ws:status` | ⬜ |
-| USB-C mode (class / Overbridge, with the warning) | `cmd usbmode=`; `ws:status` `usbMode` | ⬜ |
-| Display: screensaver, brightness | `cmd screensaver= brightness=`; `ws:status` | ⬜ |
-| Wi-Fi: status, on/off, scan, join (follows the restart), forget | `/wifi/status`, `/wifi/scan`, `POST /wifi/join|forget|power` | ⬜ |
-| Access: gate, devices, forget this device, forget every device | `/pair/status`; `POST /pair/forget`, `/pair/revoke` | ⬜ |
-| MIDI bridge: state, token, on/off, OS upgrades, drive writes | `ws:status` `midibridge`; `GET /midibridge`, `POST /midibridge/set` | ⬜ |
-| Storage: volumes, eject, bench, SD speed test, sample library | `ws:status` `stor`, `sdtest`, `library`; `cmd stor= sdtest=` | ⬜ |
-| About: version, commit, build, Circle, address, link | `ws:status` | ⬜ |
+| Audio: MIDI notes, output main / tracks, IN L/R (FX return), computer audio, FIFO target | `cmd notes= out= fxin= mac= fifo=`; `ws:status` | ✅ (pending → saved, as the old page) |
+| USB-C mode (class / Overbridge, with the warning) | `cmd usbmode=`; `ws:status` `usbMode` | ✅ |
+| Display: screensaver, brightness | `cmd screensaver= brightness=`; `ws:status` | ✅ |
+| Wi-Fi: status, on/off, scan, join (follows the restart), forget | `/wifi/status`, `/wifi/scan`, `POST /wifi/join|forget|power` | ✅ (following the Pi to a new address after the join: ⬜) |
+| Access: gate, devices, forget this device, forget every device | `/pair/status`; `POST /pair/forget`, `/pair/revoke` | ✅ |
+| MIDI bridge: state, token, on/off, OS upgrades, drive writes | `ws:status` `midibridge`; `GET /midibridge`, `POST /midibridge/set` | ✅ |
+| Storage: volumes, eject, bench, SD speed test, sample library | `ws:status` `stor`, `sdtest`, `library`; `cmd stor= sdtest=` | 🔶 (the storage bench ⬜) |
+| About: version, commit, build, Circle, address, link | `ws:status` | ✅ |
 
 ## Not carried over, or not in the old page either
 

@@ -4,7 +4,7 @@
 import { computed, useId } from "vue";
 
 const props = withDefaults(
-  defineProps<{ label: string; modelValue: number; min?: number; max?: number; step?: number; unit?: string; vertical?: boolean; hideLabel?: boolean; format?: (v: number) => string }>(),
+  defineProps<{ label: string; modelValue: number; min?: number; max?: number; step?: number; unit?: string; vertical?: boolean; hideLabel?: boolean; disabled?: boolean; format?: (v: number) => string }>(),
   { min: 0, max: 127, step: 1, unit: "", vertical: false, hideLabel: false, format: undefined },
 );
 const emit = defineEmits<{ "update:modelValue": [number]; commit: [number] }>();
@@ -22,6 +22,7 @@ const text = computed(() => (props.format ? props.format(props.modelValue) : `${
       :max="max"
       :step="step"
       :value="modelValue"
+      :disabled="disabled"
       :aria-valuetext="`${label} ${text}`"
       @input="emit('update:modelValue', Number(($event.target as HTMLInputElement).value))"
       @change="emit('commit', Number(($event.target as HTMLInputElement).value))"

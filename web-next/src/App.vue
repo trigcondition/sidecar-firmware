@@ -5,6 +5,7 @@
 import { computed } from "vue";
 import Logo from "./components/Logo.vue";
 import SignalTide from "./components/SignalTide.vue";
+import ConfirmDialog from "./ui/ConfirmDialog.vue";
 import { routes } from "./router";
 import { provideSidecar } from "./lib/useSidecar";
 import { usePrefs } from "./lib/usePrefs";
@@ -48,6 +49,7 @@ const powerWarn = computed(() => {
   <main id="main">
     <router-view />
   </main>
+  <ConfirmDialog />
 </template>
 
 <style scoped>
