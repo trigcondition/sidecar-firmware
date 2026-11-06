@@ -142,6 +142,15 @@ CORE_COLD void mfx_enc(int e, int d, bool func) {
   }
 }
 
+// 0.5.0 (EDIT): the target mfx_enc's turn of e edits now, as its mod::manual_knob names it (0 none)
+CORE_COLD uint16_t mfx_enc_tid(int e) {
+  if (mp.eq) return e < ins::kEqParams ? mod::tid(mod::kIns, master::kEqChain, 8 + e) : e == 7 ? mod::tid(mod::kMfx, 0, 0) : 0;
+  const int ch = master::chain(mp.slot), s = master::slot(mp.slot), t = ins::control.type[ch][s];
+  if (e < 4) return t ? mod::tid(mod::kIns, ch, s * 4 + e) : 0;
+  if (e == 6 && master::send_type(t)) return mod::tid(mod::kMfx, 0, 1 + mp.slot);
+  return 0;
+}
+
 CORE_COLD bool mfx_key(int code) {
   if (code == 0x41 && !mp.eq) return mp.eq = true, mp.touched = -1, true;    // RIGHT: the EQ view
   if ((code == 0x40 || code == 0x45) && mp.eq) return mp.eq = false, mp.touched = -1, true;   // LEFT, NO: back
@@ -161,7 +170,8 @@ CORE_COLD bool mfx_shown() {
 
 }  // namespace
 
-UI_ROM const ExtraPage kMasterPage = {"MASTER", mfx_shown, mfx_draw, mfx_enc, mfx_key, 0xFF, false, nullptr, nullptr, nullptr};
+UI_ROM const ExtraPage kMasterPage = {"MASTER", mfx_shown, mfx_draw, mfx_enc, mfx_key, 0xFF, false, nullptr, nullptr, nullptr,
+                                      false, nullptr, mfx_enc_tid};
 
 #if CORE_UI_TOOLS
 void mfx_page_set(int slot, bool eq) { mp.slot = slot, mp.eq = eq, mp.touched = -1; }   // tests

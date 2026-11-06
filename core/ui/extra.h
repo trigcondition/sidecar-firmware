@@ -29,7 +29,18 @@ struct ExtraPage {
   // kLed*), or false: stock (null: never)
   bool (*leds_now)(uint8_t c[16]);
   bool off_ring;   // UX review R3: not on the LEFT / RIGHT ring (in the page list only while it is the page shown)
+  // 0.5.0 (spec-050 2.6): the release of a key whose press `key` took (true), to the page that took it, also after the
+  // page changed; a hello or the page closing releases every key still held (the Rytm's releases are lost with the
+  // link). Null: releases dropped, as before (aggregate initialisation leaves it null on the other pages)
+  bool (*key_up)(int code);
+  // 0.5.0 (spec-050 2.6, EDIT): the modulation target (core/mod/target.h Tid) encoder e edits now, 0 none: with a scene
+  // key held and the scenes' EDIT on, a turn of it locks that target into the scene instead of editing it. Null: the
+  // page locks nothing (its trig keys stay its own)
+  uint16_t (*enc_tid)(int e);
 };
+#if CORE_UI_TOOLS
+void extra_test_page(const ExtraPage* p);   // tests: one more page at the end of the order (null: none)
+#endif
 // UX review R3 / N3 (page_menu.cpp): MENU (YES on SIDECAR: every page with its shortcut) and KEYS (every combo; also
 // while UP is held alone on the stock screen: rui1044's 49 1 4)
 extern const ExtraPage kMenuPage, kKeysPage, kWebUiPage;   // WEB UI: the MENU's row (remote_webui)
@@ -135,6 +146,11 @@ bool remote_play_take(PlayInput* in);   // false: nothing since the last call
 extern const ExtraPage kRecPage;
 // ---- the LFO page (page_lfo.cpp, core/lfo.h): first of the pages drawn by code (LFO, REC, SCOPE)
 extern const ExtraPage kLfoPage;
+// ---- the MORPH page (page_morph.cpp, core/mod/scene.h, spec-050 2.6): the scenes, A / B, the fader, a scene's locks
+extern const ExtraPage kMorphPage;
+void morph_page_reset();   // the page's own state (holds, the question) cleared (tests)
+int morph_page_held();     // the scene key held on it (0..11), -1 none
+void morph_value_text(uint16_t tid, uint16_t v, char* b, int cap);   // a lock's value (x 128) as the page shows it
 #if CORE_POLY
 extern const ExtraPage kSeqPage;   // the Sidecar sequencer's page (page_seq.cpp, core/seq/seq.h)
 // fix1028: NOTE EDIT's roll (page_seq.cpp) gives each pitch its lane and, when the page has more pitches than lanes

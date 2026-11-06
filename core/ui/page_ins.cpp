@@ -316,6 +316,16 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
   }
 }
 
+// 0.5.0 (EDIT): the target ins_enc's turn of e edits now, as its mod::manual_knob names it (0 none)
+CORE_COLD uint16_t ins_enc_tid(int e) {
+  if (ip.eq) return e < ins::kEqParams ? mod::tid(mod::kIns, chain_now(), 8 + e) : 0;
+  if (ip.out) return e >= 1 && e <= 3 ? mod::tid(mod::kOut, voice_now(), e - 1) : 0;
+  int ch = chain_now();
+  if (e < 4) return ins::control.type[ch][ip.slot] ? mod::tid(mod::kIns, ch, ip.slot * 4 + e) : 0;
+  if (e == 7 && !ip.bus) return mod::tid(mod::kIsnd, ch, ip.busel);
+  return 0;
+}
+
 CORE_COLD bool ins_key(int code) {
   if (code == 0x41 && !ip.eq) {   // ins1112 RIGHT: the EQ view (RIGHT again is the page list's, as always)
     ip.eq = true, ip.out = false, ip.touched = -1;
@@ -360,7 +370,8 @@ CORE_COLD void ins_open_out() {
   ip.bus = false, ip.out = true, ip.eq = false, ip.track = -1, ip.manual = false, ip.touched = -1;
 }
 
-UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_key, 0xFF, false, nullptr, nullptr, nullptr};
+UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_key, 0xFF, false, nullptr, nullptr, nullptr,
+                                   false, nullptr, ins_enc_tid};
 
 #if CORE_UI_TOOLS
 void ins_page_set(bool bus, int slot, int busel, int track, bool out, bool eq) {   // tests and the renderer

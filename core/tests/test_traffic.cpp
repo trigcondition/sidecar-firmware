@@ -313,7 +313,7 @@ int main() {
     stopped(0.1);
     CHECK(ui::remote_display_request(&pg) == g0 + 8 && pg == 6 && ui::remote_page_title());
     ui::remote_display_owns(0);
-    from_rytm(msg(0x49, {1, 14}));   // past T13: ignored
+    from_rytm(msg(0x49, {1, 15}));   // past T14 (0.5.0: T14 MORPH): ignored
     CHECK(ui::remote_display_request(&pg) == g0 + 8 && pg == 6);
     printf("display pages: UP + T5 the touchscreen's, T9 SCOPE / T10 SIDECAR / T6 T12 T13 SONG PROJECT POOL on the Rytm "
            "(opened, switched; a touchscreen's own) ok\n");
