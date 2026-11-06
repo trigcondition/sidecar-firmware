@@ -97,6 +97,20 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
       return json(res, { ok: true });
     }
     if (p === "/um") return json(res, dev.um());
+    if (p === "/pool") { const k = url.searchParams.get("l") ?? "smp", b = +(url.searchParams.get("b") ?? 0) & 7; return json(res, dev.poolJson(k, b, url.searchParams.get("u") === "1")); }
+    if (p === "/bundle/projects") return json(res, dev.projects);
+    if (p === "/bundle/list") return json(res, url.searchParams.get("src") === "card" ? dev.bundles : []);
+    if (p === "/bundle/trash") return json(res, dev.trash);
+    if (p === "/bundle/status") return json(res, dev.bundleStatus());
+    if (p.startsWith("/bundle/") && req.method === "POST") {
+      const f = await body(req);
+      if (p === "/bundle/export") { const pr = dev.projects.find((x) => x.key === f.get("key")); if (!pr) return json(res, { ok: false, error: "no such project" }); Object.assign(dev.job, { phase: "COLLECT", done: 0, total: pr.bytes, startedAt: Date.now(), key: pr.rytm.replace(/ /g, "_") }); return json(res, { ok: true }); }
+      if (p === "/bundle/cancel") { dev.job.phase = "IDLE"; return json(res, { ok: true }); }
+      if (p === "/bundle/delete") { const i = dev.projects.findIndex((x) => x.key === f.get("key") && f.get("confirm") === x.key && !x.current); if (i < 0) return json(res, { ok: false, error: "refused" }); const [pr] = dev.projects.splice(i, 1); dev.trash.unshift({ id: Date.now() % 1000, key: pr.key, name: pr.rytm, why: "deleted", items: pr.files, date: new Date().toISOString() }); return json(res, { ok: true }); }
+      if (p === "/bundle/remove") { dev.bundles = dev.bundles.filter((b) => `/Bundles/${b.name}` !== f.get("path")); return json(res, { ok: true }); }
+      if (p === "/bundle/trash/restore") { const i = dev.trash.findIndex((t) => String(t.id) === f.get("id")); if (i < 0) return json(res, { ok: false, error: "no such entry" }); const [t] = dev.trash.splice(i, 1); dev.projects.push({ key: t.key, rytm: t.name, files: t.items, bytes: 10_000_000, used: 0, current: 0, imported: 0 }); return json(res, { ok: true }); }
+      if (p === "/bundle/trash/remove") { dev.trash = dev.trash.filter((t) => String(t.id) !== f.get("id")); return json(res, { ok: true }); }
+    }
     // the card (mock/fs.mjs; fsweb.h's answers)
     const text = (t, status = 200) => { res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" }); res.end(t); };
     const qp = url.searchParams;

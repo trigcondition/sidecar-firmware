@@ -49,6 +49,21 @@ export function createDevice() {
       ], peq: [0, 0, 64, 64], rep: 1, onmain: 0 },
     },
     fs: createFs(),
+    // the POOL (poolweb.cpp's /pool): per list, banks of rows [row, type, name, state, path, used, users, size, members, ch, ram]
+    pool: {
+      smp: { 0: [[1, "sample", "kick 909.wav", "EXACT", "kick 909.wav", 12, 2, 88000, 0, 1, 0], [2, "sample", "snare tape.wav", "CHANGED", "snare tape.wav", 4, 1, 120000, 0, 2, 0], [3, "sample", "gone.wav", "MISSING", "Drums/gone.wav", 0, 0, 0, 0, 0, 0], [4, "sample", "vox chop.wav", "EXACT", "vox chop.wav", 0, 0, 410000, 0, 2, 1]] },
+      wt: { 0: [[1, "sample", "basic shapes.wav", "EXACT", "WAVETABLES/basic shapes.wav", 3, 1, 262144, 0, 1, 1]] },
+      inst: { 0: [[1, "instrument", "Rhodes.sfz", "EXACT", "MULTISAMPLE/Rhodes.sfz", 2, 1, 4_200_000, 24, 2, 0]] },
+    },
+    poolUndo: [],
+    projects: [
+      { key: "@003", rytm: "SHARED SET", files: 184, bytes: 210_000_000, used: 9, date: "2026-11-06T18:40", current: 1, imported: 0 },
+      { key: "@001", rytm: "AR PERC PATCH", files: 96, bytes: 88_000_000, used: 4, date: "2026-11-02T20:11", current: 0, imported: 0 },
+      { key: "@007", rytm: "LIVE 0611", files: 41, bytes: 30_500_000, used: 2, date: "2026-10-30T23:02", current: 0, imported: 1 },
+    ],
+    bundles: [{ name: "AR_PERC_PATCH_2026-11-02.sidecar.zip", size: 88_200_000, date: "2026-11-02 20:15" }],
+    trash: [{ id: 2, key: "@005", name: "OLD SKETCH", why: "deleted", items: 22, date: "2026-10-28T12:00" }],
+    job: { phase: "IDLE", done: 0, total: 0, waiting: "", startedAt: 0, key: "" },
     // the recorder (recorder.h / rec_pi.cpp's /status "rec"), playback (rec_play.h) and the samplers (core/samp)
     rec: { state: 0, arm: false, ready: true, frames: 0, startedAt: 0, take: "jam_2026-11-06_1840", prefix: "", vol: "SD", volOk: 1, freeKnown: 1, freeMB: 28120, totalMB: 30436,
       bits: 24, ch: [0, 3, 4], speedKBps: 21_000, speedMeasured: 1, drops: 0, silence: 0, outShort: 0, error: "", abandoned: 0, writes: 0, cardKBps: 0, needKBps: 0, worstWriteMs: 0, ringMs: 4000, ringMax: 0, ringSlots: 64, bytes: 0 },
@@ -171,6 +186,7 @@ export function createDevice() {
     else if ((m = /^seq=swing:(\d+):(\d+)$/.exec(c))) { d.seq.swing = +m[2]; d.seq.gen++; }
     else if (/^ins=/i.test(c)) d.mixer(c);
     else if (/^(rec|play|samp|asamp)=/.test(c)) d.recCmd(c);
+    else if (/^pool=/.test(c)) d.poolCmd(c);
     else if ((m = /^lfo=([1-8]):off$/.exec(c))) d.lfo.l[+m[1] - 1].tgt = "OFF";
     else if ((m = /^lfo=([1-8]):tgt:(\w+)$/.exec(c))) d.lfo.l[+m[1] - 1].tgt = m[2].toUpperCase();
     else if ((m = /^lfo=([1-8]):(par|wav|sync|trig|rate|dep):(-?\d+)$/.exec(c))) d.lfo.l[+m[1] - 1][m[2]] = +m[3];
@@ -254,6 +270,60 @@ export function createDevice() {
     else if (c === "samp=stop" && d.samp.state === 2) Object.assign(d.samp, { state: 5, ms: Date.now() - d.samp.startedAt, bpm: 120, wav: "SHARED SET/samp_001.wav", nSlices: 8 });
     else if (c === "asamp=start") Object.assign(d.asamp, { state: 1, done: 0, total: 15, startedAt: Date.now(), sfz: "", error: "" });
     else if (c === "asamp=cancel" && d.asamp.state === 1) d.asamp.state = 5;
+  };
+
+  // ---- the POOL: pool=<k>:accept|replace|unload|add|fill|undo|shown:..., each answered in the log as pools.cpp does
+  const BANKS = "ABCDEFGH";
+  const bankRows = (k, b) => (d.pool[k][b] ??= []);
+  const find = (k, code) => { const b = BANKS.indexOf(code[0]), r = +code.slice(1); return { b, r, rows: bankRows(k, b), i: bankRows(k, b).findIndex((x) => x[0] === r) }; };
+  d.poolJson = (k, b, unused) => {
+    const rows = bankRows(k, b);
+    if (unused) return { unused: rows.filter((x) => !x[5] && !x[6]).map((x) => (b << 7) | x[0]), warn: "NOT SEEN PLAYING - A RYTM LOCK MAY STILL USE IT" };
+    const all = Object.values(d.pool[k]).flat();
+    return { st: { project: "SHARED SET", ready: true, [k]: { n: all.length, locked: 0, ro: 0, why: "" } }, ram: { budget: 256 << 20, used: all.reduce((a, x) => a + x[7], 0), tables: 3 << 20, entries: all.length, pct: 7 }, bank: { bank: b, locked: 0, rows } };
+  };
+  d.poolCmd = (c) => {
+    let m;
+    const say = (k, t) => d.addLog(`pool: ${k}${t}`);
+    if ((m = /^pool=(\w+):shown:([A-H])$/.exec(c))) return;
+    if ((m = /^pool=(\w+):undo$/.exec(c))) { const u = d.poolUndo.pop(); if (u) { d.pool[u.k][u.b] = u.rows; say(m[1], ": undone"); } else say(m[1], ": nothing to undo: EMPTY"); return; }
+    const keep = (k, b) => d.poolUndo.push({ k, b, rows: JSON.parse(JSON.stringify(bankRows(k, b))) });
+    if ((m = /^pool=(\w+):accept:([A-H]\d{3})$/.exec(c))) { const f = find(m[1], m[2]); if (f.i >= 0) { keep(m[1], f.b); f.rows[f.i][3] = "EXACT"; say(m[1], ` ${m[2]} ${f.rows[f.i][2]}: SET`); } else say(m[1], ` ${m[2]} -: NO SUCH ROW`); return; }
+    if ((m = /^pool=(\w+):replace:([A-H]\d{3}):(.+?)(:yes)?$/.exec(c))) {
+      const f = find(m[1], m[2]), n = m[3].split("/").pop();
+      if (f.i < 0) return say(m[1], ` ${m[2]} -: NO SUCH ROW`);
+      if ((f.rows[f.i][5] || f.rows[f.i][6]) && !m[4]) return say(m[1], ` ${m[2]} ${n}: IN USE: REPLACE?`);
+      keep(m[1], f.b);
+      Object.assign(f.rows[f.i], { 2: n, 3: "EXACT", 4: m[3].replace(/^\/Samples\//, "") });
+      return say(m[1], ` ${m[2]} ${n}: SET`);
+    }
+    if ((m = /^pool=(\w+):unload:(.+)$/.exec(c))) {
+      const codes = m[2].split(",").map((x) => x.split(":")[0]);
+      let n = 0;
+      for (const code of codes) { const f = find(m[1], code); if (f.i >= 0) { if (!n) keep(m[1], f.b); f.rows.splice(f.i, 1); n++; } }
+      return say(m[1], `: ${n} unloaded`);
+    }
+    if ((m = /^pool=(\w+):add:([A-H]):(.+)$/.exec(c))) {
+      const b = BANKS.indexOf(m[2]), rows = bankRows(m[1], b), n = m[3].split("/").pop();
+      if (Object.values(d.pool[m[1]]).flat().some((x) => x[2] === n)) return say(m[1], ` ${m[2]}001 ${n}: IN POOL`);
+      let r = 1;
+      while (rows.some((x) => x[0] === r)) r++;
+      keep(m[1], b);
+      rows.push([r, m[1] === "inst" ? "instrument" : "sample", n, "EXACT", m[3].replace(/^\/Samples\//, ""), 0, 0, 100000, 0, 0, 0]);
+      rows.sort((a, x) => a[0] - x[0]);
+      return say(m[1], ` ${m[2]}${String(r).padStart(3, "0")} ${n}: SET`);
+    }
+    if ((m = /^pool=(\w+):fill:([A-H]):(.+)$/.exec(c))) return say(m[1], `: bank ${m[2]} filled from ${m[3]}: 0 added`);
+  };
+  // ---- bundles: an export to the card runs ~6 s through its phases
+  d.bundleStatus = () => {
+    const j = d.job;
+    if (j.phase !== "IDLE" && j.phase !== "DONE" && j.phase !== "FAILED") {
+      const t = (Date.now() - j.startedAt) / 6000, ph = ["COLLECT", "HASH", "WRITE", "COMMIT"];
+      if (t >= 1) { j.phase = "DONE"; j.done = j.total; d.bundles.unshift({ name: `${j.key}_${new Date().toISOString().slice(0, 10)}.sidecar.zip`, size: j.total, date: new Date().toISOString().slice(0, 16).replace("T", " ") }); }
+      else Object.assign(j, { phase: ph[Math.floor(t * 4)], done: Math.floor(t * j.total) });
+    }
+    return { job: j.phase === "IDLE" ? "" : "export", phase: j.phase, done: j.done, total: j.total, key: j.key, waiting: j.waiting, seq: 1 };
   };
 
   d.um = () => {

@@ -103,13 +103,13 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| Pool: list, bank, RAM bar, rows, accept / replace / unload / select unused / undo | `GET /pool`; `cmd pool=...`; the answer from `ws:log` | ⬜ |
+| Pool: list, bank, RAM bar, rows, accept / replace / unload / select unused / undo | `GET /pool`; `cmd pool=...`; the answer from `ws:log` | ✅ (replace takes a typed path; the old page's mini file picker ⬜) |
 | JUNO / FM pool: add or set a preset from the index | `GET /presets`; `cmd preset=...` | ⬜ |
-| Files: browse, sort, hidden, download, new folder, rename, delete, upload files and folders (48 KB chunks, CRC-32, resume) | `/fs/ls`, `/fs/get`, `/fs/mkdir`, `/fs/mv`, `/fs/del`, `/fs/put` | ⬜ |
-| +SMP / +WT / +INST into a pool bank, fill bank | `cmd pool=<k>:add|fill:...` | ⬜ |
-| Projects: table, export (browser via the service worker / card), progress, cancel, delete, Rytm file | `/bundle/*`, `/bundle-sw.js` | ⬜ |
-| Bundles on the card and USB sticks: import (plan, slot, skip machines), delete, eject | `/bundle/*`, `/usb/*` | ⬜ |
-| Trash: restore, remove, empty | `/bundle/trash*`, `/bundle/prjslot` | ⬜ |
+| Files: browse, sort, hidden, download, new folder, rename, delete, upload files and folders (48 KB chunks, CRC-32, resume) | `/fs/ls`, `/fs/get`, `/fs/mkdir`, `/fs/mv`, `/fs/del`, `/fs/put` | ✅ (drag and drop ⬜) |
+| +SMP / +WT / +INST into a pool bank, fill bank | `cmd pool=<k>:add|fill:...` | ✅ |
+| Projects: table, export (browser via the service worker / card), progress, cancel, delete, Rytm file | `/bundle/*`, `/bundle-sw.js` | 🔶 (table, export to the card, progress, cancel, delete; to the browser and the Rytm file ⬜) |
+| Bundles on the card and USB sticks: import (plan, slot, skip machines), delete, eject | `/bundle/*`, `/usb/*` | 🔶 (the card's list, delete; import and sticks ⬜) |
+| Trash: restore, remove, empty | `/bundle/trash*`, `/bundle/prjslot` | 🔶 (restore where it was, remove; to another slot, empty ⬜) |
 
 ## Settings
 
