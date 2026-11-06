@@ -11,8 +11,9 @@
 namespace voice_pi {
 
 // ~10 times a second while the VOICE page shows: o from the newest data; pat the newest decoded Rytm pattern (null
-// none), its number. o->gen changes only when something to draw changed.
-void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern);
+// none), its number. o->gen changes only when something to draw changed. scope false (the web's "voices" topic): no
+// scope and level (the input tap is the display's: reading it here would steal its entries and peaks).
+void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern, bool scope = true);
 // A HOME tile's track (0..11) shown on VOICE instead of the Rytm's selected track, until the Rytm selects another one
 // (-1: follow the Rytm). Core 0 (the display's command, voicepick=T).
 void Pick(int track);

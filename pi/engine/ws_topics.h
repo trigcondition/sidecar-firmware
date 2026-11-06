@@ -18,16 +18,22 @@ inline void peak (wsproto::Writer &w, float p)
 	w.s (b);
 }
 
-// {"master":[L,R],"strips":[V1..V8, B1, B2, B3, M]}: a voice's strip is max(L, R) of its pair; the buses have no meter
-// source yet (null); the master is the whole output's peak (Output::TakePeak gives one value: L = R)
-inline size_t levels (const float (*voices)[2], float master, char *pOut, size_t max)
+// {"master":[L,R],"strips":[V1..V8, B1, B2, B3, M]}: a voice's strip is the largest of its OUT pair (L, R) and its own
+// track (trk, 0 when the voice is not on a track); the buses' are bus (null: none, a build without send FX); the
+// master is the whole output's peak (Output::TakePeak gives one value: L = R)
+inline size_t levels (const float (*voices)[2], const float *trk, const float *bus, float master, char *pOut, size_t max)
 {
 	wsproto::Writer w (pOut, max);
 	w.s ("{\"master\":[");
 	peak (w, master); w.s (","); peak (w, master);
 	w.s ("],\"strips\":[");
-	for (int v = 0; v < 8; v++) { peak (w, voices[v][0] > voices[v][1] ? voices[v][0] : voices[v][1]); w.s (","); }
-	w.s ("null,null,null,");
+	for (int v = 0; v < 8; v++)
+	{
+		float p = voices[v][0] > voices[v][1] ? voices[v][0] : voices[v][1];
+		if (trk && trk[v] > p) p = trk[v];
+		peak (w, p); w.s (",");
+	}
+	for (int b = 0; b < 3; b++) { if (bus) peak (w, bus[b]); else w.s ("null"); w.s (","); }
 	peak (w, master);
 	w.s ("]}");
 	return w.ok ? w.n : 0;

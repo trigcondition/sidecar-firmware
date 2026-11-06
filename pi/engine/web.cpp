@@ -32,7 +32,11 @@
 #include "web_cmd.h"		// the commands the web may send (/cmd and /ws)
 #include "web_ws.h"		// /ws (docs/web-ws.md)
 #include "ws_frame.h"		// its handshake
+#include "webnext_path.h"	// /next: the new app from the card
+#include "voiceview_json.h"	// the voices topic
+#include "voice_pi.h"
 #include "ws_topics.h"		// its levels and log payloads
+#include "sendfx_pi.h"		// the buses' meters
 #include "shared.h"		// g_Output, g_PeakFan: the levels
 #if SIDECAR_SEQED
 #include "seqed_pi.h"		// the sequencer view (the touch editor's)
@@ -418,7 +422,38 @@ static boolean Open (const char *pPath)
 	static const char *const kOpen[] = {"/", "/index.html", "/bundle-sw.js", "/health", "/status", "/log", "/pair",
 					    "/pair/status", "/pair/resume", "/pair/show"};
 	for (unsigned i = 0; i < sizeof kOpen / sizeof kOpen[0]; i++) if (strcmp (pPath, kOpen[i]) == 0) return TRUE;
-	return FALSE;
+	return strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0;	// the new app's files (webnext_path.h): no data in them
+}
+
+// GET /next/<file>: the new web app from the card (webnext_path.h), the .gz sibling when there is one. false: no such
+// file (or not one of the app's names): 404; too big for the buffer: 500 and a log line
+static THTTPStatus NextFile (const char *pPath, u8 *pBuffer, unsigned *pLength, const char **ppContentType)
+{
+	char sd[160];
+	if (!webnext::path (pPath, sd, sizeof sd - 4)) return HTTPNotFound;
+	size_t n = strlen (sd);
+	strcpy (sd + n, ".gz");
+	bool bGz = true;
+	FIL f;
+	if (f_open (&f, sd, FA_READ) != FR_OK)
+	{
+		sd[n] = 0;
+		bGz = false;
+		if (f_open (&f, sd, FA_READ) != FR_OK) return HTTPNotFound;
+	}
+	FSIZE_t nSize = f_size (&f);
+	UINT got = 0;
+	bool bOK = nSize <= *pLength && f_read (&f, pBuffer, (UINT) nSize, &got) == FR_OK && got == nSize;
+	f_close (&f);
+	if (!bOK)
+	{
+		CLogger::Get ()->Write (From, LogWarning, "next: %s not served (%u bytes)", sd + 4, (unsigned) nSize);
+		return HTTPInternalServerError;
+	}
+	sd[n] = 0;					// (the type from the name without .gz)
+	*pLength = got;
+	*ppContentType = webnext::headers (sd, bGz, webnext::immutable (pPath));
+	return HTTPOK;
 }
 
 // The refusal's body: "<code> <message>" for the endpoints whose client reads text, JSON for the rest. Decided here,
@@ -531,9 +566,14 @@ size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size
 		g_Output.TakeVoicePeaks (Pk);			// into every reader's share, then this connection's own
 		g_PeakFan.feed_voices (Pk);
 		g_PeakFan.feed_master (g_Output.TakePeak ());
+		float X[peakfan::Fan::kExtra];
+		g_Output.TakeTrkPeaks (X);			// each voice on its own track (only the web reads these)
+		sendfx_pi::TakeBusPeaks (X + 8);		// B1..B3
+		g_PeakFan.feed_extra (X, 0, peakfan::Fan::kExtra);
 		peakfan::Reader r = pThis->m_nWsSlot == 0 ? peakfan::kWeb : peakfan::kWeb2;
 		g_PeakFan.take_voices (r, Pk);
-		return wstopics::levels (Pk, g_PeakFan.take_master (r), pOut, nMax);
+		g_PeakFan.take_extra (r, X);
+		return wstopics::levels (Pk, X, X + 8, g_PeakFan.take_master (r), pOut, nMax);
 	}
 #if SIDECAR_SEQED
 	case wsproto::kSeq:
@@ -549,6 +589,13 @@ size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size
 				     s_pView->valid ? s_pView->pattern : -1, s_pView->bpm10, pOut, nMax);
 	}
 #endif
+	case wsproto::kVoices:
+	{
+		static sidecar_voice_view_t *s_pVoice = new sidecar_voice_view_t;	// (core 0; ~3 KB, not on the stack)
+		if (s_pVoice == 0) return 0;
+		voice_pi::Fill (s_pVoice, 0, -1, false);	// no scope: the display's tap is its own; no p-locks (the display's dump)
+		return voicejson::view (*s_pVoice, pOut, nMax);
+	}
 	case wsproto::kLog:
 	{
 		static const unsigned kChunk = 8192;		// the log bytes in one push
@@ -596,7 +643,7 @@ const char *CWebServer::WsCommand (void *pParam, const char *pCmd)
 static boolean WsStillOn (void) { return paircode_pi::WebOn (); }
 
 // the topics this build serves (the sequencer's only with core/seq in the tree)
-static const unsigned WsTopics = 1u << wsproto::kLevels | 1u << wsproto::kLog
+static const unsigned WsTopics = 1u << wsproto::kLevels | 1u << wsproto::kLog | 1u << wsproto::kVoices
 #if SIDECAR_SEQED
 				 | 1u << wsproto::kSeq | 1u << wsproto::kSeqPos
 #endif
@@ -710,6 +757,10 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		*pLength = n;
 		*ppContentType = bRaw ? "text/html; charset=utf-8\r\nCache-Control: no-store"
 				      : "text/html; charset=utf-8\r\nContent-Encoding: gzip\r\nVary: Accept-Encoding\r\nCache-Control: no-cache";
+	}
+	else if (strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0)
+	{
+		Status = NextFile (pPath, pBuffer, pLength, ppContentType);
 	}
 	else if (strcmp (pPath, "/health") == 0)
 	{

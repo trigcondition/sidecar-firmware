@@ -33,8 +33,8 @@ static const unsigned kMaxBad = 10;		// malformed messages before the connection
 static const unsigned kMaxAuthFail = 5;		// wrong tokens before the connection is closed (1008)
 
 // The topics (docs/web-ws.md "Topics"). A build serves the ones its Host's mask names (the hello lists them).
-enum Topic { kStatus, kLevels, kSeq, kSeqPos, kLog, kTopics };
-static const char *const kTopicName[kTopics] = {"status", "levels", "seq", "seqpos", "log"};
+enum Topic { kStatus, kLevels, kSeq, kSeqPos, kLog, kVoices, kTopics };
+static const char *const kTopicName[kTopics] = {"status", "levels", "seq", "seqpos", "log", "voices"};
 struct Rate { unsigned min, def, gap; };	// ms: the fastest a client may ask, the default, the longest silence for an unchanged topic
 static const Rate kRate[kTopics] = {
 	{kMinMs, kDefaultMs, kMaxMs},	// status: /status
@@ -42,10 +42,11 @@ static const Rate kRate[kTopics] = {
 	{100, 250, 10000},		// seq: the sequencer view (pushed when it changed)
 	{33, 50, 1000},			// seqpos: the play head
 	{250, 500, 10000},		// log: the console log's new bytes (as GET /log)
+	{100, 200, 10000},		// voices: the touchscreen's VOICE page (pushed when it changed)
 };
 // Names the protocol reserves for later topics: a sub to one of them is answered as "later", not "unknown", so a
 // client can tell a newer server from a typo
-static const char *const kLater[] = {"usbMode", "voices", "scenes"};
+static const char *const kLater[] = {"usbMode", "scenes"};
 
 struct Host
 {

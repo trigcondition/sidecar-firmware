@@ -8,6 +8,8 @@
 #include "../seqview_json.h"
 #include "../peak_fan.h"
 #include "../ws_topics.h"
+#include "../voiceview_json.h"
+#include "../webnext_path.h"
 
 #include <string>
 #include <vector>
@@ -275,8 +277,8 @@ static void test_session ()
 		CHECK (r.msg ("{\"type\":\"nope\",\"id\":2}") == 0 && has (r.last (), "\"code\":404"));
 		CHECK (r.msg ("{\"type\":\"ping\"}") == 0 && has (r.last (), "\"type\":\"error\""));
 		// sub: status now, later names, unknown names; ms clamped
-		CHECK (r.msg ("{\"type\":\"sub\",\"id\":3,\"payload\":{\"topics\":[\"status\",\"voices\",\"zzz\"],\"ms\":10}}") == 0);
-		CHECK (has (r.last (), "\"topics\":[\"status\"],\"later\":[\"voices\"],\"unknown\":[\"zzz\"],\"ms\":250"));
+		CHECK (r.msg ("{\"type\":\"sub\",\"id\":3,\"payload\":{\"topics\":[\"status\",\"scenes\",\"zzz\"],\"ms\":10}}") == 0);
+		CHECK (has (r.last (), "\"topics\":[\"status\"],\"later\":[\"scenes\"],\"unknown\":[\"zzz\"],\"ms\":250"));
 		CHECK (r.s->subscribed (wsproto::kStatus) && r.s->interval (wsproto::kStatus) == 250);
 		CHECK (wsjson::valid_object (r.last ().data (), r.last ().size ()));
 		size_t n0 = r.f.sent.size ();
@@ -359,7 +361,7 @@ static void test_session ()
 	}
 	{	// topics: only the served ones in the hello, the rest "later"; each topic's own range and silence gap
 		Rig r (8192, 1u << wsproto::kLevels);
-		CHECK (has (r.f.sent[0], "\"topics\":[\"status\",\"levels\"]") && has (r.f.sent[0], "\"later\":[\"seq\",\"seqpos\",\"log\",\"usbMode\""));
+		CHECK (has (r.f.sent[0], "\"topics\":[\"status\",\"levels\"]") && has (r.f.sent[0], "\"later\":[\"seq\",\"seqpos\",\"log\",\"voices\",\"usbMode\""));
 		CHECK (has (r.f.sent[0], "\"rates\":{\"status\":[250,1000],\"levels\":[33,40]}"));
 		CHECK (wsjson::valid_object (r.f.sent[0].data (), r.f.sent[0].size ()));
 		r.msg ("{\"type\":\"sub\",\"id\":1,\"payload\":{\"topics\":[\"levels\",\"seq\"],\"ms\":1}}");
@@ -471,15 +473,85 @@ static void test_topics ()
 
 	// levels and log payloads
 	float vp[8][2] = {{0.1f, 0.2f}, {1.5f, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0.0005f, 0}};
-	n = wstopics::levels (vp, 0.625f, buf, 1000);
+	n = wstopics::levels (vp, nullptr, nullptr, 0.625f, buf, 1000);
 	CHECK (n > 0 && wsjson::valid_object (buf, n));
 	CHECK (std::string (buf) == "{\"master\":[0.625,0.625],\"strips\":[0.200,1.000,0.000,0.000,0.000,0.000,0.000,0.001,null,null,null,0.625]}");
+	{
+		const float trk[8] = {0.5f, 0, 0.25f, 0, 0, 0, 0, 0}, bus[3] = {0.125f, 2.0f, 0};
+		n = wstopics::levels (vp, trk, bus, 0.625f, buf, 1000);
+		CHECK (std::string (buf) == "{\"master\":[0.625,0.625],\"strips\":[0.500,1.000,0.250,0.000,0.000,0.000,0.000,0.001,0.125,1.000,0.000,0.625]}");
+		peakfan::Fan *g = new peakfan::Fan;
+		const float x1[11] = {0.1f, 0, 0, 0, 0, 0, 0, 0, 0.3f, 0, 0}, x2[3] = {0.2f, 0, 0};
+		g->feed_extra (x1, 0, 11);
+		g->feed_extra (x2, 8, 3);
+		float o[11];
+		g->take_extra (peakfan::kWeb, o);
+		CHECK (o[0] == 0.1f && o[8] == 0.3f);
+		g->take_extra (peakfan::kWeb, o);
+		CHECK (o[0] == 0.0f && o[8] == 0.0f);
+		g->take_extra (peakfan::kWeb2, o);
+		CHECK (o[8] == 0.3f);			// the other connection's share is its own
+		delete g;
+	}
 	const char t[] = "a \"b\"\\\n\x01\xe9z";
 	n = wstopics::log (100, 109, true, t, sizeof t - 1, buf, 1000);
 	CHECK (n > 0 && wsjson::valid_object (buf, n));
 	CHECK (std::string (buf) == "{\"from\":100,\"to\":109,\"gap\":true,\"text\":\"a \\\"b\\\"\\\\\\n\\u0001?z\"}");
 	CHECK (wstopics::log (0, 5, false, "hello", 5, buf, 20) == 0);	// does not fit
 	delete[] buf;
+}
+
+
+static void test_voices_and_next ()
+{
+	char buf[4096];
+	sidecar_voice_view_t *v = new sidecar_voice_view_t;
+	memset (v, 0, sizeof *v);
+	size_t n = voicejson::view (*v, buf, sizeof buf);
+	CHECK (std::string (buf, n) == "{\"valid\":false}");
+	v->valid = 1; v->track = 2; v->machine = -1; v->sidecar = 1;
+	memcpy (v->name, "FM \"X\"         Z", 16);			// not terminated: 16 characters at most
+	for (int k = 0; k < 8; k++) v->val[k] = (unsigned char) (k * 10);
+	memcpy (v->label[0], "LEV", 4); memcpy (v->label[1], "TUNE!", 5);
+	v->pattern = 3; v->steps = 2; v->locks[1] = 4; v->trig[0] = 1;
+	v->mode = SVV_FM; v->fm_alg = 4; v->fm_fb = 7; v->fm_car = 5; v->fm_fb_src = -1; v->fm_col[0] = -2;
+	memcpy (v->fm_freq[0], "1.00", 5);
+	v->gen = 99;
+	n = voicejson::view (*v, buf, sizeof buf);
+	CHECK (n > 0 && wsjson::valid_object (buf, n));
+	CHECK (has (buf, "\"track\":2,\"machine\":-1,\"sidecar\":true,\"name\":\"FM \\\"X\\\"         Z\""));
+	CHECK (has (buf, "\"val\":[0,10,20,30,40,50,60,70],\"label\":[\"LEV\",\"TUNE!\",\"\""));
+	CHECK (has (buf, "\"pattern\":3,\"locks\":[0,4],\"trig\":[1,0],\"mode\":\"fm\",\"fm\":{\"name\":\"\",\"alg\":4,\"fb\":7"));
+	CHECK (has (buf, "\"col\":[-2,0,0,0,0,0]") && has (buf, "\"fbSrc\":-1") && has (buf, "\"freq\":[\"1.00\",\"\""));
+	CHECK (has (buf, "\"gen\":99}"));
+	v->mode = SVV_MULTI; v->ms_nz = 99; v->steps = 999;		// clamped
+	n = voicejson::view (*v, buf, sizeof buf);
+	CHECK (n > 0 && wsjson::valid_object (buf, n) && has (buf, "\"multi\":{\"inst\":\"\",\"ready\":false"));
+	v->mode = SVV_DAISY; v->dz_n = 2; v->dz_ratio[1] = 271;
+	n = voicejson::view (*v, buf, sizeof buf);
+	CHECK (has (buf, "\"daisy\":{\"model\":0,\"ratio\":[0,271],\"ring\":[0,0]}"));
+	CHECK (voicejson::view (*v, buf, 40) == 0);			// does not fit
+	delete v;
+
+	// /next from the card
+	char p[160];
+	CHECK (webnext::path ("/next", p, sizeof p) && std::string (p) == "SD:/.rytm/www-next/index.html");
+	CHECK (webnext::path ("/next/", p, sizeof p) && std::string (p) == "SD:/.rytm/www-next/index.html");
+	CHECK (webnext::path ("/next/assets/index-Ab_9.js", p, sizeof p) && std::string (p) == "SD:/.rytm/www-next/assets/index-Ab_9.js");
+	const char *bad[] = {"/nextx", "/nex", "/next/../x", "/next/a/../b", "/next/.hidden", "/next/a//b", "/next/a/", "/next//a",
+			     "/next/a b", "/next/a%2e", "/next/a?x=1", "/next/a\\b", "/fs/x", "/"};
+	for (const char *b : bad) CHECK (!webnext::path (b, p, sizeof p));
+	std::string longp = "/next/" + std::string (121, 'a');
+	CHECK (!webnext::path (longp.c_str (), p, sizeof p));
+	CHECK (!webnext::path ("/next/index.html", p, 20));		// does not fit the buffer
+	CHECK (std::string (webnext::type ("a/b.js")) == "text/javascript; charset=utf-8");
+	CHECK (std::string (webnext::type ("x.woff2")) == "font/woff2" && std::string (webnext::type ("x")) == "application/octet-stream");
+	CHECK (std::string (webnext::type ("x.exe")) == "application/octet-stream");
+	CHECK (webnext::immutable ("/next/assets/x.js") && !webnext::immutable ("/next/index.html"));
+	CHECK (std::string (webnext::headers ("a/index.html", false, false)) == "text/html; charset=utf-8\r\nCache-Control: no-cache");
+	CHECK (std::string (webnext::headers ("x.js", true, true)) == "text/javascript; charset=utf-8\r\nContent-Encoding: gzip\r\nVary: Accept-Encoding\r\nCache-Control: public, max-age=31536000, immutable");
+	CHECK (std::string (webnext::headers ("noext", false, true)) == "application/octet-stream\r\nCache-Control: public, max-age=31536000, immutable");
+	CHECK (std::string (webnext::headers ("x.exe", true, false)).rfind ("application/octet-stream\r\nContent-Encoding: gzip", 0) == 0);
 }
 
 int main ()
@@ -490,6 +562,7 @@ int main ()
 	test_session ();
 	test_cmd_policy ();
 	test_topics ();
+	test_voices_and_next ();
 	printf ("test_ws: OK\n");
 	return 0;
 }

@@ -31,9 +31,20 @@ public:
 	}
 	float take_master (Reader r) { float p = m_M[r]; m_M[r] = 0.0f; return p; }
 
+	// the web's extra meters: each voice's own track (Output::TakeTrkPeaks, 8) and the buses B1..B3
+	// (sendfx_pi::TakeBusPeaks, 3)
+	static const int kExtra = kVoices + 3;
+	void feed_extra (const float *pk, int at, int n)
+	{
+		for (int r = 0; r < kReaders; r++)
+			for (int i = 0; i < n; i++) if (pk[i] > m_X[r][at + i]) m_X[r][at + i] = pk[i];
+	}
+	void take_extra (Reader r, float *pk) { for (int i = 0; i < kExtra; i++) { pk[i] = m_X[r][i]; m_X[r][i] = 0.0f; } }
+
 private:
 	float m_V[kReaders][kVoices][2] = {};
 	float m_M[kReaders] = {};
+	float m_X[kReaders][kExtra] = {};
 };
 
 }	// namespace peakfan
