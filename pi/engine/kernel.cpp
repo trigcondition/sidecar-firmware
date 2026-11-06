@@ -47,6 +47,10 @@ static int s_nRytmPatIndex = -1;
 #include <circle/synchronize.h>
 #include <circle/util.h>
 #include <circle/version.h>
+#if RASPPI >= 5
+#include <circle/bcm2712.h>		// the power button's GPIO
+#include <circle/macros.h>
+#endif
 #include <fatfs/ff.h>
 
 #include "bridge.h"
@@ -988,6 +992,16 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 {
 	CKernel *pThis = (CKernel *) pParam;
 	if (pThis->UsbCommand (pCmd)) return TRUE;			// usbmode= (the USB-C mode)
+	if (strncmp (pCmd, "poweroff", 8) == 0 && (pCmd[8] == 0 || pCmd[8] == '='))	// a clean power-off (docs/pi5.md)
+	{
+#if RASPPI >= 5
+		if (strcmp (pCmd + 8, "=1") == 0) pThis->m_bPowerOff = TRUE;
+		else pThis->m_Logger.Write (From, LogWarning, "poweroff=1: a clean power-off, as the power button");
+#else
+		pThis->m_Logger.Write (From, LogWarning, "poweroff: refused, the Pi 5 only (this board has no power button)");
+#endif
+		return TRUE;
+	}
 	boolean bSaver = strncmp (pCmd, "screensaver", 11) == 0 && (pCmd[11] == 0 || pCmd[11] == '=');
 	boolean bBright = strncmp (pCmd, "brightness", 10) == 0 && (pCmd[10] == 0 || pCmd[10] == '=');
 	if (strncmp (pCmd, "uistyle", 7) == 0 && (pCmd[7] == 0 || pCmd[7] == '='))	// the display's theme
@@ -2057,6 +2071,59 @@ void CKernel::StopAndReboot (const char *pWhy, boolean bTryboot)
 	reboot ();
 }
 
+#if RASPPI >= 5
+void CKernel::StopAndPowerOff (const char *pWhy)
+{
+	m_Logger.Write (From, LogNotice, "power-off: %s - the audio faded, the card's work drained, then off", pWhy);
+	{
+		char Why[68];
+		core_snprintf (Why, sizeof Why, "a planned power-off: %s", pWhy);
+		crumb::Why (Why);
+	}
+	if (m_pDisplay != 0) m_pDisplay->PowerOff ();		// dark at once: the press was seen
+	CObUsb::FadeOut ();
+	m_Timer.MsDelay (30);					// the 20 ms fade out to the Rytm: no click
+	g_Rec.stop ();						// a take ends: its files closed in the drain
+	m_pTransport->Stop ();
+	if (m_pTransport != &m_Usb) m_Usb.Stop ();
+	if (m_bSaveDisplay) SaveDisplaySettings ();
+	bridge::save_flush (true);				// core 3's idle saves: the settle waits skipped
+	// the drain: the card queue (core 3's posted writes), the recorder's ring and close, until all idle for 100 ms
+	pwrbtn::Drain Drain (m_Timer.GetClockTicks ());
+	rec::Status s;
+	boolean bDone;
+	do
+	{
+		bridge::card_service (8);
+		rec_pi::Poll ();
+		g_Rec.status (&s, false);
+		asm volatile ("dsb sy; sev");			// core 3 out of its wfe: its idle saves run
+		bDone = Drain.Done (s.state == rec::Recorder::kIdle && bridge::save_settled (), m_Timer.GetClockTicks ());
+	}
+	while (!bDone);
+	if (Drain.TimedOut (m_Timer.GetClockTicks ()))
+		m_Logger.Write (From, LogWarning, "power-off: the card's work did not finish in %u s (recorder %d, saves %s): off anyway",
+				pwrbtn::kDrainCapUs / 1000000, s.state, bridge::save_settled () ? "done" : "pending");
+	else
+		m_Logger.Write (From, LogNotice, "power-off: the card's work done in %u ms",
+				(m_Timer.GetClockTicks () - Drain.nStart) / 1000);
+	m_Timer.MsDelay (50);					// the log line out
+	blackbox_pi::Flush ();
+	m_Watchdog.Stop ();
+	poweroff ();
+}
+
+void CKernel::PowerButtonPoll (void)
+{
+	unsigned nNow = m_Timer.GetClockTicks ();
+	if (nNow - m_nButtonAt < pwrbtn::kPollUs) return;
+	m_nButtonAt = nNow;
+	// active low; the 50 ms debounce (Circle's) only once it reads pressed
+	if (m_Button.Poll (!(read32 (ARM_GPIO1_DATA0) & BIT (20)), [] { return is_power_button_pressed () != FALSE; }))
+		StopAndPowerOff ("the power button");
+}
+#endif
+
 #ifdef SIDECAR_PI5_TESTMODE
 void CKernel::UsbTestTick (void)
 {
@@ -2441,6 +2508,10 @@ void CKernel::Run (void)
 		if (bridge::take_restart ()) StopAndReboot ("another device's state folder");
 		CSdFiles::TReboot SdReboot = CSdFiles::TakeReboot ();
 		if (SdReboot != CSdFiles::RebootNone) StopAndReboot ("asked on the SD file port", SdReboot == CSdFiles::RebootTry);
+#if RASPPI >= 5
+		if (m_bPowerOff) StopAndPowerOff ("asked on the console (poweroff=1)");
+		PowerButtonPoll ();
+#endif
 		if (m_Timer.GetTicks () - m_nLastStats >= HZ || m_Console.TakeStatsNow ())
 		{
 			m_nLastStats = m_Timer.GetTicks ();

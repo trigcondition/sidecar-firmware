@@ -102,6 +102,9 @@ bool sdtest_command(const char* p, bool busy, char* out, int cap);
 void card_worker(bool on);
 int card_service(int n);
 bool card_busy();
+// the Pi 5's power-off (kernel.cpp): the idle saves without their settle waits (core::idle_flush); all on the card (idle_settled)
+void save_flush(bool on);
+bool save_settled();
 // SAMPLING and the AUTO-SAMPLER (core/samp/sampler.h, autosamp.h): the console's samp... / asamp... (core 3), MIDI
 // realtime for the sampler's PLAY / bar starts and tempo (core 3), the producer's frames (core 0: the IN completion,
 // the OUT fill), the card side (core 0's loop: true when it did a step), /status's ,"samp":{...},"asamp":{...}.

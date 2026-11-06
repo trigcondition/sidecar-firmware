@@ -34,6 +34,9 @@
 #include "usb_mode.h"
 #include "touch_cal.h"		// pi/ui: the touch calibration (touchcal=)
 #include "sidecar_ui.h"
+#if RASPPI >= 5
+#include "pwrbtn.h"		// the power button (docs/pi5.md "Power button")
+#endif
 
 class CWifi;				// wifi.h: Wi-Fi (off by default)
 class CSidecarDisplay;			// pi/ui/sidecar_display.h: the HDMI display (docs/pi-display.md)
@@ -169,6 +172,13 @@ private:
 #endif
 	void SaveDisplaySettings (void);
 	CWifi			*m_pWifi;		// wifi.h: always made (its console commands), the chip only with wifi=1|scan
+#if RASPPI >= 5
+	void StopAndPowerOff (const char *pWhy);	// the audio faded, the card's work drained (3 s at most), then PSCI off
+	void PowerButtonPoll (void);			// core 0's loop: the button read every 20 ms
+	volatile boolean	m_bPowerOff = FALSE;	// poweroff=1 (any task on core 0): the loop powers off
+	unsigned		m_nButtonAt = 0;
+	pwrbtn::Button		m_Button;
+#endif
 };
 
 #endif

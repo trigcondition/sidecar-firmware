@@ -428,6 +428,23 @@ What replaces it for now:
   12/12 + MIDI on it and the Mac tests (`pi/engine/tests/sidecar_*_test.py`), unless the core differs. A risk worth
   a first spike: Circle's own `sample/29-miniorgan` as a MIDI gadget on the Pi 5.
 
+## Power button
+
+The Pi 5's own power button shuts the Sidecar down cleanly (the Pi 5 build only; the Pi 4 has no such button):
+
+- **Short press** while it runs: the screen goes dark, the audio to the Rytm fades out over 20 ms (no click), the
+  Overbridge stream stops, a recording take is closed (its WAV files valid), the settings and the edits that wait to be
+  saved (LFOs, INSERT FX, the sequencer's patterns, the project, `display.txt`) are written, then the black box, then the
+  board turns off (PSCI SYSTEM_OFF). The card's work gets 3 s at most: a hung card does not keep the board on (a take cut
+  there is repaired at the next boot, as after a power loss). The log says `power-off: the card's work done in N ms`.
+- **Press again** while it is off: the Pi 5's firmware powers it back on and the Sidecar boots.
+- **Long press** (held a few seconds): the power chip's hard off. It skips all of the above, as pulling the cable does.
+
+A press only counts once the button has been seen released since the boot, so the press that powered the board on
+does not turn it off again. The button is read every 20 ms; Circle's 50 ms debounce runs only when it reads pressed.
+The console (and the web page's `/cmd`) can do the same: `:poweroff=1`. The Pi 4 build answers `poweroff: refused,
+the Pi 5 only`.
+
 ## Test checklist (Pi 5, Rytm, Mac)
 
 1. **Boot log**: serial at 921600 on pins 6/8/10. Expect Circle's banner, the engine's `==== rytm-pi engine` line,

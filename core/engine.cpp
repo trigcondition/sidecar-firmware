@@ -15,6 +15,7 @@
 #include "bundle/prjslot.h"
 #include "bundle/projects.h"
 #include "bundle/rename.h"
+#include "msamp/cardq.h"
 #include "msamp/msamp.h"
 #include "presets/preset_index.h"
 #include "msamp/sdtest.h"
@@ -116,6 +117,9 @@ CORE_COLD bool idle_prepare() {
   return T_("prepare", prepare_pending());
 }
 
+static volatile bool g_flush = false;   // idle_flush: a power-off waits for the saves
+CORE_COLD void idle_flush(bool on) { g_flush = on; }
+
 CORE_COLD bool idle_save() {
 #if CORE_MSAMP
   TV_("rename", rename::tick(now_ms()));       // a project rename's looks / moves (card-queue steps) and its question's timeout
@@ -140,7 +144,7 @@ CORE_COLD bool idle_save() {
     return true;
   }
   if (T_("fxin", fxin::save())) return true;
-  bool leaving = device::leaving();   // a restart is coming: what waits for its edits to settle goes now
+  bool leaving = device::leaving() || g_flush;   // a restart or a power-off is coming: what waits for its edits to settle goes now
   if (leaving) lfo::save_due();
   if (T_("lfo", lfo::save())) return true;
 #if CORE_POLY
@@ -167,6 +171,17 @@ CORE_COLD bool idle_save() {
   settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved();
 #endif
   return T_("device", device::step(settled)) || ix;   // a change of state folder: the last write, behind all of the above
+}
+
+CORE_COLD bool idle_settled() {
+  bool s = !lfo::dirty() && !fx::card_dirty && !project_dirty && !fmt::post_busy() && fmt::unwritten(nullptr) == 0;
+#if CORE_POLY
+  s = s && !ins::settings_dirty(nullptr) && !seq::unsaved();
+#endif
+#if CORE_MSAMP
+  s = s && cardq::pending() == 0;
+#endif
+  return s;
 }
 
 // With the sample RAM: a stream within ~85 ms of running dry first, then MULTISAMPLE's streams and loads, then a load

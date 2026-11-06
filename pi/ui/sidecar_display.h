@@ -66,6 +66,9 @@ public:
 	unsigned GetScreensaver (void) const	{ return m_nSaverMin; }
 	boolean IsBlank (void) const		{ return m_bBlank; }
 	void Activity (void);
+#if RASPPI >= 5
+	void PowerOff (void)			{ Blank (TRUE); }	// the power button: the screen dark at once (Update not run again)
+#endif
 
 private:
 	boolean OpenFrameBuffer (void);

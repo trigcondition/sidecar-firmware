@@ -138,6 +138,7 @@ Core 0 runs these itself:
 | `pair` | the pairing code's state (below, "Pairing code"): the gate on / off / fixed, how many devices are paired, how many sessions. **Never the code itself** - the console's output is the log the page serves |
 | `pair=show` | the code on the Rytm's screen again (30 s), for when the popup was missed |
 | `pair=revoke` | every paired device and every session dropped: each one needs the code again (also `sdboot.py`'s) |
+| `poweroff=1` | Pi 5 only: a clean power-off, as a short press of the power button (`docs/pi5.md` "Power button": the audio faded, a take closed, the saves written, 3 s at most, then off; the button powers it on again). Refused on the Pi 4 |
 
 An unknown command logs `unknown command "..."`. A long line is dropped whole.
 
