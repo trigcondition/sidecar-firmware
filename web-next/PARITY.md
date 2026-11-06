@@ -36,7 +36,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 | Box strip (boxes, roles) and the box name instead of "Rytm" | `ws:status` `boxes[]` (`feat` bits gate pages) | ✅ (the strip on Home; `feat` hides send FX, POOL, projects, user slots, IN L/R, "show on the Rytm") |
 | Power warning banner | `ws:status` `power.warn` | ✅ |
 | Clock sync at load | `POST /time` | ✅ (once paired) |
-| Build check (page older than the kernel) | ws hello `version` | ➖ the Pi serves /next/ from the card now (`npm run card`); the build-against-kernel check is still to do |
+| Build check (page older than the kernel) | ws hello `version` | ✅ the build is stamped with VERSION and its commit; a note when the Sidecar's release differs (Settings › About shows both) |
 
 ## Home
 

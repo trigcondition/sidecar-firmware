@@ -28,7 +28,7 @@ export function refused(c) {
   return null;
 }
 
-export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code } = {}) {
+export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code, version = "0.4.2-mock" } = {}) {
   const say = (...a) => { if (!quiet) console.log("[mock]", ...a); };
   const started = Date.now();
   const pairCode = code ?? String(crypto.randomInt(0, 1e8)).padStart(8, "0");
@@ -165,7 +165,7 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
     const error = (id, code, msg) => send(id ? { type: "reply", id, ok: false, error: { code, msg, ...(code === 401 ? { pair: true } : {}) } } : { type: "error", error: { code, msg } });
     const bad = (id, code, msg) => { error(id, code, msg); if (++s.bad >= 10) ws.close(1008, "too many bad requests"); };
     const rates = Object.fromEntries(TOPICS.map((t) => [t, RATE[t].slice(0, 2)]));
-    send({ type: "hello", payload: { proto: PROTO, server: "sidecar", version: "0.4.2-mock", topics: TOPICS, later: LATER, caps: ["auth", "sub", "unsub", "cmd", "ping", "ack"], auth: "token", window: WINDOW, maxMsg: MAX_MSG, minMs: RATE.status[0], maxMs: MAX_MS, rates } });
+    send({ type: "hello", payload: { proto: PROTO, server: "sidecar", version, topics: TOPICS, later: LATER, caps: ["auth", "sub", "unsub", "cmd", "ping", "ack"], auth: "token", window: WINDOW, maxMsg: MAX_MSG, minMs: RATE.status[0], maxMs: MAX_MS, rates } });
 
     // a topic's payload now (the log advances this connection's cursor, as web.cpp's WsBuild)
     const build = (topic) => {

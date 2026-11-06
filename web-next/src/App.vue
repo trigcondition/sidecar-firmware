@@ -2,7 +2,7 @@
      status pill (pattern, tempo, play state, connection) laid over it, the page tabs as pills (the current one
      filled), the page. A skip link first. -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import Logo from "./components/Logo.vue";
 import SignalTide from "./components/SignalTide.vue";
 import ConfirmDialog from "./ui/ConfirmDialog.vue";
@@ -10,15 +10,19 @@ import { routes } from "./router";
 import { provideSidecar } from "./lib/useSidecar";
 import { usePrefs } from "./lib/usePrefs";
 import { transportText } from "./lib/status";
+import { WEB_BUILD, buildNote } from "./lib/build";
 
 usePrefs();
-const { state, paired, levels, status, seqpos } = provideSidecar();
+const { state, paired, levels, status, seqpos, hello } = provideSidecar();
 const tabs = routes.filter((r) => r.name);
 const masterLevel = computed(() => (levels.value ? Math.max(...levels.value.master) : 0));
 const conn = computed(() =>
   state.value === "open" ? (paired.value ? "Live" : "Live, not paired") : state.value === "connecting" ? "Connecting…" : state.value === "incompatible" ? "Incompatible" : "Offline",
 );
 const transport = computed(() => transportText(seqpos.value));
+// the page against the Sidecar's release (lib/build.ts): a note until it is put away (this tab only)
+const buildMsg = computed(() => buildNote(WEB_BUILD, hello.value?.version));
+const buildSeen = ref("");
 // the supply (/status "power".warn, pi/engine/power_state.h): on every page, Wi-Fi and the page suffer first
 const powerWarn = computed(() => {
   const w = (status.value as { power?: { warn?: string } } | null)?.power?.warn;
@@ -46,6 +50,10 @@ const powerWarn = computed(() => {
     <router-link v-for="r in tabs" :key="String(r.name)" :to="r.path" class="tab">{{ r.meta?.title }}</router-link>
   </nav>
   <p v-if="powerWarn" class="banner" role="alert"><span aria-hidden="true">⚠ </span>{{ powerWarn }} (Wi-Fi and the web page suffer first).</p>
+  <div v-if="buildMsg && buildSeen !== buildMsg" class="banner build" role="status">
+    <span>{{ buildMsg }}</span>
+    <button type="button" @click="buildSeen = buildMsg">Got it</button>
+  </div>
   <main id="main">
     <router-view />
   </main>
@@ -84,5 +92,6 @@ const powerWarn = computed(() => {
   .over { padding: 0.75rem; }
 }
 .banner { margin: 0.5rem 1rem 0; padding: 0.75rem 1rem; border: 2px solid var(--warm); border-radius: var(--radius-control); color: var(--warm); }
+.banner.build { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; color: var(--text); }
 main { max-width: 80rem; margin: 0 auto; padding: 1rem 1rem 2rem; }
 </style>

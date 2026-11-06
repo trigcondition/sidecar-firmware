@@ -4,12 +4,14 @@ import { computed } from "vue";
 import Card from "../../ui/Card.vue";
 import { useSidecar } from "../../lib/useSidecar";
 import { uptimeText } from "../../lib/status";
+import { WEB_BUILD, buildState, buildText } from "../../lib/build";
 
 const { status, hello } = useSidecar();
 const rows = computed(() => {
   const s = (status.value ?? {}) as Record<string, any>;
   return [
     ["Version", s.version ? `${s.version} (${s.commit}${s.dirty ? "-dirty" : ""})` : hello.value?.version ?? "–"],
+    ["Web app", `${buildText(WEB_BUILD)} · ${({ match: "matches the Sidecar", "page-older": "older than the Sidecar", "page-newer": "newer than the Sidecar", unknown: "–" } as const)[buildState(WEB_BUILD.version, hello.value?.version)]}`],
     ["Host", `${s.host ?? "sidecar"}.local`],
     ["Address", s.ip ?? "–"],
     ["Uptime", uptimeText(s.uptime)],
