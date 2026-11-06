@@ -17,8 +17,13 @@ export const routes: RouteRecordRaw[] = [
 
 export const router = createRouter({ history: createWebHashHistory(), routes });
 
-// the page title follows the route, and focus moves to the new page's heading (keyboard and screen readers)
+// the page title follows the route, and focus moves to the new page's heading (keyboard and screen readers); with
+// ?show=<tile> (the power banner's "Details") to that Home tile instead, scrolled into view
 router.afterEach((to) => {
   document.title = `Sidecar · ${String(to.meta.title ?? "")}`;
-  requestAnimationFrame(() => document.querySelector<HTMLElement>("main h1")?.focus({ preventScroll: true }));
+  requestAnimationFrame(() => {
+    const tile = typeof to.query.show === "string" ? document.getElementById(`tile-${to.query.show}`) : null;
+    if (tile) tile.scrollIntoView({ block: "center" });
+    (tile ?? document.querySelector<HTMLElement>("main h1"))?.focus({ preventScroll: true });
+  });
 });

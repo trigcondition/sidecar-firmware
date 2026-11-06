@@ -33,7 +33,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 | Pattern · BPM · play state pill | `ws:seqpos` (`pattern`, `bpm10`, `transport`) | ✅ (Pi topic new: needs the device test) |
 | Signal tide | `ws:levels` master | 🔶 (Pi topic new) |
 | Pairing: resume, code entry, stale pairing, "show it on the Rytm" | `POST /pair`, `/pair/resume`, `/pair/status`, `/pair/show` | ✅ (and the 5 s re-check while unpaired; the gate off needs no code) |
-| Box strip (boxes, roles) and the box name instead of "Rytm" | `ws:status` `boxes[]` (`feat` bits gate pages) | ✅ (the strip on Home; `feat` hides send FX, POOL, projects, user slots, IN L/R, "show on the Rytm") |
+| Box strip (boxes, roles) and the box name instead of "Rytm" | `ws:status` `boxes[]` (`feat` bits gate pages) | ✅ (the strip on Home with two boxes or more; the name from the USB product string; `feat` hides send FX, POOL, projects, user slots, IN L/R, "show on the Rytm") |
 | Power warning banner | `ws:status` `power.warn` | ✅ |
 | Clock sync at load | `POST /time` | ✅ (once paired) |
 | Build check (page older than the kernel) | ws hello `version` | ✅ the build is stamped with VERSION and its commit; a note when the Sidecar's release differs (Settings › About shows both) |
@@ -42,7 +42,7 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| Tiles: CPU c1-c3, FIFO, underruns, Overbridge, Rytm, USB-C, temperature, power, this page | `ws:status`; CPU / FIFO / OB gap / USB-C alt from the stats lines in `ws:log` | ✅ (`src/lib/tiles.ts`) |
+| Tiles: CPU c1-c3, FIFO, underruns, Overbridge, Rytm, USB-C, temperature, power, this page | `ws:status`; CPU / FIFO / OB gap / USB-C alt from the stats lines in `ws:log`, core 0 from the 10 s idle line | ✅ redrawn: a health row, then Engine / Connections / System with meters (`src/lib/health.ts`) |
 | Rytm tracks (SRC chips) | `ws:status` `src[]` | ✅ |
 | Recorder at a glance (state, time) | `ws:status` `rec` | ✅ |
 | Log: live tail, follow, hide stats lines, highlight errors | `ws:log` | ✅ (`src/lib/logbuf.ts`) |

@@ -28,13 +28,13 @@ export function refused(c) {
   return null;
 }
 
-export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code, version = "0.4.2-mock" } = {}) {
+export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code, version = "0.4.2-mock", scenario = "" } = {}) {
   const say = (...a) => { if (!quiet) console.log("[mock]", ...a); };
   const started = Date.now();
   const pairCode = code ?? String(crypto.randomInt(0, 1e8)).padStart(8, "0");
   const clients = new Map();          // id -> secret
   const tokens = new Set();
-  const dev = createDevice();
+  const dev = createDevice({ scenario });
   let requests = 0;
 
   // a slow swell with some jitter, so the tide moves

@@ -4,7 +4,7 @@
 export const FEAT = { remoteui: 1, project: 2, kits: 4, patterns: 8, sendfx: 16, userslots: 32, srcview: 64, fxin: 128, pools: 256 } as const;
 export type Feat = keyof typeof FEAT;
 
-export interface Box { id: string; name: string; n?: string; role: string; on: boolean; feat: number }
+export interface Box { key?: string; id: string | number; name: string; n?: number; role: string; on: boolean | number; feat: number }
 
 export function boxes(st: unknown): Box[] {
   const b = (st as { boxes?: unknown } | null)?.boxes;

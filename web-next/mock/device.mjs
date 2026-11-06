@@ -7,7 +7,10 @@ import { createFs } from "./fs.mjs";
 const MACHINES = ["plaits", "juno", "daisy", "dsps", "dd", "fm"];
 export const TRACKS = ["BD", "SD", "RS/CP", "BT", "LT", "MT/HT", "CH/OH", "CY/CB"];
 
-export function createDevice() {
+// scenario "warn": a weak supply (under-voltage now, 1.5 A), three underruns while playing, a FIFO that touched 0 and a
+// warm SoC, so the Home page's warning state can be seen (the shots; nothing else changes)
+export function createDevice({ scenario = "" } = {}) {
+  const warn = scenario === "warn";
   const started = Date.now();
   const d = {
     commands: 0,
@@ -93,7 +96,8 @@ export function createDevice() {
     ip: "169.254.20.230",
     uptime: up(),
     web: { requests: web.requests, maxus: 812, commands: d.commands, refused: 0, idle: 0, open: web.open },
-    boxes: [{ id: "rytm", name: "Analog Rytm MKII", n: "Rytm", role: "in use", on: true, feat: 511, tracks: 12, voices: 8 }],
+    // as pi/engine/box_list.h writes them: id the USB product id, n a count of same-type boxes, name the product string
+    boxes: [{ key: "2", id: 2, n: 1, name: "Elektron Analog Rytm MKII", role: "host", on: 1, tracks: 12, voices: 8, params: 0, feat: 511, state: "/.rytm" }],
     link: "usb",
     gadget: "sidecar",
     sidecar: true,
@@ -101,18 +105,18 @@ export function createDevice() {
     usbHost: true,
     streaming: true,
     rytmMidi: true,
-    temp: 58 + Math.round(3 * Math.sin(up() / 20)),
+    temp: (warn ? 77 : 52) + Math.round(2 * Math.sin(up() / 20)),
     tempWarn: false,
     clockLow: 0,
     out: d.out,
     notes: d.notes,
     drone: d.drone,
     fifoTarget: d.fifoTarget,
-    underruns: 0,
-    restartUnderruns: 0,
+    underruns: warn ? 3 : 0,
+    restartUnderruns: warn ? 5 : 0,
     streams: 1,
     usbMode: d.usbMode,
-    cpu: { setting: "max", mhz: 1800, budgetUs: 340 },
+    cpu: { setting: "max", mhz: 2400, budgetUs: 125 },
     machines: d.machines,
     scene: sceneJson(d.scene),
     src: TRACKS.map((t, i) => ({ m: i < 8 ? d.machines[i].toUpperCase() : "RYTM", vb: i })).concat([{ m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }]),
@@ -126,7 +130,9 @@ export function createDevice() {
     touchtest: 0,
     display: true,
     blank: false,
-    power: { known: true, warn: "", maxCurrent: 3000, uvNow: false, uvBoot: false, throttledNow: false, cappedNow: false, note: "" },
+    power: warn
+      ? { known: true, warn: "POWER TOO WEAK: use 27 W adapter", maxCurrent: 1500, uvNow: true, uvBoot: true, throttledNow: false, cappedNow: false, note: null }
+      : { known: true, warn: null, maxCurrent: 5000, uvNow: false, uvBoot: false, throttledNow: false, cappedNow: false, note: null },
     wifi: { mode: "sta", chip: "ok", stored: !!d.wifi.ssid, on: d.wifi.on, connected: d.wifi.on && !!d.wifi.ssid, networks: d.wifi.networks.length, join: d.wifi.join.state },
     rec: d.recStatus(),
     play: d.playStatus(),
@@ -146,9 +152,12 @@ export function createDevice() {
   });
 
   // the engine's once-a-second lines, in the real format (pi/engine/kernel.cpp LogStats, ob_usb, sidecar_gadget)
+  let ticks = 0;
   d.tick = () => {
-    const j = () => (Math.random() * 3).toFixed(1);
-    d.addLog(`engine: engine: fifo min ${80 + Math.round(Math.random() * 10)} max ${110 + Math.round(Math.random() * 10)} target ${d.fifoTarget} under 0 (restart 0, streams 1) | blocks 3000 max 210 us | cpu c1 ${(40 + +j()).toFixed(1)} c2 ${(32 + +j()).toFixed(1)} c3 ${(18 + +j()).toFixed(1)} % | pass max 260 us | midi 0 B (lost 0) sysex 0 notes 0 | to-host sent 0 B 0 msgs fail 0 dropped 0 | peak 512/1000 | ${58} C`);
+    const j = () => (Math.random() * 3).toFixed(1), t = up();
+    const c1 = 34 + 8 * Math.sin(t / 7) + +j(), fmin = warn ? (t % 5 ? 4 + Math.round(Math.random() * 8) : 0) : 80 + Math.round(Math.random() * 10);
+    d.addLog(`engine: engine: fifo min ${fmin} max ${110 + Math.round(Math.random() * 10)} target ${d.fifoTarget} under ${warn ? 3 : 0} (restart ${warn ? 5 : 0}, streams 1) | blocks 3000 max ${warn ? 131 : 96} us | cpu c1 ${c1.toFixed(1)} c2 ${(26 + +j()).toFixed(1)} c3 ${(14 + +j()).toFixed(1)} % | pass max ${warn ? 150 : 110} us | midi 0 B (lost 0) sysex 0 notes 0 | to-host sent 0 B 0 msgs fail 0 dropped 0 | peak 512/1000 | ${warn ? 77 : 52} C`);
+    if (ticks++ % 10 === 0) d.addLog(`engine: idle: asleep ${warn ? 71 : 88} 52 61 79 %, wakes 900 1000 1000 1000 a second (cores 0-3), wfe on, ARM clock 2400 MHz, measured 2400, SoC ${warn ? 77 : 52} C`);
     d.addLog(`rytmob: 1000ms IN 1000/s gap 0 lost 0 late 0`);
     d.addLog(`sidecar: sidecar alt 1/1 · late 0/0/0`);
   };

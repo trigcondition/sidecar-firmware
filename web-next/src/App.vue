@@ -49,7 +49,7 @@ const powerWarn = computed(() => {
   <nav aria-label="Pages" class="tabs">
     <router-link v-for="r in tabs" :key="String(r.name)" :to="r.path" class="tab">{{ r.meta?.title }}</router-link>
   </nav>
-  <p v-if="powerWarn" class="banner" role="alert"><span aria-hidden="true">⚠ </span>{{ powerWarn }} (Wi-Fi and the web page suffer first).</p>
+  <p v-if="powerWarn" class="banner" role="alert"><span aria-hidden="true">⚠ </span>{{ powerWarn }} (Wi-Fi and the web page suffer first). <router-link :to="{ path: '/', query: { show: 'power' } }">Details</router-link></p>
   <div v-if="buildMsg && buildSeen !== buildMsg" class="banner build" role="status">
     <span>{{ buildMsg }}</span>
     <button type="button" @click="buildSeen = buildMsg">Got it</button>
@@ -92,6 +92,7 @@ const powerWarn = computed(() => {
   .over { padding: 0.75rem; }
 }
 .banner { margin: 0.5rem 1rem 0; padding: 0.75rem 1rem; border: 2px solid var(--warm); border-radius: var(--radius-control); color: var(--warm); }
+.banner a { color: var(--warm); font-weight: 700; }
 .banner.build { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; color: var(--text); }
 main { max-width: 80rem; margin: 0 auto; padding: 1rem 1rem 2rem; }
 </style>
