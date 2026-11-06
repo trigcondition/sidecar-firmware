@@ -5,17 +5,8 @@ import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("./tokens.css", import.meta.url), "utf8");
 
-/** The custom properties of the first rule whose selector contains `sel`. */
-function block(sel: string): Record<string, string> {
-  const re = /([^{}]+)\{([^{}]*)\}/g;
-  for (let m; (m = re.exec(css)); ) {
-    if (!m[1].includes(sel)) continue;
-    const vars: Record<string, string> = {};
-    for (const d of m[2].matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)) vars[d[1]] = d[2].trim();
-    return vars;
-  }
-  throw new Error(`no rule for ${sel}`);
-}
+import { tokenBlock } from "./readTokens";
+const block = (sel: string) => tokenBlock(css, sel);
 
 const standard = block(':root[data-theme="standard"]');
 const themes: Record<string, Record<string, string>> = {
@@ -70,6 +61,18 @@ for (const [name, t] of Object.entries(themes)) {
     }
   });
 }
+
+describe("colours live in the tokens only", () => {
+  it("no hex or rgb() outside tokens.css (a palette switch is a token change)", async () => {
+    const { readdirSync, statSync } = await import("node:fs");
+    const root = new URL("../", import.meta.url).pathname;
+    const files: string[] = [];
+    const walk = (d: string) => { for (const n of readdirSync(d)) { const p = `${d}/${n}`; statSync(p).isDirectory() ? walk(p) : /\.(vue|ts|css)$/.test(n) && !/\.test\.ts$|tokens\.css$/.test(n) && files.push(p); } };
+    walk(root.replace(/\/$/, ""));
+    const bad = files.filter((f) => /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/.test(readFileSync(f, "utf8").replace(/&#\d+;/g, "")));
+    expect(bad).toEqual([]);
+  });
+});
 
 describe("sizes", () => {
   it("no text token below 13px, targets at least 44px", () => {

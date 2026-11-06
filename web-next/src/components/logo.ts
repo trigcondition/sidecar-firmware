@@ -26,8 +26,9 @@ export function logoDots(small = false): LogoDot[] {
   return dots;
 }
 
-/** The favicon: fixed colours (a file cannot read the page's tokens) on a dark rounded tile, so it shows on light tabs too. */
-export function faviconSvg(): string {
+/** The favicon (a file: it cannot read the page's tokens, so scripts/favicon.mjs passes the standard theme's from
+ * tokens.css): the dots and the disc on a dark rounded tile, so it shows on light tabs too. */
+export function faviconSvg(c: { bg: string; text: string; accent: string }): string {
   const dots = logoDots(true).map((p) => `<circle cx="${p.x}" cy="${p.y}" r="${p.r}"/>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${LOGO_VIEWBOX}"><rect width="46" height="40" rx="8" fill="#050607"/><g fill="#e8edf2">${dots}</g><circle cx="${LOGO_DISC.cx}" cy="${LOGO_DISC.cy}" r="${LOGO_DISC.r}" fill="#6cc2ff"/></svg>\n`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${LOGO_VIEWBOX}"><rect width="46" height="40" rx="8" fill="${c.bg}"/><g fill="${c.text}">${dots}</g><circle cx="${LOGO_DISC.cx}" cy="${LOGO_DISC.cy}" r="${LOGO_DISC.r}" fill="${c.accent}"/></svg>\n`;
 }

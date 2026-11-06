@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { LOGO_REACH, faviconSvg, logoDots } from "./logo";
+import { tokenBlock } from "../styles/readTokens";
 
 describe("Docked logo", () => {
   it("keeps the dots within reach of the centre, larger towards it", () => {
@@ -14,6 +15,7 @@ describe("Docked logo", () => {
     expect(Math.min(...logoDots(true).map((p) => p.r))).toBeGreaterThanOrEqual(0.8);
   });
   it("public/favicon.svg is current (node scripts/favicon.mjs)", () => {
-    expect(readFileSync(new URL("../../public/favicon.svg", import.meta.url), "utf8")).toBe(faviconSvg());
+    const t = tokenBlock(readFileSync(new URL("../styles/tokens.css", import.meta.url), "utf8"), ':root[data-theme="standard"]');
+    expect(readFileSync(new URL("../../public/favicon.svg", import.meta.url), "utf8")).toBe(faviconSvg({ bg: t.bg, text: t.text, accent: t.accent }));
   });
 });

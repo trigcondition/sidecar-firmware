@@ -23,6 +23,7 @@
   --warm-tint: rgba(255, 179, 92, 0.16);
   --warm-border: #8a6a3e;      /* a warm card's edge (decorative) */
   --tide-bg: #0a1520;          /* the header band behind the signal tide */
+  --backdrop: rgba(0, 0, 0, 0.7);  /* behind a dialog */
 
   --radius-card: 0.875rem;     /* 14px */
   --radius-control: 0.5625rem; /* 9px */
@@ -59,6 +60,7 @@
   --warm-tint: transparent;
   --warm-border: #ffffff;
   --tide-bg: #000000;
+  --backdrop: rgba(0, 0, 0, 0.85);
 }
 
 /* the text-size setting (usePrefs.ts) */

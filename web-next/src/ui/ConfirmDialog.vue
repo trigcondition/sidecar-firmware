@@ -35,7 +35,7 @@ function answer(ok: boolean) {
 
 <style scoped>
 dialog { max-width: min(32rem, calc(100vw - 2rem)); color: var(--text); margin: auto; }
-dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+dialog::backdrop { background: var(--backdrop); }
 .row { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
 .danger { border-color: var(--warm); border-width: 2px; color: var(--warm); font-weight: 700; }
 </style>
