@@ -29,6 +29,10 @@
 #include "midibridge_pi.h"
 #include "sidecar_gadget.h"	// usbmidi=os: /cmd refuses link=tcp:<address> while it is on
 #include "wifi_conf.h"
+#include "web_cmd.h"		// the commands the web may send (/cmd and /ws)
+#include "web_ws.h"		// /ws (docs/web-ws.md)
+#include "ws_frame.h"		// its handshake
+#include "version.h"		// the hello's version (tools/gen_version.sh)
 #include "hosted/web_page.h"	// build.sh: www/index.html as WebPage[] (a raw string)
 #include "hosted/web_page_gz.h"	// build.sh: the same, gzip -9n, as WebPageGz[] (what "/" sends)
 #include "user/lists.h"
@@ -94,6 +98,7 @@ unsigned CLogTee::ReadSince (u64 nSince, char *pOut, unsigned nMax, u64 *pStart,
 unsigned CWebServer::s_nWorkers = 0, CWebServer::s_nRefused = 0, CWebServer::s_nIdle = 0, CWebServer::s_nMaxLifeMs = 0;
 unsigned CWebServer::s_nRequests, CWebServer::s_nMaxUs, CWebServer::s_nCommands, CWebServer::s_nUnpaired;
 CWebServer *CWebServer::s_pWorker[MaxWorkers];
+unsigned CWebServer::s_nWs = 0, CWebServer::s_nWsTotal = 0, CWebServer::s_nWsRefused = 0;
 
 CWebServer::CWebServer (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, TWebStatus *pHealth,
 			void *pParam, CSocket *pSocket)
@@ -476,6 +481,112 @@ static void Reply (const fsweb::Result &r, u8 *pBuffer, unsigned *pLength, const
 	*ppContentType = "text/plain; charset=utf-8";
 }
 
+// What GET /status answers (the /ws status topic too: the same function, so the two can never differ)
+void CWebServer::StatusJson (CString *pOut)
+{
+	CString &s = *pOut;
+	s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u,"
+		  "\"idle\":%u,\"open\":%u},",
+		  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused,
+		  s_nIdle, s_nWorkers);
+	(*m_pStatus) (&s, m_pParam);
+	paircode_pi::Status (&s);		// "pair":{...}: the gate, the counts - never the code itself
+	midibridge_pi::Status (&s);		// "midibridge":{...}: the state, the counts - never its token
+	s.Append ("}");
+}
+
+// ---- /ws, the WebSocket (web_ws.h, docs/web-ws.md). The device's side of ws_session.h: the pairing gate, the status,
+// the console. The token arrives in the first "auth" message, never in the URL (a browser cannot set a header on a
+// WebSocket); the status topic is open, as GET /status is; a command needs the token, checked again each time.
+bool CWebServer::WsToken (void *pParam, const char *pToken)
+{
+	return paircode_pi::Gate ().check (pToken);
+}
+
+size_t CWebServer::WsStatus (void *pParam, char *pOut, size_t nMax)
+{
+	CString s;
+	((CWebServer *) pParam)->StatusJson (&s);
+	size_t n = s.GetLength ();
+	if (n > nMax) return 0;
+	memcpy (pOut, (const char *) s, n);
+	return n;
+}
+
+// As POST /cmd: the same list (web_cmd.h), a /ws message counting as a body (never a URL). The upgrade passed the
+// strict same-origin check, so usbmode=overbridge is taken here, as on /cmd from the page.
+const char *CWebServer::WsCommand (void *pParam, const char *pCmd)
+{
+	CSidecarGadget *pSidecar = CSidecarGadget::Get ();
+	const char *pWhy = webcmd::refused (pCmd, true, pSidecar != 0 && pSidecar->OsUpdate ());
+	if (pWhy != 0)
+	{
+		CLogger::Get ()->Write (From, LogWarning, "ws: command refused: %s", pWhy);
+		return pWhy;
+	}
+	s_nCommands++;
+	CLogger::Get ()->Write (From, LogNotice, "command :%s (ws)", CWifi::IsSecret (pCmd) ? "wifi=join:..." : pCmd);
+	((CWebServer *) pParam)->m_pConsole->Command (pCmd);
+	return 0;
+}
+
+static boolean WsStillOn (void) { return paircode_pi::WebOn (); }
+
+// A refused upgrade: a plain HTTP answer, no body, the connection closed
+void CWebServer::WsRefuse (const char *pStatus, const char *pWhy)
+{
+	s_nWsRefused++;
+	CLogger::Get ()->Write (From, LogWarning, "ws: refused (%s): %s (Origin \"%s\")", pStatus, pWhy, GetRequestOrigin ());
+	CString s;
+	s.Format ("HTTP/1.1 %s\r\nContent-Length: 0\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n\r\n", pStatus);
+	m_pSocketForWs->Send ((const char *) s, s.GetLength (), MSG_DONTWAIT);
+}
+
+boolean CWebServer::UpgradeConnection (const char *pPath, CSocket *pSocket)
+{
+	if (strcmp (pPath, "/ws") != 0) return FALSE;		// another path: plain HTTP, as before
+	m_bServed = TRUE;
+	s_nRequests++;
+	m_pSocketForWs = pSocket;
+	char Accept[29];
+	if (!paircode_pi::WebOn ()) WsRefuse ("503 Service Unavailable", paircode_pi::kWebOff);
+	else if (!wsframe::is_websocket (GetRequestUpgrade ())) WsRefuse ("400 Bad Request", "Upgrade is not websocket");
+	else if (strcmp (GetRequestWsVersion (), "13") != 0) WsRefuse ("426 Upgrade Required", "Sec-WebSocket-Version is not 13");
+	else if (!wsframe::accept_key (GetRequestWsKey (), Accept)) WsRefuse ("400 Bad Request", "no valid Sec-WebSocket-Key");
+	// the strict same-origin check, as /midibridge/set: a browser always sends Origin on a WebSocket, and another
+	// site's page must not reach the console through it (WebSockets are not covered by the same-origin policy)
+	else if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+		WsRefuse ("403 Forbidden", "not from this page (the strict same-origin check)");
+	else if (s_nWs >= MaxWs) WsRefuse ("503 Service Unavailable", "busy: MaxWs connections open");
+	else
+	{
+		// counted as a WebSocket, no longer as an HTTP worker (MaxWorkers stays for the page's requests)
+		s_nWorkers--;
+		for (unsigned i = 0; i < MaxWorkers; i++) if (s_pWorker[i] == this) s_pWorker[i] = 0;
+		s_nWs++;
+		s_nWsTotal++;
+		CLogger::Get ()->Write (From, LogNotice, "ws: a client connected (%u open)", s_nWs);
+		static const ws_pi::TDevice Device = {0, WsToken, WsStatus, WsCommand, WsStillOn, SIDECAR_VERSION};
+		ws_pi::TDevice Dev = Device;
+		Dev.pParam = this;
+		ws_pi::TStats St;
+		m_pSocketForWs = 0;
+		ws_pi::Serve (pSocket, Accept, Dev, &St);		// deletes pSocket
+		m_nStart = CTimer::GetClockTicks ();		// "longest connection" (LogStats) stays the HTTP requests'
+		s_nWs--;
+		s_nWorkers++;					// the destructor counts it out again
+		CLogger::Get ()->Write (From, LogNotice, "ws: closed (%u%s): %u pushes, %u coalesced, %u refused, %u malformed "
+					"(%u open, %u since the boot, %u refused upgrades)", St.nCode,
+					St.nCode == 1008 ? ", a policy close: bad requests, a ping flood or a client that stopped reading" : "",
+					St.nPushes, St.nCoalesced,
+					St.nRefused, St.nBad, s_nWs, s_nWsTotal, s_nWsRefused);
+		return TRUE;
+	}
+	m_pSocketForWs = 0;
+	delete pSocket;
+	return TRUE;
+}
+
 THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, const char *pFormData, u8 *pBuffer,
 				    unsigned *pLength, const char **ppContentType)
 {
@@ -543,14 +654,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 	else if (strcmp (pPath, "/status") == 0)
 	{
 		CString s;
-		s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u,"
-			  "\"idle\":%u,\"open\":%u},",
-			  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused,
-			  s_nIdle, s_nWorkers);
-		(*m_pStatus) (&s, m_pParam);
-		paircode_pi::Status (&s);		// "pair":{...}: the gate, the counts - never the code itself
-		midibridge_pi::Status (&s);		// "midibridge":{...}: the state, the counts - never its token
-		s.Append ("}");
+		StatusJson (&s);
 		unsigned n = s.GetLength ();
 		if (n > *pLength) return HTTPInternalServerError;
 		memcpy (pBuffer, (const char *) s, n);
@@ -614,10 +718,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			pWhy = "not from this page (the same-origin check)";
 		else if (usb_mode::raises (Cmd) && !FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
 			pWhy = "usbmode=overbridge: not from this page (the strict same-origin check)";
-		else if ((!bForm && strncmp (Cmd, "wifi=", 5) == 0) || strncmp (Cmd, "midibridge=", 11) == 0
-			 || strncmp (Cmd, "usbmidi=", 8) == 0 || strncmp (Cmd, "osupdate=", 9) == 0
-			 || (strncmp (Cmd, "link=tcp:", 9) == 0 && pSidecar != 0 && pSidecar->OsUpdate ()))
-			pWhy = "not taken on /cmd (wifi= in the URL, midibridge=, usbmidi=, osupdate=, link=tcp: with usbmidi=os:)";
+		else pWhy = webcmd::refused (Cmd, bForm, pSidecar != 0 && pSidecar->OsUpdate ());	// (web_cmd.h: the list /ws shares)
 		if (pWhy != 0)
 		{
 			CLogger::Get ()->Write (From, LogWarning, "web: /cmd refused: %s (Host \"%s\", Origin \"%s\", Referer \"%s\")",
@@ -625,8 +726,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			memset (Cmd, 0, sizeof Cmd);
 			return HTTPBadRequest;
 		}
-		// wdtest hangs core 0 on purpose: the watchdog's reboot ends a RAM kernel (needs a reflash, or sdboot's engine.img)
-		if (Cmd[0] == 0 || strcmp (Cmd, "wdtest") == 0) return HTTPBadRequest;
+		// (wdtest hangs core 0 on purpose: the watchdog's reboot ends a RAM kernel; web_cmd.h refuses it, and an empty one)
 		s_nCommands++;
 		CLogger::Get ()->Write (From, LogNotice, "command :%s", CWifi::IsSecret (Cmd) ? "wifi=join:..." : Cmd);
 		m_pConsole->Command (Cmd);

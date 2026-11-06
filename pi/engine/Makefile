@@ -13,6 +13,7 @@ include $(CORE)/engines/engines.mk
 DEFINE += -DCORE_MSAMP=1
 # Circle-side objects: Circle's flags and headers (Rules.mk's %.o: %.cpp)
 OBJS = main.o kernel.o platform_pi.o shared.o ob_usb.o ob_follow.o cores.o console.o selftest.o guard.o tcp_link.o $(GADGET_OBJS) web.o sdfiles.o um_pi.o wifi.o rec_pi.o
+OBJS += web_ws.o               # /ws, the WebSocket (web_ws.h, docs/web-ws.md; the portable parts are ws_frame.h, ws_json.h, ws_session.h)
 OBJS += paircode_pi.o          # the pairing code's Pi side (paircode_pi.h; the portable paircode.cpp is in PORT_SRC)
 OBJS += midibridge_pi.o        # the Rytm MIDI bridge (midibridge_pi.h; the portable part is the header midibridge.h)
 OBJS += usbc_pi.o              # the USB-C mode for the SIDECAR MENU > USB-C on the Rytm (usbc_pi.h; the portable part is usb_mode.h)

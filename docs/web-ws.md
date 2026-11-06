@@ -1,0 +1,184 @@
+# The web API over WebSocket: /ws
+
+The Pi engine's live API for the next web UI (`web-next/`, Vue 3 + Vite + TypeScript) and, later, a desktop editor
+(Tauri) that wraps the same app. One WebSocket instead of the old page's polling: the Sidecar pushes what changed, the
+client sends commands as requests with ids. The old page (`pi/engine/www/index.html`) and every HTTP endpoint stay as
+they are; `/ws` sits beside them.
+
+Code: `pi/engine/ws_frame.h` (handshake, frames), `pi/engine/ws_json.h` (reading the client's JSON),
+`pi/engine/ws_session.h` (the protocol below), `pi/engine/web_cmd.h` (which commands the web may send, shared with
+`POST /cmd`), `pi/engine/web_ws.{h,cpp}` (the socket loop), `CWebServer::UpgradeConnection` in `pi/engine/web.cpp`,
+`pi/circle/circle-http-ws.patch` (Circle: the hook in the HTTP daemon and the socket's send-queue size). Tests: `pi/engine/tests/test_ws.cpp`
+(`make -C pi/engine/tests`), `web-next/src/lib/*.test.ts` (`npm test` in `web-next/`).
+
+## Connection
+
+- `GET /ws` with `Upgrade: websocket`, `Sec-WebSocket-Version: 13` and a valid `Sec-WebSocket-Key` (RFC 6455). The answer
+  is `101 Switching Protocols`; no subprotocol and no extension (no compression) are negotiated.
+- Refusals are plain HTTP, no body, the connection closed (each logs one `ws: refused` line with the reason):
+  `503` the web UI is off (SIDECAR MENU > WEB UI) or `MaxWs` (2) connections are open; `400` a bad Upgrade or key;
+  `426` another version; `403` the strict same-origin check failed.
+- **Same origin, strict:** `Host` must be one of the Pi's names (`<hostname>.local`, its IP) and `Origin` (else
+  `Referer`) `http://<that host>`, as for `POST /midibridge/set`. A browser always sends `Origin` on a WebSocket, and a
+  WebSocket is not covered by the browser's same-origin policy, so without this any site the owner visits could open
+  one to `sidecar.local`. A non-browser client (the Tauri app's Rust side, a test tool) sends the Pi's own origin.
+- Limits: at most 2 connections (`CWebServer::MaxWs`), counted apart from the 4 HTTP workers (`MaxWorkers`), so the
+  old page keeps its connections; each connection is one Circle task on core 0, the HTTP worker's own.
+- Frames: text only (binary closes with 1003), masked (RFC), a message up to 4096 bytes (fragments allowed, ping/pong/close
+  between them; more closes with 1009), valid UTF-8 (1007). The server's frames are not fragmented.
+- Keepalive: the server pings when it sent nothing for 15 s; nothing at all from the client for 45 s closes with 1001
+  ("idle"). Browsers answer pings by themselves. The client also sends an application `ping` request when it heard
+  nothing for 15 s and reconnects after 30 s of silence.
+- The web UI switched off while connected: closed with 1001.
+
+## The Circle patch
+
+`pi/circle/circle-http-ws.patch`, applied by `build.sh` after `circle-http-case.patch` (marker `circle-http-ws` in
+`httpdaemon.h`; `lib/net` is rebuilt as before):
+
+- `CHTTPDaemon` keeps the `Upgrade`, `Sec-WebSocket-Key` and `Sec-WebSocket-Version` headers and, for a GET with an
+  `Upgrade` header, calls the new virtual `UpgradeConnection (path, socket)` before `GetContent`. TRUE: the derived
+  class served the connection (in the worker's task) and deleted the socket. The default returns FALSE, so every other
+  request is served exactly as before.
+- `CSocket::GetBytesQueued ()` (through `CTransportLayer` and a virtual `CNetConnection::GetBytesQueued`, which
+  `CTCPConnection` answers from its TX queue): the backpressure measure above. Only lib/net derives from
+  `CNetConnection`, and lib/net is rebuilt with the patch.
+
+`web.cpp` overrides `UpgradeConnection` and `web_ws.cpp` calls `GetBytesQueued`, so a tree without the patch does not
+build (as with `circle-http-auth.patch`).
+
+## Auth
+
+The pairing code's session token (`paircode.h`, docs/pi-engine.md "Pairing code"), the same token the old page sends
+in `X-Sidecar-Auth`. A browser cannot set a header on a WebSocket, and a token in the URL would land in history, proxy
+logs and `Referer`s, so it goes in the first request after the hello:
+
+```json
+{"type":"auth","id":1,"payload":{"token":"<32 hex>"}}
+```
+
+The client gets the token over HTTP as the old page does: `POST /pair` with the code once (keeping the client id and
+secret in `localStorage`, under the old page's keys), `POST /pair/resume` at each load. Without a token the connection
+still works for what `/status` shows (that endpoint is open too); `cmd` answers 401 with `"pair":true`. The token is
+checked again at every command, so a session unpaired elsewhere (forget, revoke all, a reboot) stops at once. Five
+wrong tokens close the connection (1008). The token is kept in the connection's memory only, wiped when it ends, never
+echoed or logged.
+
+## Envelope
+
+JSON text messages. Every client request has a `type` and a positive integer `id`; its answer is a `reply` with the
+same `id`. A `payload` is an object.
+
+| from | type | members | what |
+|---|---|---|---|
+| server | `hello` | `payload` | first message: see Versioning |
+| server | `reply` | `id`, `ok`, `payload` or `error` | the answer to a request |
+| server | `pub` | `topic`, `seq`, `payload` | a topic's current state |
+| server | `error` | `error` | a message that had no usable `id` |
+| client | `auth` | `id`, `payload.token` | see Auth |
+| client | `sub` | `id`, `payload.topics` [, `payload.ms`] | subscribe; `ms` = the push interval, clamped to 250..10000 (default 1000) |
+| client | `unsub` | `id` [, `payload.topics`] | unsubscribe (no list: all) |
+| client | `cmd` | `id`, `payload.c` | one console command (below) |
+| client | `ping` | `id` | `reply` with `payload.t` (the connection's ms clock) |
+| client | `ack` | `seq` | flow control (below); no `id`, no reply |
+
+`error` is `{"code":N,"msg":"..."}` with HTTP-like codes: 400 malformed, 401 not paired (`"pair":true`), 403 refused
+command, 404 unknown type, 429 too many requests, 500 the server's own fault. Ten malformed messages close the
+connection (1008). Requests are limited to a burst of 20, then 20 a second (429 beyond; `ack` is not counted).
+
+`sub`'s reply: `{"topics":[served],"later":[reserved names not served yet],"unknown":[...],"ms":N}`.
+
+## Topics
+
+| topic | payload | pushed |
+|---|---|---|
+| `status` | exactly what `GET /status` answers (the same function, `CWebServer::StatusJson`) | when it differs from the last push, at most every `ms`; unchanged for 10 s: sent anyway |
+| `levels` | master and 12 strip peaks (below); **mock only so far** | every `ms` (33..1000, default 40) |
+
+Reserved for later (a `sub` lists them under `later`): `usbMode`, `voices`, `levels`, `scenes`, `log`. `/status` is
+~12 KB on a unit today, so the next step is to split the parts a page watches closely (`usbMode`, `voices`, `levels`)
+into topics of their own with faster intervals and leave `status` slow.
+
+### `levels` (designed, served by the mock; the Pi next)
+
+What the header's "signal tide" and the Mix page's meters draw:
+
+```json
+{"type":"pub","topic":"levels","seq":812,"payload":{"master":[0.62,0.58],"strips":[0.1,0,0,0.4,0,0,0,0,0.2,0,0,0.6]}}
+```
+
+- `master`: the L/R peak since the last push, linear 0..1 (1 = full scale); `strips`: 12 peaks in the Mix page's
+  order V1..V8, B1..B3, M. Three decimals (~170 bytes a push).
+- Peaks are **held between pushes** (max since the last one), so a short transient is never lost to the coalescing;
+  the client draws its own decay.
+- Rate: its own interval range, 33..1000 ms, default 40 ms (25 Hz). The hello will carry it per topic
+  (`"rates":{"levels":[33,40]}`) when the Pi serves the topic; until then `minMs`/`maxMs` are the status topic's.
+- Source on the Pi: the render / control cores already measure peaks (core/fx/out_measure); core 3 publishes the 14
+  values into a single-writer snapshot (as `/lists` does), core 0's web task reads it when a push is due: no lock on
+  the audio path, nothing built while no client subscribes.
+- Flow control as for every topic: within the window of 4 the newest peaks go; a slow client simply sees fewer frames.
+  At 25 Hz the window is the bottleneck only above ~160 ms round trip, where fewer frames is the right answer.
+- Not changed-only: silence is pushed too (as zeros), at most once a second while everything is 0.
+
+## Commands
+
+`{"type":"cmd","id":7,"payload":{"c":"notes=1"}}` runs the serial console's parser, as `POST /cmd` does
+(`CConsole::Command`), logged as `command :notes=1 (ws)` (`wifi=join:` redacted). The refusals are `POST /cmd`'s
+(`web_cmd.h`, one list for both): `midibridge=`, `usbmidi=`, `osupdate=`, `link=tcp:<host>` while usbmidi=os: is on,
+`wdtest`, an empty command. A `/ws` message counts as a POST body (`wifi=` allowed), and the upgrade passed the strict
+same-origin check, so `usbmode=overbridge` is taken as from the page. Commands answer `{}` when taken; their effect
+shows in the next status push (and the log), as on the old page. At most 199 bytes.
+
+## Push rates and backpressure
+
+Circle's TCP send with `MSG_DONTWAIT` never refuses: it queues whatever it is given. So the server bounds what it
+sends itself:
+
+- every `pub` has a `seq` (1, 2, ... per connection); the client sends `{"type":"ack","seq":N}` once it has handled
+  push N (the web client does this after the handlers ran);
+- at most 4 pushes may be unacked (`window` in the hello); while the window is full nothing is built or sent, and when
+  it opens the topic's **newest** state goes out: older states are never queued (coalesced; counted, and logged in the
+  `ws: closed` line);
+- a client can ack without reading (a tool, not a browser), so the server also reads its TCP send queue
+  (`CSocket::GetBytesQueued`, from `circle-http-ws.patch`: bytes sent and not acknowledged, plus unsent): above 48 KB no
+  push is built (it waits like a full window), and a frame that would take it past 128 KB drops the connection
+  (logged as a policy close, 1008);
+- so a stalled client costs the Pi one open socket and at most 128 KB of queue, and building a push (the expensive
+  part on core 0) only happens when the client can take it;
+- pings from the client are charged to the same request bucket (a pong costs a send): a ping flood closes with 1008;
+- replies are not windowed; the rate limit bounds them.
+
+A topic is built at most every `ms` per connection; an unchanged one (FNV-1a of the payload) is not sent. With two
+clients at the default 1 s that is two `/status` builds a second, as the old page's polling costs today.
+
+## Versioning
+
+The server's first message:
+
+```json
+{"type":"hello","payload":{"proto":1,"server":"sidecar","version":"0.4.2","topics":["status"],
+ "later":["usbMode","voices","levels","scenes","log"],"caps":["auth","sub","unsub","cmd","ping","ack"],
+ "auth":"token","window":4,"maxMsg":4096,"minMs":250,"maxMs":10000}}
+```
+
+- `proto` is the major: a change that an old client would misread (a renamed member, another meaning) raises it, and
+  a client refuses a major it does not know (the web client stops and shows "incompatible", no reconnect loop).
+- Additions within a major are announced, not versioned: new topics appear in `topics`, new request types in `caps`,
+  new members in payloads are ignored by old clients. A client checks `topics` / `caps` before relying on one (the
+  Tauri app especially, as it may meet older firmware).
+
+## Serving the new app from the Pi
+
+Not wired in yet. The skeleton builds to ~112 KB of JS (44 KB gzipped), 6 KB of CSS (2 KB) and 47 KB of woff2 fonts
+(`web-next/`, `npm run build`, `base: "/next/"`): ~95 KB over the wire; the old page is ~130 KB raw (the kernel holds
+it raw and gzipped). Two ways, to decide when
+the design lands:
+
+1. Built in, as the old page: `build.sh` embeds `web-next/dist` gzipped (a few files as `hosted/web_next_*.h`) and
+   `GetContent` serves `/next/`, `/next/assets/*` from them. Budget: keep the gzipped bundle under ~100 KB, so the
+   kernel grows less than the old page did. Needs Node in the Docker build (or a committed `dist`).
+2. From the card: `/.rytm/www-next/` served read-only by `GetContent` under `/next/`, updated with the content zip.
+   No kernel growth, an app update without a kernel; one more path the open set must name.
+
+Either way `/next/*` joins the open set in `web.cpp` (it is static and has nothing of the device in it), and `/ws` is
+reached from `/next/` on the same origin.
