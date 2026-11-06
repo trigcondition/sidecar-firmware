@@ -31,6 +31,13 @@
   --cells: #c5c3ff;
   --cells-opacity: 0.3;
   --backdrop: rgba(0, 0, 0, 0.7);  /* behind a dialog */
+  /* the logo's dots, centre to rim (Logo.vue grades them by distance; the animated logo drifts each dot between all
+     five); decorative, but kept at 3:1 on the header band so the mark reads at 32 px */
+  --logo-1: #ff7a5c;           /* coral, the centre */
+  --logo-2: #d46cff;           /* magenta, from the header glow */
+  --logo-3: #9a97ff;           /* the accent */
+  --logo-4: #bdb9e8;           /* lavender, the rim */
+  --logo-5: #eeedff;           /* the text white (drift only) */
 
   --radius-card: 0.875rem;     /* 14px */
   --radius-control: 0.5625rem; /* 9px */
@@ -71,6 +78,11 @@
   --cells: #ffffff;
   --cells-opacity: 0.5;
   --backdrop: rgba(0, 0, 0, 0.85);
+  --logo-1: #ffffff;           /* high contrast: plain white dots */
+  --logo-2: #ffffff;
+  --logo-3: #ffffff;
+  --logo-4: #ffffff;
+  --logo-5: #ffffff;
 }
 
 /* the text-size setting (usePrefs.ts) */

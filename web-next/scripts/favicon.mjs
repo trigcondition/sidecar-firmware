@@ -6,4 +6,4 @@ import { faviconSvg } from "../src/components/logo.ts";
 import { tokenBlock } from "../src/styles/readTokens.ts";
 
 const t = tokenBlock(readFileSync(new URL("../src/styles/tokens.css", import.meta.url), "utf8"), ':root[data-theme="standard"]');
-writeFileSync(new URL("../public/favicon.svg", import.meta.url), faviconSvg({ bg: t.bg, text: t.text, accent: t.accent }));
+writeFileSync(new URL("../public/favicon.svg", import.meta.url), faviconSvg({ bg: t.bg, accent: t.accent, logo: [1, 2, 3, 4].map((n) => t[`logo-${n}`]) }));

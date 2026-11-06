@@ -41,7 +41,8 @@ const pairs: [string, string, number][] = [
   ["on-accent", "accent", TEXT], ["on-accent", "warm", TEXT], ["bg", "text", TEXT],
   ["control-border", "bg", UI], ["control-border", "card", UI],
   ["focus", "bg", UI], ["focus", "card", UI],
-  ["text", "tide-bg", TEXT], ["accent", "tide-bg", UI], // the header's pills and the logo's disc
+  ["text", "tide-bg", TEXT], ["accent", "tide-bg", UI], ["warm", "tide-bg", UI], // the header's pills and the logo's disc
+  ...[1, 2, 3, 4, 5].map((n): [string, string, number] => [`logo-${n}`, "tide-bg", UI]), // the logo's dots
 ];
 
 describe("the maths", () => {
