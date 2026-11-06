@@ -8,7 +8,7 @@
 // ids: 1 ReadPower, 2 CPUThrottle::Update, 3 temperature (the stats line), 4 the ARM clock read back (the
 // stats line: the voice budget follows it), 5 the ARM clock measured (every 10 s), 6 gadget throttled flags; 10.. core 0's main
 // loop sections: 10 plug-and-play, 11 gadget, 12 sidecar, 13 MIDI, 14 transport Poll, 15 console, 16 card service,
-// 17 recorder, 19 storage, 20 sampler; 30 a whole core-0 loop iteration (top to top) of at least 1 ms.
+// 17 recorder, 18 USB halt recovery (CObUsb::PollHalt), 19 storage, 20 sampler; 30 a whole core-0 loop iteration (top to top) of at least 1 ms.
 #pragma once
 #include "shared.h"
 #include "crumb.h"   // (2026-10-29: each Scope is also the core's breadcrumb section, crumb.h)

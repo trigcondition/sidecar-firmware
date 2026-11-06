@@ -60,6 +60,8 @@ uint32_t rytm_hellos();              // the Rytm's hellos so far (a new one: pai
 // the SIDECAR MENU's WEB UI page (core::ui::RemoteWebUi): paircode_pi's (cores.cpp, the control core at its start)
 void webui_init(bool (*on)(), void (*set_on)(bool), int (*gate)(), int (*devices)(), bool (*new_code)(),
                 void (*forget)());
+// the SIDECAR MENU's USB-C page (core::ui::RemoteUsb): usbc_pi's (cores.cpp, the control core at its start)
+void usb_init(int (*mode)(), unsigned (*modes)(), int (*shown)(), void (*set_mode)(int), const char* (*no_ob)());
 // The Rytm has said hello on this run: before that a refused popup is "no Rytm yet", not "this Rytm cannot" - the
 // boot's code stays owed until it arrives instead of being given up after ten seconds (the modal never appeared:
 // the Rytm's first hello comes well after the engine's boot, audit 2026-10-26)

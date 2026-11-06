@@ -36,7 +36,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-enum { SEG_TAB, SEG_NOTES, SEG_OUT, SEG_MAC, SEG_VOICE, SEG_MACH, SEG_DRONE, SEG_SAVER, SEG_STYLE, SEG_LOOK, SEG_CLOCK, SEG_N };
+enum { SEG_TAB, SEG_NOTES, SEG_OUT, SEG_MAC, SEG_VOICE, SEG_MACH, SEG_DRONE, SEG_SAVER, SEG_STYLE, SEG_LOOK, SEG_CLOCK, SEG_USB, SEG_N };
 enum { PG_HOME, PG_SOUND, PG_FX, PG_ABOUT, PG_SEQ, PG_RYTM, PG_DISPLAY, PG_MACH, PG_VOICE, PG_INS, PG_SONG, PG_REC, PG_SCOPE, PG_STATUS, PG_PROJECT, PG_POOL,
        PG_SERVICE, PG_CHOP, PG_PRESET, PG_MFX, PG_MORPH, PG_N };	// SERVICE (UX review T18): FIFO and the test drone, out of the musician's Sound page; the tab is called System: the CPU clock too
 
@@ -57,6 +57,9 @@ static const char *const kSaverMap[] = {"Off", "15 min", "1 h", "4 h", ""};
 static const int kSaverMin[4] = {0, 15, 60, 240};		// screensaver=MIN
 static const char *const kClockMap[] = {"1500 MHz", "1200 MHz", "1000 MHz", ""};	// Settings > System: cpumhz= (pi/engine/cpuclock.h)
 static const int kClockMHz[3] = {1500, 1200, 1000};
+static const char *const kUsbMap[] = {"Class compliant", "Overbridge", ""};	// Settings > Sound: usbmode= (pi/engine/usb_mode.h)
+static const char *const kUsbMap2[] = {"Class", "Overbridge", ""};			// (OLED: the narrow panel)
+static const char *const kUsbCmd[2] = {"usbmode=class", "usbmode=overbridge"};
 static const char *const kStyleMap[] = {"OLED", "Classic", ""};
 static const char *const kLookMap[] = {"Studio", "Stage", ""};	// L1: the OLED look
 static const char *const kSendName[SIDECAR_UI_SENDS] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"};
@@ -136,6 +139,7 @@ static void map_cols (int classic, char *c1, char *c2, int cap)	// c1: the title
 	}
 }
 static lv_obj_t *s_Home, *s_Pages, *s_Pg[PG_N], *s_Nav[NAV_N], *s_SetTitle;
+static lv_obj_t *s_UsbInfo;			// Settings > Sound: what USB-C is now, OVERBRIDGE's warning
 static lv_obj_t *s_Seg[SEG_N], *s_FifoVal, *s_DroneInfo, *s_FxName[2], *s_Bar[2][SIDECAR_UI_SENDS], *s_Kill;
 static lv_obj_t *s_About[8], *s_Bright, *s_BrightVal, *s_Dim, *s_Power;
 static char s_Banner[96];				// the warning banner's text (s_Power draws it itself: tests read it here)
@@ -458,6 +462,7 @@ static void seg_cb (lv_obj_t *m, int i, void *ud)
 		lv_snprintf (b, sizeof b, "cpumhz=%d", kClockMHz[i]);
 		command (b);
 		break;
+	case SEG_USB:	command (kUsbCmd[i ? 1 : 0]); break;	// stored, and USB-C replugs as that device
 	case SEG_SAVER:
 		lv_snprintf (b, sizeof b, "screensaver=%d", kSaverMin[i]);
 		command (b);
@@ -691,7 +696,10 @@ static void oled_sound (lv_obj_t *pg)
 	seg (l, SEG_OUT, LU (4), VS (63), lw - LU (8), VS (22), kOutMap, TH_KEY);
 	label (l, LU (6), VS (91), TH->f_micro, TH->dim, "COMPUTER AUDIO (USB-C)");
 	seg (l, SEG_MAC, LU (4), VS (102), lw - LU (8), VS (22), kOnOff, TH_KEY);
-	label_w (l, LU (6), VS (138), lw - LU (12), TH->f_micro, TH->faint, "FIFO, DRONE, CLOCK: SYSTEM");
+	label (l, LU (6), VS (130), TH->f_micro, TH->dim, "USB-C MODE");
+	seg (l, SEG_USB, LU (4), VS (141), lw - LU (8), VS (22), kUsbMap2, TH_KEY);
+	s_UsbInfo = label_w (l, LU (6), VS (168), lw - LU (12), TH->f_micro, TH->faint, "");
+	lv_label_set_long_mode (s_UsbInfo, LV_LABEL_LONG_MODE_WRAP);
 
 	lv_obj_t *r = th_panel (pg, rx, LU (41), rw, UH - LU (41), "MIDI NOTES IN", TH_PANEL_GROUP);
 	seg (r, SEG_VOICE, LU (4), VS (13), rw - LU (8), VS (46), (voice_maps (), s_VoiceMap2), TH_KEY_TRIG);
@@ -700,6 +708,7 @@ static void oled_sound (lv_obj_t *pg)
 	label_w (r, LU (6), VS (130), rw - LU (12), TH->f_micro, TH->faint, "PLAYS MIDI NOTES SENT TO THE");
 	label_w (r, LU (6), VS (130) + LU (11), rw - LU (12), TH->f_micro, TH->faint, "VOICE. A TRACK'S MACHINE IS");
 	label_w (r, LU (6), VS (130) + LU (22), rw - LU (12), TH->f_micro, TH->faint, "THE RYTM'S SRC PAGE.");
+	label_w (r, LU (6), VS (130) + LU (44), rw - LU (12), TH->f_micro, TH->faint, "FIFO, DRONE, CLOCK: SYSTEM");
 	th_seg_set (s_Seg[SEG_VOICE], sidecar_ui_voice_pos (s_nVoice));
 	s_Sel[SEG_VOICE] = sidecar_ui_voice_pos (s_nVoice);
 }
@@ -848,7 +857,10 @@ static void classic_sound (lv_obj_t *pg)
 	seg (l, SEG_OUT, LU (12), CY (118), LU (354) + dx, CH (48), kOutMap, TH_KEY);
 	label (l, LU (12), CY (170), sm, TH->dim, "Computer audio (USB-C)");
 	seg (l, SEG_MAC, LU (12), CY (188), LU (354) + dx, CH (48), kOnOff, TH_KEY);
-	label (l, LU (12), CY (252), sm, TH->sub, "FIFO, the test drone, the CPU clock: System.");
+	label (l, LU (12), CY (244), sm, TH->dim, "USB-C mode");
+	seg (l, SEG_USB, LU (12), CY (262), LU (354) + dx, CH (48), kUsbMap, TH_KEY);
+	s_UsbInfo = label_w (l, LU (12), CY (316), LU (354) + dx, TH->f_micro, TH->sub, "");
+	lv_label_set_long_mode (s_UsbInfo, LV_LABEL_LONG_MODE_WRAP);
 
 	lv_obj_t *r = th_panel (pg, LU (400) + dx, 0, LU (388) + dx, ph, "MIDI notes in", TH_PANEL_GROUP);
 	label (r, LU (12), CY (30), sm, TH->dim, "Voice");
@@ -859,6 +871,7 @@ static void classic_sound (lv_obj_t *pg)
 	seg (r, SEG_MACH, LU (12), CY (118), LU (364) + dx, CH (48), kMachMap, TH_KEY | TH_KEY_SMALL);
 	lv_obj_t *h = label_w (r, LU (12), CY (180), LU (364) + dx, sm, TH->sub, "Plays the MIDI notes sent to the voice. A track's machine is the Rytm's SRC page.");
 	lv_label_set_long_mode (h, LV_LABEL_LONG_MODE_WRAP);
+	label (r, LU (12), CY (316), sm, TH->sub, "FIFO, the test drone, the CPU clock: System.");
 	th_seg_set (s_Seg[SEG_VOICE], sidecar_ui_voice_pos (s_nVoice));
 	s_Sel[SEG_VOICE] = sidecar_ui_voice_pos (s_nVoice);
 }
@@ -1696,6 +1709,30 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 		int k = -1;
 		for (int i = 0; i < 3; i++) if (kClockMHz[i] == s->cpu_mhz) k = i;
 		seg_set (SEG_CLOCK, k);
+	}
+	{	// the USB-C mode (Settings > Sound): the mode set; a mode this unit cannot run is greyed; what USB-C is now, and
+		// OVERBRIDGE's warning wherever it can be picked, set or not (docs/usb-mirror.md "What the filters cover")
+		const int ok = s->usb_modes != 0, ob = s->usb_mode == 1, O = oled ();
+		const char *box = O ? sidecar_ui_box_up () : sidecar_ui_box ();
+		char u[200];
+		seg_set (SEG_USB, ok && s->usb_mode >= 0 ? s->usb_mode : -1);
+		th_seg_enable (s_Seg[SEG_USB], 0, ok && (s->usb_modes & 1));
+		th_seg_enable (s_Seg[SEG_USB], 1, ok && (s->usb_modes & 2));
+		if (!ok) lv_snprintf (u, sizeof u, "%s", O ? "NOT HERE: USB-C IS CMDLINE GADGET=" : "Not here: USB-C is cmdline.txt's gadget= (MIDI only or off).");
+		else if (ob && !(s->usb_modes & 2)) lv_snprintf (u, sizeof u, "%s", O ? "NOT IN THIS BUILD: CLASS RUNS." : "Overbridge is not in this build: class compliant runs.");
+		else if (s->usb_shown == 1) lv_snprintf (u, sizeof u, O ? "NOW: THE %s ITSELF." : "Now: the %s itself.", box);
+		else if (s->usb_shown == 2) lv_snprintf (u, sizeof u, "%s", O ? "NOW: REPLUGGING..." : "Now: replugging...");
+		else if (ob) lv_snprintf (u, sizeof u, O ? "NOW: SIDECAR DEVICE (NO %s YET)." : "Now: the Sidecar device (no %s read yet).", box);
+		else lv_snprintf (u, sizeof u, "%s", O ? "NOW: SIDECAR AUDIO + MIDI." : "Now: the Sidecar's audio and MIDI.");
+		if (ok && (s->usb_modes & 2))	// set, or before it is picked (the review's L3)
+		{
+			size_t n = strlen (u);
+			if (ob) lv_snprintf (u + n, sizeof u - n, "%s", O ? "\nITS REQUESTS PASS UNFILTERED:\nOS UPDATES CAN REACH IT."
+									  : " Its requests pass unfiltered: an OS update from the computer can reach it.");
+			else lv_snprintf (u + n, sizeof u - n, "%s", O ? "\nOVERBRIDGE IS UNFILTERED:\nOS UPDATES CAN REACH THE BOX."
+									 : " Overbridge: the box's requests unfiltered, OS updates can reach it.");
+		}
+		set_text (s_UsbInfo, u);
 	}
 	if (s->brightness >= 5 && !th_slider_dragging (s_Bright))
 	{

@@ -927,7 +927,7 @@ int main() {
     for (int i = 0; i < menu_rows(); ++i) CHECK(!menu_row_page(i) || !sc_shortcut_only(menu_row_page(i)));
     for (int i = 0; i < menu_rows() + 4; ++i) from_rytm(0x31, 0, 0x43, 1), from_rytm(0x31, 0, 0x43, 0);   // DOWN to the last row
     remote_tick(t += 30);
-    CHECK(shown_text("KEYS (ALL COMBOS)") && shown_text("UP+T12") && shown_text("UP+T10") && !shown_text("UP+T13"));
+    CHECK(shown_text("KEYS (ALL COMBOS)") && shown_text("USB-C -") && shown_text("UP+T10") && !shown_text("UP+T13"));   // (USB-C, no platform here: "-"; PROJECT's UP+T12 one row up)
     png("menu_2_end.png");
     from_rytm(0x31, 0, 0x44, 1), from_rytm(0x31, 0, 0x44, 0);   // YES: KEYS
     remote_tick(t += 30);
@@ -1349,6 +1349,85 @@ int main() {
       remote_pair_code("");
       menu_reset();
       printf("ui: SIDECAR MENU > WEB UI: on / off, the code, a new code, forget the devices (YES twice)\n");
+    }
+    // SIDECAR MENU > USB-C: the mode set (CLASS COMPLIANT / OVERBRIDGE), YES asks for the row's, OVERBRIDGE's warning,
+    // what the computer sees; a mode the unit cannot run says so; no platform hooks: NOT HERE
+    {
+      struct Fake { int mode = 0; unsigned modes = 3; int shown = 0, sets = 0; };
+      static Fake fu;
+      static const RemoteUsb hooks = {[] { return fu.mode; }, [] { return fu.modes; }, [] { return fu.shown; },
+                                      [](int m) { fu.mode = m, ++fu.sets, fu.shown = 2; }};
+      auto key = [&](int k) { from_rytm(0x31, 0, (uint8_t)k, 1), from_rytm(0x31, 0, (uint8_t)k, 0); remote_tick(t += 30); };
+      auto is = [](const char* title) { return remote_page_title() && !strcmp(remote_page_title(), title); };
+      int row = -1;
+      for (int i = 0; i < menu_rows(); ++i) if (menu_row_page(i) && !strcmp(menu_row_page(i), "USB-C")) row = i;
+      CHECK(row >= 0);
+      auto open = [&] {
+        menu_reset();
+        key(0x44);                               // YES on SIDECAR: MENU
+        CHECK(is("MENU"));
+        for (int i = 0; i < row; ++i) from_rytm(0x31, 0, 0x43, 1), from_rytm(0x31, 0, 0x43, 0);
+        key(0x44);
+      };
+      remote_usb(nullptr);
+      open();
+      CHECK(is("MENU"));                         // (its note: "USB-C: NOT HERE NOW")
+      remote_usb(&hooks);
+      key(0x44);
+      CHECK(is("USB-C") && shown_text("CLASS COMPLIANT") && shown_text("OVERBRIDGE") && shown_text("SET") &&
+            shown_text("SIDECAR DEVICE") && shown_text("AUDIO 12 IN/OUT + MIDI") && shown_text("YES: SET  NO: BACK") &&
+            !shown_text("ITS REQUESTS UNFILTERED"));
+      png("usb_1_class.png");
+      key(0x44);                                 // YES on CLASS COMPLIANT, set already: nothing asked
+      CHECK(fu.sets == 0 && shown_text("CLASS ALREADY"));
+      key(0x43);                                 // DOWN: OVERBRIDGE, its warning before it is set
+      CHECK(fu.sets == 0 && shown_text("ITS REQUESTS UNFILTERED") && shown_text("OS UPDATES CAN REACH IT"));
+      key(0x44);                                 // YES: asked once more (the box's requests unfiltered)
+      CHECK(fu.sets == 0 && shown_text("YES: OVERBRIDGE  NO: KEEP") && shown_text("ITS REQUESTS UNFILTERED"));
+      png("usb_2_confirm.png");
+      key(0x45);                                 // NO: kept, still on the page
+      CHECK(fu.sets == 0 && is("USB-C") && shown_text("KEPT"));
+      key(0x44), key(0x43);                      // YES then DOWN (a move): the question is off
+      CHECK(fu.sets == 0 && !shown_text("YES: OVERBRIDGE  NO: KEEP"));
+      key(0x44), key(0x44);                      // YES, YES: asked for
+      CHECK(fu.sets == 1 && fu.mode == 1 && shown_text("OVERBRIDGE: REPLUGS") && shown_text("REPLUG..."));
+      fu.shown = 1;
+      remote_tick(t += 3000);
+      CHECK(shown_text("THE BOX") && shown_text("ITS REQUESTS UNFILTERED") && shown_text("YES: SET  NO: BACK"));
+      png("usb_3_overbridge.png");
+      key(0x42);                                 // UP: CLASS COMPLIANT; OVERBRIDGE set: the warning stays
+      CHECK(shown_text("ITS REQUESTS UNFILTERED"));
+      key(0x44);
+      CHECK(fu.sets == 2 && fu.mode == 0 && shown_text("CLASS: REPLUGS"));
+      fu.shown = 0;
+      remote_tick(t += 3000);
+      CHECK(!shown_text("ITS REQUESTS UNFILTERED"));
+      fu.modes = 1;                              // a build without the mirror: OVERBRIDGE refused here
+      key(0x43), key(0x44);
+      CHECK(fu.sets == 2 && fu.mode == 0 && shown_text("NOT IN BUILD") && shown_text("NOT IN THIS BUILD"));
+      // a platform's own word for why OVERBRIDGE cannot run (no_ob): on the row and in the note instead
+      static const RemoteUsb hooks5 = {hooks.mode, hooks.modes, hooks.shown, hooks.set_mode, [] { return "NO MIRROR"; }};
+      remote_usb(&hooks5);
+      remote_tick(t += 3000);
+      key(0x44);
+      CHECK(fu.sets == 2 && fu.mode == 0 && shown_text("NO MIRROR") && !shown_text("NOT IN BUILD"));
+      remote_usb(&hooks);
+      fu.modes = 0, fu.shown = -1;               // USB-C is not the Sidecar's device (cmdline gadget=midi / 0)
+      key(0x42), key(0x44);
+      CHECK(fu.sets == 2 && shown_text("NO SIDECAR USB") && shown_text("USB-C: CMDLINE GADGET="));
+      png("usb_4_nogadget.png");
+      key(0x45);                                 // NO: SIDECAR
+      CHECK(!is("USB-C") && remote_stats().page == 0);
+      fu = Fake{};
+      fu.mode = 1;
+      open();                                    // it opens on the mode set: OVERBRIDGE's row
+      key(0x44);                                 // YES there
+      CHECK(is("USB-C") && fu.sets == 0 && shown_text("OVERBRIDGE ALREADY"));
+      key(0x45);                                 // NO: SIDECAR
+      CHECK(!is("USB-C") && remote_stats().page == 0);
+      remote_usb(nullptr);
+      menu_reset();
+      printf("ui: SIDECAR MENU > USB-C: class compliant / overbridge, its warning, what USB-C is now\n");
     }
   }
 

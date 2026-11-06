@@ -568,6 +568,17 @@ int main() {
     device::reset();
     CHECK(device::kA4.features & device::kUserSlots);
   }
+  // ---- a clock 24.8+ days into the uptime (a Pi up for weeks, a Mac): the first rescan after boot waits its 150 ms, not forever
+  // (g_scan_at started as 0 and now_ms() - 0 read as in the future from 2^31 ms on, so the scan never began)
+  host_fake_time(true, 3000000000000ull);   // 3.0e9 ms, past 2^31
+  idle_all();
+  CHECK(um::command("um=rescan", o, sizeof o));
+  idle_all();
+  CHECK(um::slot_view(0).state == RMP_SLOT_READY);
+  host_fake_time(true, 3000000000000ull + 150000ull * 15);
+  CHECK(um::command("um=rescan", o, sizeof o));
+  idle_all();
+  host_fake_time(false, 0);
   printf("test_um_scan: PASS\n");
   return 0;
 }

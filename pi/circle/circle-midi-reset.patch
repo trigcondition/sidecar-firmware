@@ -1,0 +1,119 @@
+diff -ruN a/include/circle/usb/usbmidi.h b/include/circle/usb/usbmidi.h
+--- a/include/circle/usb/usbmidi.h
++++ b/include/circle/usb/usbmidi.h
+@@ -73,6 +73,13 @@
+ 	/// \return 0 idle, 1 a transfer in flight, 2 idle, and the last one failed (this call clears that)
+ 	unsigned GetSendState (void);
+ 
++	/// circle-midi-reset.patch
++	/// \brief The OUT endpoint halted by a transfer error (xHCI): Reset Endpoint, Set TR Dequeue, its queued URBs dropped
++	/// \return TRUE: it was halted and is running again. FALSE: not halted (a device only slow to take it), an
++	///	    asynchronous send in flight, no such path, or the controller refused the reset
++	/// \note Task level, interrupts enabled (the xHCI command waits for its event)
++	boolean ResetOutHalted (void);
++
+ 	/// \brief Send one or more messages in plain MIDI message format
+ 	/// \param nCable Cable number (0-15)
+ 	/// \param pData Pointer to the message buffer
+@@ -98,6 +105,9 @@
+ 	typedef unsigned TSendStateHandler (void *pParam);
+ 	void RegisterSendEventsAsyncHandler (TSendEventsHandler *pHandler, TSendStateHandler *pState, void *pParam);
+ 
++	typedef boolean TResetHandler (void *pParam);		// circle-midi-reset.patch
++	void RegisterResetHandler (TResetHandler *pHandler, void *pParam);
++
+ 	boolean GetAllSoundOffOnUSBError (void) const;
+ 
+ 	friend class CUSBMIDIHostDevice;
+@@ -111,6 +121,8 @@
+ 	TSendEventsHandler *m_pSendAsyncHandler = 0;
+ 	TSendStateHandler *m_pSendStateHandler = 0;
+ 	void *m_pSendAsyncParam = 0;
++	TResetHandler *m_pResetHandler = 0;
++	void *m_pResetParam = 0;
+ 	void *m_pSendEventsParam;
+ 
+ 	boolean m_bAllSoundOff;
+diff -ruN a/include/circle/usb/usbmidihost.h b/include/circle/usb/usbmidihost.h
+--- a/include/circle/usb/usbmidihost.h
++++ b/include/circle/usb/usbmidihost.h
+@@ -41,6 +41,7 @@
+ 	static boolean SendEventsHandler (const u8 *pData, unsigned nLength, void *pParam);
+ 	static boolean SendAsyncHandler (const u8 *pData, unsigned nLength, void *pParam);	// circle-midi-async.patch
+ 	static unsigned SendStateHandler (void *pParam);
++	static boolean ResetOutHandler (void *pParam);		// circle-midi-reset.patch
+ 
+ private:
+ 	boolean StartRequest (void);
+diff -ruN a/lib/usb/usbmidi.cpp b/lib/usb/usbmidi.cpp
+--- a/lib/usb/usbmidi.cpp
++++ b/lib/usb/usbmidi.cpp
+@@ -351,6 +351,17 @@
+ 	m_pSendAsyncParam = pParam;
+ }
+ 
++boolean CUSBMIDIDevice::ResetOutHalted (void)
++{
++	return m_pResetHandler != 0 && (*m_pResetHandler) (m_pResetParam);
++}
++
++void CUSBMIDIDevice::RegisterResetHandler (TResetHandler *pHandler, void *pParam)
++{
++	m_pResetHandler = pHandler;
++	m_pResetParam = pParam;
++}
++
+ void CUSBMIDIDevice::RegisterSendEventsHandler (TSendEventsHandler *pHandler, void *pParam)
+ {
+ 	m_pSendEventsParam = pParam;
+diff -ruN a/lib/usb/usbmidihost.cpp b/lib/usb/usbmidihost.cpp
+--- a/lib/usb/usbmidihost.cpp
++++ b/lib/usb/usbmidihost.cpp
+@@ -26,6 +26,9 @@
+ #include <circle/usb/usbaudio.h>
+ #include <circle/usb/usb.h>
+ #include <circle/usb/usbhostcontroller.h>
++#if RASPPI >= 4
++#include <circle/usb/xhciendpoint.h>
++#endif
+ #include <circle/synchronize.h>
+ #include <circle/koptions.h>
+ #include <circle/logger.h>
+@@ -193,6 +196,7 @@
+ 		m_pTxBuffer = new u8[TxBufferSize];
+ 		assert (m_pTxBuffer != 0);
+ 		m_pInterface->RegisterSendEventsAsyncHandler (SendAsyncHandler, SendStateHandler, this);
++		m_pInterface->RegisterResetHandler (ResetOutHandler, this);
+ 	}
+ 
+ 	return StartRequest ();
+@@ -246,6 +250,29 @@
+ 	}
+ 
+ 	return TRUE;
++}
++
++// circle-midi-reset.patch: a transfer error halts a non-isochronous xHCI endpoint, and every later send on it fails (or
++// times out): reset it. Not while an asynchronous send is in flight (its URB is the completion's to free).
++boolean CUSBMIDIHostDevice::ResetOutHandler (void *pParam)
++{
++	CUSBMIDIHostDevice *pThis = static_cast<CUSBMIDIHostDevice *> (pParam);
++	assert (pThis);
++#if RASPPI >= 4
++	if (pThis->m_pEndpointOut == 0 || pThis->m_bTxBusy)
++	{
++		return FALSE;
++	}
++	CXHCIEndpoint *pXHCI = pThis->m_pEndpointOut->GetXHCIEndpoint ();
++	if (pXHCI == 0 || pXHCI->GetEPState () < 2 || !pXHCI->ResetFromHalted ())	// 2 halted, 3 stopped, 4 error
++	{
++		return FALSE;
++	}
++	pXHCI->DropURBs ();					// circle-xhci-dropurbs.patch: what the reset skipped
++	return TRUE;
++#else
++	return FALSE;
++#endif
+ }
+ 
+ unsigned CUSBMIDIHostDevice::SendStateHandler (void *pParam)

@@ -61,9 +61,63 @@ test("mock_web: commands change /status (machines per voice, fifo limit), MOCK_I
   for (let i = 0; i < 50 && !s; i++) { try { s = await (await fetch(base + "/status")).json(); } catch { await new Promise((r) => setTimeout(r, 100)); } }
   assert.ok(s, "mock_web answers");
   assert.equal(s.machines.length, 8); assert.equal(s.machines[0], "PLAITS");
-  const cmd = (c) => fetch(base + "/cmd", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "c=" + encodeURIComponent(c) });
+  const cmd = (c) => fetch(base + "/cmd", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: base },   // (as the page: usbmode=overbridge needs it)
+    body: "c=" + encodeURIComponent(c) });
   for (const c of ["notes=1", "out=tracks", "mac=off", "drone=2", "fifo=8", "notemach=3:juno"]) await cmd(c);
   s = await (await fetch(base + "/status")).json();
   assert.equal(s.notes, true); assert.equal(s.out, "tracks"); assert.equal(s.mac, true);
   assert.equal(s.drone, 2); assert.equal(s.fifoTarget, 24); assert.equal(s.machines[3], "JUNO");
+  assert.deepEqual(s.usbMode, { set: "class", from: "default", runs: "class", modes: ["class", "overbridge"], shown: "sidecar", boxUp: true, board: 4 });
+  await cmd("usbmode=overbridge");
+  s = await (await fetch(base + "/status")).json();
+  assert.equal(s.usbMode.set, "overbridge"); assert.equal(s.usbMode.from, "card"); assert.equal(s.usbMode.shown, "box");
+  await cmd("usbmode=cmdline");
+  s = await (await fetch(base + "/status")).json();
+  assert.equal(s.usbMode.set, "class"); assert.equal(s.usbMode.from, "default");
+});
+
+// the USB-C mode (pi/engine/usb_mode.h, /status "usbMode"): the button set from /status, the ones this unit cannot run
+// disabled, the line beside it, and OVERBRIDGE's warning while it is set
+test("USB-C mode: chosen, disabled where it cannot run, what USB-C is now, the warning", () => {
+  const c = page.indexOf("function chosen"), d = page.indexOf("function settle");
+  assert.ok(c > 0 && d > c, "chosen and paintSeg in index.html");
+  const btn = (val) => ({ dataset: { val }, title: "", disabled: false, tabIndex: 0, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, classList: { toggle() {} } });
+  const bs = [btn("class"), btn("overbridge")];
+  const group = { dataset: { key: "usbmode" }, classList: { toggle() {} }, setAttribute() {}, querySelectorAll: () => bs, querySelector: () => bs[0] };
+  const el = { "#usbnow": { textContent: "" }, "#usb-warn": { hidden: true }, "#mvoice": { value: "0" }, "#mcur": { textContent: "" }, "#fifocur": { textContent: "" } };
+  const docU = { querySelectorAll: (q) => (q === ".seg[data-key]" ? [group] : []) };
+  const run = new Function("document", "$", "pend", "online", "st0", `let status = st0; ${page.slice(c, d)}; paintSeg(); return chosen("usbmode");`);
+  const pend = { want: () => undefined };
+  const paint = (st) => run(docU, (q) => el[q], pend, true, st);
+
+  assert.equal(paint({ gadget: "sidecar", usbMode: { set: "class", from: "default", runs: "class", modes: ["class", "overbridge"], shown: "sidecar", boxUp: true } }), "class");
+  assert.equal(bs[0].attrs["aria-checked"], "true"); assert.equal(bs[1].disabled, false);
+  assert.equal(el["#usbnow"].textContent, "now: the Sidecar device"); assert.equal(el["#usb-warn"].hidden, true);
+
+  assert.equal(paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "cmdline", runs: "overbridge", modes: ["class", "overbridge"], shown: "box", boxUp: true } }), "overbridge");
+  assert.equal(bs[1].attrs["aria-checked"], "true");
+  assert.equal(el["#usbnow"].textContent, "now: the Rytm itself (cmdline.txt usb=)"); assert.equal(el["#usb-warn"].hidden, false);
+
+  paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "card", runs: "class", modes: ["class"], shown: "sidecar", boxUp: false } });
+  assert.equal(bs[1].disabled, true); assert.match(bs[1].title, /not in this build/);
+  assert.equal(el["#usbnow"].textContent, "now: the Sidecar device; not in this build: class compliant runs");
+  // a Pi 5 (board 5) as the Pi 4: OVERBRIDGE there when its build has the mirror, the generic word when not
+  paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "card", runs: "overbridge", modes: ["class", "overbridge"], shown: "box", boxUp: true, board: 5 } });
+  assert.equal(bs[1].disabled, false); assert.equal(bs[1].attrs["aria-checked"], "true");
+  assert.equal(el["#usbnow"].textContent, "now: the Rytm itself");
+  paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "card", runs: "class", modes: ["class"], shown: "sidecar", boxUp: false, board: 5 } });
+  assert.equal(bs[1].disabled, true); assert.match(bs[1].title, /not in this build/);
+  assert.equal(el["#usbnow"].textContent, "now: the Sidecar device; not in this build: class compliant runs");
+
+  // the warning before it is set: while Overbridge is pending (the click confirmed), and a confirm() before the click
+  const pendOb = { want: (k) => (k === "usbmode" ? "overbridge" : undefined) };
+  run(docU, (q) => el[q], pendOb, true, { gadget: "sidecar", usbMode: { set: "class", from: "default", runs: "class", modes: ["class", "overbridge"], shown: "sidecar", boxUp: true } });
+  assert.equal(el["#usb-warn"].hidden, false);
+  assert.match(page, /k === "usbmode" && b\.dataset\.val === "overbridge" && chosen\(k\) !== "overbridge" && !confirm\(USB_OB_WARN\)\) return;/);
+  const w = page.slice(page.indexOf("const USB_OB_WARN"), page.indexOf("const USB_OB_WARN") + 400);
+  assert.match(w, /unfiltered/); assert.match(w, /usbmidi=os:/); assert.match(w, /not during a transfer or an OS update/);
+
+  paint({ gadget: "midi", usbMode: { set: "class", from: "default", runs: "class", modes: [], shown: "none", boxUp: false } });
+  assert.equal(bs[0].disabled, true); assert.equal(bs[1].disabled, true);
+  assert.equal(el["#usbnow"].textContent, "not here: cmdline.txt gadget=midi");
 });

@@ -336,13 +336,22 @@ What replaces it for now:
 - **Circle: not by default.** `lib/usb/gadget/Makefile` builds the DWC2 gadget only for `RASPPI != 5`, and `bcm2712.h`
   has no `ARM_USB_BASE`. `RASPPI=5 pi/engine/build.sh` builds it (`PI5_GADGET=1`, the default since 0.4.0), in a Circle
   tree of its own (`circle-engine-pi5usb`, the host-side patches + `circle-gadget.patch` + `circle-gadget-wake.patch` +
-  `circle-pi5-gadget.patch` + `circle-gadget-reset.patch`).
+  `circle-pi5-gadget.patch` + `circle-gadget-reset.patch`, then the `usb=mirror` patches as on the Pi 4, see below).
+- **Overbridge passthrough (`usb=mirror`): Pi 4 since 0.4.1; Pi 5 since 0.4.2.** The mirror
+  (docs/usb-mirror.md: the computer sees the attached box itself) is in the Pi 5's kernel again (0.4.1's left it out),
+  with the same patches and the same USB-C mode switch as the Pi 4: OVERBRIDGE on the web page's Sound tab, Settings >
+  Sound and the Rytm's SIDECAR MENU > USB-C, `/status` `usbMode.modes` `["class","overbridge"]` (`"board":5`). Power: a
+  Pi 5 that uses its USB-C for data gets about 1.5 A from a computer or hub port: on a powered hub port (about 1.5 A) the 0.4.2 test unit ran without under-voltage;
+  while an earlier setup on a hub port was power-starved and reset when Overbridge started, and a direct Apple Silicon port did not enumerate it; for full power it needs a
+  USB-C power + data splitter with USB-PD pass-through (docs/usb-mirror.md "The Pi 5").
 - **On by default (0.4.0, in testing).** The Pi 5's `GADGET` default is `sidecar`, as on the Pi 4: UAC2 12 in / 12 out
   and USB MIDI on USB-C, the web page's Sound tab and the touchscreen's Settings > Sound offer computer audio as on the
   Pi 4 (both go by `/status` "sidecar" / "mac": the Sidecar device is up). `gadget=0` in `cmdline.txt` turns it off,
   `gadget=midi` gives P1's MIDI echo. The USB-C port is also the Pi 5's power input, so the computer reaches it through a
   **powered USB-C hub or dock that passes data and powers the Pi** (for example a dock with USB-PD pass-through that
-  can give 5 A; a Mac port alone gives 3 A at most, and the Pi 5 then limits its USB-A ports to 600 mA). Measured so far
+  can give 5 A; a Mac port alone gives 3 A at most, and the Pi 5 then limits its USB-A ports to 600 mA). A Pi 5 that
+  uses its USB-C for data gets about 1.5 A from a computer or hub port; full power needs a USB-C power+data splitter
+  with USB-PD pass-through. Measured so far
   through an Overhub II at 480 Mb/s (the bring-up kernel and the engine's test kernels, "Engine test mode"); the release
   kernel with a computer on USB-C has not yet run on hardware. Kernels before 0.4.0 that had the gadget compiled in
   (`PI5_GADGET=1`, run on a Pi 5 in 2026-11) defaulted to `gadget=0`; they ran on the official 27 W supply with no boot,

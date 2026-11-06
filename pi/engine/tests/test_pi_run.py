@@ -87,8 +87,8 @@ def main():
         return (f"engine: fifo min 80 max 96 target 96 under {under} | blocks {blocks} max 40 us | cpu c1 0.4 c2 0.3 "
                 f"c3 1.2 % | plaits 0.2 | midi 6 B sysex 2 notes 2 | to-host dropped 0 | peak 120/1000 | 51 C")
     st = lambda out=6857, notes=2: f"selftest: OUT {out}/s notes {notes} slips 0"
-    ob = lambda gap=0, lost=0: (f"rytmob: 1000ms IN 6857/s 6857 gap {gap} lost {lost} max 0 odd 0 sh 0 bad 0 err 0 "
-                                f"dt 200us pk 0 | OUT 6857/s 6857 err 0 age 0ms cr 2 drop 0 | pend 8/2")
+    ob = lambda gap=0, lost=0: (f"rytmob: 1000ms IN 6857/s 6857 gap {gap} lost {lost} max 0 odd 0 sh 0 bad 0 err 0 rs 0 "
+                                f"dt 200us pk 0 | OUT 6857/s 6857 err 0 rs 0 age 0ms cr 2 drop 0 | pend 8/2")
     assert run_checks(lambda: pi_run.check_stats([eng(3), st(), eng(3), st()], "m", True)) == []
     assert run_checks(lambda: pi_run.check_stats([eng(3), ob(), eng(3), ob()], "m", False)) == []
     assert run_checks(lambda: pi_run.check_stats([eng(3), st(), eng(4), st(5000)], "m", True)) == [

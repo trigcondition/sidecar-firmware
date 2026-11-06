@@ -96,6 +96,21 @@ struct RemoteWebUi {
 };
 void remote_webui(const RemoteWebUi* h);
 const RemoteWebUi* remote_webui();
+// The USB-C page (the SIDECAR MENU's USB-C, page_menu.cpp): what the platform's USB-C port is to the computer, one mode
+// at a time (pi/engine/usb_mode.h): 0 CLASS COMPLIANT (the Sidecar's own audio + MIDI device), 1 OVERBRIDGE (the box
+// itself, passed through: docs/usb-mirror.md). The Pi's (pi/engine/usbc_pi.h, cores.cpp); with none set (the Teensy,
+// the Mac) the row says it is not here. Control side; set_mode only asks (the platform stores and applies it).
+struct RemoteUsb {
+  int (*mode)();              // the mode set (-1: not known yet)
+  unsigned (*modes)();        // bit m: mode m can run here (0: USB-C is not the Sidecar's device: cmdline gadget=)
+  int (*shown)();             // what the computer sees now: 0 the Sidecar device, 1 the box, 2 off the bus (a replug), -1 none
+  void (*set_mode)(int mode);
+  // why OVERBRIDGE cannot run here, the row's short word (13 characters at most) and YES's note; none set (the Pi: the
+  // generic words), or it returns nullptr: NOT IN BUILD / NOT IN THIS BUILD
+  const char* (*no_ob)();
+};
+void remote_usb(const RemoteUsb* h);
+const RemoteUsb* remote_usb();
 // The USER SLOTS page (page_slots.cpp): which installed user machine each slot U1..U5 plays. The platform's user
 // machines (core/user/um.cpp installs these in um::begin: the Pi, the Mac); none set (the Teensy) and the page is not
 // shown. Control side, as the console's um commands.

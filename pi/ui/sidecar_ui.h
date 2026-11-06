@@ -53,6 +53,10 @@ typedef struct
 	int		temp_warn;			// 1: the temperature warning is on (80 C up, off below 75 C: pi/engine/thermal.h): a banner
 	int		clock_low_mhz;			// the ARM clock Circle's throttle lowered it to (thermal.h clock_low_mhz), 0: not lowered
 	int		cpu_mhz;			// the CPU clock setting (Settings > System: 1500 / 1200 / 1000), 0: not known
+	// the USB-C mode (Settings > Sound; pi/engine/usb_mode.h): 0 CLASS COMPLIANT, 1 OVERBRIDGE (the box passed through)
+	int		usb_mode;			// the mode set
+	int		usb_modes;			// bit m: mode m can run here (0: USB-C is not the Sidecar's device, cmdline gadget=)
+	int		usb_shown;			// what the computer sees: 0 the Sidecar device, 1 the box, 2 a replug, -1 none
 	// the box in use (core/device): every page names it and its voices so; a change rebuilds the pages (once a boot, as a rule)
 	const char	*box;				// its word for the user ("Rytm", "A4"), 0: "Rytm"
 	const char	*voice[SIDECAR_UI_TRACKS];	// voice v's name for the user ("T1", "-" one it does not use), 0: the Rytm's (sidecar_vlabel.h)

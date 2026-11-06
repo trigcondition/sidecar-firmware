@@ -31,6 +31,7 @@
 #include "power_state.h"
 #include "thermal.h"
 #include "cpuclock.h"
+#include "usb_mode.h"
 #include "touch_cal.h"		// pi/ui: the touch calibration (touchcal=)
 #include "sidecar_ui.h"
 
@@ -71,6 +72,12 @@ private:
 	void ThermalStep (unsigned nTempC);			// the temperature warning (thermal.h): once a second, from LogStats
 	void ReadPower (boolean bLog);				// the supply (power_state.h): at boot, every 10 s, logged on a change and once a minute
 	void PushUi (void);					// the display's state, read back from the engine (docs/pi-display.md)
+	// the USB-C mode (usb_mode.h, docs/usb-mirror.md "The setting"): the mode chosen from display.txt / cmdline, run on the
+	// gadget (live: CSidecarGadget::SetMirror), and published to the Rytm's SIDECAR MENU > USB-C (usbc_pi.h); core 0
+	void ApplyUsbMode (void);
+	void PublishUsb (void);					// core 0's loop: usbc_pi's view when it changed
+	int UsbShown (void) const;				// what the computer sees: 0 the Sidecar device, 1 the box, 2 between them; -1 no Sidecar gadget
+	boolean UsbCommand (const char *pCmd);			// usbmode, usbmode=class|overbridge|cmdline (TRUE: it was one)
 	static void UiCommand (const char *pCmd, void *pParam);	// a display control: the console's parser, then a re-read
 	void StopAndReboot (const char *pWhy, boolean bTryboot = FALSE);
 	void BootStep (unsigned nStep);			// the boot screen's bar (1..CSidecarDisplay::SplashSteps)	// bTryboot: the firmware reads tryboot.txt once
@@ -120,6 +127,15 @@ private:
 	// when it was set, then after each CCPUThrottle::Update and once a second: FollowClock), and the voice budget for it; capped: below the full clock, so Circle's Update does not run (it
 	// would raise the clock again when the SoC is cool)
 	unsigned		m_nClockSetting = 1500;
+	// the USB-C mode (usb_mode.h): usbmode= in display.txt if there (m_bUsbStored), else cmdline usb=; m_UsbMode the one
+	// chosen (it runs if m_nUsbModes has it, else CLASS COMPLIANT), m_nUsbModes what this unit can show
+	boolean			m_bUsbStored = FALSE;
+	usb_mode::Mode		m_UsbStored = usb_mode::kSidecar;
+	usb_mode::Mode		m_UsbMode = usb_mode::kSidecar;
+	usb_mode::From		m_UsbFrom = usb_mode::kDefault;
+	unsigned		m_nUsbModes = 0;
+	volatile boolean	m_bUsbApply = FALSE;	// a usbmode= changed the mode: Run applies it (ApplyUsbMode) at one point of its loop
+	int			m_nUsbPub = -2;		// PublishUsb's last (mode, modes, shown) as one number
 	volatile unsigned	m_nClockMHz = 0;
 	volatile unsigned	m_nBudgetUs = 0;
 	volatile unsigned	m_nMeasuredMHz = 0;	// MeasureClock's last reading, 0: none yet

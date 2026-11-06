@@ -1,0 +1,428 @@
+diff --git a/include/circle/usb/gadget/dwusbgadget.h b/include/circle/usb/gadget/dwusbgadget.h
+index bb5e83f..ad2359e 100644
+--- a/include/circle/usb/gadget/dwusbgadget.h
++++ b/include/circle/usb/gadget/dwusbgadget.h
+@@ -86,6 +86,27 @@ public:
+ 	/// \note By default host-to-device requests will be ignored and other requests will be STALLed
+ 	virtual int OnClassOrVendorRequest (const TSetupData *pSetupData, u8 *pData);
+ 
++#define CIRCLE_GADGET_MIRROR	1	// pi/circle/circle-gadget-mirror.patch is in
++	// circle-gadget-mirror: a class or vendor request answered later (a request forwarded to another device)
++	static const int ControlNotHandled = -1000;	///< OnControlRequest(): the request takes the path above
++	static const int ControlDeferred = -1001;	///< OnControlRequest(): EP0 NAKs until CompleteControl()
++
++	/// \brief A class or vendor request has been received on EP0 (IRQ level), before OnClassOrVendorRequest()
++	/// \param pSetupData The SETUP packet
++	/// \param pOutData Host-to-device: the data stage's bytes (wLength), else 0 (device-to-host)
++	/// \return ControlNotHandled (default) or ControlDeferred
++	/// \note Called at the SETUP stage for a device-to-host request or one without data, after the data stage else
++	virtual int OnControlRequest (const TSetupData *pSetupData, const u8 *pOutData)	{ return ControlNotHandled; }
++
++	/// \brief Completes a request that OnControlRequest() deferred (IRQ level, or with IRQs disabled)
++	/// \param pData Device-to-host: the answer (cut to wLength), else ignored
++	/// \param nLength The answer's length (0 for host-to-device), < 0 to STALL the request
++	/// \return FALSE if no request was deferred (a reset or a new SETUP came in between)
++	boolean CompleteControl (const void *pData, int nLength);
++
++	/// \brief A deferred request was given up by the host: a reset, or a new SETUP came first (IRQ level)
++	virtual void OnControlAborted (void)	{}
++
+ 	/// \brief SET_INTERFACE has been received on EP0 (IRQ level)
+ 	/// \param uchInterface Interface number
+ 	/// \param uchAltSetting Alternate setting
+@@ -146,6 +167,7 @@ private:
+ 
+ 	void AssignEndpoint (unsigned nEP, CDWUSBGadgetEndpoint *pEP);
+ 	void RemoveEndpoint (unsigned nEP);
++	void RemoveEndpoint (unsigned nEP, CDWUSBGadgetEndpoint *pEP);	// circle-gadget-mirror
+ 	void SetDeviceAddress (u8 uchAddress);
+ 	boolean SetConfiguration (u8 uchConfiguration);
+ 	friend class CDWUSBGadgetEndpoint;
+@@ -182,6 +204,7 @@ private:
+ 	boolean m_bPnPEvent[PnPEventUnknown];
+ 
+ 	CDWUSBGadgetEndpoint *m_pEP[NumberOfEPs+1];
++	CDWUSBGadgetEndpoint *m_pOutEP[NumberOfEPs+1];	// circle-gadget-mirror: OUT EPs whose number an IN EP has
+ 
+ 	int m_nIsoPending;
+ 
+diff --git a/include/circle/usb/gadget/dwusbgadgetendpoint0.h b/include/circle/usb/gadget/dwusbgadgetendpoint0.h
+index a777355..53576ec 100644
+--- a/include/circle/usb/gadget/dwusbgadgetendpoint0.h
++++ b/include/circle/usb/gadget/dwusbgadgetendpoint0.h
+@@ -38,6 +38,8 @@ public:
+ 
+ 	void OnTransferComplete (boolean bIn, size_t nLength) override;
+ 
++	boolean CompleteDeferred (const void *pData, int nLength);	// circle-gadget-mirror
++
+ private:
+ 	enum TState
+ 	{
+@@ -47,7 +49,8 @@ private:
+ 		StateOutDataPhase,
+ 		StateInStatusPhase,
+ 		StateOutStatusPhase,
+-		StateStall
++		StateStall,
++		StateDeferred		// circle-gadget-mirror: waiting for CompleteDeferred(), EP0 NAKs
+ 	};
+ 
+ 	TState m_State;
+@@ -60,6 +63,7 @@ private:
+ 	DMA_BUFFER (u8, m_InBuffer, BufferSize);
+ 
+ 	TSetupData m_SetupData;
++	boolean m_bForwarded;			// circle-gadget-mirror: the deferred OUT request is answered
+ };
+ 
+ #endif
+diff --git a/lib/usb/gadget/dwusbgadget.cpp b/lib/usb/gadget/dwusbgadget.cpp
+index 4633ed5..44ded95 100644
+--- a/lib/usb/gadget/dwusbgadget.cpp
++++ b/lib/usb/gadget/dwusbgadget.cpp
+@@ -53,6 +53,7 @@ CDWUSBGadget::CDWUSBGadget (CInterruptSystem *pInterruptSystem, TDeviceSpeed Dev
+ 	for (unsigned i = 0; i <= NumberOfEPs; i++)
+ 	{
+ 		m_pEP[i] = nullptr;
++		m_pOutEP[i] = nullptr;	// circle-gadget-mirror
+ 	}
+ }
+ 
+@@ -537,6 +538,13 @@ void CDWUSBGadget::HandleUSBSuspend (void)
+ 				m_pEP[i]->OnSuspend ();
+ 			}
+ 		}
++		for (unsigned i = 1; i <= NumberOfEPs; i++)	// circle-gadget-mirror: the OUT EPs of shared numbers
++		{
++			if (m_pOutEP[i])
++			{
++				m_pOutEP[i]->OnSuspend ();
++			}
++		}
+ 
+ 		m_State = StateSuspended;
+ 	}
+@@ -565,6 +573,13 @@ void CDWUSBGadget::HandleWakeUp (void)
+ 			m_pEP[i]->OnResume ();
+ 		}
+ 	}
++	for (unsigned i = 1; i <= NumberOfEPs; i++)	// circle-gadget-mirror: the OUT EPs of shared numbers
++	{
++		if (m_pOutEP[i])
++		{
++			m_pOutEP[i]->OnResume ();
++		}
++	}
+ }
+ 
+ void CDWUSBGadget::HandleUSBReset (void)
+@@ -656,6 +671,13 @@ void CDWUSBGadget::HandleUSBReset (void)
+ 			m_pEP[i]->OnUSBReset ();
+ 		}
+ 	}
++	for (unsigned i = 1; i <= NumberOfEPs; i++)	// circle-gadget-mirror: the OUT EPs of shared numbers
++	{
++		if (m_pOutEP[i])
++		{
++			m_pOutEP[i]->OnUSBReset ();
++		}
++	}
+ 
+ 	m_State = StateResetDone;
+ 
+@@ -786,8 +808,10 @@ void CDWUSBGadget::HandleOutEPInterrupt (void)
+ 			if (m_State != StateSuspended)
+ 			{
+ 				assert (nEP <= NumberOfEPs);
+-				assert (m_pEP[nEP]);
+-				m_pEP[nEP]->HandleOutInterrupt ();
++				// circle-gadget-mirror: an OUT EP whose number an IN EP has is in m_pOutEP[]
++				CDWUSBGadgetEndpoint *pEP = nEP && m_pOutEP[nEP] ? m_pOutEP[nEP] : m_pEP[nEP];
++				assert (pEP);
++				pEP->HandleOutInterrupt ();
+ 			}
+ 			else
+ 			{
+@@ -816,6 +840,10 @@ void CDWUSBGadget::HandleIncompleteIso (boolean bIn)
+ 			{
+ 				m_pEP[i]->HandleIncompleteIso (nFrame);
+ 			}
++			if (!bIn && m_pOutEP[i])	// circle-gadget-mirror: the OUT EPs of shared numbers
++			{
++				m_pOutEP[i]->HandleIncompleteIso (nFrame);
++			}
+ 		}
+ 	}
+ 
+@@ -942,6 +970,31 @@ void CDWUSBGadget::InterruptStub (void *pParam)
+ void CDWUSBGadget::AssignEndpoint (unsigned nEP, CDWUSBGadgetEndpoint *pEP)
+ {
+ 	assert (nEP <= NumberOfEPs);
++	assert (pEP);
++
++	// circle-gadget-mirror: IN and OUT EPs of one number are separate objects (0x83 and 0x03, as a mirrored device
++	// has them). An EP takes m_pEP[] as before; only an OUT EP whose number an IN EP has goes to m_pOutEP[] (and an
++	// OUT EP already in m_pEP[] moves there when an IN EP of its number comes). A device without shared numbers
++	// never uses m_pOutEP[].
++	const boolean bOut = pEP->GetDirection () == CDWUSBGadgetEndpoint::DirectionOut;
++	if (nEP && m_pEP[nEP])
++	{
++		const boolean bOldOut = m_pEP[nEP]->GetDirection () == CDWUSBGadgetEndpoint::DirectionOut;
++		if (bOut != bOldOut && !m_pOutEP[nEP])
++		{
++			if (bOut)
++			{
++				m_pOutEP[nEP] = pEP;
++			}
++			else
++			{
++				m_pOutEP[nEP] = m_pEP[nEP];
++				m_pEP[nEP] = pEP;
++			}
++
++			return;
++		}
++	}
+ 
+ 	if (m_pEP[nEP])
+ 	{
+@@ -949,7 +1002,6 @@ void CDWUSBGadget::AssignEndpoint (unsigned nEP, CDWUSBGadgetEndpoint *pEP)
+ 	}
+ 
+ 	m_pEP[nEP] = pEP;
+-	assert (m_pEP[nEP]);
+ }
+ 
+ void CDWUSBGadget::RemoveEndpoint (unsigned nEP)
+@@ -959,6 +1011,37 @@ void CDWUSBGadget::RemoveEndpoint (unsigned nEP)
+ 	m_pEP[nEP] = nullptr;
+ }
+ 
++void CDWUSBGadget::RemoveEndpoint (unsigned nEP, CDWUSBGadgetEndpoint *pEP)
++{
++	assert (nEP <= NumberOfEPs);
++
++	if (nEP && m_pOutEP[nEP] == pEP)	// circle-gadget-mirror
++	{
++		m_pOutEP[nEP] = nullptr;
++
++		return;
++	}
++
++	assert (m_pEP[nEP] == pEP);
++	m_pEP[nEP] = nullptr;
++	if (nEP && m_pOutEP[nEP])		// the number's OUT EP back to the plain slot
++	{
++		m_pEP[nEP] = m_pOutEP[nEP];
++		m_pOutEP[nEP] = nullptr;
++	}
++}
++
++// circle-gadget-mirror
++boolean CDWUSBGadget::CompleteControl (const void *pData, int nLength)
++{
++	if (m_pEP[0] == nullptr)
++	{
++		return FALSE;
++	}
++
++	return static_cast<CDWUSBGadgetEndpoint0 *> (m_pEP[0])->CompleteDeferred (pData, nLength);
++}
++
+ void CDWUSBGadget::SetDeviceAddress (u8 uchAddress)
+ {
+ #ifdef USB_GADGET_DEBUG
+@@ -990,6 +1073,13 @@ boolean CDWUSBGadget::SetConfiguration (u8 uchConfiguration)
+ 				m_pEP[i]->OnDeactivate ();
+ 			}
+ 		}
++		for (unsigned i = 1; i <= NumberOfEPs; i++)	// circle-gadget-mirror
++		{
++			if (m_pOutEP[i])
++			{
++				m_pOutEP[i]->OnDeactivate ();
++			}
++		}
+ 
+ 		return TRUE;
+ 	}
+@@ -1017,6 +1107,15 @@ boolean CDWUSBGadget::SetConfiguration (u8 uchConfiguration)
+ 			nEPCount++;
+ 		}
+ 	}
++	for (unsigned i = 1; i <= NumberOfEPs; i++)	// circle-gadget-mirror
++	{
++		if (m_pOutEP[i])
++		{
++			m_pOutEP[i]->OnActivate ();
++
++			nEPCount++;
++		}
++	}
+ 
+ 	LOGNOTE ("%u Endpoint(s) activated", nEPCount);
+ 
+diff --git a/lib/usb/gadget/dwusbgadgetendpoint.cpp b/lib/usb/gadget/dwusbgadgetendpoint.cpp
+index bf1b059..5e3893d 100644
+--- a/lib/usb/gadget/dwusbgadgetendpoint.cpp
++++ b/lib/usb/gadget/dwusbgadgetendpoint.cpp
+@@ -78,7 +78,7 @@ CDWUSBGadgetEndpoint::CDWUSBGadgetEndpoint (const TUSBEndpointDescriptor *pDesc,
+ CDWUSBGadgetEndpoint::~CDWUSBGadgetEndpoint (void)
+ {
+ 	assert (m_pGadget);
+-	m_pGadget->RemoveEndpoint (m_nEP);
++	m_pGadget->RemoveEndpoint (m_nEP, this);	// circle-gadget-mirror
+ }
+ 
+ void CDWUSBGadgetEndpoint::SetMaxPacketSize (size_t nMaxPacketSize)
+diff --git a/lib/usb/gadget/dwusbgadgetendpoint0.cpp b/lib/usb/gadget/dwusbgadgetendpoint0.cpp
+index f0166eb..00b60e7 100644
+--- a/lib/usb/gadget/dwusbgadgetendpoint0.cpp
++++ b/lib/usb/gadget/dwusbgadgetendpoint0.cpp
+@@ -32,7 +32,8 @@ static const char FromEP0[] = "ep0";
+ 
+ CDWUSBGadgetEndpoint0::CDWUSBGadgetEndpoint0 (size_t nMaxPacketSize, CDWUSBGadget *pGadget)
+ :	CDWUSBGadgetEndpoint (nMaxPacketSize, pGadget),
+-	m_State (StateDisconnect)
++	m_State (StateDisconnect),
++	m_bForwarded (FALSE)
+ {
+ }
+ 
+@@ -42,7 +43,13 @@ CDWUSBGadgetEndpoint0::~CDWUSBGadgetEndpoint0 (void)
+ 
+ void CDWUSBGadgetEndpoint0::OnActivate (void)
+ {
++	if (m_State == StateDeferred)		// circle-gadget-mirror
++	{
++		m_pGadget->OnControlAborted ();
++	}
++
+ 	m_State = StateIdle;
++	m_bForwarded = FALSE;
+ 
+ 	// SETUP reception may already have been armed in HandleUSBReset() (see
+ 	// there). Do not arm it twice.
+@@ -54,6 +61,11 @@ void CDWUSBGadgetEndpoint0::OnActivate (void)
+ 
+ void CDWUSBGadgetEndpoint0::OnDeactivate (void)
+ {
++	if (m_State == StateDeferred)		// circle-gadget-mirror
++	{
++		m_pGadget->OnControlAborted ();
++	}
++
+ 	m_State = StateDisconnect;
+ 
+ 	CancelTransfer ();
+@@ -68,6 +80,27 @@ void CDWUSBGadgetEndpoint0::OnControlMessage (void)
+ 	// copy setup packet to be used in OnTransferComplete()
+ 	memcpy (&m_SetupData, pSetupData, sizeof m_SetupData);
+ 
++	// circle-gadget-mirror: a new SETUP ends a deferred request (the host gave up on it)
++	if (m_State == StateDeferred)
++	{
++		m_pGadget->OnControlAborted ();
++		m_State = StateIdle;
++	}
++	m_bForwarded = FALSE;
++
++	// circle-gadget-mirror: a class or vendor request the gadget answers later (device-to-host, or without data;
++	// host-to-device with data: after the data stage, OnTransferComplete())
++	if (   pSetupData->bmRequestType & (REQUEST_CLASS | REQUEST_VENDOR)
++	    && (   (pSetupData->bmRequestType & REQUEST_IN)
++		|| pSetupData->wLength == 0)
++	    && pSetupData->wLength <= BufferSize
++	    && m_pGadget->OnControlRequest (pSetupData, 0) == CDWUSBGadget::ControlDeferred)
++	{
++		m_State = StateDeferred;	// nothing armed: the data (or status) stage is NAKed
++
++		return;
++	}
++
+ 	// Trace: always log every SETUP request (diagnosis for issue #591)
+ 	CLogger::Get ()->Write (FromEP0, LogTrace,
+ 				"SETUP bmRequestType 0x%02X bRequest 0x%02X wValue 0x%04X wLength %u",
+@@ -303,13 +336,23 @@ void CDWUSBGadgetEndpoint0::OnTransferComplete (boolean bIn, size_t nLength)
+ 			break;
+ 		}
+ 
++		// circle-gadget-mirror: the data stage of a class or vendor request is in; the gadget may answer later
++		if (   m_SetupData.bmRequestType & (REQUEST_CLASS | REQUEST_VENDOR)
++		    && m_pGadget->OnControlRequest (&m_SetupData, m_OutBuffer) == CDWUSBGadget::ControlDeferred)
++		{
++			m_State = StateDeferred;	// the status stage is NAKed
++
++			break;
++		}
++
+ 		m_State = StateInStatusPhase;
+ 		BeginTransfer (TransferDataIn, nullptr, 0);
+ 		break;
+ 
+ 	case StateInStatusPhase:
+ 		assert (m_pGadget);
+-		if (   m_SetupData.bmRequestType & (REQUEST_CLASS | REQUEST_VENDOR)
++		if (   !m_bForwarded		// circle-gadget-mirror: a deferred request was answered already
++		    && m_SetupData.bmRequestType & (REQUEST_CLASS | REQUEST_VENDOR)
+ 		    && m_pGadget->OnClassOrVendorRequest (&m_SetupData, m_OutBuffer) < 0)
+ 		{
+ 			Stall (TRUE);
+@@ -326,3 +369,56 @@ void CDWUSBGadgetEndpoint0::OnTransferComplete (boolean bIn, size_t nLength)
+ 		break;
+ 	}
+ }
++
++// circle-gadget-mirror: the answer to a request OnControlRequest() deferred
++boolean CDWUSBGadgetEndpoint0::CompleteDeferred (const void *pData, int nLength)
++{
++	if (m_State != StateDeferred)
++	{
++		return FALSE;
++	}
++
++	if (nLength < 0)
++	{
++		m_State = StateIdle;
++
++		Stall (TRUE);
++		BeginTransfer (TransferSetupOut, m_OutBuffer, sizeof (TSetupData));
++
++		return TRUE;
++	}
++
++	if (!(m_SetupData.bmRequestType & REQUEST_IN))
++	{
++		m_bForwarded = TRUE;
++		m_State = StateInStatusPhase;
++		BeginTransfer (TransferDataIn, nullptr, 0);
++
++		return TRUE;
++	}
++
++	size_t nLen = (size_t) nLength;
++	if (nLen > m_SetupData.wLength)
++	{
++		nLen = m_SetupData.wLength;
++	}
++	if (nLen > BufferSize)
++	{
++		nLen = BufferSize;
++	}
++	if (nLen)
++	{
++		memcpy (m_InBuffer, pData, nLen);
++	}
++
++	m_State = StateInDataPhase;
++
++	m_nBytesLeft = nLen;
++	m_pBufPtr = m_InBuffer;
++
++	BeginTransfer (TransferDataIn, nLen ? m_pBufPtr : nullptr,
++		         m_nBytesLeft <= m_nMaxPacketSize
++		       ? m_nBytesLeft : m_nMaxPacketSize);
++
++	return TRUE;
++}

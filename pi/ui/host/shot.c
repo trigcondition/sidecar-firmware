@@ -295,6 +295,7 @@ static void status_init (int style)
 	static const unsigned char ust[5] = {1, 1, 2, 6, 0};
 	for (int i = 0; i < 5; i++) { strcpy (s.uslot[i], us[i]); s.uslot_state[i] = ust[i]; }
 	s.screensaver = 60; s.brightness = 100; s.touch_hidden = 0; s.cpu_mhz = 1500;
+	s.usb_mode = 0; s.usb_modes = 3; s.usb_shown = 0;	// the USB-C mode: CLASS COMPLIANT, both modes built
 	s.ui_style = style;
 	s.ui_look = -1;
 	s.poly = 1u << 7;		// RS/CP (voice 7, WAVE): a poly track
@@ -1037,6 +1038,11 @@ static void theme_run (int style, const char *pre)
 	sidecar_ui_touch (0, 2010, 1240, 392, 145);			// T1: the first tap seen hides HOME's touch test (stored)
 	EXPECT (!sidecar_ui_touch_test_shown ()); EXPECT_CMD ("touchtest=0");
 	sidecar_ui_show (1); shot ("sound");
+	// the USB-C mode: OVERBRIDGE set with the box shown (its warning), not in this build (greyed), no Sidecar gadget
+	s_St.usb_mode = 1, s_St.usb_shown = 1; sidecar_ui_status (&s_St); run (2); shot ("sound-overbridge");
+	s_St.usb_modes = 1, s_St.usb_shown = 0; sidecar_ui_status (&s_St); run (2); shot ("sound-overbridge-nobuild");
+	s_St.usb_modes = 0, s_St.usb_shown = -1; sidecar_ui_status (&s_St); run (2); shot ("sound-usb-nogadget");
+	s_St.usb_mode = 0, s_St.usb_modes = 3, s_St.usb_shown = 0; sidecar_ui_status (&s_St); run (2);
 	sidecar_ui_show (2); shot ("fx");
 	sidecar_ui_show (6); shot ("display");
 	{
@@ -1806,6 +1812,8 @@ static void theme_run (int style, const char *pre)
 		tap (LU (44) + DX / 8, LU (41) + VS (24) + VS (22) / 2);         EXPECT_CMD ("notes=0");	// ENGINE panel at y 41: notes Off
 		tap (LU (127) + 3 * DX / 8, LU (41) + VS (63) + VS (22) / 2);   EXPECT_CMD ("out=tracks");
 		tap (LU (127) + 3 * DX / 8, LU (41) + VS (102) + VS (22) / 2);  EXPECT_CMD ("mac=on");
+		tap (LU (127) + 3 * DX / 8, LU (41) + VS (141) + VS (22) / 2);  EXPECT_CMD ("usbmode=overbridge");	// the USB-C mode
+		tap (LU (44) + DX / 8, LU (41) + VS (141) + VS (22) / 2);       EXPECT_CMD ("usbmode=class");
 		tap (rx + LU (4) + (rw - LU (8)) * 7 / 8, LU (41) + VS (13) + VS (46) / 4);				// BT = voice 1 (row 1, 4th: the Rytm's track order)
 		tap (rx + LU (4) + (rw - LU (8)) * 5 / 6, LU (41) + VS (76) + VS (46) * 3 / 4);  EXPECT_CMD ("notemach=1:md");	// machine MD (row 2, last; DIGIDRUM before 0.3.0)
 		tap (OTAB (4), LU (27));							// tab: Service (T18): FIFO, the drone
@@ -1841,6 +1849,8 @@ static void theme_run (int style, const char *pre)
 		tap (LU (100), LU (114) + CY (48) + CH / 2);                 EXPECT_CMD ("notes=0");
 		tap (LU (300) + 3 * DX / 8, LU (114) + CY (118) + CH / 2);   EXPECT_CMD ("out=tracks");
 		tap (LU (300) + 3 * DX / 8, LU (114) + CY (188) + CH / 2);   EXPECT_CMD ("mac=on");
+		tap (LU (300) + 3 * DX / 8, LU (114) + CY (262) + CH / 2);   EXPECT_CMD ("usbmode=overbridge");	// the USB-C mode
+		tap (LU (100), LU (114) + CY (262) + CH / 2);                EXPECT_CMD ("usbmode=class");
 		tap (x0 + LU (140) + 7 * DX / 32, LU (114) + CY (48) + CH / 2);			// BT = voice 1 (4th key: the Rytm's track order)
 		tap (x0 + vw - LU (20), LU (114) + CY (118) + CH / 2);   EXPECT_CMD ("notemach=1:md");
 		tap (CTAB (4), LU (84));								// tab: Service (T18)

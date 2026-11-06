@@ -43,7 +43,7 @@ void extra_test_page(const ExtraPage* p);   // tests: one more page at the end o
 #endif
 // UX review R3 / N3 (page_menu.cpp): MENU (YES on SIDECAR: every page with its shortcut) and KEYS (every combo; also
 // while UP is held alone on the stock screen: rui1044's 49 1 4)
-extern const ExtraPage kMenuPage, kKeysPage, kWebUiPage;   // WEB UI: the MENU's row (remote_webui)
+extern const ExtraPage kMenuPage, kKeysPage, kWebUiPage, kUsbPage;   // WEB UI, USB-C: the MENU's rows (remote_webui, remote_usb)
 void menu_open();          // MENU shown (the page opened when closed)
 void keys_map(bool on);    // UP held alone (on: KEYS shown, T1..T10 lit) / let go (off: the page closes again)
 bool keys_map_on();        // the map shows (the touchscreen shows it too)

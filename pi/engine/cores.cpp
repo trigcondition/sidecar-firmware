@@ -14,6 +14,7 @@
 #include "midi_in.h"
 #include "notes.h"
 #include "paircode_pi.h"
+#include "usbc_pi.h"
 #include "sendfx_pi.h"
 #include "masterfx_pi.h"
 #include "rec_pi.h"
@@ -419,6 +420,7 @@ void CEngineCores::Control (void)
 	// the Rytm's SIDECAR MENU > WEB UI (core/ui/page_menu.cpp): paircode_pi's, which only asks core 0 (Poll)
 	bridge::webui_init (paircode_pi::WebOn, paircode_pi::MenuWeb, paircode_pi::MenuGate, paircode_pi::MenuDevices,
 			    paircode_pi::MenuNewCode, paircode_pi::MenuForget);
+	bridge::usb_init (usbc_pi::Mode, usbc_pi::Modes, usbc_pi::Shown, usbc_pi::Ask, nullptr);	// SIDECAR MENU > USB-C: asks core 0
 	// The generic timer's event stream on this core, so the wfe below never sleeps longer than 152 us. A sev from core 0 (a pull from the FIFO) can be
 	// consumed by a wfe inside this core's own work (a spinlock: the logger, the card), and the next sev may be
 	// a poll of core 0 away (1.2..3.3 ms measured on the TCP link): the FIFO then stayed empty and the link sent

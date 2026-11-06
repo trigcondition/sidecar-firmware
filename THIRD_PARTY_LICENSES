@@ -1017,12 +1017,13 @@ SOFTWARE.
 
 ------------------------------------------------------------------------------
 MD (plugins/mdkit): mdkit by Soejrd (commit 96157fe)
-Licence: CC0 1.0 Universal: see "mdkit" above (plugins/mdkit/NOTICE).
+Licence: CC0 1.0 Universal: see "mdkit" above (plugins/mdkit/NOTICE). Not in the sidecar-pi-plugins zip since 0.4.1: MD is
+a built-in machine (core/md); plugins/mdkit stays for its tables (md_tables.h, gen.py) and for building the package.
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
 MODEL E (plugins/modele): the oscillator bank of ModelDigi (https://github.com/simonjohansson/ModelDigi, commit c412bdf2ab3b0b5b62484e8195c2f880d1964c67)
-Licence: GNU GPL version 2 or later: licenses/GPL-2.0.txt, and the upstream LICENSE unchanged in plugins/modele/third_party/modeldigi/LICENSE. Vendored unchanged: dsp/oscillator.c, oscillator.h, edge_kernel.h, mixer_curve.h (SPDX lines in each file). The whole package is GPL-2.0-or-later (plugins/modele/LICENSE, NOTICE); it is built on its own, not in the sidecar-pi-plugins zip, and its complete source goes with the binary (make package: modele-source.tar.gz).
+Licence: GNU GPL version 2 or later: licenses/GPL-2.0.txt, and the upstream LICENSE unchanged in plugins/modele/third_party/modeldigi/LICENSE. Vendored unchanged: dsp/oscillator.c, oscillator.h, edge_kernel.h, mixer_curve.h (SPDX lines in each file). The whole package is GPL-2.0-or-later (plugins/modele/LICENSE, NOTICE); in the sidecar-pi-plugins zip since 0.4.1, outside the zip's MIT LICENSE.txt: modele.a64.rmp with modele-LICENSE.txt (the GPL), modele-NOTICE.txt and modele-source.tar.gz (its complete source, which goes with the binary; make package).
 ------------------------------------------------------------------------------
 
 

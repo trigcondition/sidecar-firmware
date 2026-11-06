@@ -359,6 +359,11 @@ void webui_init(bool (*on)(), void (*set_on)(bool), int (*gate)(), int (*devices
   h = {on, set_on, gate, devices, new_code, forget};
   core::ui::remote_webui(&h);
 }
+void usb_init(int (*mode)(), unsigned (*modes)(), int (*shown)(), void (*set_mode)(int), const char* (*no_ob)()) {
+  static core::ui::RemoteUsb h;
+  h = {mode, modes, shown, set_mode, no_ob};
+  core::ui::remote_usb(&h);
+}
 void pair_popup_end() { core::ui::remote_popup_end(); }
 bool rytm_greeted() { return core::ui::remote_stats().hellos != 0; }
 

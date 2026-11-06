@@ -1,0 +1,85 @@
+diff -ruN a/include/circle/usb/usbhostcontroller.h b/include/circle/usb/usbhostcontroller.h
+--- a/include/circle/usb/usbhostcontroller.h
++++ b/include/circle/usb/usbhostcontroller.h
+@@ -93,6 +93,7 @@
+ 
+ private:
+ 	void PortStatusChanged (CUSBStandardHub *pHub);
++	void RemovePortStatusEvents (CUSBStandardHub *pHub);	// circle-hub-rearm2.patch
+ 	friend class CUSBStandardHub;
+ 
+ private:
+diff -ruN a/lib/usb/usbhostcontroller.cpp b/lib/usb/usbhostcontroller.cpp
+--- a/lib/usb/usbhostcontroller.cpp
++++ b/lib/usb/usbhostcontroller.cpp
+@@ -237,6 +237,41 @@
+ 	m_SpinLock.Release ();
+ }
+ 
++// circle-hub-rearm2.patch: a hub that is deleted drops the events it queued. Its recovery timer queues one after an
++// error, and a hub that is unplugged gets errors, so an event of a hub deleted meanwhile (by its parent's port change,
++// handled with the spin lock released) would otherwise reach HandlePortStatusChange() on freed memory.
++void CUSBHostController::RemovePortStatusEvents (CUSBStandardHub *pHub)
++{
++	assert (pHub != 0);
++
++	if (!m_bPlugAndPlay)
++	{
++		return;
++	}
++
++	m_SpinLock.Acquire ();
++
++	TPtrListElement *pElement = m_HubList.GetFirst ();
++	while (pElement != 0)
++	{
++		TPtrListElement *pNext = m_HubList.GetNext (pElement);
++
++		TPortStatusEvent *pEvent = (TPortStatusEvent *) m_HubList.GetPtr (pElement);
++		assert (pEvent != 0);
++		if (   !pEvent->bFromRootPort
++		    && pEvent->pHub == pHub)
++		{
++			m_HubList.Remove (pElement);
++
++			delete pEvent;
++		}
++
++		pElement = pNext;
++	}
++
++	m_SpinLock.Release ();
++}
++
+ #if RASPPI <= 4
+ 
+ CUSBHostController *CUSBHostController::Get (void)
+diff -ruN a/lib/usb/usbstandardhub.cpp b/lib/usb/usbstandardhub.cpp
+--- a/lib/usb/usbstandardhub.cpp
++++ b/lib/usb/usbstandardhub.cpp
+@@ -25,6 +25,7 @@
+ #endif
+ #include <circle/devicenameservice.h>
+ #include <circle/logger.h>
++#include <circle/synchronize.h>		// circle-hub-rearm2.patch
+ #include <circle/timer.h>
+ #include <circle/koptions.h>
+ #include <circle/debug.h>
+@@ -64,11 +65,16 @@
+ 
+ CUSBStandardHub::~CUSBStandardHub (void)
+ {
+-	if (m_hRecoveryTimer != 0)			// circle-hub-rearm.patch
++	// circle-hub-rearm2.patch: with IRQs off, so the recovery timer cannot fire between reading its handle and
++	// cancelling it; then the events it may have queued already are dropped (they would reach a deleted hub)
++	EnterCritical ();
++	if (m_hRecoveryTimer != 0)
+ 	{
+ 		CTimer::Get ()->CancelKernelTimer (m_hRecoveryTimer);
+ 		m_hRecoveryTimer = 0;
+ 	}
++	GetHost ()->RemovePortStatusEvents (this);
++	LeaveCritical ();
+ 
+ 	if (m_nDeviceNumber != 0)
+ 	{

@@ -64,10 +64,17 @@ public:
 	void SetLinkTcp (boolean)			{}
 	boolean TakeReboot (void)			{ return FALSE; }
 	boolean UsbReboot (void) const			{ return FALSE; }
+	boolean Mirror (void) const			{ return FALSE; }
+	static boolean MirrorBuilt (void)		{ return FALSE; }
+	void SetMirror (boolean)			{}
+	boolean MirrorShown (void) const		{ return FALSE; }
+	boolean MirrorBoxThere (void) const		{ return FALSE; }
+	boolean MirrorSwitching (void) const		{ return FALSE; }
 };
 #else
 #include <circle/usb/gadget/dwusbgadget.h>
 #include <circle/usb/gadget/dwusbgadgetendpoint.h>
+#include <circle/usb/gadget/dwusbgadgetendpoint0.h>	// circle-gadget-stray: GetSetupAbortCount ()
 #include <circle/interrupt.h>
 #include <circle/logger.h>
 #include <circle/synchronize.h>
@@ -79,6 +86,9 @@ public:
 #include "usbmidi_os_path.h"
 #include "spsc.h"
 #include "tohost_q.h"
+#include "mirror_desc.h"
+#include "mirror_ctl.h"
+#include "mirror_ep.h"
 
 #if __has_include("hosted/sidecar_config.h")
 #include "hosted/sidecar_config.h"			// build.sh: SIDECAR_CH_IN=20 pi/engine/build.sh
@@ -122,6 +132,9 @@ public:
 	CSidecarMIDIEP (const TUSBEndpointDescriptor *pDesc, CSidecarGadget *pGadget);
 	void OnActivate (void) override;
 	void OnDeactivate (void) override;
+	void OnSuspend (void) override			{ m_Wake.suspend (*this); }	// mirror_ep.h: back at the resume
+	void OnResume (void) override			{ m_Wake.wake (*this); }	// (a resume without a reset)
+	boolean Active (void) const			{ return m_bActive; }
 	void OnTransferComplete (boolean bIn, size_t nLength) override;
 	void Kick (void);				// IN: start a transfer if idle and packets wait (IRQs masked)
 	boolean Held (void) const			{ return m_bHeld; }
@@ -130,10 +143,48 @@ public:
 
 private:
 	CSidecarGadget *m_pSidecar;
+	mirror::EpWake m_Wake;				// a bus suspend and a resume without a reset (mirror_ep.h)
 	boolean m_bActive, m_bBusy;
 	boolean m_bHeld;				// OUT, usbmidi=os: not re-armed while the Rytm-bound queue is full
 	DMA_BUFFER (u8, m_Buffer, BufSize);
 };
+
+#ifdef CIRCLE_GADGET_MIRROR
+// usb=mirror (docs/usb-mirror.md): one of the box's audio or pipe endpoints on the computer's side (mirror_desc.h roles;
+// MIDI keeps CSidecarMIDIEP). Interrupt or bulk, its size the largest of any alternate setting.
+class CMirrorEP : public CDWUSBGadgetEndpoint
+{
+public:
+	CMirrorEP (const mirror::Ep &rEp, CSidecarGadget *pGadget);
+	void OnActivate (void) override;
+	void OnDeactivate (void) override;
+	void OnSuspend (void) override			{ m_Wake.suspend (*this); }	// mirror_ep.h
+	void OnResume (void) override			{ m_Wake.wake (*this); }	// a resume without a reset
+	void OnTransferComplete (boolean bIn, size_t nLength) override;
+	void Kick (void);				// IN: send the next packet if idle (IRQ level, or IRQs masked)
+	void Rearm (void);				// OUT: take the computer's next packet (the box took this one)
+	boolean Send (const u8 *pData, unsigned nLength);	// pipe IN: one packet of the box (FALSE: inactive or busy)
+	mirror::Role Role (void) const			{ return m_Role; }
+	u8 Address (void) const				{ return m_uchAddr; }
+	boolean Active (void) const			{ return m_bActive; }
+	boolean Busy (void) const			{ return m_Role == mirror::kPipeOut ? m_Out.box : m_bBusy; }
+	boolean Armed (void) const			{ return IsTransferActive (); }	// mirror::OutGate
+	void ArmOut (void);
+	boolean Iso (void) const			{ return GetType () == TypeIsochronous; }	// mirror::cancel ()
+	void StopIso (void)				{ StopIsoTransfer (); }
+	void Cancel (void)				{ CancelTransfer (); }
+
+private:
+	mirror::EpWake m_Wake;
+	mirror::OutGate m_Out;				// audio and pipe OUT
+	CSidecarGadget *m_pSidecar;
+	mirror::Role m_Role;
+	u8 m_uchAddr;
+	unsigned m_nMps;
+	boolean m_bActive, m_bBusy;
+	DMA_BUFFER (u8, m_Buffer, 512);
+};
+#endif
 
 class CSidecarGadget : public CDWUSBGadget
 {
@@ -159,6 +210,9 @@ public:
 	void FromRytmBlock (const u8 *pBlock);		// xHCI IRQ: one Overbridge IN block (7 frames x 12 ch)
 	void FromEngine (const s32 (*pFrames)[12], unsigned nFrames);	// task: the self-test's output as the stand-in IN
 	void ToRytm (s32 (*pFrames)[12], const s16 (*pVoices)[8], unsigned nFrames, boolean bTask);
+#ifdef CIRCLE_GADGET_MIRROR
+	boolean MirrorOutExtra (u8 *pBlock, u16 nCounter);	// ob_usb FillOut: the computer's per-block bytes into the box's block
+#endif
 	void FromRytmMIDI (const u8 *pPacket);		// xHCI IRQ: one event packet from the Rytm
 	void MIDIToComputer (u32 nPacket);		// core 0's loop: one event packet of the engine's own (the auto-sampler's notes)
 	boolean ForRytm (u32 *pPacket);			// core 0's loop: the next packet for the Rytm
@@ -178,8 +232,37 @@ public:
 	boolean UsbReboot (void) const			{ return m_bUsbReboot; }
 	boolean TakeReboot (void);			// core 0's loop: the computer asked for a reboot (usbreboot=1, reboot_sysex.h)
 
+	// usb=mirror, the USB-C mode OVERBRIDGE (usb_mode.h; docs/usb-mirror.md): the computer sees the attached box itself -
+	// its device, configuration and string descriptors, read from it at run time (ob_usb.cpp) - and its audio, async
+	// channel (pipes), MIDI and class / vendor requests are relayed. Until the box has been read, and after it has been
+	// gone for mirrorhold= seconds (10), the computer sees the Sidecar device; each switch is a replug (SoftDisconnect,
+	// 300 ms, SoftConnect). Built only with pi/circle/circle-gadget-mirror.patch and -softconnect.patch
+	// (CIRCLE_GADGET_MIRROR); without them the mode is CLASS COMPLIANT whatever is set.
+	static boolean MirrorBuilt (void);
+	// core 0, task level: the mode set (kernel.cpp, before Start and at run time). At run time OFF while the box is shown
+	// is a replug back as the Sidecar device; ON reads a box that is up (CObUsb::MirrorWanted) and MirrorPoll switches
+	// to it as at a plug-in. Nothing else changes: the Pi's own stream with the box runs on.
+	void SetMirror (boolean bOn);
+	boolean Mirror (void) const			{ return m_bMirror; }
+	boolean MirrorShown (void) const;		// the computer sees the box now
+	boolean MirrorBoxThere (void) const;		// the box has been read and is up (it is shown, or will be)
+	boolean MirrorSwitching (void) const;		// off the bus between the two
+#ifdef CIRCLE_GADGET_MIRROR
+	// the box's side (ob_usb.cpp): task level unless said
+	boolean MirrorSetDescriptors (const u8 *pDev, const u8 *pCfg, unsigned nCfg);	// FALSE: not one the gadget can carry
+	void MirrorSetString (u8 uchIndex, const u8 *pDesc, unsigned nLength);
+	void MirrorBoxUp (boolean bUp);			// read completely / gone
+	void MirrorControlDone (unsigned nSeq, const u8 *pData, int nLength);	// xHCI IRQ: the box's answer (< 0: STALL)
+	boolean MirrorPipeIn (u8 uchAddr, const u8 *pData, unsigned nLength);	// xHCI IRQ: FALSE: dropped (no computer)
+	void MirrorPipeOutDone (u8 uchAddr);		// xHCI IRQ: the box took the computer's packet
+#endif
+
 protected:
 	const void *GetDescriptor (u16 wValue, u16 wIndex, size_t *pLength) override;
+#ifdef CIRCLE_GADGET_MIRROR
+	int OnControlRequest (const TSetupData *pSetupData, const u8 *pOutData) override;
+	void OnControlAborted (void) override;
+#endif
 	int OnClassOrVendorRequest (const TSetupData *pSetupData, u8 *pData) override;
 	boolean OnSetInterface (u8 uchInterface, u8 uchAltSetting) override;
 	int OnGetInterface (u8 uchInterface) override;
@@ -202,6 +285,57 @@ private:
 	void HostUp (boolean bUp);			// the MIDI IN endpoint (de)activated (gadget IRQ), or torn down (OnSuspend)
 	friend class CSidecarIsoEP;
 	friend class CSidecarMIDIEP;
+#ifdef CIRCLE_GADGET_MIRROR
+	friend class CMirrorEP;
+
+	void MirrorAddEndpoints (void);
+	boolean MirrorSetInterface (u8 uchInterface, u8 uchAlt);
+	void MirrorAudioIn (const u8 *pBlock);		// xHCI IRQ: one IN block of the box (12 channels)
+	unsigned MirrorFillIn (u8 *pBuffer);		// gadget IRQ: the next block for the computer (0: none)
+	void MirrorAudioOut (const u8 *pBlock, unsigned nLength);	// gadget IRQ: one OUT block of the computer
+	void MirrorPipeOut (CMirrorEP *pEP, const u8 *pData, unsigned nLength);	// gadget IRQ
+	void MirrorPipeInSent (u8 uchAddr);		// gadget IRQ
+	void MirrorPoll (void);				// core 0's loop: the connect, the forwarded request
+	boolean IsNameRequest (const TSetupData *pSetup, u8 uchType) const;
+	void MirrorLogStats (CLogger *pLogger);
+	CMirrorEP *MirrorEP (u8 uchAddr);
+
+	u8 m_MirDev[18];
+	u8 m_MirCfg[mirror::kMaxConfig];
+	unsigned m_nMirCfg;
+	mirror::Layout m_MirLayout;
+	struct { u8 uchIndex, nLength; u8 Data[254]; } m_MirStr[mirror::kMaxStrings];
+	unsigned m_nMirStr;
+	CMirrorEP *m_pMirEP[mirror::kMaxEps];
+	u8 m_MirAlt[mirror::kMaxIfaces];
+	unsigned m_nMirInCh, m_nMirOutCh;		// channels of the computer's current alternate (0: no stream)
+	volatile boolean m_bMirHave, m_bMirBoxUp;
+	// which device the computer sees: the box (m_bShowMirror) or the Sidecar; a switch leaves the bus, waits, comes back
+	volatile boolean m_bShowMirror;
+	boolean m_bSwitching, m_bSwitchTo, m_bMirKeep;
+	u64 m_nSwitchAt, m_nBoxGoneAt;
+	mirror::ExtraRing m_MirExtra;
+	unsigned m_nExtraMargin;			// mirrormargin=N blocks (8)
+	u16 m_nExtraOff;				// the Pi's OUT counter minus the computer's, plus the margin
+	volatile boolean m_bExtraOff;			// set at the computer's first OUT block of a stream			// the computer's per-block OUT bytes, for the box (MirrorOutExtra)
+	char m_MirName[mirror::kNameLen];		// mirrorname=: the suffix on the box's Overbridge name (empty: off)
+	unsigned m_nHoldSecs;				// mirrorhold=S: the box gone this long before the Sidecar comes back
+	void MirrorSwitch (boolean bToMirror);		// task level: leave the bus
+	// the box's IN blocks for the computer (xHCI IRQ -> gadget IRQ, both core 0)
+	static const unsigned MirInDepth = 64;		// 8 ms: 8 (1 ms) dropped blocks while a plugin was open (U3 run 4 [hw])
+	u8 m_MirIn[MirInDepth][384];
+	unsigned m_nMirInHead, m_nMirInTail;
+	// the forwarded class / vendor request (gadget IRQ -> core 0's loop -> the box -> xHCI IRQ)
+	TSetupData m_CtlSetup;
+	u8 m_CtlData[512];
+	mirror::Ctl m_Ctl;				// pending, at the box, its sequence number (mirror_ctl.h)
+	void MirrorBoxGone (void);			// IRQs masked: the box's half of every exchange ends (pipes, EP0)
+	struct TMirStats
+	{
+		unsigned nInBlocks, nInSent, nInDrop, nOutBlocks, nOutBad, nOutExtra, nOutAnchor, nCtl, nCtlStall, nCtlAbort, nCtlLate;
+		unsigned nPipeIn, nPipeInDrop, nPipeOut, nPipeOutDrop, nAltBad, nBoxGoneDrop;
+	} m_MirStats;
+#endif
 
 	u64 TimerQ16 (void);				// generic timer, device frames 16.16
 	u64 Now (void);
@@ -219,6 +353,8 @@ private:
 	u8 m_uchOutAlt, m_uchInAlt;
 	boolean m_bMac, m_bTest, m_bFake, m_bRytmMIDI;
 	OsGate m_Gate;					// usbmidi=os: the setting and the host (usbmidi_os_path.h)
+	boolean m_bMirror;				// usb=mirror: the USB-C mode is OVERBRIDGE (SetMirror)
+	boolean m_bMirUsed;				// it has been on this boot: MirrorPoll runs (a switch back, the box's pipes)
 	boolean m_bUsbReboot;				// usbreboot=1: the computer's reboot SysEx is obeyed
 	RebootSysEx m_Reboot;				// the computer's packets (gadget IRQ) -> TakeReboot (core 0)
 	void UpdateOsPass (boolean bCut, const char *pWhy);	// the filter's pass from m_Gate; bCut: drop what is on its

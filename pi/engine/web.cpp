@@ -1,6 +1,7 @@
 // pi/engine/web.cpp - see web.h.
 #include "web.h"
 #include "wifi.h"
+#include "usb_mode.h"	// usbmode=overbridge: /cmd takes it from this page only (strict)
 
 #include <circle/logger.h>
 #include <circle/net/in.h>
@@ -591,20 +592,36 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 	{
 		char Cmd[200];		// wifi=join:SSID:PASS is up to 106 characters, pool=S:<path> up to 191
 		boolean bForm = FormValue (pFormData, "c", Cmd, sizeof Cmd);
-		if (!bForm && !FormValue (pParams, "c", Cmd, sizeof Cmd)) return HTTPBadRequest;
+		if (!bForm && !FormValue (pParams, "c", Cmd, sizeof Cmd))
+		{	// (a body Circle did not read as a form lands here: circle-http-case.patch)
+			CLogger::Get ()->Write (From, LogWarning, "web: /cmd refused: no c= (a form body of %u bytes)", (unsigned) strlen (pFormData));
+			return HTTPBadRequest;
+		}
 		// another site's page cannot post commands (its Origin is not ours); wifi= only in a POST's body (never a URL)
 		// midibridge= neither: /cmd's origin check is the lenient one, and the bridge can carry an OS upgrade, so it
 		// is turned on only from the page (POST /midibridge/set, strict) or on the serial console. usbmidi= (and its
 		// older name osupdate=) neither, for the same reason: it lets OS upgrades through the USB-C MIDI port
 		// (usbmidi_os.h); cmdline.txt or the serial console only. And while usbmidi=os: is on or emu, link=tcp:<address>
 		// neither: it would send the computer's MIDI (Transfer content, an OS image) to any host and bring that
-		// host's MIDI back as the Rytm's. link=tcp (cmdline's emuhost=) and link=usb stay allowed
+		// host's MIDI back as the Rytm's. link=tcp (cmdline's emuhost=) and link=usb stay allowed. usbmode=overbridge
+		// (usb_mode.h raises: the box's requests and async channel then pass unfiltered) only with the strict
+		// same-origin check, as POST /midibridge/set; usbmode=class / cmdline lower the exposure and stay lenient
+		// Each refusal logs why (the command itself not: it may be wifi=join with its key), the headers the same-origin
+		// checks read included: the page can only say "refused" for a 400, the log says which
 		CSidecarGadget *pSidecar = CSidecarGadget::Get ();
-		if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), FALSE)
-		    || (!bForm && strncmp (Cmd, "wifi=", 5) == 0) || strncmp (Cmd, "midibridge=", 11) == 0
-		    || strncmp (Cmd, "usbmidi=", 8) == 0 || strncmp (Cmd, "osupdate=", 9) == 0
-		    || (strncmp (Cmd, "link=tcp:", 9) == 0 && pSidecar != 0 && pSidecar->OsUpdate ()))
+		const char *pWhy = 0;
+		if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), FALSE))
+			pWhy = "not from this page (the same-origin check)";
+		else if (usb_mode::raises (Cmd) && !FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+			pWhy = "usbmode=overbridge: not from this page (the strict same-origin check)";
+		else if ((!bForm && strncmp (Cmd, "wifi=", 5) == 0) || strncmp (Cmd, "midibridge=", 11) == 0
+			 || strncmp (Cmd, "usbmidi=", 8) == 0 || strncmp (Cmd, "osupdate=", 9) == 0
+			 || (strncmp (Cmd, "link=tcp:", 9) == 0 && pSidecar != 0 && pSidecar->OsUpdate ()))
+			pWhy = "not taken on /cmd (wifi= in the URL, midibridge=, usbmidi=, osupdate=, link=tcp: with usbmidi=os:)";
+		if (pWhy != 0)
 		{
+			CLogger::Get ()->Write (From, LogWarning, "web: /cmd refused: %s (Host \"%s\", Origin \"%s\", Referer \"%s\")",
+						pWhy, GetRequestHost (), GetRequestOrigin (), GetRequestReferer ());
 			memset (Cmd, 0, sizeof Cmd);
 			return HTTPBadRequest;
 		}
@@ -700,8 +717,11 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			if (r != paircode::kOk && g.take_report (&nSince))
 				CLogger::Get ()->Write (From, LogWarning, "%u pairing attempt(s) refused (the last: %s)", nSince,
 							paircode::err_text (r));
+			// stale: the page drops its saved pairing (a device this Sidecar does not know, or the gate off); any other
+			// refusal (kNoRandom) keeps it for the next try
 			if (r == paircode::kOk) s.Format ("{\"ok\":true,\"token\":\"%s\"}", Token2);
-			else s.Format ("{\"ok\":false,\"code\":403,\"wait\":%u,\"error\":\"%s\"}", g.lock_left_s (m_nPeer),
+			else s.Format ("{\"ok\":false,\"code\":403,\"stale\":%s,\"wait\":%u,\"error\":\"%s\"}",
+					r == paircode::kNoDevice || r == paircode::kOffGate ? "true" : "false", g.lock_left_s (m_nPeer),
 					paircode::err_text (r));
 		}
 		else if (strcmp (op, "forget") == 0 || strcmp (op, "revoke") == 0)	// from the page, and paired

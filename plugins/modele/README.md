@@ -1,7 +1,7 @@
 # MODEL E: a three-oscillator voice with a ladder filter (basses, leads)
 
 A Pi Sidecar user machine (RMPA package `modele.a64.rmp`, id `modele.voice`), version 1.1.0, in the release's plugins
-zip from 0.4.0. The oscillators are [ModelDigi](https://github.com/simonjohansson/ModelDigi)'s bank (GPL-2.0-or-later, vendored
+zip from 0.4.1. The oscillators are [ModelDigi](https://github.com/simonjohansson/ModelDigi)'s bank (GPL-2.0-or-later, vendored
 unchanged in `third_party/modeldigi`, the commit in `NOTICE`): three oscillators with edge-smoothed waves, oscillator
 3 as a modulator (taken before its level, so it can modulate in silence), analog drift and the mixer's saturation.
 ModelDigi stops at the oscillators; `modele.c` adds the rest of a playable voice: a 4-pole ladder (no unit delay in its

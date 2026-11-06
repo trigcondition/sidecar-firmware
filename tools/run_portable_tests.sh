@@ -19,11 +19,12 @@ trap 'rm -rf "$T"' EXIT
 
 # The Pi tests that need more than a compiler run when it is there: test_bundleweb, test_poolweb and test_presetweb link the core's
 # Mac library (macOS, after make -C core engines), the FatFs tests copy Circle's addon/fatfs (pi/circle/build.sh's
-# checkout); without it they are named as skipped.
+# checkout), and test_gadget_ep0 patches a copy of Circle's USB gadget sources; without them they are named as skipped.
 PT=$R/pi/engine/tests
 skip=()
 { [ "$(uname)" = Darwin ] && [ -f "$R/core/build/libengines.a" ]; } || skip+=(test_bundleweb test_poolweb test_presetweb)
 [ -f "$R/pi/circle/build/circle/addon/fatfs/ff.c" ] || skip+=(test_stor_fatfs test_stor_fatfs_exfat test_stor_fatfs_lfn3)
+[ -f "$R/pi/circle/build/circle/lib/usb/gadget/dwusbgadgetendpoint.cpp" ] || skip+=(test_gadget_ep0)   # patches a copy of Circle's gadget sources
 tests=()
 for f in "$PT"/test_*.cpp test_stor_fatfs_exfat test_stor_fatfs_lfn3; do
   t=$(basename "$f" .cpp)

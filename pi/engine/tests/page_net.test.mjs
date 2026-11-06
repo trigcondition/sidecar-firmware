@@ -22,7 +22,7 @@ function gate(fake, pair = { tok: "" }) {
   const asked = [];
   // pairLost is what the wrapper calls now: it bumps the generation and asks, as the page's does
   const pairLost = (why) => { pair.gen++; pair.tok = ""; asked.push(why || 1); };
-  new Function("window", "PAIR", "pairAsk", "pairLost", page.slice(a, b + 2))(win, pair, (w) => asked.push(w || 1), pairLost);
+  new Function("window", "PAIR", "pairAsk", "pairLost", "CMD_NOT_PAIRED", page.slice(a, b + 2))(win, pair, (w) => asked.push(w || 1), pairLost, "not paired");
   win.fetch.asked = asked;
   return win.fetch;
 }
@@ -56,15 +56,19 @@ test("a 503 is tried again (3 times), a failure frees its slot", async () => {
 });
 
 // the pairing token's side of the gate (pi/engine/paircode.h): the header on this page's own requests only, and a
-// "not paired" answer drops the token and asks again
+// "not paired" answer drops the token and asks again. The headers stay a plain object with their names' case: Chrome
+// sends a Headers object's names in lower case ("content-type"), which Circle's daemon did not take as the form
+// (/cmd refused every paired change, hardware 2026-11-06)
 test("the pairing token rides in X-Sidecar-Auth, and a refusal asks again", async () => {
   const seen = [];
   const pair = { tok: "a".repeat(32) };
   const f = gate(async (url, opt) => {
-    seen.push([url, opt && opt.headers ? opt.headers.get("X-Sidecar-Auth") : null]);
+    assert.ok(!opt || !opt.headers || !(opt.headers instanceof Headers), "a plain object: a Headers object goes out in lower case");
+    if (opt && opt.body) assert.deepEqual(Object.keys(opt.headers), ["Content-Type", "X-Sidecar-Auth"], "the names keep their case");
+    seen.push([url, opt && opt.headers ? opt.headers["X-Sidecar-Auth"] : null]);
     return { status: 200, headers: noHeaders };
   }, pair);
-  await f("/cmd", { method: "POST", body: "c=notes%3D1" });
+  await f("/cmd", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "c=notes%3D1" });
   await f("/status", { cache: "no-store" });
   await f("/status");                                   // no options at all
   await f("https://example.invalid/x");                 // another origin: no token on it

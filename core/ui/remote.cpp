@@ -399,6 +399,16 @@ struct State {
   int16_t src14[12] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // P1's last 14 bits by 2A or our 48 (song)
   int16_t wr_pat[12] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // P1 our 48 wrote, its answer owed (presetpick)
   uint16_t src_known[12] = {};
+  // rc5 (page-2 defaults): the Rytm's machine list on top (2B), each track's voice byte when it opened, the tracks a
+  // one-track 33 moved while it was open; after it closed, the tracks owed page 2 (p2_due): the voice byte at the open
+  // (p2_from), the one written for (p2_vb), the stage (0 waiting for the choice to settle, 1 P9..P12 sent, 2 P13..P16
+  // sent), its time, the params still to send (p2_want) and not answered yet (p2_ans), the resends
+  bool mlist = false;
+  uint8_t mlist_vb[12] = {};
+  uint16_t mlist_moved = 0;
+  uint16_t p2_due = 0;
+  uint8_t p2_from[12] = {}, p2_vb[12] = {}, p2_stage[12] = {}, p2_want[12] = {}, p2_ans[12] = {}, p2_tries[12] = {};
+  uint32_t p2_ms[12] = {};
   RemoteStats stats = {};
 };
 
@@ -1284,6 +1294,106 @@ CORE_COLD void display_remote_page(int page) {
   remote_show_page(t);
 }
 
+// rc5 (0.4.1, the owner on hardware: a DSP SAMPLE voice silent, its TUN / STA / END left by the machine before): a
+// machine chosen in the Rytm's machine list gets its SRC knobs' (P1..P8) defaults from stock's set_machine, which leaves
+// page 2 (P9..P16, the stock sample words 17..24) as the sound had them (rytm-mods 0026 design "1034", "1051"; measured
+// in rytm-emu gate040 and o174: LIVE IN -> DSP SAMPLE kept LIVE IN's 77 0 0 0 0 0 0 0, i.e. TUN +13, END 0, LEV 0).
+// 0026 writes page 2's defaults itself for LIVE IN, CHOP and MIDI, 0021 for MD and the user slots; for the machines
+// below the Pi does it, as 0026's cu_defs_tick does: once the list has closed (2B: MachineListView no longer on top),
+// for a track a one-track 33 moved while it was open, and kSettleMs later still on another machine than at the open,
+// P9..P16 written as knob turns (48), the records' defaults. Measured order (both OSes): the previews' 33s, NO's
+// restoring 33 and YES's last 33 all come before the 2B of the close; no snapshot 33, no other view over the list. The
+// wait and the re-check cover a later one. 0026 queues 8 48s and drops the rest (rui.c WQ_N): page 2 goes as two groups
+// of 4 a UI tick apart, and params not answered within kAnswerMs go once more (logged). A kit, sound or project load is
+// no list choice: its words stay. Values: DSP SAMPLE's records are copies of stock's sample records, which PLAITS's and
+// DAISYSP's page 2 rely on (0021 ext.c); MULTISAMPLE / WAVETABLE / GRANULAR / 6-OP FM's E..H: 0026's cu_p2k,
+// cu_wtp2k, cu_grp2k, CU_CHORD.
+constexpr uint32_t kMachineListVt173 = 0x401E5BF4u;   // MachineListView's vtable, OS 1.73 (0026's cu_prep)
+constexpr uint32_t kMachineListVt174 = 0x401E5EA4u;   // OS 1.74 (notes os174 address map; 0026 sends sv.top_vt raw)
+constexpr uint32_t kSettleMs = 150, kGroupMs = 60, kAnswerMs = 1000;   // >= 2 UI ticks (50 ms); one tick; the answers
+struct PageTwo {
+  uint8_t machine, mask, v[8];
+};
+UI_ROM const PageTwo kPageTwo[] = {
+    {kDspSample, 0xFF, {64, 64, 0, 0, 0, 120, 0, 100}},   // TUN FIN SMP MOD STA END LOP LEV
+    {kPlaits, 0xFF, {64, 64, 0, 0, 0, 120, 0, 100}},
+    {kDaisy, 0xFF, {64, 64, 0, 0, 0, 120, 0, 100}},
+    {kMultiMachine, 0xFF, {64, 64, 0, 0, 0, 0, 0, 0}},     // TUNE FINE STRT LOOP / CHD INV SPR VOI
+    {kWaveMachine, 0xFF, {0, 64, 100, 64, 0, 0, 0, 0}},    // ATK DEC SUS ENV / CHD INV SPR VOI
+    {kGranMachine, 0xFF, {10, 60, 0, 0, 0, 0, 0, 0}},      // ATK REL HOLD ANIM / CHD INV SPR VOI
+    {kFm, 0xF0, {0, 0, 0, 0, 0, 0, 0, 0}},                 // E..H: CHD INV SPR VOI (A..D are FM's own)
+};
+CORE_COLD const PageTwo* page_two(int m) {
+  for (const PageTwo& p : kPageTwo)
+    if (p.machine == m) return &p;
+  return nullptr;
+}
+CORE_COLD void page_two_cancel() { s.p2_due = 0, s.mlist_moved = 0; }
+CORE_COLD void machine_list(bool on) {
+  if (on && !s.mlist) {
+    memcpy(s.mlist_vb, track_vb, sizeof s.mlist_vb), s.mlist_moved = 0;
+    // re-opened within a choice's settle wait: that choice goes on in this list (its machine at the first open, so a NO
+    // here still gets the first choice's defaults), nothing written for a machine this list's cursor only previews
+    for (int t = 0; t < 12; ++t)
+      if ((s.p2_due >> t & 1) && s.p2_stage[t] == 0)
+        s.p2_due &= (uint16_t)~(1u << t), s.mlist_vb[t] = s.p2_from[t], s.mlist_moved |= (uint16_t)(1u << t);
+  }
+  if (!on && s.mlist && have_tracks)
+    for (int t = 0; t < 12; ++t)
+      if (s.mlist_moved >> t & 1)
+        s.p2_due |= (uint16_t)(1u << t), s.p2_from[t] = s.mlist_vb[t], s.p2_stage[t] = 0, s.p2_ms[t] = s.now_ms;
+  if (!on) s.mlist_moved = 0;
+  s.mlist = on;
+}
+// one group (params 8 + first .. 8 + first + 3) of what is still to send, if the track still plays that machine
+CORE_COLD void page_two_group(int t, int first) {
+  const PageTwo* p = page_two(machine_of(s.p2_vb[t]));
+  for (int k = first; k < first + 4 && p; ++k)
+    if ((s.p2_want[t] >> k & 1) && remote_track_write(t, 8 + k, p->v[k], 0, 0)) s.p2_ans[t] |= (uint8_t)(1u << k);
+  s.p2_want[t] &= (uint8_t)~(0x0Fu << first);
+}
+CORE_COLD void page_two_tick(uint32_t ms) {
+  for (int t = 0; t < 12 && s.p2_due; ++t) {
+    if (!(s.p2_due >> t & 1)) continue;
+    uint16_t bit = (uint16_t)(1u << t);
+    uint32_t dt = ms - s.p2_ms[t];
+    if (s.p2_stage[t] > 0 && track_vb[t] != s.p2_vb[t]) {   // the track moved on meanwhile: nothing more for it
+      s.p2_due &= (uint16_t)~bit;
+      continue;
+    }
+    if (s.p2_stage[t] == 0) {
+      if (dt < kSettleMs || s.mlist) continue;   // (the list open again: machine_list took the choice back)
+      uint8_t vb = track_vb[t], from = s.p2_from[t];
+      const PageTwo* p = vb == kNotOurs ? nullptr : page_two(machine_of(vb));
+      // NO, or back to the machine it had (its words are its own), or a machine whose page 2 the Rytm sets / has none
+      if (!p || (from != kNotOurs && machine_of(from) == machine_of(vb))) {
+        s.p2_due &= (uint16_t)~bit;
+        continue;
+      }
+      s.p2_vb[t] = vb, s.p2_want[t] = p->mask, s.p2_ans[t] = 0, s.p2_tries[t] = 0;
+      core::log("rui: track %s chose %s in the machine list: P9..P16 its defaults", kTrackName[t], machine_long(machine_of(vb)));
+      page_two_group(t, 0);
+      s.p2_stage[t] = 1, s.p2_ms[t] = ms;
+    } else if (s.p2_stage[t] == 1) {
+      if (dt < kGroupMs) continue;
+      page_two_group(t, 4);
+      s.p2_stage[t] = 2, s.p2_ms[t] = ms;
+    } else if (!s.p2_ans[t]) {
+      s.p2_due &= (uint16_t)~bit;   // all answered
+    } else if (dt >= kAnswerMs) {
+      core::log("rui: track %s page 2: no answer for P9..P16 mask %02x (the Rytm's 48 queue full?)%s", kTrackName[t],
+                s.p2_ans[t], s.p2_tries[t] ? ": given up" : ": sent again");
+      if (s.p2_tries[t]++) {
+        s.p2_due &= (uint16_t)~bit;
+        continue;
+      }
+      s.p2_want[t] = s.p2_ans[t], s.p2_ans[t] = 0;
+      page_two_group(t, 0);
+      s.p2_stage[t] = 1, s.p2_ms[t] = ms;
+    }
+  }
+}
+
 }  // namespace
 
 CORE_COLD bool remote_is_list(int vi, int k) {
@@ -1458,6 +1568,8 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         if ((b[3] & 0x78) == kJuno) send_juno_names();
         else if ((b[3] & 0x78) == kFm) send_fm_names();
       }
+      if (b[1] != 1) page_two_cancel();                          // rc5: a snapshot (a load) is no list choice
+      else if (s.mlist) s.mlist_moved |= (uint16_t)(1u << b[0]);
       for (int i = 0; i < b[1]; ++i)
         track_vb[b[0] + i] = track_vb_of(b[0] + i, b[3 + 2 * i], b[2 + 2 * i]), tracks_known |= (uint16_t)(1u << (b[0] + i));
       have_tracks = true;
@@ -1504,6 +1616,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       if (n < 8) break;
       static uint32_t last = 0xFFFFFFFFu;
       uint32_t vt = (uint32_t)b[2] << 28 | (uint32_t)b[3] << 21 | (uint32_t)b[4] << 14 | (uint32_t)b[5] << 7 | b[6];
+      machine_list(vt == kMachineListVt173 || vt == kMachineListVt174);   // rc5: the list's choice gets page 2's defaults once it closes
       uint32_t key = (uint32_t)b[0] << 24 ^ vt ^ (uint32_t)b[1] << 16;
       if (key == last && !src_log) return;
       last = key;
@@ -1597,6 +1710,8 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     }
     case kWrite:   // rui1036: 48 <track> <param> <status>: the Rytm's answer to our write (logged when refused)
       if (n < 3) break;
+      if (b[0] < 12 && b[1] >= 8 && b[1] < 16 && (s.p2_due >> b[0] & 1) && s.p2_stage[b[0]])   // rc5: page 2's answered
+        s.p2_ans[b[0]] &= (uint8_t)~(1u << (b[1] - 8));
       if (b[2] == 4) core::log("rui: 48 write track %d P%d locked on the steps held", b[0] + 1, b[1] + 1);   // (1038)
       else if (b[2]) core::log("rui: 48 write track %d P%d refused (status %d)", b[0] + 1, b[1] + 1, b[2]);
       if (b[0] < 12 && b[1] == 0 && s.wr_pat[b[0]] >= 0) {   // presetpick: PAT written into a JUNO track's sound (not a
@@ -1615,6 +1730,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       lfo::kit_changed(b[0]);
       if (b[0] != kit_said) {  // (a 3B also comes with every page open and hello: the same kit is no change)
         kit_said = b[0];
+        page_two_cancel();     // rc5: a kit loaded around a list choice: its machines and words are the kit's
 #if CORE_MSAMP
         midim::kit_switched(); // MIDI: its held notes off; the new kit's PRG and the rest go out at its reports
 #endif
@@ -1632,6 +1748,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       return;
     case kHello: {   // 1023: <uptime >> 7> <uptime & 0x7F> <caps>: the splash when the Rytm was up before the link
       s.presets_told = false;
+      s.mlist = false, page_two_cancel();   // rc5: a new link: no list choice owed
       if (n < 3) break;
       s.stats.hellos++;
       int up = b[0] << 7 | b[1];
@@ -1689,6 +1806,7 @@ CORE_COLD void remote_tick(uint32_t ms) {
     }
   }
   s.now_ms = ms;
+  page_two_tick(ms);   // rc5: a machine list choice's page-2 defaults
 #if CORE_POLY && CORE_MSAMP
   static uint32_t rename_seen = 0;   // UX review B1: a rename's question shows the PROJECT page (it asks there)
   if (rename::asks() != rename_seen) {
@@ -1792,6 +1910,9 @@ CORE_COLD const char* remote_pair_code_now() { return pair_code; }
 const RemoteWebUi* webui_hooks = nullptr;
 CORE_COLD void remote_webui(const RemoteWebUi* h) { webui_hooks = h; }
 CORE_COLD const RemoteWebUi* remote_webui() { return webui_hooks; }
+const RemoteUsb* usb_hooks = nullptr;
+CORE_COLD void remote_usb(const RemoteUsb* h) { usb_hooks = h; }
+CORE_COLD const RemoteUsb* remote_usb() { return usb_hooks; }
 CORE_COLD bool remote_popup(const char* l1, const char* l2, uint32_t hold_ms, bool over) {
   // caps36 and legacy are what the Rytm can do, and no policy changes that: an older mod cannot draw this at all.
   // `open` and `splash` are policy - deferring to a Sidecar page is right for a status popup and wrong for the

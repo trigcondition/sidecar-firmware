@@ -1,0 +1,112 @@
+diff --git a/include/circle/usb/gadget/dwusbgadget.h b/include/circle/usb/gadget/dwusbgadget.h
+index ad2359e..3aa2d80 100644
+--- a/include/circle/usb/gadget/dwusbgadget.h
++++ b/include/circle/usb/gadget/dwusbgadget.h
+@@ -104,6 +104,16 @@ public:
+ 	/// \return FALSE if no request was deferred (a reset or a new SETUP came in between)
+ 	boolean CompleteControl (const void *pData, int nLength);
+ 
++	// circle-gadget-softconnect: the device leaves the bus and comes back, as a replug, with the descriptors and
++	// endpoints GetDescriptor() and AddEndpoints() give then (a gadget that changes what it is)
++#define CIRCLE_GADGET_SOFTCONNECT	1
++
++	/// \brief Leave the bus (task level): the endpoints are deactivated, the interrupts stay off until SoftConnect()
++	void SoftDisconnect (void);
++	/// \brief Back on the bus (task level, after SoftDisconnect(); the host needs some 100 ms to see the detach):
++	///	   the core is set up again, OnSuspend() removes the gadget's endpoints, AddEndpoints() makes them anew
++	boolean SoftConnect (void);
++
+ 	/// \brief A deferred request was given up by the host: a reset, or a new SETUP came first (IRQ level)
+ 	virtual void OnControlAborted (void)	{}
+ 
+diff --git a/lib/usb/gadget/dwusbgadget.cpp b/lib/usb/gadget/dwusbgadget.cpp
+index 44ded95..5078e32 100644
+--- a/lib/usb/gadget/dwusbgadget.cpp
++++ b/lib/usb/gadget/dwusbgadget.cpp
+@@ -1031,6 +1031,86 @@ void CDWUSBGadget::RemoveEndpoint (unsigned nEP, CDWUSBGadgetEndpoint *pEP)
+ 	}
+ }
+ 
++// circle-gadget-softconnect
++void CDWUSBGadget::SoftDisconnect (void)
++{
++	PeripheralEntry ();
++
++	CDWHCIRegister AHBConfig (DWHCI_CORE_AHB_CFG);
++	AHBConfig.Read ();
++	AHBConfig.And (~DWHCI_CORE_AHB_CFG_GLOBALINT_MASK);
++	AHBConfig.Write ();
++
++	CDWHCIRegister DeviceCtrl (DWHCI_DEV_CTRL);
++	DeviceCtrl.Read ();
++	DeviceCtrl.Or (DWHCI_DEV_CTRL_SOFT_DISCONNECT);
++	DeviceCtrl.Write ();
++
++	PeripheralExit ();
++
++	// the endpoints as at a reset of the configuration, EP0 last
++	for (unsigned i = 1; i <= NumberOfEPs; i++)
++	{
++		if (m_pEP[i])
++		{
++			m_pEP[i]->OnDeactivate ();
++		}
++		if (m_pOutEP[i])
++		{
++			m_pOutEP[i]->OnDeactivate ();
++		}
++	}
++	if (m_pEP[0])
++	{
++		m_pEP[0]->OnDeactivate ();
++	}
++
++	m_State = StateSuspended;
++}
++
++boolean CDWUSBGadget::SoftConnect (void)
++{
++	OnSuspend ();				// the gadget removes its endpoints
++
++	delete m_pEP[0];
++
++	PeripheralEntry ();
++
++	if (!InitCore ())
++	{
++		PeripheralExit ();
++
++		LOGERR ("Cannot initialize core");
++
++		return FALSE;
++	}
++
++	size_t nDescLength;
++	const TUSBDeviceDescriptor *pDeviceDesc =
++		reinterpret_cast<const TUSBDeviceDescriptor *> (
++			GetDescriptor (DESCRIPTOR_DEVICE << 8, 0, &nDescLength));
++	assert (pDeviceDesc);
++	new CDWUSBGadgetEndpoint0 (pDeviceDesc->bMaxPacketSize0, this);
++
++	AddEndpoints ();
++
++	m_State = StateSuspended;
++
++	CDWHCIRegister DeviceCtrl (DWHCI_DEV_CTRL);
++	DeviceCtrl.Read ();
++	DeviceCtrl.And (~DWHCI_DEV_CTRL_SOFT_DISCONNECT);
++	DeviceCtrl.Write ();
++
++	CDWHCIRegister AHBConfig (DWHCI_CORE_AHB_CFG);
++	AHBConfig.Read ();
++	AHBConfig.Or (DWHCI_CORE_AHB_CFG_GLOBALINT_MASK);
++	AHBConfig.Write ();
++
++	PeripheralExit ();
++
++	return TRUE;
++}
++
+ // circle-gadget-mirror
+ boolean CDWUSBGadget::CompleteControl (const void *pData, int nLength)
+ {

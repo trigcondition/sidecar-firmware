@@ -40,6 +40,9 @@ page, the serial console or the display shows on all of them.
 - **Sound**:
   - MIDI notes Off/On, Output Main/Tracks, Computer audio Off/On (disabled without the USB-C gadget), FIFO target
     with - and + (steps of 8 frames).
+  - USB-C mode Class compliant / Overbridge (`usbmode=`, docs/usb-mirror.md "The setting"): stored, applied at once
+    (USB-C replugs); the line under it says what the computer sees now and, with Overbridge set, that the box's requests
+    pass unfiltered. A mode the unit cannot run is greyed (no mirror in the build, as the Pi 5 in 0.4.1; both without the USB-C gadget).
   - Voice 1-8, then that voice's Machine (PLAITS JUNO FM DAISY DSPS GRAIN MD; MD replaced DD, DIGIDRUM, 2026-10-29; none checked for a user machine) and
     Drone (Off, This voice, All). DSPS and GRAIN are one machine in the status, so the one picked stays checked.
 - **Send FX**:

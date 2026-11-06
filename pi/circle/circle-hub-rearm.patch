@@ -1,0 +1,218 @@
+diff -ruN a/include/circle/usb/usbstandardhub.h b/include/circle/usb/usbstandardhub.h
+--- a/include/circle/usb/usbstandardhub.h
++++ b/include/circle/usb/usbstandardhub.h
+@@ -27,6 +27,7 @@
+ #include <circle/usb/usbdevice.h>
+ #include <circle/usb/usbhostcontroller.h>
+ #include <circle/numberpool.h>
++#include <circle/timer.h>
+ #include <circle/types.h>
+ 
+ class CUSBStandardHub : public CUSBFunction
+@@ -55,6 +56,12 @@
+ 	const TUSBHubInfo *GetHubInfo (void) const;
+ #endif
+ 
++	// circle-hub-rearm.patch: the status-change request ended in an error (any hub, since boot): how often,
++	// the last error (the xHCI completion code; 0 on DWHCI), and how often re-arming it failed
++	static unsigned GetStatusErrors (void)		{ return s_nStatusErrors; }
++	static unsigned GetStatusLastError (void)	{ return s_nStatusLastError; }
++	static unsigned GetRearmFailures (void)		{ return s_nRearmFailures; }
++
+ private:
+ 	boolean EnumeratePorts (void);
+ 
+@@ -64,11 +71,20 @@
+ 	void HandlePortStatusChange (void);
+ 	friend class CUSBHostController;
+ 
++	// circle-hub-rearm.patch: the recovery after an error is asked for from a kernel timer, never from the
++	// completion or from HandlePortStatusChange itself - an endpoint that fails again at once would otherwise keep
++	// CUSBHostController::UpdatePlugAndPlay's loop going for ever (core 0 held, the watchdog)
++	void ScheduleRecovery (void);			// IRQ or task level
++	static void RecoveryTimer (TKernelTimerHandle hTimer, void *pParam, void *pContext);
++
+ private:
+ 	TUSBHubDescriptor *m_pHubDesc;
+ 
+ 	CUSBEndpoint *m_pInterruptEndpoint;
+ 	u8 *m_pStatusChangeBuffer;
++	volatile boolean m_bStatusError;		// circle-hub-rearm.patch: set by the recovery timer, handled at task level
++	volatile TKernelTimerHandle m_hRecoveryTimer;
++	volatile unsigned m_nConsecErrors;		// since the last good completion
+ 
+ 	unsigned m_nPorts;
+ 	boolean m_bPowerIsOn;
+@@ -82,6 +98,10 @@
+ 
+ 	unsigned m_nDeviceNumber;
+ 	static CNumberPool s_DeviceNumberPool;
++
++	static unsigned s_nStatusErrors;
++	static unsigned s_nStatusLastError;
++	static unsigned s_nRearmFailures;
+ };
+ 
+ #endif
+diff -ruN a/lib/usb/usbstandardhub.cpp b/lib/usb/usbstandardhub.cpp
+--- a/lib/usb/usbstandardhub.cpp
++++ b/lib/usb/usbstandardhub.cpp
+@@ -20,6 +20,9 @@
+ #include <circle/usb/usbstandardhub.h>
+ #include <circle/usb/usbdevicefactory.h>
+ #include <circle/usb/xhciusbdevice.h>
++#if RASPPI >= 4
++#include <circle/usb/xhciendpoint.h>	// circle-hub-rearm.patch
++#endif
+ #include <circle/devicenameservice.h>
+ #include <circle/logger.h>
+ #include <circle/timer.h>
+@@ -29,6 +32,9 @@
+ #include <assert.h>
+ 
+ CNumberPool CUSBStandardHub::s_DeviceNumberPool (1);
++unsigned CUSBStandardHub::s_nStatusErrors = 0;
++unsigned CUSBStandardHub::s_nStatusLastError = 0;
++unsigned CUSBStandardHub::s_nRearmFailures = 0;
+ 
+ static const char FromHub[] = "usbhub";
+ static const char DevicePrefix[] = "uhub";
+@@ -38,6 +44,9 @@
+ 	m_pHubDesc (0),
+ 	m_pInterruptEndpoint (0),
+ 	m_pStatusChangeBuffer (0),
++	m_bStatusError (FALSE),
++	m_hRecoveryTimer (0),
++	m_nConsecErrors (0),
+ 	m_nPorts (0),
+ 	m_bPowerIsOn (FALSE)
+ #if RASPPI >= 4
+@@ -55,6 +64,12 @@
+ 
+ CUSBStandardHub::~CUSBStandardHub (void)
+ {
++	if (m_hRecoveryTimer != 0)			// circle-hub-rearm.patch
++	{
++		CTimer::Get ()->CancelKernelTimer (m_hRecoveryTimer);
++		m_hRecoveryTimer = 0;
++	}
++
+ 	if (m_nDeviceNumber != 0)
+ 	{
+ 		CDeviceNameService::Get ()->RemoveDevice (DevicePrefix, m_nDeviceNumber, FALSE);
+@@ -576,6 +591,7 @@
+ 	{
+ 		assert (pURB->GetResultLength () > 0);
+ 
++		m_nConsecErrors = 0;			// circle-hub-rearm.patch
+ 		GetHost ()->PortStatusChanged (this);
+ 	}
+ 	else
+@@ -584,6 +600,19 @@
+ 		{
+ 			StartStatusChangeRequest ();
+ 		}
++		else
++		{
++			// circle-hub-rearm.patch: Circle used to stop here, and the hub never reported a port change
++			// again: no unplug, no replug, until a reboot (a Rytm restarting after an OS update was never seen
++			// again; on the Pi 4's VL805 hub, an xHCI Transaction Error about 0.65 s after the Rytm's own).
++			// A timer has the task level reset the endpoint and arm the request again.
++			s_nStatusErrors++;
++#if RASPPI >= 4
++			CXHCIEndpoint *pXHCI = m_pInterruptEndpoint->GetXHCIEndpoint ();
++			s_nStatusLastError = pXHCI != 0 ? pXHCI->GetLastErrorCode () : 0;
++#endif
++			ScheduleRecovery ();
++		}
+ 	}
+ 
+ 	delete pURB;
+@@ -607,6 +636,39 @@
+ 		usStatusBitmap |= (u16) m_pStatusChangeBuffer[1] << 8;
+ 	}
+ 
++	if (m_bStatusError)
++	{
++		// circle-hub-rearm.patch: the request ended in an error, so the buffer holds nothing. A halted xHCI
++		// endpoint is reset (it takes no new transfer before that) and the request is armed again.
++		m_bStatusError = FALSE;
++		CLogger::Get ()->Write (FromHub, LogWarning, "Status change request failed (error %u, %u so far): re-armed",
++					s_nStatusLastError, s_nStatusErrors);
++#if RASPPI >= 4
++		CXHCIEndpoint *pXHCI = m_pInterruptEndpoint->GetXHCIEndpoint ();
++		if (   pXHCI != 0
++		    && pXHCI->GetEPState () >= 2)	// halted, stopped or error
++		{
++			if (!pXHCI->ResetFromHalted ())
++			{
++				CLogger::Get ()->Write (FromHub, LogError, "Cannot reset the status change endpoint");
++			}
++		}
++#endif
++		// Nothing is sent to the hub itself here: right after such an error it may not answer yet, and a failed
++		// port read below is a LogPanic (an earlier version that cleared the halt on the hub and read every port
++		// at this point made the Pi reboot on about one Rytm OS update in six). A change the hub latched
++		// meanwhile stays in its change bits, and the hub reports it again once the request is armed.
++		if (!StartStatusChangeRequest ())
++		{
++			CLogger::Get ()->Write (FromHub, LogError, "Cannot restart request");
++
++			s_nRearmFailures++;
++			ScheduleRecovery ();
++		}
++
++		return;
++	}
++
+ 	//CLogger::Get ()->Write (FromHub, LogDebug, "Status change (0x%04X)",
+ 	//			(unsigned) usStatusBitmap);
+ 
+@@ -711,5 +773,47 @@
+ 	if (!StartStatusChangeRequest ())
+ 	{
+ 		CLogger::Get ()->Write (FromHub, LogError, "Cannot restart request");
++
++		s_nRearmFailures++;			// circle-hub-rearm.patch: tried again later, from a timer
++		ScheduleRecovery ();
++	}
++}
++
++// circle-hub-rearm.patch: one recovery at a time, 250 ms after the first error, backing off to 1 s; after 50 errors
++// in a row (no good completion between) the hub is given up, as Circle did before, with a line saying so.
++void CUSBStandardHub::ScheduleRecovery (void)
++{
++	if (m_hRecoveryTimer != 0)
++	{
++		return;					// one is due already
++	}
++
++	unsigned nErrors = ++m_nConsecErrors;
++	if (nErrors > 50)
++	{
++		if (nErrors == 51)
++		{
++			CLogger::Get ()->Write (FromHub, LogError, "Status change request failed 50 times in a row: given up");
++		}
++
++		return;
++	}
++
++	unsigned nDelayMs = 250 * nErrors;
++	if (nDelayMs > 1000)
++	{
++		nDelayMs = 1000;
+ 	}
++
++	m_hRecoveryTimer = CTimer::Get ()->StartKernelTimer (MSEC2HZ (nDelayMs), RecoveryTimer, 0, this);
++}
++
++void CUSBStandardHub::RecoveryTimer (TKernelTimerHandle hTimer, void *pParam, void *pContext)
++{
++	CUSBStandardHub *pThis = (CUSBStandardHub *) pContext;
++	assert (pThis != 0);
++
++	pThis->m_hRecoveryTimer = 0;
++	pThis->m_bStatusError = TRUE;
++	pThis->GetHost ()->PortStatusChanged (pThis);
+ }

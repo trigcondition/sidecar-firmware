@@ -1,0 +1,104 @@
+diff -ruN a/include/circle/usb/usbmidi.h b/include/circle/usb/usbmidi.h
+--- a/include/circle/usb/usbmidi.h
++++ b/include/circle/usb/usbmidi.h
+@@ -79,6 +79,9 @@
+ 	///	    asynchronous send in flight, no such path, or the controller refused the reset
+ 	/// \note Task level, interrupts enabled (the xHCI command waits for its event)
+ 	boolean ResetOutHalted (void);
++	/// circle-midi-reset2.patch: CLEAR_FEATURE(ENDPOINT_HALT) to the device before the reset, the state read after it
++	/// \return the OUT endpoint is halted on the xHC (state 2, 3 or 4): ResetOutHalted would act on it
++	boolean OutHalted (void);
+ 
+ 	/// \brief Send one or more messages in plain MIDI message format
+ 	/// \param nCable Cable number (0-15)
+@@ -107,6 +110,7 @@
+ 
+ 	typedef boolean TResetHandler (void *pParam);		// circle-midi-reset.patch
+ 	void RegisterResetHandler (TResetHandler *pHandler, void *pParam);
++	void RegisterOutHaltedHandler (TResetHandler *pHandler)	{ m_pOutHaltedHandler = pHandler; }	// circle-midi-reset2
+ 
+ 	boolean GetAllSoundOffOnUSBError (void) const;
+ 
+@@ -122,6 +126,7 @@
+ 	TSendStateHandler *m_pSendStateHandler = 0;
+ 	void *m_pSendAsyncParam = 0;
+ 	TResetHandler *m_pResetHandler = 0;
++	TResetHandler *m_pOutHaltedHandler = 0;
+ 	void *m_pResetParam = 0;
+ 	void *m_pSendEventsParam;
+ 
+diff -ruN a/include/circle/usb/usbmidihost.h b/include/circle/usb/usbmidihost.h
+--- a/include/circle/usb/usbmidihost.h
++++ b/include/circle/usb/usbmidihost.h
+@@ -42,6 +42,7 @@
+ 	static boolean SendAsyncHandler (const u8 *pData, unsigned nLength, void *pParam);	// circle-midi-async.patch
+ 	static unsigned SendStateHandler (void *pParam);
+ 	static boolean ResetOutHandler (void *pParam);		// circle-midi-reset.patch
++	static boolean OutHaltedHandler (void *pParam);		// circle-midi-reset2.patch
+ 
+ private:
+ 	boolean StartRequest (void);
+diff -ruN a/lib/usb/usbmidi.cpp b/lib/usb/usbmidi.cpp
+--- a/lib/usb/usbmidi.cpp
++++ b/lib/usb/usbmidi.cpp
+@@ -356,6 +356,11 @@
+ 	return m_pResetHandler != 0 && (*m_pResetHandler) (m_pResetParam);
+ }
+ 
++boolean CUSBMIDIDevice::OutHalted (void)
++{
++	return m_pOutHaltedHandler != 0 && (*m_pOutHaltedHandler) (m_pResetParam);
++}
++
+ void CUSBMIDIDevice::RegisterResetHandler (TResetHandler *pHandler, void *pParam)
+ {
+ 	m_pResetHandler = pHandler;
+diff -ruN a/lib/usb/usbmidihost.cpp b/lib/usb/usbmidihost.cpp
+--- a/lib/usb/usbmidihost.cpp
++++ b/lib/usb/usbmidihost.cpp
+@@ -197,6 +197,7 @@
+ 		assert (m_pTxBuffer != 0);
+ 		m_pInterface->RegisterSendEventsAsyncHandler (SendAsyncHandler, SendStateHandler, this);
+ 		m_pInterface->RegisterResetHandler (ResetOutHandler, this);
++		m_pInterface->RegisterOutHaltedHandler (OutHaltedHandler);	// circle-midi-reset2
+ 	}
+ 
+ 	return StartRequest ();
+@@ -252,6 +253,19 @@
+ 	return TRUE;
+ }
+ 
++// circle-midi-reset2: is the OUT endpoint halted on the xHC (state 2, 3 or 4)?
++boolean CUSBMIDIHostDevice::OutHaltedHandler (void *pParam)
++{
++	CUSBMIDIHostDevice *pThis = static_cast<CUSBMIDIHostDevice *> (pParam);
++	assert (pThis);
++#if RASPPI >= 4
++	CXHCIEndpoint *pXHCI = pThis->m_pEndpointOut != 0 ? pThis->m_pEndpointOut->GetXHCIEndpoint () : 0;
++	return pXHCI != 0 && pXHCI->GetEPState () >= 2;
++#else
++	return FALSE;
++#endif
++}
++
+ // circle-midi-reset.patch: a transfer error halts a non-isochronous xHCI endpoint, and every later send on it fails (or
+ // times out): reset it. Not while an asynchronous send is in flight (its URB is the completion's to free).
+ boolean CUSBMIDIHostDevice::ResetOutHandler (void *pParam)
+@@ -264,7 +278,16 @@
+ 		return FALSE;
+ 	}
+ 	CXHCIEndpoint *pXHCI = pThis->m_pEndpointOut->GetXHCIEndpoint ();
+-	if (pXHCI == 0 || pXHCI->GetEPState () < 2 || !pXHCI->ResetFromHalted ())	// 2 halted, 3 stopped, 4 error
++	if (pXHCI == 0 || pXHCI->GetEPState () < 2)		// 2 halted, 3 stopped, 4 error
++	{
++		return FALSE;
++	}
++	// circle-midi-reset2: the device's side first. The reset sets the host's data toggle to DATA0, and the device's must
++	// follow, or it drops the next packet as a repeat; its answer does not matter.
++	pThis->GetHost ()->ControlMessage (pThis->GetEndpoint0 (), REQUEST_OUT | REQUEST_TO_ENDPOINT, CLEAR_FEATURE,
++					   ENDPOINT_HALT, pThis->m_pEndpointOut->GetNumber (), 0, 0);
++	// ResetFromHalted returns TRUE for a command that failed (it returns !code): the state after it decides
++	if (!pXHCI->ResetFromHalted () || pXHCI->GetEPState () == 2 || pXHCI->GetEPState () == 4)
+ 	{
+ 		return FALSE;
+ 	}

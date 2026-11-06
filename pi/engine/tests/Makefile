@@ -18,11 +18,25 @@ all: $(TESTS)
 build/%: %.cpp $(SRC) $(wildcard ../*.h) $(wildcard shim/circle/*.h) $(CORE)/fx/out.h $(CORE)/fx/out_mix.h check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $< $(SRC)
+# usb=mirror's descriptor and per-block helpers (mirror_desc.h) with the Overbridge block layout (ob_block.h)
+build/test_mirror_desc: test_mirror_desc.cpp ../mirror_desc.h ../../../teensy/libraries/RytmHost/ob_block.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -I../../../teensy/libraries/RytmHost -o $@ $<
 # the real ob_usb.cpp on a fake Circle (shim_ob/); copied, so its quoted includes find the shim's neighbours before the real ones
-build/test_ob_usb: test_ob_usb.cpp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h ../a4_in.cpp ../a4_in.h ../drift_src.h $(CORE)/device/a4.h ../output.cpp ../../../teensy/libraries/RytmHost/ob_block.h $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/device/device.h $(CORE)/fx/out.h $(CORE)/fx/out.cpp $(CORE)/fx/send_fx.h $(wildcard shim_ob/*.h) $(wildcard shim_ob/circle/*.h) $(wildcard shim_ob/circle/usb/*.h) check.h
+build/test_ob_usb: test_ob_usb.cpp ../ob_usb.cpp ../ob_usb.h ../ep_halt.h ../ob_follow.cpp ../ob_follow.h ../a4_in.cpp ../a4_in.h ../drift_src.h $(CORE)/device/a4.h ../output.cpp ../../../teensy/libraries/RytmHost/ob_block.h $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/device/device.h $(CORE)/fx/out.h $(CORE)/fx/out.cpp $(CORE)/fx/send_fx.h $(wildcard shim_ob/*.h) $(wildcard shim_ob/circle/*.h) $(wildcard shim_ob/circle/usb/*.h) check.h
 	@mkdir -p build/ob_src
 	cp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h build/ob_src/
 	$(CXX) -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all -Ibuild/ob_src -Ishim_ob -I.. -I../../../core -I../../../teensy/libraries/RytmHost -o $@ test_ob_usb.cpp build/ob_src/ob_usb.cpp build/ob_src/ob_follow.cpp ../a4_in.cpp ../output.cpp $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp -DOB_USB_TEST
+# usb=mirror's box side: the same, built with CIRCLE_GADGET_MIRROR and RASPPI=4 (the xHC's Reset Endpoint), against the
+# recording gadget of shim_ob/sidecar_gadget.h
+build/test_ob_mirror: test_ob_mirror.cpp ../ob_usb.cpp ../ob_usb.h ../ep_halt.h ../ob_follow.cpp ../ob_follow.h ../a4_in.cpp ../a4_in.h ../mirror_desc.h ../drift_src.h $(CORE)/device/a4.h ../output.cpp ../../../teensy/libraries/RytmHost/ob_block.h $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/device/device.h $(CORE)/fx/out.h $(wildcard shim_ob/*.h) $(wildcard shim_ob/circle/*.h) $(wildcard shim_ob/circle/usb/*.h) check.h
+	@mkdir -p build/ob_mirror_src
+	cp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h build/ob_mirror_src/
+	$(CXX) -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all -Ibuild/ob_mirror_src -Ishim_ob -I.. -I../../../core -I../../../teensy/libraries/RytmHost -o $@ test_ob_mirror.cpp build/ob_mirror_src/ob_usb.cpp build/ob_mirror_src/ob_follow.cpp ../a4_in.cpp ../output.cpp $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp -DOB_USB_TEST -DCIRCLE_GADGET_MIRROR -DRASPPI=4
+# usb=mirror's forwarded request and the box going away (mirror_ctl.h), as sidecar_gadget.cpp drives them
+build/test_mirror_ctl: test_mirror_ctl.cpp ../mirror_ctl.h ../mirror_desc.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $<
 # core/ui/tap_names.h on its own, no system header (rec_pi.cpp's include: the kernel build has no <new>); rec_pi.cpp
 # includes it and declares tap_source_name nowhere by hand
 build/test_tap_names: test_tap_names.cpp $(CORE)/ui/tap_names.h ../rec_pi.cpp
@@ -140,6 +154,24 @@ build/fatfs-%/ff.h: $(FATFS_SRC)/ff.c $(FATFS_SRC)/ffconf.h
 	cp $(FATFS_SRC)/ff.c $(FATFS_SRC)/ff.h $(FATFS_SRC)/diskio.h $(FATFS_SRC)/ffunicode.c $(dir $@)
 	sed $(FATFS_HOST) $(if $(filter exfat,$*),$(STOR_EXFAT_SED),) $(FATFS_SRC)/ffconf.h > $(dir $@)ffconf.h
 FATFS_DEPS = test_stor_fatfs.cpp ../stor_vol.cpp ../stor_vol.h check.h
+# the DWC2 gadget's EP0 and endpoint cancel (test_gadget_ep0.cpp): Circle's dwusbgadgetendpoint*.cpp with the Pi 4
+# gadget patch stack (pi/engine/build.sh's order, up to circle-gadget-stray.patch), copied into build/dwc and patched
+# there, on a fake register file (shim_dwc/)
+DWC_ROOT := $(if $(filter %/circle,$(CIRCLE_BUILD)),$(CIRCLE_BUILD),$(CIRCLE_BUILD)/circle)
+DWC_PATCHES := $(addprefix ../../circle/,circle-gadget.patch circle-gadget-wake.patch circle-gadget-reset.patch \
+	       circle-gadget-mirror.patch circle-gadget-softconnect.patch circle-gadget-stray.patch)
+build/dwc/.patched: $(DWC_PATCHES) ../../circle/gadget_wake.h ../../circle/gadget_flush.h
+	@test -f $(DWC_ROOT)/lib/usb/gadget/dwusbgadgetendpoint0.cpp || { echo "test_gadget_ep0: no Circle at $(DWC_ROOT) (CIRCLE_BUILD=.../pi/circle/build)"; exit 1; }
+	@rm -rf build/dwc && mkdir -p build/dwc/lib/usb
+	@cp -R $(DWC_ROOT)/include build/dwc/ && cp -R $(DWC_ROOT)/lib/usb/gadget build/dwc/lib/usb/
+	@cp ../../circle/gadget_wake.h build/dwc/include/circle/usb/gadget/gadgetwake.h
+	@cp ../../circle/gadget_flush.h build/dwc/include/circle/usb/gadget/gadgetflush.h
+	@cd build/dwc && for p in $(DWC_PATCHES); do patch -s -p1 < ../../$$p || exit 1; done
+	@touch $@
+build/test_gadget_ep0: test_gadget_ep0.cpp ../mirror_ep.h build/dwc/.patched $(wildcard shim_dwc/*.h shim_dwc/circle/*.h shim_dwc/circle/usb/*.h shim_dwc/circle/usb/gadget/*.h) check.h
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all \
+	  -Ishim_dwc -Ibuild/dwc/include -I. -I.. -o $@ $< build/dwc/lib/usb/gadget/dwusbgadgetendpoint.cpp \
+	  build/dwc/lib/usb/gadget/dwusbgadgetendpoint0.cpp
 build/test_stor_fatfs: build/fatfs-fat/ff.h $(FATFS_DEPS)
 	cc -O1 -g -w -c -o build/fatfs-fat/ff.o build/fatfs-fat/ff.c && cc -O1 -g -w -c -o build/fatfs-fat/ffunicode.o build/fatfs-fat/ffunicode.c
 	$(CXX) $(CXXFLAGS) -Ibuild/fatfs-fat -o $@ test_stor_fatfs.cpp ../stor_vol.cpp build/fatfs-fat/ff.o build/fatfs-fat/ffunicode.o

@@ -1,0 +1,253 @@
+--- a/include/circle/usb/gadget/dwusbgadgetendpoint.h
++++ b/include/circle/usb/gadget/dwusbgadgetendpoint.h
+@@ -68,6 +68,12 @@
+ 	/// \brief The bus woke from that suspend without a reset (IRQ level)
+ 	virtual void OnResume (void) {}
+ 
++	/// \brief circle-gadget-stray: completions that came for an EP with no transfer armed since boot (a SETUP for EP0
++	///	   while it waited for a deferred answer, recovered or dropped; or an IN / OUT completion, ignored); before,
++	///	   FinishTransfer() asserted on them
++#define CIRCLE_GADGET_STRAY	1
++	static unsigned GetStrayCount (void)	{ return s_nStray; }
++
+ 	/// \brief Set the maximum packet size of this EP (e.g. after speed negotiation)
+ 	/// \param nMaxPacketSize New maximum packet size in bytes
+ 	void SetMaxPacketSize (size_t nMaxPacketSize);
+@@ -173,6 +179,11 @@
+ 
+ 	static void HandleUSBReset (void);
+ 
++	// circle-gadget-stray: a SETUP done while no transfer is armed (EP0 waiting for a deferred answer, IRQ level)
++	virtual void OnStraySetup (void) {}
++	void NoteStray (const char *pWhat);
++	static volatile unsigned s_nStray;
++
+ 	friend class CDWUSBGadget;
+ 	friend class CDWUSBGadgetEndpoint0;
+ 
+--- a/include/circle/usb/gadget/dwusbgadgetendpoint0.h
++++ b/include/circle/usb/gadget/dwusbgadgetendpoint0.h
+@@ -40,7 +40,15 @@
+ 
+ 	boolean CompleteDeferred (const void *pData, int nLength);	// circle-gadget-mirror
+ 
++	// circle-gadget-stray: deferred requests the host's next SETUP ended
++	static unsigned GetSetupAbortCount (void)	{ return s_nSetupAborts; }
++
+ private:
++	void OnStraySetup (void) override;		// circle-gadget-stray
++	const u8 *FindStraySetup (void);
++	static volatile unsigned s_nSetupAborts;
++
++private:
+ 	enum TState
+ 	{
+ 		StateDisconnect,
+--- a/lib/usb/gadget/dwusbgadgetendpoint.cpp
++++ b/lib/usb/gadget/dwusbgadgetendpoint.cpp
+@@ -544,7 +544,21 @@
+ 
+ 	InitTransfer ();
+ }
++
++// circle-gadget-stray (IRQ level): a completion for this EP while no transfer is armed on it (TransferUnknown),
++// acknowledged by the caller: counted, logged the first time and then at powers of two
++volatile unsigned CDWUSBGadgetEndpoint::s_nStray = 0;
+ 
++void CDWUSBGadgetEndpoint::NoteStray (const char *pWhat)
++{
++	unsigned n = s_nStray + 1;
++	s_nStray = n;
++	if ((n & (n - 1)) == 0)
++	{
++		LOGWARN ("EP%u: %s with no transfer armed (%u so far)", m_nEP, pWhat, n);
++	}
++}
++
+ size_t CDWUSBGadgetEndpoint::FinishTransfer (void)
+ {
+ 	assert (m_TransferMode < TransferUnknown);
+@@ -633,6 +647,16 @@
+ 		OutEPIntAck.Set (DWHCI_DEV_OUT_EP_INT_SETUP_DONE);
+ 		OutEPIntAck.Write ();
+ 
++		if (m_TransferMode == TransferUnknown)		// circle-gadget-stray: EP0 waited for a deferred answer
++		{
++			CDWHCIRegister XferAck (DWHCI_DEV_OUT_EP_INT (m_nEP), DWHCI_DEV_OUT_EP_INT_XFER_COMPLETE);
++			XferAck.Write ();
++			NoteStray ("SETUP");
++			OnStraySetup ();
++			OutEPInt.And (~DWHCI_DEV_OUT_EP_INT_XFER_COMPLETE);
++		}
++		else
++		{
+ 		size_t nLength = FinishTransfer ();
+ 		if (nLength == sizeof (TSetupData))
+ 		{
+@@ -649,6 +673,7 @@
+ 		}
+ 
+ 		OutEPInt.And (~DWHCI_DEV_OUT_EP_INT_XFER_COMPLETE);
++		}
+ 	}
+ 
+ 	if (OutEPInt.Get () & DWHCI_DEV_OUT_EP_INT_XFER_COMPLETE)
+@@ -657,6 +682,12 @@
+ 		OutEPIntAck.Set (DWHCI_DEV_OUT_EP_INT_XFER_COMPLETE);
+ 		OutEPIntAck.Write ();
+ 
++		if (m_TransferMode == TransferUnknown)		// circle-gadget-stray: ignored (it asserted)
++		{
++			NoteStray ("OUT completion");
++		}
++		else
++		{
+ 		size_t nLength = FinishTransfer ();
+ 
+ 		if (m_Type == TypeIsochronous)
+@@ -665,6 +696,7 @@
+ 		}
+ 
+ 		OnTransferComplete (FALSE, nLength);
++		}
+ 	}
+ 
+ 	if (OutEPInt.Get () & DWHCI_DEV_OUT_EP_INT_OUT_TOKEN_EP_DISABLED)
+@@ -710,6 +742,12 @@
+ 		InEPIntAck.Set (DWHCI_DEV_IN_EP_INT_XFER_COMPLETE);
+ 		InEPIntAck.Write ();
+ 
++		if (m_TransferMode == TransferUnknown)		// circle-gadget-stray: ignored (it asserted)
++		{
++			NoteStray ("IN completion");
++		}
++		else
++		{
+ 		size_t nLength = FinishTransfer ();
+ 
+ 		if (m_Type == TypeIsochronous)
+@@ -718,6 +756,7 @@
+ 		}
+ 
+ 		OnTransferComplete (TRUE, nLength);
++		}
+ 	}
+ 
+ 	if (InEPInt.Get () & DWHCI_DEV_IN_EP_INT_NAK)
+--- a/lib/usb/gadget/dwusbgadgetendpoint0.cpp
++++ b/lib/usb/gadget/dwusbgadgetendpoint0.cpp
+@@ -20,6 +20,8 @@
+ #include <circle/usb/gadget/dwusbgadgetendpoint0.h>
+ #include <circle/usb/gadget/dwusbgadget.h>
+ #include <circle/usb/dwhci.h>
++#include <circle/usb/dwhciregister.h>
++#include <circle/synchronize.h>
+ #include <circle/util.h>
+ #include <circle/logger.h>
+ #include <assert.h>
+@@ -85,6 +87,7 @@
+ 	{
+ 		m_pGadget->OnControlAborted ();
+ 		m_State = StateIdle;
++		s_nSetupAborts++;			// circle-gadget-stray
+ 	}
+ 	m_bForwarded = FALSE;
+ 
+@@ -364,8 +367,13 @@
+ 		BeginTransfer (TransferSetupOut, m_OutBuffer, sizeof (TSetupData));
+ 		break;
+ 
+-	default:
+-		assert (0);
++	default:				// circle-gadget-stray: a completion no state waits for (it asserted)
++		NoteStray (bIn ? "IN completion in no stage" : "OUT completion in no stage");
++		m_State = StateIdle;
++		if (!IsTransferActive ())
++		{
++			BeginTransfer (TransferSetupOut, m_OutBuffer, sizeof (TSetupData));
++		}
+ 		break;
+ 	}
+ }
+@@ -378,6 +386,14 @@
+ 		return FALSE;
+ 	}
+ 
++	// circle-gadget-stray: the host's next SETUP is in, its IRQ still to come (it ends this request): nothing armed
++	// now, or the old answer would go to the new request's first IN token
++	CDWHCIRegister OutEPInt (DWHCI_DEV_OUT_EP_INT (0));
++	if (OutEPInt.Read () & DWHCI_DEV_OUT_EP_INT_SETUP_DONE)
++	{
++		return TRUE;
++	}
++
+ 	if (nLength < 0)
+ 	{
+ 		m_State = StateIdle;
+@@ -422,3 +438,66 @@
+ 
+ 	return TRUE;
+ }
++
++// ---- circle-gadget-stray ----------------------------------------------------------------------------------------
++//
++// While a request waits for its deferred answer (circle-gadget-mirror) nothing is armed on EP0. A SETUP the host sends
++// then (it gave up on the request) is still taken by the core: in buffer DMA mode it is written where DOEPDMA0 points,
++// just past the last OUT transfer (the SETUP before, or an OUT data stage), and SETUP done is raised. FinishTransfer()
++// asserted on it (the Pi 4 at a live switch to the mirror, 2026-11-06, serial: dwusbgadgetendpoint.cpp(550)). The
++// SETUP is read back from there when that lies in one of EP0's buffers, and handled as any (it ends the deferred
++// request, OnControlMessage); else it is dropped, the deferred request aborted and SETUP reception armed again.
++// Nothing else of EP0's flow changes: Circle's single transfer, as before.
++
++volatile unsigned CDWUSBGadgetEndpoint0::s_nSetupAborts = 0;
++
++const u8 *CDWUSBGadgetEndpoint0::FindStraySetup (void)
++{
++	CDWHCIRegister OutEPDMAAddress (DWHCI_DEV_OUT_EP_DMA_ADDR (0));
++	u32 nEnd = OutEPDMAAddress.Read ();		// just past the SETUP the core wrote
++	const struct { const u8 *p; size_t n; } Buf[] =
++	{
++		{m_OutBuffer, sizeof m_OutBuffer},
++		{m_InBuffer, sizeof m_InBuffer},
++		{(const u8 *) m_DummyBuffer, sizeof m_DummyBuffer}
++	};
++	for (const auto &b : Buf)
++	{
++		u32 nStart = (u32) BUS_ADDRESS ((uintptr) b.p);
++		if (nEnd >= nStart + sizeof (TSetupData) && nEnd <= nStart + b.n)
++		{
++			const u8 *p = b.p + (nEnd - nStart - sizeof (TSetupData));
++			InvalidateDataCacheRange ((uintptr) p, sizeof (TSetupData));
++
++			return p;
++		}
++	}
++
++	return nullptr;
++}
++
++void CDWUSBGadgetEndpoint0::OnStraySetup (void)
++{
++	const u8 *p = FindStraySetup ();
++	if (p != nullptr)
++	{
++		u8 Setup[sizeof (TSetupData)];
++		memcpy (Setup, p, sizeof Setup);
++		memcpy (m_OutBuffer, Setup, sizeof Setup);	// where OnControlMessage() reads it
++		CleanAndInvalidateDataCacheRange ((uintptr) m_OutBuffer, sizeof Setup);
++		OnControlMessage ();
++
++		return;
++	}
++
++	CLogger::Get ()->Write (FromEP0, LogWarning, "SETUP with nothing armed, not found (DMA past our buffers): dropped");
++	if (m_State == StateDeferred)
++	{
++		m_pGadget->OnControlAborted ();
++	}
++	m_State = StateIdle;
++	if (!IsTransferActive ())
++	{
++		BeginTransfer (TransferSetupOut, m_OutBuffer, sizeof (TSetupData));
++	}
++}

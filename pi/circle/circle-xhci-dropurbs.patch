@@ -1,0 +1,38 @@
+diff -ruN a/include/circle/usb/xhciendpoint.h b/include/circle/usb/xhciendpoint.h
+--- a/include/circle/usb/xhciendpoint.h
++++ b/include/circle/usb/xhciendpoint.h
+@@ -59,6 +59,9 @@
+ 	void TransferEvent (u8 uchCompletionCode, u32 nTransferLength);
+ 
+ 	boolean ResetFromHalted (void);
++	// circle-xhci-dropurbs: after ResetFromHalted (its Set TR Dequeue skips every TD still queued), forget their URBs:
++	// none of them completes. Returns how many; the caller owns them again.
++	unsigned DropURBs (void);
+ 
+ 	unsigned GetEPState (void);		// output endpoint context: 0 disabled, 1 running, 2 halted, 3 stopped, 4 error
+ 	unsigned GetPendingURBs (void) const	{ return m_nURBCount; }
+diff -ruN a/lib/usb/xhciendpoint.cpp b/lib/usb/xhciendpoint.cpp
+--- a/lib/usb/xhciendpoint.cpp
++++ b/lib/usb/xhciendpoint.cpp
+@@ -499,6 +499,21 @@
+ 								!!m_pTransferRing->GetCycleState ());
+ }
+ 
++unsigned CXHCIEndpoint::DropURBs (void)
++{
++	m_SpinLock.Acquire ();
++	unsigned nDropped = m_nURBCount;
++	while (m_nURBCount > 0)
++	{
++		m_pURB[m_nURBHead] = 0;
++		m_nURBHead = (m_nURBHead + 1) % XHCI_EP_MAX_URBS;
++		m_nURBCount--;
++	}
++	m_SpinLock.Release ();
++
++	return nDropped;
++}
++
+ unsigned CXHCIEndpoint::GetEPState (void)
+ {
+ 	if (!m_bValid || m_pDevice == 0 || !XHCI_IS_ENDPOINTID (m_uchEndpointID))

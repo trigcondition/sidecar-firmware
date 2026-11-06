@@ -102,6 +102,7 @@ At boot, before the render loops start, every core runs the bench in turn (cores
 | `recbuf=MB` | auto | the recorder's memory, reserved once at boot from the low heap (19.2 MB of it the files' 768 KB write buffers, the rest the ring, every slot of it used); not given, on a board with a high heap (2 GB and up: the pool and MULTISAMPLE take theirs there): half the low heap's free space past 192 MB, 64..256 MB (a Pi 4: 256 MB, about 55 s of all 25 channels at 24-bit); not given on a 1 GB board: 64 MB, as before; given: as given, at most 1024; 0: recording off (the boot log says which, and when there was no room) |
 | `web=0\|1` | 1 | the web page at http://sidecar.local over the Ethernet (below, "Web page"); 0: no HTTP daemon and no mDNS (the network stays up for `link=tcp`) |
 | `paircode=0\|<8 digits>` | (absent: a random code at every boot) | the pairing code that gates the network (below, "Pairing code"). `paircode=0` turns the gate **off**: everything on the network is open, as it was before 0.3.0 - a development card only, and the engine says so at boot, once a minute, in `/health`, in `/status` and on the STATUS page. `paircode=13572468` keeps the gate but fixes the code: this is the way to run a unit with no display at all, and it is the alternative to the code being written to `/sidecar-paircode.txt`. Anything else is ignored (the gate stays on with a random code) |
+| `usb=mirror` | sidecar | Pi 4 and Pi 5, opt-in (Overbridge passthrough: Pi 4 since 0.4.1, Pi 5 since 0.4.2: on USB-C for data a Pi 5 gets about 1.5 A from a computer or hub port, full power needs a USB-C power + data splitter, docs/pi5.md): the USB-C side shows the computer the attached box itself (its descriptors, audio, async channel, MIDI and requests relayed; `docs/usb-mirror.md`) instead of the Sidecar device, which comes back when the box has been gone `mirrorhold=S` seconds (10); Overbridge shows the unit's name with `mirrorname=` (default " (SC)"). Never a public default |
 | `oburbs=1..16` `obblocks=1..8` `obout=paced\|free\|off` `oboutdelay=N` `obctr=zero\|in` | 8, 1, paced, 0, zero | spike2's Overbridge host tuning, unchanged (`docs/pi-circle-spike.md`) |
 
 ## Console (921600 baud, the flasher's serial cable)
@@ -121,6 +122,7 @@ Commands are `:<command>` and a newline, at most 47 characters. The control core
 | `notes=0\|1` | MIDI notes off/on (as `notes=` at boot) |
 | `out=main\|tracks` | the output mode (as `out=`) |
 | `fifo=N` | the FIFO target (as `fifo=`; the Task 7 sweep). It stays across `link=` switches until the next `fifo=` |
+| `usbmode=class\|overbridge\|cmdline` | the USB-C mode (`docs/usb-mirror.md` "The setting"; opt-in, never a default): CLASS COMPLIANT (the Sidecar device) or OVERBRIDGE (the box passed through; Pi 4 since 0.4.1, the Pi 5 since 0.4.2), stored in `/.rytm/display.txt` (it then wins over cmdline `usb=`) and applied at once (USB-C replugs: not during a transfer or an OS update); `/cmd` takes `overbridge` only same-origin (strict); `cmdline` drops the stored one; `usbmode` alone logs the mode, where it came from and what the computer sees. Core 0's (kernel.cpp) |
 | `fxin=1\|0\|?` | the IN L/R source (below, "IN L/R source"): 1 the Rytm's FX return on Overbridge IN L/R, 0 its AUDIO IN, ? ask the Rytm; `fxin` alone reports. Needs the rui1024 Rytm build |
 | `unmute` | clear every mute and any pending `overtest` |
 | `faulttest=V` | guard test: voice V's next render faults (a write to an unmapped address): the voice is muted "crashed" and the others play on |
@@ -168,6 +170,22 @@ Each file is written whole (a `.tmp` file, then a rename), and nothing that exis
 - `thermal: ...` lines come once per crossing of the temperature warning (below), not per second; the stats line's last field is the temperature.
 - With `link=tcp`, the `tcp:` line (every 10 s) ends `wanted max W, poll gap max G us`: the most frames the emulator had asked for at once, and core 0's longest gap between two polls of the link.
 - With the Rytm, spike3's `rytmob:` line follows: IN/OUT blocks a second, `gap`, `lost`, and so on.
+  - `err` and `rs` (IN and OUT): transfer errors, and the endpoint resets after a halt (`pi/engine/ep_halt.h`). A non-isochronous
+    transfer error (4, a USB transaction error; 6, a STALL) halts the xHCI endpoint, and the URBs behind it never complete. Before
+    0.4.1 that stopped the Sidecar voices for good, with the CPU at 0 and no underrun. Now the main loop sends CLEAR_FEATURE(ENDPOINT_HALT)
+    to the box, resets the endpoint, drops the skipped URBs and submits again. An endpoint with URBs pending and no completion for
+    50 ms counts as halted too. While it keeps failing the resets back off: 0, 10 ms, 100 ms, then 1 s. Whatever comes between,
+    an endpoint gets at most 5 resets in any second, and one endpoint is reset per main-loop pass. The log gets at most 3 lines
+    in 10 s; the first line of the next 10 s gives the number left out. The `a4ob:` line has
+    the same `rs` fields.
+  - A pulled cable fails every endpoint of the box at once. So a lone failed endpoint is reset 5 ms after its error (time for
+    another to follow), and when two or more endpoints of one box (the Rytm's IN, OUT and USB MIDI OUT; an A4's IN and OUT) fail
+    within 5 ms of each other, nothing is sent to the box for up to 500 ms, time for the hub to report the disconnect. A box
+    still there after that is reset as above. One log line says so (`a likely unplug, their resets held`). A Rytm on USB MIDI
+    alone (no Overbridge stream) has no such check: its MIDI OUT is reset at once, as before.
+  - `/status` `"usbhalt":{"ob_in","ob_out","a4_in","a4_out","midi_out","refused","held"}`: resets since boot (the Rytm's Overbridge IN
+    and OUT, an A4's, the Rytm's USB MIDI OUT), the resets that did not take (the endpoint still halted afterwards; tried again
+    after the back-off), and the times a box's resets were held because its endpoints failed together.
 - `engine: muted !PLAITS(6) ...` lists the muted voices. Each new mute is also logged once with its reason.
 
 ### Underruns and the start-up stall (2026-10-25)
@@ -770,7 +788,7 @@ The page is built into the kernel (`hosted/web_page.h`), so **an open tab keeps 
 
 #### Code and tests
 
-`pi/engine/paircode.{h,cpp}` (portable: the code, the compare, the limiter, sessions, the card's file, the 7310 lines), `pi/engine/paircode_pi.{h,cpp}` (the card, the hardware RNG, the boot messages, `/status`, the STATUS row, the console's `pair*`), the perimeter and `/pair*` in `web.cpp`, `/health` in `kernel.cpp`, the confinement in `fsweb.cpp`, the 7310 step in `sdfiles.cpp`, `pi/circle/circle-http-auth.patch` (Circle's HTTP daemon keeps `X-Sidecar-Auth`; applied by `build.sh` after `circle-http-origin.patch`), the dialog and the Access section in `www/index.html`.
+`pi/engine/paircode.{h,cpp}` (portable: the code, the compare, the limiter, sessions, the card's file, the 7310 lines), `pi/engine/paircode_pi.{h,cpp}` (the card, the hardware RNG, the boot messages, `/status`, the STATUS row, the console's `pair*`), the perimeter and `/pair*` in `web.cpp`, `/health` in `kernel.cpp`, the confinement in `fsweb.cpp`, the 7310 step in `sdfiles.cpp`, `pi/circle/circle-http-auth.patch` (Circle's HTTP daemon keeps `X-Sidecar-Auth`; applied by `build.sh` after `circle-http-origin.patch`), `pi/circle/circle-http-case.patch` (the daemon reads `Content-Type` and `Content-Length` whatever their case: Chrome sends `content-type` for a `fetch()` with a `Headers` object, and until 0.4.1 every paired change from the page lost its form and `/cmd` refused it with nothing logged; the page now also sends its headers as a plain object, and `/cmd` logs each refusal's reason as `web: /cmd refused: ...`), the dialog and the Access section in `www/index.html`.
 
 - `make -C pi/engine/tests` (`test_paircode`): the code's shape and spread, the constant-time compare, use before init refusing rather than falling open, the limiter and its doubling lockout, the 10 s report throttle, sessions and both expiries, `check_quiet` not keeping a session alive, the card's file and its atomic save with failing writes and renames, a full file of the longest names, a device surviving a reboot, revocation, nine devices, the `cmdline.txt` parsing, the 7310 `PAIR`/`AUTH` lines, and that no answer, no error text and no file but the recourse one ever holds the code.
 - `make -C pi/engine/tests` (`test_fsweb`): every denied path refused for every operation — `/.rytm/wifi.txt`, `/.rytm/pair.txt`, `/cmdline.txt`, `/config.txt`, `/engine.img`, `/overlays`, and near-misses like `/Samples2` — both ends of a `mv`, the content folders still working, and the root listing showing content only.
@@ -913,6 +931,8 @@ wording follows the Rytm MIDI bridge's `midibridge=os:on`; the parsing is `pi/en
   upgrade always passes from its start. Start the upgrade again.
 - `/status`: `"usbmidi":{"os":"off|emu|on","osUpgrade":true|false,"aborted":N}` (`osUpgrade`: they pass right now;
   `aborted`: upgrades cut since boot).
+- With the USB-C mode OVERBRIDGE the filter covers MIDI only: the box's vendor requests and async channel pass
+  unfiltered (`docs/usb-mirror.md` "What the filters cover").
 - After the upgrade the Rytm reboots; `pi/circle/circle-replug.patch` has the hub enumerate it again.
 - While on or emu, `POST /cmd` also refuses `link=tcp:<address>` (it would send the computer's MIDI, an OS image
   included, to any host); `link=tcp` (cmdline's `emuhost=`) and `link=usb` stay allowed.

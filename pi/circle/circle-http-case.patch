@@ -1,0 +1,23 @@
+diff -ru a/lib/net/httpdaemon.cpp b/lib/net/httpdaemon.cpp
+--- a/lib/net/httpdaemon.cpp
++++ b/lib/net/httpdaemon.cpp
+@@ -579,7 +579,9 @@
+ 		return HTTPOK;
+ 	}
+ 
+-	if (strcmp (pToken, "Content-Type") == 0)
++	// circle-http-case.patch: header names are case-insensitive (RFC 9110): a browser may send "content-type"
++	// (Chrome does for a fetch() with a Headers object), and the form data was then not read at all
++	if (strcasecmp (pToken, "Content-Type") == 0)
+ 	{
+ 		if ((pToken = strtok_r (0, " ;", &pSavePtr)) == 0)
+ 		{
+@@ -605,7 +607,7 @@
+ 			strcpy (m_MultipartBoundary, pToken);
+ 		}
+ 	}
+-	else if (strcmp (pToken, "Content-Length") == 0)
++	else if (strcasecmp (pToken, "Content-Length") == 0)
+ 	{
+ 		if ((pToken = strtok_r (0, " ", &pSavePtr)) == 0)
+ 		{

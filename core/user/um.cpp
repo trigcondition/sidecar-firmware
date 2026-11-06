@@ -2232,6 +2232,9 @@ void begin(const Exec* e, const char* d) {
   core::hooks.slot_prints = on_prints;
   core::ui::remote_slots(&kUiSlots);   // the USER SLOTS page on the box's screen
   project_reload();
+#if CORE_MSAMP
+  g_scan_at = core::now_ms();   // (not the 0 it starts as: now_ms() - 0 reads as in the future after 24.8 days of uptime)
+#endif
   g_scan = 1;
   core::log("um: user machines from %s (code arena %u KB, %u KB state a voice)", g_dir, (unsigned)(e->total >> 10),
             (unsigned)(kStateMax >> 10));
@@ -2317,6 +2320,9 @@ void rescan() {
     g_scan_at = core::now_ms() + kRescanQuietMs;
 #endif
   } else {
+#if CORE_MSAMP
+    g_scan_at = core::now_ms();   // (the last rescan's time may be more than 24.8 days old: a stale one waits as if in the future)
+#endif
     g_scan = 1;
   }
 }
