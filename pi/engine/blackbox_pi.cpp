@@ -39,7 +39,19 @@ void Off (const char *pWhy)
 }
 
 // one write: the bytes logged since the last one (a chunk at most); FALSE when the card refused it (nothing taken then)
+volatile bool s_bWriting;		// inside WriteOnce: a panic from the card's own path must not write again
+
+boolean WriteOnceInner (void);
+
 boolean WriteOnce (void)
+{
+	s_bWriting = true;
+	boolean b = WriteOnceInner ();
+	s_bWriting = false;
+	return b;
+}
+
+boolean WriteOnceInner (void)
 {
 	mbtrace::Scope Mb (42, 200);
 	const uint64_t nDone = s_nDone, nLost = s_nLost, nShown = s_nLostShown;
@@ -163,6 +175,18 @@ void Flush (void)
 {
 	for (int i = 0; i < 4 && s_State == kOn && crumb::area ()->log_total != s_nDone; ++i)
 		if (!WriteOnce ()) break;
+}
+
+// A panic (CLogger's panic handler, kernel.cpp): its line is in the crumb's ring but would never reach the card, as
+// core 0 halts before its loop's next write and the reset loses the ring (the Pi 4's sdboot / rpiboot path keeps no
+// RAM). Written out only on core 0, with the black box on, no write of its own under way and no disk transfer in
+// flight (a panic from the card's path itself). A write that hangs ends as the panic would anyway: the watchdog.
+void PanicFlush (void)
+{
+	unsigned long nMpidr;
+	asm volatile ("mrs %0, mpidr_el1" : "=r" (nMpidr));
+	if ((nMpidr & 0xFF) != 0 || s_State != kOn || s_bWriting || crumb::area ()->disk.busy != 0) return;
+	Flush ();
 }
 
 unsigned Status (char *pOut, unsigned nMax)
