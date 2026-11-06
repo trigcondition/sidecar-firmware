@@ -13,6 +13,7 @@ import { mixCmd, strips } from "../lib/mix";
 import { useSidecar } from "../lib/useSidecar";
 import { coalescer } from "../lib/coalesce";
 import { dbText } from "../lib/status";
+import { has } from "../lib/box";
 
 const { status, levels, cmd, paired } = useSidecar();
 const st = computed(() => (status.value ?? null) as Record<string, any> | null);
@@ -76,7 +77,7 @@ function setLevel(i: number, v: number) {
         </div>
       </Card>
 
-      <Card label="Send FX">
+      <Card v-if="has(status, 'sendfx')" label="Send FX">
         <ul class="fxl">
           <li v-for="(f, i) in fx" :key="i">
             <b>FX {{ i + 1 }}</b> · {{ f.type || "OFF" }} · returns {{ f.post ? "POST (0/1)" : "PRE (2/3)" }}

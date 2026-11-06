@@ -8,6 +8,8 @@ import { RequestError } from "../lib/client";
 import { LogBuffer, type LogPush } from "../lib/logbuf";
 import { STATS_LINE, boxName, buildTiles } from "../lib/tiles";
 import { useSidecar } from "../lib/useSidecar";
+import { REC_STATES, hms } from "../lib/rec";
+import { boxes as boxList, has } from "../lib/box";
 import { uptimeText } from "../lib/status";
 
 const { client, state, hello, paired, status, pair, api, cmd } = useSidecar();
@@ -35,6 +37,7 @@ const tiles = computed(() => buildTiles(status.value, stats.value));
 const shown = computed(() => (hideStats.value ? lines.value.filter((l) => !STATS_LINE.test(l.text)) : lines.value));
 const isError = (t: string) => /ERROR|fail|fault|warn/i.test(t);
 const box = computed(() => boxName(status.value));
+const rec = computed(() => (status.value as Record<string, any> | null)?.rec as Record<string, any> | undefined);
 
 // the box's tracks (/status "src"): the machine each one reports; hidden until any has reported
 const TRACK = ["BD", "SD", "RS/CP", "BT", "LT", "MT/HT", "CH/OH", "CY/CB", "T9", "T10", "T11", "T12"];
@@ -91,7 +94,7 @@ async function send() {
       <label for="code">Pairing code</label>
       <input id="code" v-model="code" inputmode="numeric" autocomplete="off" maxlength="9" />
       <button type="submit" :disabled="code.replace(/\s/g, '').length !== 8">Pair</button>
-      <button type="button" @click="showCode">Show it on the {{ box }}</button>
+      <button v-if="has(status, 'remoteui')" type="button" @click="showCode">Show it on the {{ box }}</button>
     </form>
     <p v-if="pairMsg" role="status">{{ pairMsg }}</p>
   </Card>
@@ -101,9 +104,21 @@ async function send() {
       <template v-if="status">{{ status.host }}.local · up <span class="num">{{ uptimeText(status.uptime) }}</span></template>
       <template v-if="hello"> · Sidecar {{ hello.version }}</template>
     </p>
+    <ul v-if="boxList(status).length" class="boxes" aria-label="Boxes on USB">
+      <li v-for="b in boxList(status)" :key="b.id" :class="{ on: b.on }">
+        <b>{{ b.name }}</b> <span class="small">· {{ b.role }}</span>
+      </li>
+    </ul>
     <div class="tiles">
       <Tile v-for="t in tiles" :key="t.key" :tile="t" />
     </div>
+    <p v-if="rec" class="rec">
+      <span class="label">Recorder</span>
+      <span :class="{ warm: rec.state === 2 }"><span v-if="rec.state === 2" aria-hidden="true">● </span>{{ REC_STATES[rec.state] }}</span>
+      <span v-if="rec.state === 2" class="num warm">{{ hms(rec.frames / 48000) }}</span>
+      <span v-else-if="rec.take" class="small">last take {{ rec.take }}</span>
+      <router-link to="/rec">Rec page</router-link>
+    </p>
   </Card>
 
   <Card v-if="src" :label="`${box} tracks`">
@@ -140,6 +155,11 @@ async function send() {
 
 <style scoped>
 .meta { margin: 0; color: var(--label); }
+.boxes { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.boxes li { border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 0.25rem 0.75rem; }
+.boxes li.on { border: 2px solid var(--accent); }
+.rec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; margin: 0; }
+.rec a { color: var(--accent); }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.75rem; }
 .src { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr)); gap: 0.5rem; }
 .src li { border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0.5rem; display: flex; flex-direction: column; }

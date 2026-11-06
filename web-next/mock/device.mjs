@@ -127,7 +127,7 @@ export function createDevice() {
     samp: { ...d.samp, ms: d.samp.state === 2 ? Date.now() - d.samp.startedAt : d.samp.ms },
     asamp: d.asampStatus(),
     fxin: d.fxin,
-    stor: { vols: [{ name: "SD", state: "mounted", fs: "exFAT", freeMB: 28120, totalMB: 30436, link: "", model: "", pulls: 0 }, { name: "USB", state: "mounted", fs: "exFAT", freeMB: 51200, totalMB: 61440, link: "USB 3", model: "SanDisk", pulls: 0 }], exfat: true, bench: { state: "idle" } },
+    stor: { bench: d.benchStatus(), vols: [{ name: "SD", state: "mounted", fs: "exFAT", freeMB: 28120, totalMB: 30436, link: "", model: "", pulls: 0 }, { name: "USB", state: "mounted", fs: "exFAT", freeMB: 51200, totalMB: 61440, link: "USB 3", model: "SanDisk", pulls: 0 }], exfat: true },
     sdtest: d.sdtest,
     library: { state: "ready", files: 1834, bytes: 2.1e9, hashed: 1834, pending: 0, pct: 100, dups: 3, missing: 0 },
     pair: { gate: "on", rng: true, clients: d.pairClients, sessions: 1, locked: false },
@@ -177,6 +177,8 @@ export function createDevice() {
     else if ((m = /^brightness=(\d+)$/.exec(c))) d.brightness = Math.max(5, Math.min(100, +m[1]));
     else if (c === "sdtest=start!") d.sdtest = { state: "done", phase: "", progress: 100, have: true, verdict: "fine", writeMBps: 21.4, readMBps: 88.1, rand32Iops: 2100, rand32P99Ms: 3.1 };
     else if (c === "version") d.addLog("version: Sidecar 0.4.2 (mock000)");
+    else if ((m = /^stor=bench:(\w+)$/.exec(c))) d.benchRun = { vol: m[1], at: Date.now() };
+    else if (c === "stor=cancel") d.benchRun = null;
     else if ((m = /^seqed=show:(\d+)$/.exec(c))) d.seq.track = +m[1];
     else if ((m = /^seqed=add:(\d+):(\d+):(\d+):(-?\d+):(\d+):(\d+)$/.exec(c))) { d.seq.notes.push([+m[2], +m[4], +m[3], +m[5], +m[6], 0]); d.seq.gen++; d.seq.undo++; }
     else if ((m = /^seqed=del:(\d+):(\d+):(\d+)$/.exec(c))) { d.seq.notes = d.seq.notes.filter((n) => !(n[0] === +m[2] && n[2] === +m[3])); d.seq.gen++; d.seq.undo++; }
@@ -324,6 +326,16 @@ export function createDevice() {
       else Object.assign(j, { phase: ph[Math.floor(t * 4)], done: Math.floor(t * j.total) });
     }
     return { job: j.phase === "IDLE" ? "" : "export", phase: j.phase, done: j.done, total: j.total, key: j.key, waiting: j.waiting, seq: 1 };
+  };
+
+  d.benchStatus = () => {
+    const r = d.benchRun;
+    if (!r) return d.benchDone ?? { state: "idle", have: false };
+    const p = Math.min(100, Math.floor((Date.now() - r.at) / 50));
+    if (p < 100) return { state: "running", vol: r.vol, phase: p < 50 ? "write" : "read", progress: p, have: false };
+    d.benchRun = null;
+    d.benchDone = { state: "done", vol: r.vol, phase: "done", progress: 100, have: true, table: `${r.vol}        write    read    rand 32K\nseq 1 MB   21.4 MB/s 88.1 MB/s\nrand 32K                     2100 IOPS, p99 3.1 ms\nverdict: fine for 24 channels at 24-bit` };
+    return d.benchDone;
   };
 
   d.um = () => {

@@ -7,6 +7,7 @@ import SaveState from "../../ui/SaveState.vue";
 import { useSetting } from "../../lib/pending";
 import { useSidecar } from "../../lib/useSidecar";
 import { boxName } from "../../lib/tiles";
+import { has } from "../../lib/box";
 
 const { status, cmd, paired } = useSidecar();
 const st = computed(() => (status.value ?? {}) as Record<string, any>);
@@ -43,7 +44,7 @@ const fxinState = computed(() => st.value.fxin?.state as string | undefined);
       <Segmented label="Output" :options="[{ value: 'main', text: 'Main L/R' }, { value: 'tracks', text: 'Tracks' }]" :model-value="out.value.value ?? 'tracks'" :disabled="!paired" @update:model-value="out.set" />
       <SaveState :state="out.state.value" :msg="out.msg.value" />
     </div>
-    <div v-if="fxinState && fxinState !== 'unsupported'" class="field">
+    <div v-if="fxinState && fxinState !== 'unsupported' && has(status, 'fxin')" class="field">
       <span class="label">{{ box }} IN L/R</span>
       <Segmented label="IN L/R source" :options="[{ value: 0, text: 'Inputs' }, { value: 1, text: 'FX return' }]" :model-value="fxin.value.value ?? 0" :disabled="!paired" @update:model-value="fxin.set" />
       <SaveState :state="fxin.state.value" :msg="fxin.msg.value" />

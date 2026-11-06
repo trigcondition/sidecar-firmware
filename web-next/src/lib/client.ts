@@ -211,6 +211,11 @@ export class SidecarClient {
     return false;
   }
 
+  /** One given token (an empty one: the pairing gate is off, and the Sidecar takes any). */
+  authenticateAs(tok: string): Promise<boolean> {
+    return this.tryToken(tok);
+  }
+
   private async tryToken(tok: string): Promise<boolean> {
     try {
       await this.request("auth", { token: tok });

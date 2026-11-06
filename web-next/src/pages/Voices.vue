@@ -10,6 +10,7 @@ import { RequestError } from "../lib/client";
 import { coalescer } from "../lib/coalesce";
 import type { Lfos } from "../lib/lfo";
 import { useSidecar } from "../lib/useSidecar";
+import { has } from "../lib/box";
 
 const { status, cmd, paired } = useSidecar();
 const lfos = computed(() => (status.value as Record<string, any> | null)?.lfo as Lfos | undefined);
@@ -35,7 +36,7 @@ function send(c: string) {
     </template>
   </Card>
   <div class="grid">
-    <MachinesCard />
+    <MachinesCard v-if="has(status, 'userslots')" />
     <PresetsCard />
   </div>
 </template>

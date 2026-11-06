@@ -27,6 +27,8 @@ export interface Sidecar {
   pairing: Pairing;
   /** a command; resolves when the Sidecar took it, rejects with its refusal (RequestError) */
   cmd: (c: string) => Promise<void>;
+  /** the pairing gate (GET /pair/status): "on", "fixed", "off"; "" not known yet */
+  gate: Ref<string>;
 }
 
 const KEY: InjectionKey<Sidecar> = Symbol("sidecar");
@@ -49,6 +51,7 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     levels: shallowRef<Levels | null>(null),
     seqpos: shallowRef<SeqPos | null>(null),
     lastError: ref(""),
+    gate: ref(""),
     api: new Api({ token: () => pairing.current, onPairLost: () => void client.authenticate().catch(() => false) }),
     pairing,
     async cmd(c: string) {
@@ -75,7 +78,32 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     client.subscribe<Status>("status", (v) => (s.status.value = v)),
   ];
   client.connect();
+
+  // While unpaired (the old page's 5 s tick): ask the gate. Off: the Sidecar takes any token. Otherwise try this
+  // browser's saved pairing again (paired elsewhere meanwhile, a reboot). Once paired: the page's clock to the
+  // Sidecar (POST /time, gated, as the old page after pairing), once per pairing.
+  let timeSent = false;
+  async function recheck() {
+    if (s.state.value !== "open" || s.paired.value) return;
+    try {
+      const ps = await s.api.json<{ gate?: string }>("/pair/status");
+      s.gate.value = ps.gate ?? "";
+      if (ps.gate === "off") await client.authenticateAs("");
+      else if (pairing.saved()) await client.authenticate();
+    } catch {
+      /* the next tick */
+    }
+  }
+  const pairTick = setInterval(recheck, 5000);
+  client.on("hello", () => void recheck());
+  client.on("paired", (p) => {
+    if (!p) return void (timeSent = false);
+    if (timeSent) return;
+    timeSent = true;
+    void s.api.post("/time", { epoch: Math.floor(Date.now() / 1000), tz: -new Date().getTimezoneOffset() }).catch(() => (timeSent = false));
+  });
   onScopeDispose(() => {
+    clearInterval(pairTick);
     offs.forEach((f) => f());
     offLevels?.();
     offPos?.();
