@@ -5,6 +5,9 @@
 #include "../ws_json.h"
 #include "../ws_session.h"
 #include "../web_cmd.h"
+#include "../seqview_json.h"
+#include "../peak_fan.h"
+#include "../ws_topics.h"
 
 #include <string>
 #include <vector>
@@ -222,16 +225,19 @@ struct Fake
 	std::vector<std::string> cmds;
 	bool fail = false;
 	bool room = true;			// can_push
+	std::string other = "{\"x\":1}";	// every topic but status
+	unsigned topics = 0;
 };
 static bool FRoom (void *p) { return ((Fake *) p)->room; }
 static bool FSend (void *p, const char *s, size_t n) { Fake *f = (Fake *) p; if (f->fail) return false; f->sent.push_back (std::string (s, n)); return true; }
 static bool FTok (void *p, const char *t) { return !((Fake *) p)->token.empty () && ((Fake *) p)->token == t; }
-static size_t FStatus (void *p, char *o, size_t max)
+static size_t FStatus (void *p, wsproto::Topic t, char *o, size_t max)
 {
 	Fake *f = (Fake *) p;
-	if (f->status.size () > max) return 0;
-	memcpy (o, f->status.data (), f->status.size ());
-	return f->status.size ();
+	const std::string &s = t == wsproto::kStatus ? f->status : f->other;
+	if (s.size () > max) return 0;
+	memcpy (o, s.data (), s.size ());
+	return s.size ();
 }
 static const char *FCmd (void *p, const char *c)
 {
@@ -246,9 +252,9 @@ struct Rig
 	Fake f;
 	char buf[8192];
 	wsproto::Session *s;
-	Rig (size_t nBuf = 8192)
+	Rig (size_t nBuf = 8192, unsigned topics = 0)
 	{
-		wsproto::Host h = {&f, FSend, FTok, FStatus, FCmd, "0.4.2", FRoom};
+		wsproto::Host h = {&f, FSend, FTok, FStatus, FCmd, "0.4.2", FRoom, topics};
 		s = new wsproto::Session (h, buf, nBuf);
 		s->open (0);
 	}
@@ -351,6 +357,24 @@ static void test_session ()
 		q.msg ("{\"type\":\"ack\",\"seq\":0}", 1050);	// acks are not rate-limited
 		CHECK (has (q.last (), "\"code\":429"));
 	}
+	{	// topics: only the served ones in the hello, the rest "later"; each topic's own range and silence gap
+		Rig r (8192, 1u << wsproto::kLevels);
+		CHECK (has (r.f.sent[0], "\"topics\":[\"status\",\"levels\"]") && has (r.f.sent[0], "\"later\":[\"seq\",\"seqpos\",\"log\",\"usbMode\""));
+		CHECK (has (r.f.sent[0], "\"rates\":{\"status\":[250,1000],\"levels\":[33,40]}"));
+		CHECK (wsjson::valid_object (r.f.sent[0].data (), r.f.sent[0].size ()));
+		r.msg ("{\"type\":\"sub\",\"id\":1,\"payload\":{\"topics\":[\"levels\",\"seq\"],\"ms\":1}}");
+		CHECK (has (r.last (), "\"topics\":[\"levels\"],\"later\":[\"seq\"],\"unknown\":[],\"ms\":33"));
+		CHECK (r.s->interval (wsproto::kLevels) == 33);
+		r.s->tick (0);
+		CHECK (has (r.last (), "\"topic\":\"levels\",\"seq\":1,\"payload\":{\"x\":1}"));
+		r.msg ("{\"type\":\"ack\",\"seq\":1}");
+		for (uint32_t t = 33; t < 1000; t += 33) r.s->tick (t);	// unchanged: silent up to its 1 s gap
+		CHECK (r.s->seq () == 1);
+		r.s->tick (1030);
+		CHECK (r.s->seq () == 2);
+		r.msg ("{\"type\":\"sub\",\"id\":2,\"payload\":{\"topics\":[\"levels\"]}}");
+		CHECK (r.s->interval (wsproto::kLevels) == 40);			// no ms: the topic's default
+	}
 	{	// a full send queue holds pushes back like a full window; pings are charged to the bucket
 		Rig r;
 		r.msg ("{\"type\":\"sub\",\"id\":1,\"payload\":{\"topics\":[\"status\"]}}");
@@ -392,6 +416,72 @@ static void test_cmd_policy ()
 	CHECK (webcmd::refused ("usbmode=overbridge", true, false) == 0);	// web.cpp's strict origin check, not this list
 }
 
+static void test_topics ()
+{
+	// the sequencer view: valid JSON, notes as arrays, only busy steps listed
+	sidecar_seq_view_t *v = new sidecar_seq_view_t ();
+	char *buf = new char[64 * 1024];
+	CHECK (seqjson::view (*v, buf, 64 * 1024) > 0 && std::string (buf) == "{\"valid\":false}");
+	v->valid = 1; v->track = 8; v->tracks[0] = 8; v->tracks[1] = 9; v->tracks[2] = v->tracks[3] = -1;
+	v->pattern = 3; strcpy (v->project, "SHARED \"SET\""); strcpy (v->machine, "6-OP FM");
+	v->length = 32; v->npages = 2; v->transport = 1; v->bpm10 = 1200; v->gen = 7;
+	strcpy (v->chord[0], "OFF"); strcpy (v->chord[1], "MAJ");
+	v->n = 2;
+	v->note[0] = {0, -12, 60, 100, 0, 96};
+	v->note[1] = {5, 0, 64, 90, 2, 48};
+	v->locks[5] = 3; v->fx_val[9] = -4;
+	size_t n = seqjson::view (*v, buf, 64 * 1024);
+	CHECK (n > 0 && wsjson::valid_object (buf, n));
+	std::string s (buf, n);
+	CHECK (has (s, "\"project\":\"SHARED \\\"SET\\\"\""));
+	CHECK (has (s, "\"notes\":[[0,-12,60,100,96,0],[5,0,64,90,48,2]]"));
+	CHECK (has (s, "\"steps\":[[5,3,0,0,0,0,0,0,0,0],[9,0,0,0,0,0,0,-4,0,0]]"));
+	CHECK (has (s, "\"tracks\":[8,9,-1,-1]") && has (s, "\"bpm10\":1200"));
+	// the worst case fits the connection's buffer (web_ws.h kOutMax)
+	v->n = SEQED_NOTES; v->length = SEQED_STEPS;
+	for (int k = 0; k < SEQED_NOTES; k++) v->note[k] = {(unsigned short) (k % 128), -96, 127, 127, 3, 65535};
+	for (int k = 0; k < SEQED_STEPS; k++) { v->locks[k] = 12; v->cond[k] = 1; v->xstep[k] = 31; v->rt_cnt[k] = 8; v->rt_mode[k] = 3; v->fx_cmd[k] = 15; v->fx_val[k] = -128; v->lcond[k] = 64; v->arpl[k] = 65535; }
+	n = seqjson::view (*v, buf, 40 * 1024);
+	CHECK (n > 0 && wsjson::valid_object (buf, n));
+	CHECK (seqjson::pos (12345, 8, 1, buf, 100) > 0 && std::string (buf) == "{\"pos\":12345,\"track\":8,\"transport\":1}");
+	CHECK (seqjson::pos (-1, -1, 0, buf, 100) > 0 && std::string (buf) == "{\"pos\":-1,\"track\":-1,\"transport\":0}");
+	CHECK (seqjson::view (*v, buf, 100) == 0);		// does not fit: 0
+	delete v;
+
+	// the peak fan: each reader gets every peak once
+	peakfan::Fan *f = new peakfan::Fan ();
+	float pk[8][2] = {}, out[8][2];
+	pk[2][1] = 0.5f;
+	f->feed_voices (pk);
+	f->feed_master (0.25f);
+	f->take_voices (peakfan::kDisplay, out);
+	CHECK (out[2][1] == 0.5f);
+	f->take_voices (peakfan::kDisplay, out);
+	CHECK (out[2][1] == 0.0f);				// taken
+	f->take_voices (peakfan::kWeb, out);
+	CHECK (out[2][1] == 0.5f);				// the web's share was not stolen
+	pk[2][1] = 0.1f;
+	f->feed_voices (pk);
+	pk[2][1] = 0.3f;
+	f->feed_voices (pk);
+	f->take_voices (peakfan::kWeb, out);
+	CHECK (out[2][1] == 0.3f);				// the max since the last take
+	CHECK (f->take_master (peakfan::kStats) == 0.25f && f->take_master (peakfan::kStats) == 0.0f && f->take_master (peakfan::kWeb) == 0.25f);
+	delete f;
+
+	// levels and log payloads
+	float vp[8][2] = {{0.1f, 0.2f}, {1.5f, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0.0005f, 0}};
+	n = wstopics::levels (vp, 0.625f, buf, 1000);
+	CHECK (n > 0 && wsjson::valid_object (buf, n));
+	CHECK (std::string (buf) == "{\"master\":[0.625,0.625],\"strips\":[0.200,1.000,0.000,0.000,0.000,0.000,0.000,0.001,null,null,null,0.625]}");
+	const char t[] = "a \"b\"\\\n\x01\xe9z";
+	n = wstopics::log (100, 109, true, t, sizeof t - 1, buf, 1000);
+	CHECK (n > 0 && wsjson::valid_object (buf, n));
+	CHECK (std::string (buf) == "{\"from\":100,\"to\":109,\"gap\":true,\"text\":\"a \\\"b\\\"\\\\\\n\\u0001?z\"}");
+	CHECK (wstopics::log (0, 5, false, "hello", 5, buf, 20) == 0);	// does not fit
+	delete[] buf;
+}
+
 int main ()
 {
 	test_handshake ();
@@ -399,6 +489,7 @@ int main ()
 	test_json ();
 	test_session ();
 	test_cmd_policy ();
+	test_topics ();
 	printf ("test_ws: OK\n");
 	return 0;
 }

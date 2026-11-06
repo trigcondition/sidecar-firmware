@@ -32,6 +32,12 @@
 #include "web_cmd.h"		// the commands the web may send (/cmd and /ws)
 #include "web_ws.h"		// /ws (docs/web-ws.md)
 #include "ws_frame.h"		// its handshake
+#include "ws_topics.h"		// its levels and log payloads
+#include "shared.h"		// g_Output, g_PeakFan: the levels
+#if SIDECAR_SEQED
+#include "seqed_pi.h"		// the sequencer view (the touch editor's)
+#include "seqview_json.h"
+#endif
 #include "version.h"		// the hello's version (tools/gen_version.sh)
 #include "hosted/web_page.h"	// build.sh: www/index.html as WebPage[] (a raw string)
 #include "hosted/web_page_gz.h"	// build.sh: the same, gzip -9n, as WebPageGz[] (what "/" sends)
@@ -503,14 +509,70 @@ bool CWebServer::WsToken (void *pParam, const char *pToken)
 	return paircode_pi::Gate ().check (pToken);
 }
 
-size_t CWebServer::WsStatus (void *pParam, char *pOut, size_t nMax)
+// One topic's payload (ws_session.h's Host::build). Core 0 (this connection's worker task), like the display loop and the
+// stats line that share the peaks (peak_fan.h) and the sequencer view (seqed_pi.h)
+size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size_t nMax)
 {
-	CString s;
-	((CWebServer *) pParam)->StatusJson (&s);
-	size_t n = s.GetLength ();
-	if (n > nMax) return 0;
-	memcpy (pOut, (const char *) s, n);
-	return n;
+	CWebServer *pThis = (CWebServer *) pParam;
+	switch (Topic)
+	{
+	case wsproto::kStatus:
+	{
+		CString s;
+		pThis->StatusJson (&s);
+		size_t n = s.GetLength ();
+		if (n > nMax) return 0;
+		memcpy (pOut, (const char *) s, n);
+		return n;
+	}
+	case wsproto::kLevels:
+	{
+		float Pk[8][2];
+		g_Output.TakeVoicePeaks (Pk);			// into every reader's share, then this connection's own
+		g_PeakFan.feed_voices (Pk);
+		g_PeakFan.feed_master (g_Output.TakePeak ());
+		peakfan::Reader r = pThis->m_nWsSlot == 0 ? peakfan::kWeb : peakfan::kWeb2;
+		g_PeakFan.take_voices (r, Pk);
+		return wstopics::levels (Pk, g_PeakFan.take_master (r), pOut, nMax);
+	}
+#if SIDECAR_SEQED
+	case wsproto::kSeq:
+	case wsproto::kSeqPos:
+	{
+		static sidecar_seq_view_t *s_pView = 0;		// the newest view, shared by the connections (core 0)
+		static unsigned s_nSeen = 0;
+		if (s_pView == 0) { s_pView = new sidecar_seq_view_t; memset (s_pView, 0, sizeof *s_pView); }
+		if (s_pView == 0) return 0;
+		seqed_pi::View (s_pView, &s_nSeen);		// (a copy only when it changed)
+		if (Topic == wsproto::kSeq) return seqjson::view (*s_pView, pOut, nMax);
+		return seqjson::pos (seqed_pi::Playhead (), s_pView->valid ? s_pView->track : -1, s_pView->transport, pOut, nMax);
+	}
+#endif
+	case wsproto::kLog:
+	{
+		static const unsigned kChunk = 8192;		// the log bytes in one push
+		static char *s_pBuf = new char[kChunk];
+		if (s_pBuf == 0) return 0;
+		u64 nStart, nEnd;
+		u64 nSince = pThis->m_nWsLogAt;
+		if (!pThis->m_bWsLogStarted)			// a new subscriber: the last few KB for context
+		{
+			pThis->m_pLog->ReadSince (~0ull >> 1, s_pBuf, 0, &nStart, &nEnd);
+			nSince = nEnd > kChunk ? nEnd - kChunk : 0;
+		}
+		unsigned n = pThis->m_pLog->ReadSince (nSince, s_pBuf, kChunk, &nStart, &nEnd);
+		boolean bGap = pThis->m_bWsLogStarted && nStart > nSince;
+		size_t nOut = wstopics::log (nStart, nEnd, bGap, s_pBuf, n, pOut, nMax);
+		if (nOut != 0)
+		{
+			pThis->m_nWsLogAt = nEnd;
+			pThis->m_bWsLogStarted = TRUE;
+		}
+		return nOut;
+	}
+	default:
+		return 0;
+	}
 }
 
 // As POST /cmd: the same list (web_cmd.h), a /ws message counting as a body (never a URL). The upgrade passed the
@@ -531,6 +593,13 @@ const char *CWebServer::WsCommand (void *pParam, const char *pCmd)
 }
 
 static boolean WsStillOn (void) { return paircode_pi::WebOn (); }
+
+// the topics this build serves (the sequencer's only with core/seq in the tree)
+static const unsigned WsTopics = 1u << wsproto::kLevels | 1u << wsproto::kLog
+#if SIDECAR_SEQED
+				 | 1u << wsproto::kSeq | 1u << wsproto::kSeqPos
+#endif
+				 ;
 
 // A refused upgrade: a plain HTTP answer, no body, the connection closed
 void CWebServer::WsRefuse (const char *pStatus, const char *pWhy)
@@ -564,15 +633,20 @@ boolean CWebServer::UpgradeConnection (const char *pPath, CSocket *pSocket)
 		s_nWorkers--;
 		for (unsigned i = 0; i < MaxWorkers; i++) if (s_pWorker[i] == this) s_pWorker[i] = 0;
 		s_nWs++;
+		static boolean s_bSlot[MaxWs];			// which slot is in use (each its own share of the peaks)
+		m_nWsSlot = 0;
+		while (m_nWsSlot < MaxWs - 1 && s_bSlot[m_nWsSlot]) m_nWsSlot++;
+		s_bSlot[m_nWsSlot] = TRUE;
 		s_nWsTotal++;
 		CLogger::Get ()->Write (From, LogNotice, "ws: a client connected (%u open)", s_nWs);
-		static const ws_pi::TDevice Device = {0, WsToken, WsStatus, WsCommand, WsStillOn, SIDECAR_VERSION};
+		static const ws_pi::TDevice Device = {0, WsToken, WsBuild, WsTopics, WsCommand, WsStillOn, SIDECAR_VERSION};
 		ws_pi::TDevice Dev = Device;
 		Dev.pParam = this;
 		ws_pi::TStats St;
 		m_pSocketForWs = 0;
 		ws_pi::Serve (pSocket, Accept, Dev, &St);		// deletes pSocket
 		m_nStart = CTimer::GetClockTicks ();		// "longest connection" (LogStats) stays the HTTP requests'
+		s_bSlot[m_nWsSlot] = FALSE;
 		s_nWs--;
 		s_nWorkers++;					// the destructor counts it out again
 		CLogger::Get ()->Write (From, LogNotice, "ws: closed (%u%s): %u pushes, %u coalesced, %u refused, %u malformed "

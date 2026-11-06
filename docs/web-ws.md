@@ -93,13 +93,33 @@ connection (1008). Requests are limited to a burst of 20, then 20 a second (429 
 | topic | payload | pushed |
 |---|---|---|
 | `status` | exactly what `GET /status` answers (the same function, `CWebServer::StatusJson`) | when it differs from the last push, at most every `ms`; unchanged for 10 s: sent anyway |
-| `levels` | master and 12 strip peaks (below); **mock only so far** | every `ms` (33..1000, default 40) |
+| `levels` | master and 12 strip peaks (below) | every `ms` (33..1000, default 40); unchanged: at least once a second |
+| `seq` | the touch pattern editor's view of the shown seq track (below) | when it changed, at most every `ms` (100..10000, default 250) |
+| `seqpos` | `{"pos":steps x 1000 (-1 stopped),"track":T,"transport":0 stop 1 play 2 pause}` | every `ms` (33..1000, default 50) when it moved |
+| `log` | `{"from":N,"to":M,"gap":bool,"text":"..."}`: the console log's new bytes, as `GET /log` | when there are new bytes, at most every `ms` (250..10000, default 500), up to 8 KB a push |
+
+Each topic's range is in the hello (`"rates":{"status":[250,1000],"levels":[33,40],...}`, fastest and default), and
+the hello's `topics` lists only what this build serves (`seq` / `seqpos` need core/seq in the tree; the rest are
+`later`). The window of 4 is shared by all topics. `log` is open, as `GET /log` is; a new subscriber gets the last
+8 KB first, and `gap` says bytes were lost (the 64 KB ring overwrote them).
+
+### `seq` (the touch editor's view)
+
+`seqed_pi::View` (the same view the touchscreen's SEQ page draws, `pi/ui/sidecar_seqed.h`) as JSON,
+`pi/engine/seqview_json.h`: `track` (the Rytm track shown, 0..11), `tracks` (the 4 seq slots), `pattern`, `machine`,
+`length`, `pages`, `defaults`, `transport`, `bpm10`, `undo`/`redo`, `gen`, `chords` (names), `swing`, `poly`, `speed`,
+`dir`, `key`, `scale`, `qnt`, `rnd`, `seed`, `seedFixed`, `editPage`, `noteEdit`, `notes` as
+`[step, micro, pitch, vel, len, flags]` (micro and len in 1/96 step) and `steps` (only the steps with anything) as
+`[step, locks, cond, extras, ratchet count, ratchet mode, fx cmd, fx value, lock cond, arp locks]`. 1024 notes fit in
+40 KB (test_ws). Edits are the touch editor's own command lines (`seqed=add:T:S:P:M:V:L`, `del`, `move`, `len`, `vel`,
+`chord`, `strum`, `human`, `undo`, `redo`; docs/TOUCH-EDITOR.md) sent as `cmd`. `seqed=show:T` picks the shown track:
+it is one shown track for the touchscreen and the web together.
 
 Reserved for later (a `sub` lists them under `later`): `usbMode`, `voices`, `levels`, `scenes`, `log`. `/status` is
 ~12 KB on a unit today, so the next step is to split the parts a page watches closely (`usbMode`, `voices`, `levels`)
 into topics of their own with faster intervals and leave `status` slow.
 
-### `levels` (designed, served by the mock; the Pi next)
+### `levels`
 
 What the header's "signal tide" and the Mix page's meters draw:
 
@@ -113,9 +133,12 @@ What the header's "signal tide" and the Mix page's meters draw:
   the client draws its own decay.
 - Rate: its own interval range, 33..1000 ms, default 40 ms (25 Hz). The hello will carry it per topic
   (`"rates":{"levels":[33,40]}`) when the Pi serves the topic; until then `minMs`/`maxMs` are the status topic's.
-- Source on the Pi: the render / control cores already measure peaks (core/fx/out_measure); core 3 publishes the 14
-  values into a single-writer snapshot (as `/lists` does), core 0's web task reads it when a push is due: no lock on
-  the audio path, nothing built while no client subscribes.
+- Source on the Pi: the output stage's own peaks (`Output::TakeVoicePeaks`, `TakePeak`), which reset when read. So that
+  the web does not steal the touchscreen's meters, whoever reads them feeds `g_PeakFan` (`pi/engine/peak_fan.h`) and
+  takes its own share: the display, the stats line and each of the two web connections. Core 0 only; the render path
+  is unchanged; nothing is read while no client subscribes.
+- Known gaps: a voice on its own TRK output has no peak there (the output stage measures the OUT mixer's voices only),
+  so its strip reads 0; B1..B3 are `null` (no bus meter yet); the master is one value (L = R).
 - Flow control as for every topic: within the window of 4 the newest peaks go; a slow client simply sees fewer frames.
   At 25 Hz the window is the bottleneck only above ~160 ms round trip, where fewer frames is the right answer.
 - Not changed-only: silence is pushed too (as zeros), at most once a second while everything is 0.

@@ -21,9 +21,9 @@ namespace wsproto {
 
 static const unsigned kProto = 1;		// the protocol's version: a client refuses a major it does not know
 static const unsigned kWindow = 4;		// unacked pushes per connection
-static const unsigned kMinMs = 250;		// a topic's fastest push interval a client can ask for
+static const unsigned kMinMs = 250;		// the status topic's fastest push interval a client can ask for
 static const unsigned kDefaultMs = 1000;	// ... and the one it gets without asking (the old page polls /status at 1 s)
-static const unsigned kMaxMs = 10000;		// the slowest; also the longest gap between pushes of an unchanged topic
+static const unsigned kMaxMs = 10000;		// the slowest of any topic
 static const unsigned kMaxMsg = 4096;		// the longest message a client may send (ws_frame.h's Parser size)
 static const unsigned kTokenMax = 64;		// a pairing session token (paircode.h: kTokenHex)
 static const unsigned kCmdMax = 200;		// a console command, as /cmd's (web.cpp)
@@ -32,11 +32,20 @@ static const unsigned kRefillMs = 50;		// (20 requests a second, sustained)
 static const unsigned kMaxBad = 10;		// malformed messages before the connection is closed (1008)
 static const unsigned kMaxAuthFail = 5;		// wrong tokens before the connection is closed (1008)
 
-enum Topic { kStatus, kTopics };
-static const char *const kTopicName[kTopics] = {"status"};
-// Names the protocol reserves for later topics (docs/web-ws.md "Topics"): a sub to one of them is answered as
-// "later", not "unknown", so a client can tell a newer server from a typo
-static const char *const kLater[] = {"usbMode", "voices", "levels", "scenes", "log"};
+// The topics (docs/web-ws.md "Topics"). A build serves the ones its Host's mask names (the hello lists them).
+enum Topic { kStatus, kLevels, kSeq, kSeqPos, kLog, kTopics };
+static const char *const kTopicName[kTopics] = {"status", "levels", "seq", "seqpos", "log"};
+struct Rate { unsigned min, def, gap; };	// ms: the fastest a client may ask, the default, the longest silence for an unchanged topic
+static const Rate kRate[kTopics] = {
+	{kMinMs, kDefaultMs, kMaxMs},	// status: /status
+	{33, 40, 1000},			// levels: peaks, ~25 Hz
+	{100, 250, 10000},		// seq: the sequencer view (pushed when it changed)
+	{33, 50, 1000},			// seqpos: the play head
+	{250, 500, 10000},		// log: the console log's new bytes (as GET /log)
+};
+// Names the protocol reserves for later topics: a sub to one of them is answered as "later", not "unknown", so a
+// client can tell a newer server from a typo
+static const char *const kLater[] = {"usbMode", "voices", "scenes"};
 
 struct Host
 {
@@ -45,15 +54,15 @@ struct Host
 	bool (*send) (void *param, const char *p, size_t n);
 	// the pairing gate's check of a session token (paircode.h's Gate::check)
 	bool (*token_ok) (void *param, const char *tok);
-	// the status object ("{...}", what GET /status answers) into pOut, at most max bytes; its length, 0 if it does
-	// not fit
-	size_t (*status) (void *param, char *pOut, size_t max);
+	// a topic's payload (a JSON value, "{...}") into pOut, at most max bytes; its length, 0 if it does not fit
+	size_t (*build) (void *param, Topic t, char *pOut, size_t max);
 	// a console command, as POST /cmd runs it (its refusals included); 0 = taken, else why it was refused
 	const char *(*command) (void *param, const char *c);
 	const char *version;			// the firmware's, for the hello ("0.4.2")
 	// false while the connection's send queue is too full for a push (the client stopped reading although it acks):
 	// the push waits, as when the window is full. 0: always room
 	bool (*can_push) (void *param);
+	unsigned topics;			// the topics served: bit (1 << Topic); 0 = status only
 };
 
 struct Stats
@@ -100,7 +109,7 @@ public:
 	Session (const Host &h, char *pOut, size_t nOut) : m_Host (h), m_pOut (pOut), m_nOut (nOut)
 	{
 		memset (m_Tok, 0, sizeof m_Tok);
-		for (unsigned t = 0; t < kTopics; t++) { m_Sub[t] = false; m_Ms[t] = kDefaultMs; m_At[t] = 0; m_Hash[t] = 0; m_bSent[t] = false; }
+		for (unsigned t = 0; t < kTopics; t++) { m_Sub[t] = false; m_Ms[t] = kRate[t].def; m_At[t] = 0; m_Hash[t] = 0; m_bSent[t] = false; }
 	}
 	~Session () { wipe (); }
 
@@ -112,11 +121,18 @@ public:
 		Writer w (m_pOut, m_nOut);
 		w.s ("{\"type\":\"hello\",\"payload\":{\"proto\":").u (kProto).s (",\"server\":\"sidecar\",\"version\":")
 		 .str (m_Host.version).s (",\"topics\":[");
-		for (unsigned t = 0; t < kTopics; t++) w.s (t ? "," : "").str (kTopicName[t]);
+		unsigned k = 0;
+		for (unsigned t = 0; t < kTopics; t++) if (served ((Topic) t)) w.s (k++ ? "," : "").str (kTopicName[t]);
 		w.s ("],\"later\":[");
-		for (unsigned i = 0; i < sizeof kLater / sizeof kLater[0]; i++) w.s (i ? "," : "").str (kLater[i]);
+		k = 0;
+		for (unsigned t = 0; t < kTopics; t++) if (!served ((Topic) t)) w.s (k++ ? "," : "").str (kTopicName[t]);
+		for (unsigned i = 0; i < sizeof kLater / sizeof kLater[0]; i++) w.s (k++ ? "," : "").str (kLater[i]);
 		w.s ("],\"caps\":[\"auth\",\"sub\",\"unsub\",\"cmd\",\"ping\",\"ack\"],\"auth\":\"token\",\"window\":").u (kWindow)
-		 .s (",\"maxMsg\":").u (kMaxMsg).s (",\"minMs\":").u (kMinMs).s (",\"maxMs\":").u (kMaxMs).s ("}}");
+		 .s (",\"maxMsg\":").u (kMaxMsg).s (",\"minMs\":").u (kMinMs).s (",\"maxMs\":").u (kMaxMs).s (",\"rates\":{");
+		k = 0;
+		for (unsigned t = 0; t < kTopics; t++)		// per topic: [fastest, default] in ms
+			if (served ((Topic) t)) w.s (k++ ? "," : "").str (kTopicName[t]).s (":[").u (kRate[t].min).s (",").u (kRate[t].def).s ("]");
+		w.s ("}}}");
 		out (w);
 	}
 
@@ -253,14 +269,9 @@ private:
 		wsjson::Span sp, el;
 		bool bList = wsjson::find (p, n, "payload.topics", &sp);
 		if (bList && sp.p[0] != '[') return bad (id, 400, "topics: not an array");
-		uint32_t ms = kDefaultMs;
+		uint32_t ask = 0, ms = 0, msFirst = 0;		// ask 0: each topic's default; else clamped to each topic's range
 		wsjson::Span sm;
-		if (bOn && wsjson::find (p, n, "payload.ms", &sm))
-		{
-			if (!wsjson::u32 (sm, &ms)) return bad (id, 400, "ms: not an unsigned integer");
-			if (ms < kMinMs) ms = kMinMs;
-			if (ms > kMaxMs) ms = kMaxMs;
-		}
+		if (bOn && wsjson::find (p, n, "payload.ms", &sm) && !wsjson::u32 (sm, &ask)) return bad (id, 400, "ms: not an unsigned integer");
 		if (bOn && !bList) return bad (id, 400, "sub: no topics");
 		Writer ans (m_Ans, sizeof m_Ans), unk (m_Unk, sizeof m_Unk), lat (m_Lat, sizeof m_Lat);
 		ans.s ("{\"topics\":[");
@@ -271,19 +282,22 @@ private:
 			char Name[24];
 			if (!wsjson::str (el, Name, sizeof Name)) return bad (id, 400, "topics: not strings");
 			int t = topic (Name);
-			if (t >= 0)
+			if (t >= 0 && served ((Topic) t))
 			{
+				const Rate &r = kRate[t];
+				ms = ask == 0 ? r.def : ask < r.min ? r.min : ask > kMaxMs ? kMaxMs : ask;
+				if (nOn == 0) msFirst = ms;
 				if (bOn && (!m_Sub[t] || m_Ms[t] != ms)) { m_bSent[t] = false; m_Hash[t] = 0; }	// send it now
 				m_Sub[t] = bOn;
-				m_Ms[t] = ms;
+				if (bOn) m_Ms[t] = ms;
 				ans.s (nOn++ ? "," : "").str (Name);
 			}
-			else if (later (Name)) lat.s (nLat++ ? "," : "").str (Name);
+			else if (t >= 0 || later (Name)) lat.s (nLat++ ? "," : "").str (Name);
 			else unk.s (nUnk++ ? "," : "").str (Name);
 		}
 		if (!bOn && !bList) for (unsigned t = 0; t < kTopics; t++) m_Sub[t] = false;	// unsub with no list: all
 		ans.s ("],\"later\":[").s (m_Lat).s ("],\"unknown\":[").s (m_Unk).s ("]");
-		if (bOn) ans.s (",\"ms\":").u (ms);
+		if (bOn && nOn) ans.s (",\"ms\":").u (msFirst);	// (the first topic's; each topic's range is in the hello)
 		ans.s ("}");
 		if (!ans.ok || !unk.ok || !lat.ok) return bad (id, 400, "topics: too many");
 		ok (id, m_Ans);
@@ -316,13 +330,13 @@ private:
 		Writer w (m_pOut, m_nOut);
 		w.s ("{\"type\":\"pub\",\"topic\":").str (kTopicName[t]).s (",\"seq\":").u (m_Seq + 1).s (",\"payload\":");
 		size_t nHead = w.n;
-		size_t nBody = m_Host.status (m_Host.param, m_pOut + nHead, m_nOut > nHead + 2 ? m_nOut - nHead - 2 : 0);
+		size_t nBody = m_Host.build (m_Host.param, t, m_pOut + nHead, m_nOut > nHead + 2 ? m_nOut - nHead - 2 : 0);
 		m_At[t] = now;
-		if (nBody == 0) { error (0, 500, "status: too large for the buffer"); m_Sub[t] = false; return; }
+		if (nBody == 0) { error (0, 500, "a topic too large for the buffer (unsubscribed)"); m_Sub[t] = false; return; }
 		w.n = nHead + nBody;
 		uint32_t h = 2166136261u;			// FNV-1a of the body: unchanged -> nothing sent
 		for (size_t i = nHead; i < w.n; i++) h = (h ^ (uint8_t) m_pOut[i]) * 16777619u;
-		if (m_bSent[t] && h == m_Hash[t] && now - m_Sent[t] < kMaxMs) { m_Stats.unchanged++; return; }
+		if (m_bSent[t] && h == m_Hash[t] && now - m_Sent[t] < kRate[t].gap) { m_Stats.unchanged++; return; }
 		w.s ("}");
 		m_Hash[t] = h;
 		m_bSent[t] = true;
@@ -332,6 +346,7 @@ private:
 		out (w);
 	}
 
+	bool served (Topic t) const { return t == kStatus || (m_Host.topics & (1u << t)) != 0; }
 	static int topic (const char *p) { for (unsigned t = 0; t < kTopics; t++) if (strcmp (p, kTopicName[t]) == 0) return (int) t; return -1; }
 	static bool later (const char *p) { for (unsigned i = 0; i < sizeof kLater / sizeof kLater[0]; i++) if (strcmp (p, kLater[i]) == 0) return true; return false; }
 

@@ -10,6 +10,7 @@
 #include <circle/net/socket.h>
 #include <circle/types.h>
 #include <stddef.h>
+#include "ws_session.h"
 
 namespace ws_pi {
 
@@ -23,13 +24,14 @@ static const unsigned kLoopMs = 10;		// the poll's sleep when nothing arrived
 // is dropped.
 static const size_t kTxSoft = 48 * 1024;
 static const size_t kTxHard = 128 * 1024;
-static const size_t kOutMax = 32 * 1024;	// one outgoing message (a status push: /status is ~12 KB on a unit today)
+static const size_t kOutMax = 40 * 1024;	// (the largest: the "seq" topic, 1024 notes: under 40 KB, test_ws)	// one outgoing message (a status push: /status is ~12 KB on a unit today)
 
 struct TDevice
 {
 	void *pParam;
 	bool (*TokenOk) (void *pParam, const char *pToken);
-	size_t (*Status) (void *pParam, char *pOut, size_t nMax);
+	size_t (*Build) (void *pParam, wsproto::Topic Topic, char *pOut, size_t nMax);	// a topic's payload
+	unsigned nTopics;			// the topics served (wsproto::Host::topics)
 	const char *(*Command) (void *pParam, const char *pCmd);
 	boolean (*StillOn) (void);		// the web UI switch (SIDECAR MENU > WEB UI): off ends the connection
 	const char *pVersion;

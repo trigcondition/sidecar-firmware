@@ -50,7 +50,7 @@ static boolean SendFrame (TConn *c, wsframe::Op op, const void *p, size_t n)
 
 static bool HSend (void *p, const char *s, size_t n)	{ return SendFrame ((TConn *) p, wsframe::kText, s, n); }
 static bool HToken (void *p, const char *t)		{ const TDevice *d = ((TConn *) p)->pDevice; return d->TokenOk (d->pParam, t); }
-static size_t HStatus (void *p, char *o, size_t m)	{ const TDevice *d = ((TConn *) p)->pDevice; return d->Status (d->pParam, o, m); }
+static size_t HBuild (void *p, wsproto::Topic t, char *o, size_t m)	{ const TDevice *d = ((TConn *) p)->pDevice; return d->Build (d->pParam, t, o, m); }
 static const char *HCmd (void *p, const char *c)	{ const TDevice *d = ((TConn *) p)->pDevice; return d->Command (d->pParam, c); }
 static bool HCanPush (void *p)				{ return ((TConn *) p)->pSocket->GetBytesQueued () < kTxSoft; }
 
@@ -97,7 +97,7 @@ void Serve (CSocket *pSocket, const char *pAccept, const TDevice &rDevice, TStat
 	TClock Clock;
 	c->nNow = Clock.Now ();
 	c->nLastTx = c->nNow;
-	wsproto::Host Host = {c, HSend, HToken, HStatus, HCmd, rDevice.pVersion, HCanPush};
+	wsproto::Host Host = {c, HSend, HToken, HBuild, HCmd, rDevice.pVersion, HCanPush, rDevice.nTopics};
 	wsproto::Session *pSession = new wsproto::Session (Host, c->Out, sizeof c->Out);
 	pSession->open (c->nNow);
 

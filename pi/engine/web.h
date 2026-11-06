@@ -21,6 +21,8 @@
 #include <circle/string.h>
 #include <circle/types.h>
 
+#include "ws_session.h"
+
 class CConsole;
 
 // The logger's target: everything to the serial port as before, and a copy into a ring buffer (64 KB) the page
@@ -92,10 +94,13 @@ private:
 	static unsigned s_nWs, s_nWsTotal, s_nWsRefused;	// /ws: open now, since the boot, refused (web_ws.h)
 	void StatusJson (CString *pOut);	// what /status answers (and /ws's status topic)
 	static bool WsToken (void *pParam, const char *pToken);
-	static size_t WsStatus (void *pParam, char *pOut, size_t nMax);
+	static size_t WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size_t nMax);	// the /ws topics' payloads
 	static const char *WsCommand (void *pParam, const char *pCmd);
 	void WsRefuse (const char *pStatus, const char *pWhy);
-	CSocket *m_pSocketForWs = 0;		// the socket being upgraded (UpgradeConnection; Circle keeps its own private)
+	CSocket *m_pSocketForWs = 0;
+	unsigned m_nWsSlot = 0;			// which of the MaxWs connections (its own share of the peaks, peak_fan.h)
+	u64 m_nWsLogAt = 0;			// the "log" topic: the log position sent up to
+	boolean m_bWsLogStarted = FALSE;		// the socket being upgraded (UpgradeConnection; Circle keeps its own private)
 	static unsigned s_nUnpaired;		// requests refused by the pairing code's gate (paircode.h)
 };
 

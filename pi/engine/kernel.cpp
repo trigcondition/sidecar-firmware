@@ -1696,6 +1696,13 @@ boolean CKernel::UsbCommand (const char *pCmd)
 // the page is filled (kernel's state, status_pi's core part)
 static sidecar_status_view_t s_StatusView;
 
+// the output's peak since the last stats line, shared with the web's "levels" (peak_fan.h)
+static float StatsPeak (void)
+{
+	g_PeakFan.feed_master (g_Output.TakePeak ());
+	return g_PeakFan.take_master (peakfan::kStats);
+}
+
 void CKernel::LogStats (void)
 {
 	m_pTransport->LogStats (&m_Logger);
@@ -1786,7 +1793,7 @@ void CKernel::LogStats (void)
 		s.nFifoMin, s.nFifoMax, CEngineCores::FifoTarget (), g_Output.Underflows (), g_Output.RestartUnderflows (), g_Output.Streams (), s.nBlocks, s.nMaxBlockUs,
 		c1 / 10, c1 % 10, c2 / 10, c2 % 10, c3 / 10, c3 % 10, s.nMaxPassUs, (const char *) Mach, s.nMidiBytes, s_nMidiInLost, s.nSysEx, s.nNotes, (const char *) Chans,
 		m_Usb.MIDIOutBytes (), m_Usb.MIDIOutMessages (), m_Usb.MIDIOutFailed (),
-		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped (), (unsigned) (g_Output.TakePeak () * 1000),
+		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped (), (unsigned) (StatsPeak () * 1000),
 		nTemp);
 	static unsigned s_nPowerTick;
 	if (++s_nPowerTick % 10 == 0) { mbtrace::Scope Mb (1); ReadPower (FALSE); }	// every 10 s (a mailbox call)
@@ -2359,7 +2366,9 @@ void CKernel::Run (void)
 				{
 					s_nInsAt = nNow;
 					float Pk[8][2];
-					g_Output.TakeVoicePeaks (Pk);	// the OUT route's meters (PRE / POST voices)
+					g_Output.TakeVoicePeaks (Pk);	// the OUT route's meters (PRE / POST voices),
+					g_PeakFan.feed_voices (Pk);	// shared with the web's "levels" (peak_fan.h)
+					g_PeakFan.take_voices (peakfan::kDisplay, Pk);
 					insfx_pi::Fill (&s_InsView, Pk);
 					sidecar_insfx_set (&s_InsView);
 				}
