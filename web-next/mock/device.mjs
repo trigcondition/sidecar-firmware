@@ -28,6 +28,25 @@ export function createDevice() {
     seq: seqView(),
     playStart: Date.now(),
     transport: 1,
+    // the mixer (core/fx/insert.cpp json "ins": V1..V8, B1..B3; out routes; the master "mfx")
+    ins: {
+      kit: 1,
+      route3: 0,
+      c: ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "B1", "B2", "B3"].map((n, i) => ({
+        n,
+        s: [{ t: ["FILTER", "EQ", "DRIVE", "OFF", "OFF", "FILTER", "EQ", "OFF", "OFF", "OFF", "OFF"][i], p: [80, 20, 0, 0], l: [80, 20, 0, 0] }, { t: i === 0 ? "COMP" : "OFF", p: [50, 60, 40, 20], l: [50, 60, 40, 20] }],
+        peq: [[0, 0, 80, 70], [20, 0, 60, 80], [0, 0, 64, 64], [0, 30, 70, 50], [0, 0, 64, 64], [10, 40, 50, 64], [30, 0, 64, 80], [0, 0, 64, 64], [40, 60, 64, 64], [30, 70, 64, 64], [0, 0, 64, 64]][i],
+        ...(i < 8 ? { send: [i === 1 ? 50 : 0, i === 6 ? 30 : 0, 0] } : {}),
+      })),
+      out: Array.from({ length: 8 }, (_, i) => ({ route: i === 1 ? "post" : "trk", lev: 100 - i * 4, pan: 64, wid: 64, dec: 0, open: 0 })),
+      mfx: { byp: 0, src: "ret", lev: 100, trim: 0, gr: 1.5, on: 1, s: [
+        { t: "COMP", p: [50, 60, 40, 20], l: ["THR", "RAT", "SPD", "GAIN"], v: ["-12dB", "4:1", "40", "+2dB"], mix: 127, pair: 0, send: 0 },
+        { t: "OFF", p: [0, 0, 0, 0], l: ["", "", "", ""], v: ["", "", "", ""], mix: 127, pair: 0, send: 0 },
+        { t: "OFF", p: [0, 0, 0, 0], l: ["", "", "", ""], v: ["", "", "", ""], mix: 127, pair: 0, send: 0 },
+        { t: "OFF", p: [0, 0, 0, 0], l: ["", "", "", ""], v: ["", "", "", ""], mix: 127, pair: 0, send: 0 },
+      ], peq: [0, 0, 64, 64], rep: 1, onmain: 0 },
+    },
+    fx: [{ type: "RINGS", post: 1, send: [0, 40, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0] }, { type: "CLOUD", post: 0, send: [0, 0, 0, 30, 0, 0, 0, 60, 0, 0, 0, 0] }],
   };
 
   const up = () => Math.floor((Date.now() - started) / 1000);
@@ -77,6 +96,8 @@ export function createDevice() {
     sdtest: d.sdtest,
     library: { state: "ready", files: 1834, bytes: 2.1e9, hashed: 1834, pending: 0, pct: 100, dups: 3, missing: 0 },
     pair: { gate: "on", rng: true, clients: d.pairClients, sessions: 1, locked: false },
+    ins: d.ins,
+    fx: d.fx,
     midibridge: { on: d.bridge.on, state: d.bridge.on ? "waiting" : "off", port: 7320, osUpgrade: d.bridge.os, dataWrites: d.bridge.data, toRytm: 0, fromRytm: 0, drops: 0 },
   });
 
@@ -127,6 +148,31 @@ export function createDevice() {
     else if ((m = /^seqed=len:(\d+):(\d+):(\d+):(\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) n[4] = +m[4]; d.seq.gen++; }
     else if ((m = /^seqed=move:(\d+):(\d+):(\d+):(\d+):(\d+):(-?\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) { n[0] = +m[4]; n[2] = +m[5]; n[1] = +m[6]; } d.seq.gen++; }
     else if ((m = /^seq=swing:(\d+):(\d+)$/.exec(c))) { d.seq.swing = +m[2]; d.seq.gen++; }
+    else if (/^ins=/i.test(c)) d.mixer(c);
+    else if (/^(out=V\d:|mfx=)/i.test(c)) d.mixer(c);
+  };
+
+  // ins= / out= / mfx= (core/fx/insert.cpp, out.cpp, master.cpp kHelp)
+  const chainOf = (id) => ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "B1", "B2", "B3"].indexOf(id.toUpperCase());
+  const EQK = ["hpf", "lpf", "low", "high"];
+  d.mixer = (c) => {
+    let m;
+    if ((m = /^ins=(\w+):([AB]):type:(\w+)$/i.exec(c))) d.ins.c[chainOf(m[1])].s[m[2].toUpperCase() === "A" ? 0 : 1].t = m[3].toUpperCase();
+    else if ((m = /^ins=(\w+):([AB]):p([1-4]):(\d+)$/i.exec(c))) d.ins.c[chainOf(m[1])].s[m[2].toUpperCase() === "A" ? 0 : 1].p[+m[3] - 1] = +m[4];
+    else if ((m = /^ins=(\w+):eq:off$/i.exec(c))) d.ins.c[chainOf(m[1])].peq = [0, 0, 64, 64];
+    else if ((m = /^ins=(\w+):eq:(hpf|lpf|low|high):(\d+)$/i.exec(c))) d.ins.c[chainOf(m[1])].peq[EQK.indexOf(m[2])] = +m[3];
+    else if ((m = /^ins=(V\d):send:([1-3]):(\d+)$/i.exec(c))) d.ins.c[chainOf(m[1])].send[+m[2] - 1] = +m[3];
+    else if ((m = /^out=V(\d):(lev|pan|wid):(\d+)$/i.exec(c))) d.ins.out[+m[1] - 1][m[2]] = +m[3];
+    else if ((m = /^out=V(\d):(trk|pre|post)$/i.exec(c))) d.ins.out[+m[1] - 1].route = m[2];
+    else if ((m = /^mfx=lev:(\d+)$/.exec(c))) d.ins.mfx.lev = +m[1];
+    else if ((m = /^mfx=byp:([01])$/.exec(c))) d.ins.mfx.byp = +m[1];
+    else if ((m = /^mfx=src:(ret|mix)$/.exec(c))) d.ins.mfx.src = m[1];
+    else if ((m = /^mfx=trim:(-?\d+)$/.exec(c))) d.ins.mfx.trim = +m[1];
+    else if ((m = /^mfx=([1-4]):type:(\w+)$/i.exec(c))) d.ins.mfx.s[+m[1] - 1].t = m[2].toUpperCase();
+    else if ((m = /^mfx=([1-4]):p([1-4]):(\d+)$/i.exec(c))) d.ins.mfx.s[+m[1] - 1].p[+m[2] - 1] = +m[3];
+    else if ((m = /^mfx=([1-4]):mix:(\d+)$/i.exec(c))) d.ins.mfx.s[+m[1] - 1].mix = +m[2];
+    else if ((m = /^mfx=eq:(hpf|lpf|low|high):(\d+)$/i.exec(c))) d.ins.mfx.peq[EQK.indexOf(m[1])] = +m[2];
+    else if (c === "mfx=eq:off") d.ins.mfx.peq = [0, 0, 64, 64];
   };
 
   d.seqpos = () => {

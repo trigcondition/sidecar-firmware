@@ -63,11 +63,11 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 
 | Feature | Data | Status |
 |---|---|---|
-| 12 strips V1-V8, B1-B3, M: machine, level number, meter | `ws:status` `machines`, `ins`; `ws:levels` (buses: no meter source yet) | ⬜ |
-| Insert EQ curve per strip, insert FX chip | `ws:status` `ins.c[]` (`s`, `peq`) | ⬜ (read-only first) |
-| Send FX 1/2: type, PRE/POST, 12 sends; kill tails | `ws:status` `fx[]`; `cmd killfx` | ⬜ |
-| Master FX: bypass, source, level, trim, 4 slots (type, P1-P4, mix, pair), limiter GR | `cmd mfx=...`; `ws:status` `ins.mfx` | ⬜ |
-| Sidechain | placeholder until 0.5.0 | ⬜ |
+| 12 strips V1-V8, B1-B3, M: machine, level number, meter | `ws:status` `machines`, `ins`; `ws:levels` (buses: no meter source yet) | ✅ (voice level `out=Vn:lev`, master `mfx=lev`) |
+| Insert EQ curve per strip, insert FX chip | `ws:status` `ins.c[]` (`s`, `peq`) | ✅ editable: POST EQ, inserts A/B with P1-P4, route, pan, width, sends (`ins=`, `out=`) |
+| Send FX 1/2: type, PRE/POST, 12 sends; kill tails | `ws:status` `fx[]`; `cmd killfx` | ✅ |
+| Master FX: bypass, source, level, trim, 4 slots (type, P1-P4, mix, pair), limiter GR | `cmd mfx=...`; `ws:status` `ins.mfx` | ✅ (pair ⬜) |
+| Sidechain | placeholder until 0.5.0 | ✅ placeholder |
 
 ## Seq (new: the old page had only the forms)
 

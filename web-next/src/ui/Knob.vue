@@ -1,18 +1,32 @@
 <!-- web-next/src/ui/Knob.vue - a dial drawn over a native range input (the input takes the keys, the pointer and the
      screen reader; the drawing is decoration). Dots round the dial as on the touchscreen, the value as a number. -->
 <script setup lang="ts">
-import { computed, useId } from "vue";
+import { computed, ref, useId, watch } from "vue";
 
-const props = withDefaults(defineProps<{ label: string; modelValue: number; min?: number; max?: number; format?: (v: number) => string }>(), {
+const props = withDefaults(defineProps<{ label: string; modelValue: number; min?: number; max?: number; disabled?: boolean; format?: (v: number) => string }>(), {
   min: 0,
   max: 127,
+  disabled: false,
   format: undefined,
 });
 const emit = defineEmits<{ "update:modelValue": [number]; commit: [number] }>();
 const id = useId();
-const frac = computed(() => (props.modelValue - props.min) / Math.max(1, props.max - props.min));
+// its own value while it is turned (the Sidecar's answer comes later); the prop's again when it is let go
+const v = ref(props.modelValue);
+let turning = false;
+watch(() => props.modelValue, (m) => { if (!turning) v.value = m; });
+const frac = computed(() => (v.value - props.min) / Math.max(1, props.max - props.min));
 const angle = computed(() => -135 + 270 * frac.value);
-const text = computed(() => (props.format ? props.format(props.modelValue) : String(props.modelValue)));
+const text = computed(() => (props.format ? props.format(v.value) : String(v.value)));
+function input(e: Event) {
+  turning = true;
+  v.value = Number((e.target as HTMLInputElement).value);
+  emit("update:modelValue", v.value);
+}
+function change() {
+  turning = false;
+  emit("commit", v.value);
+}
 const ticks = Array.from({ length: 28 }, (_, i) => {
   const a = ((-135 + (270 * i) / 27 - 90) * Math.PI) / 180;
   return { x: 24 + 20 * Math.cos(a), y: 24 + 20 * Math.sin(a), f: i / 27 };
@@ -31,10 +45,11 @@ const ticks = Array.from({ length: 28 }, (_, i) => {
         type="range"
         :min="min"
         :max="max"
-        :value="modelValue"
+        :value="v"
+        :disabled="disabled"
         :aria-valuetext="`${label} ${text}`"
-        @input="emit('update:modelValue', Number(($event.target as HTMLInputElement).value))"
-        @change="emit('commit', Number(($event.target as HTMLInputElement).value))"
+        @input="input"
+        @change="change"
       />
     </div>
     <label :for="id" class="label">{{ label }}</label>

@@ -12,6 +12,7 @@ import { RequestError } from "../lib/client";
 import { patternName } from "../lib/status";
 import { DIR, KEYS, POLY_ALLOC, QNT, SCALES, SPD, SUB, cmd as seqCmd, noteName, parseView, pitchWindow, playStep, trackName, type SeqNote, type SeqPos, type SeqView } from "../lib/seq";
 import { useSidecar } from "../lib/useSidecar";
+import { coalescer } from "../lib/coalesce";
 
 const { client, cmd, paired, hello, status } = useSidecar();
 const view = shallowRef<SeqView | null>(null);
@@ -92,8 +93,27 @@ function nudge(n: SeqNote, ds: number, dp: number) {
   send(seqCmd.move(T.value, n.step, n.pitch, s2, p2, n.micro));
   selKey.value = { step: s2, pitch: p2 };
 }
-const setVel = (n: SeqNote, v: number) => send(seqCmd.vel(T.value, n.step, n.pitch, v));
-const setLen = (n: SeqNote, l: number) => send(seqCmd.len(T.value, n.step, n.pitch, l));
+// velocity and length by keys: a command per press, the newest wins (lib/coalesce.ts)
+const latest = coalescer(cmd, (e) => (msg.value = e instanceof RequestError ? `Refused (${e.code}): ${e.message}` : (e as Error).message));
+const setVel = (n: SeqNote, v: number) => void latest(seqCmd.vel(T.value, n.step, n.pitch, v));
+const setLen = (n: SeqNote, l: number) => void latest(seqCmd.len(T.value, n.step, n.pitch, l));
+// + / - and [ / ] count on from the last value sent, not from the view (it comes back later)
+const sentVel = new Map<string, number>(), sentLen = new Map<string, number>();
+const noteKey = (n: SeqNote) => `${T.value}:${n.step}:${n.pitch}`;
+function stepVel(n: SeqNote, d: number) {
+  const v = Math.max(1, Math.min(127, (sentVel.get(noteKey(n)) ?? n.vel) + d));
+  sentVel.set(noteKey(n), v);
+  setVel(n, v);
+}
+function stepLen(n: SeqNote, d: number) {
+  const l = Math.max(SUB / 4, (sentLen.get(noteKey(n)) ?? n.len) + d);
+  sentLen.set(noteKey(n), l);
+  setLen(n, l);
+}
+watch(view, () => {
+  sentVel.clear();
+  sentLen.clear();
+});
 const setMicro = (n: SeqNote, m: number) => send(seqCmd.move(T.value, n.step, n.pitch, n.step, n.pitch, m));
 
 // the chord stamp
@@ -171,8 +191,8 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           @add="add"
           @remove="remove"
           @nudge="nudge"
-          @vel="(n, d) => setVel(n, n.vel + d)"
-          @len="(n, d) => setLen(n, n.len + d)"
+          @vel="stepVel"
+          @len="stepLen"
           @scroll="scroll"
         />
         <p class="small">{{ view.notes.length }} notes. <template v-if="!draw">Drawing is off: taps only select.</template></p>
