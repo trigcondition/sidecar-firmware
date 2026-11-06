@@ -1,0 +1,67 @@
+/* web-next/src/styles/tokens.css - the design tokens ("OLED Studio") and the two themes. Every colour the app uses
+   comes from here; src/styles/contrast.test.ts reads this file and checks the WCAG contrast of the pairs that
+   carry text or controls, so a token change cannot quietly make the app harder to read.
+   Sizes are in rem, so the text-size setting (100 / 125 / 150 %, on <html>) scales the whole app. */
+
+:root,
+:root[data-theme="standard"] {
+  --bg: #050607;
+  --card: #0b0d10;
+  --card-texture: radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  --card-texture-size: 5px 5px;
+  --border: #1f242b;           /* decorative only: card edges, rules (never the only sign of a control) */
+  --control-border: #5b6573;   /* buttons, inputs, pills: 3:1 against the card */
+  --control-border-width: 1px;
+  --text: #e8edf2;
+  --label: #b4bdc8;            /* small uppercase labels */
+  --accent: #6cc2ff;
+  --accent-glow: 0 0 8px rgba(108, 194, 255, 0.55);
+  --warm: #ffb35c;             /* the second accent: sidechain, warnings */
+  --focus: #ffd166;            /* the focus ring, both themes */
+  --on-accent: #050607;        /* text on an accent fill */
+
+  --radius-card: 0.875rem;     /* 14px */
+  --radius-control: 0.5625rem; /* 9px */
+  --radius-pill: 999px;
+  --space: 1rem;
+  --target: 2.75rem;           /* 44px: the smallest touch target */
+  --text-min: 0.8125rem;       /* 13px: no text smaller */
+  --label-size: 0.8125rem;
+  --label-tracking: 0.14em;
+
+  --font-ui: "Space Grotesk", system-ui, sans-serif;
+  --font-dot: "Doto", "Space Grotesk", ui-monospace, monospace; /* numbers and titles */
+
+  --tide-dots: var(--accent);
+  --tide-offset: var(--warm);
+  color-scheme: dark;
+}
+
+:root[data-theme="contrast"] {
+  --bg: #000000;
+  --card: #000000;
+  --card-texture: none;
+  --border: #ffffff;
+  --control-border: #ffffff;
+  --control-border-width: 2px;
+  --text: #ffffff;
+  --label: #e6e6e6;
+  --accent: #8fd3ff;
+  --accent-glow: none;
+  --warm: #ffd166;
+  --focus: #ffd166;
+  --on-accent: #000000;
+}
+
+/* the text-size setting (usePrefs.ts) */
+:root { font-size: 100%; }
+:root[data-text-size="125"] { font-size: 125%; }
+:root[data-text-size="150"] { font-size: 150%; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --accent-glow: none; }
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
