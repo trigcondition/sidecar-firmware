@@ -1,28 +1,35 @@
-/* web-next/src/styles/tokens.css - the design tokens ("OLED Studio") and the two themes. Every colour the app uses
+/* web-next/src/styles/tokens.css - the design tokens ("UV night", the owner's B3 palette) and the two themes. Every colour the app uses
    comes from here; src/styles/contrast.test.ts reads this file and checks the WCAG contrast of the pairs that
    carry text or controls, so a token change cannot quietly make the app harder to read.
    Sizes are in rem, so the text-size setting (100 / 125 / 150 %, on <html>) scales the whole app. */
 
 :root,
 :root[data-theme="standard"] {
-  --bg: #050607;
-  --card: #0b0d10;
+  --bg: #08071a;
+  --card: #110f28;
   --card-texture: radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
   --card-texture-size: 5px 5px;
-  --border: #1f242b;           /* decorative only: card edges, rules (never the only sign of a control) */
-  --control-border: #5b6573;   /* buttons, inputs, pills: 3:1 against the card */
+  --border: #2c2950;           /* decorative only: card edges, rules (never the only sign of a control) */
+  --control-border: #6a64a0;   /* buttons, inputs, pills: 3.5:1 against the card */
   --control-border-width: 1px;
-  --text: #e8edf2;
-  --label: #b4bdc8;            /* small uppercase labels */
-  --accent: #6cc2ff;
-  --accent-glow: 0 0 8px rgba(108, 194, 255, 0.55);
-  --warm: #ffb35c;             /* the second accent: sidechain, warnings */
+  --text: #eeedff;
+  --label: #bdb9e8;            /* small uppercase labels */
+  --accent: #9a97ff;
+  --accent-glow: 0 0 8px rgba(154, 151, 255, 0.55);
+  --warm: #ff7a5c;             /* the second accent (coral): sidechain, warnings */
   --focus: #ffd166;            /* the focus ring, both themes */
-  --on-accent: #050607;        /* text on an accent fill */
-  --accent-tint: rgba(108, 194, 255, 0.1);  /* a selected item's fill (with a check mark and a thicker outline) */
-  --warm-tint: rgba(255, 179, 92, 0.16);
-  --warm-border: #8a6a3e;      /* a warm card's edge (decorative) */
-  --tide-bg: #0a1520;          /* the header band behind the signal tide */
+  --on-accent: #08071a;        /* text on an accent fill */
+  --accent-tint: rgba(154, 151, 255, 0.1);  /* a selected item's fill (with a check mark and a thicker outline) */
+  --warm-tint: rgba(255, 122, 92, 0.16);
+  --warm-border: #5a2a3a;      /* a warm card's edge (decorative) */
+  --tide-bg: #0d0a2a;          /* the header band behind the signal tide */
+  /* the header's soft UV glow (blurred ellipses) and its dashed "docked circles": decoration only (aria-hidden) */
+  --glow-1: #3b2bd1;
+  --glow-2: #c2245a;
+  --glow-3: #4b2fe0;
+  --glow-opacity: 0.4;
+  --cells: #c5c3ff;
+  --cells-opacity: 0.3;
   --backdrop: rgba(0, 0, 0, 0.7);  /* behind a dialog */
 
   --radius-card: 0.875rem;     /* 14px */
@@ -60,6 +67,9 @@
   --warm-tint: transparent;
   --warm-border: #ffffff;
   --tide-bg: #000000;
+  --glow-opacity: 0;
+  --cells: #ffffff;
+  --cells-opacity: 0.5;
   --backdrop: rgba(0, 0, 0, 0.85);
 }
 

@@ -41,13 +41,14 @@ const pairs: [string, string, number][] = [
   ["on-accent", "accent", TEXT], ["on-accent", "warm", TEXT], ["bg", "text", TEXT],
   ["control-border", "bg", UI], ["control-border", "card", UI],
   ["focus", "bg", UI], ["focus", "card", UI],
+  ["text", "tide-bg", TEXT], ["accent", "tide-bg", UI], // the header's pills and the logo's disc
 ];
 
 describe("the maths", () => {
   it("matches WCAG's reference points", () => {
     expect(ratio("#000000", "#ffffff")).toBeCloseTo(21, 5);
     expect(ratio("#777777", "#ffffff")).toBeCloseTo(4.48, 2);
-    expect(ratio("#1f242b", "#0b0d10")).toBeLessThan(1.3); // why --border is decorative only
+    expect(ratio(standard.border, standard.card)).toBeLessThan(1.5); // why --border is decorative only
   });
 });
 
