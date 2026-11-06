@@ -47,11 +47,17 @@ int fader_source();                         // the source that set the fader las
 
 // ---- the Rytm's QUICK PERF knob as the fader (spec-050 2.4.5, 5.1; plan-050 Task 47): the mod's 2D 01 0E report.
 // Absolute, left end = A, no pickup; ignored until the knob has sent since the Rytm booted (kQpMoved: before, its
-// position reads 0 whatever the knob says). Smoothed over the measured interval between reports (at least kSmoothMs,
+// position reads 0 whatever the knob says). The first position after the link comes up (qperf_rebase: a hello, a USB
+// edge) is a baseline only: the knob takes the fader when its position changes from it (Phase 7 review M2), so the
+// hello's report never moves the fader nor overrides a kit file's F. While another source has the fader, or a held
+// manual edit plays, the knob takes it on a change of kQpTakeSteps positions from the one it acted on last (M1: a
+// pot's 1-step flicker does not steal the fader or let a held edit go); once it has the fader it follows every step. Smoothed over the measured interval between reports (at least kSmoothMs,
 // at most kQpSmoothMaxMs; a first report after a pause: kSmoothMs), so a turn does not stair-step.
 constexpr uint8_t kQpFunc = 1, kQpMoved = 2, kQpMuted = 4;   // flags: FUNC held, moved since boot, macros muted
 constexpr uint32_t kQpSmoothMaxMs = 100;
+constexpr int kQpTakeSteps = 2;
 void qperf(int pos, uint16_t mask, uint8_t flags);   // pos 0..255, mask the PERF macros on the knob (bit m - 1)
+void qperf_rebase();                        // the link came up (host_link's link_reset): the next position a baseline
 uint16_t qperf_mask();                      // those macros while the knob is the fader's source (PERF follow skips
                                             // them: the Rytm moves them itself, spec 2.7), else 0
 // the Rytm's own scene as the mod reports it (2D 01 0F, on any change: its pads, CC 92, the host command, a kit load):

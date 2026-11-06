@@ -419,6 +419,7 @@ static void qp(int pos, int mask, int flags) {
 }
 static void qperf_sets_fader() {
   scene_reset_with_base(40);
+  qp(0, 0, 2);     // the first report: a baseline (M2)
   qp(255, 0, 2);
   CHECK(scene::state().fader == 16383);
   qp(0, 0, 2);
@@ -435,8 +436,10 @@ static void qperf_ignored_until_moved() {
   qp(0, 0, 0);   // the hello's: the knob has not sent since the Rytm booted
   qp(77, 0, 0);
   CHECK(scene::state().fader == 9000);
-  qp(77, 0, 2);
-  CHECK(scene::state().fader == 77 * 16383 / 255);
+  qp(77, 0, 2);    // the first position: a baseline
+  CHECK(scene::state().fader == 9000);
+  qp(80, 0, 2);
+  CHECK(scene::state().fader == 80 * 16383 / 255);
   printf("scene: the QPERF position is ignored until flags bit 1 (moved since boot)\n");
 }
 static void qperf_smoothing_follows_interval() {
@@ -477,6 +480,71 @@ static void qperf_smoothing_follows_interval() {
   run_ms(21);
   CHECK(scene::fader_played() == 0);
   printf("scene: the QPERF fader is smoothed over the reports' interval (at least 20 ms)\n");
+}
+// Phase 7 review M2: the first report after each hello is a baseline only, whatever the source; a later change takes
+static void hello35() {
+  const uint8_t m[] = {0xF0, 0x7D, 0x52, 0x54, 0x35, 1, 0, 40, 1, 0xF7};
+  engine_sysex(m, (int)sizeof m);
+}
+static void qperf_baseline_after_hello() {
+  scene_reset_with_base(40);
+  scene::set_fader(3000, scene::kPage);   // (a kit file's F does the same: the fader set, the knob not its source)
+  hello35();
+  qp(200, 0, 2);   // the hello's report: the knob at 200 since the Rytm booted, bit 1 set
+  run_ms(25);
+  CHECK(scene::state().fader == 3000 && scene::fader_source() == scene::kPage);
+  qp(200, 0x003, 2);   // the mask changed, the position did not
+  CHECK(scene::state().fader == 3000 && scene::fader_source() == scene::kPage);
+  qp(203, 0, 2);   // the knob moved: it takes the fader
+  CHECK(scene::state().fader == 203 * 16383 / 255 && scene::fader_source() == scene::kQperf);
+  // the link drops and comes back while the knob is the source: the next report a baseline again
+  hello35();
+  scene::set_fader(5000, scene::kPage);
+  qp(90, 0, 2);
+  CHECK(scene::state().fader == 5000 && scene::fader_source() == scene::kPage);
+  qp(93, 0, 2);
+  CHECK(scene::state().fader == 93 * 16383 / 255 && scene::fader_source() == scene::kQperf);
+  printf("scene: the first QPERF report after a hello is a baseline; a change takes the fader\n");
+}
+// Phase 7 review M1: a 1-step flicker never steals the fader from another source nor lets a held edit go; 2 steps do;
+// once the knob has the fader it follows every step
+static void qperf_jitter_deadband() {
+  scene_reset_with_base(40);
+  qp(100, 0, 2);   // baseline
+  scene::set_fader(4000, scene::kPage);
+  for (int k = 0; k < 50; ++k) qp(k & 1 ? 101 : 100, 0, 2), run_ms(8);
+  CHECK(scene::state().fader == 4000 && scene::fader_source() == scene::kPage);
+  qp(99, 0, 2), run_ms(8);
+  CHECK(scene::state().fader == 4000 && scene::fader_source() == scene::kPage);
+  qp(102, 0, 2);   // 2 steps from 100: the knob takes it
+  CHECK(scene::state().fader == 102 * 16383 / 255 && scene::fader_source() == scene::kQperf);
+  qp(103, 0, 2);   // the knob's own: every step
+  CHECK(scene::state().fader == 103 * 16383 / 255);
+  qp(102, 0, 2);
+  CHECK(scene::state().fader == 102 * 16383 / 255);
+  printf("scene: a 1-step QPERF flicker does not steal a page's fader; 2 steps do; then every step\n");
+
+  // a held manual edit (the knob the fader's source): a flicker does not let it go, 2 steps do
+  scene_reset_with_base(40);
+  report_p1(0x03, 0, 3);
+  v[0].p[1] = 40;
+  lock_ab(T("V1:P2"), 20, 100);
+  qp(100, 0, 2);   // baseline
+  qp(128, 0, 2);   // the knob takes the fader (about halfway)
+  run_ms(150);
+  CHECK(scene::fader_source() == scene::kQperf);
+  open_v1_page();
+  msg3(0x32, 1, 64 + 5, 0);   // a page edit: held
+  ui::remote_tick(g_ms += 10);
+  CHECK(mod::find(T("V1:P2"))->held == 1);
+  float held = v[0].p[1];
+  for (int k = 0; k < 20; ++k) qp(k & 1 ? 128 : 129, 0, 2), run_ms(8);
+  CHECK(mod::find(T("V1:P2"))->held == 1 && v[0].p[1] == held);
+  qp(130, 0, 2);   // 2 steps from 128: the morph takes it again
+  run_ms(150);
+  CHECK(mod::find(T("V1:P2"))->held == 0 && scene::state().fader == 130 * 16383 / 255);
+  close_page();
+  printf("scene: a 1-step QPERF flicker does not let a held edit go; 2 steps do\n");
 }
 static std::vector<std::vector<uint8_t>> g_rytm;
 static void rytm_cap(const uint8_t* m, int n) { g_rytm.emplace_back(m, m + n); }
@@ -550,6 +618,8 @@ int main() {
   qperf_sets_fader();
   qperf_ignored_until_moved();
   qperf_smoothing_follows_interval();
+  qperf_baseline_after_hello();
+  qperf_jitter_deadband();
   perf_follow_skips_knob_macros();
   scene_report_shown();
   printf("test_scene: PASS\n");

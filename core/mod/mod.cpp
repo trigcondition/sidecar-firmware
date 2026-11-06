@@ -166,6 +166,11 @@ CORE_COLD void manual(Tid t, float v) {
 CORE_COLD void fader_moved() {
   for (Entry& e : used()) e.held = 0;
 }
+CORE_COLD bool held_any() {
+  for (const Entry& e : used())
+    if (e.t && e.held) return true;
+  return false;
+}
 
 CORE_COLD void end_tick() {
   for (Entry& e : used()) {

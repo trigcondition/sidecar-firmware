@@ -59,6 +59,7 @@ void played(int vi, float out[16]);                  // the voice's values as th
 void manual(Tid t, float v);
 inline void manual_knob(Tid t) { manual(t, knob_now(t)); }   // an offset kind's edit: its knob, now set
 void fader_moved();                                  // every held edit lets go (scene::set_fader)
+bool held_any();                                     // a held edit plays (scene::qperf: a knob flicker never lets it go)
 const Entry* find(Tid t);
 // worst_us: the slowest whole tick(); flush_us: the slowest flush_voices (a user machine's params call is in it);
 // lookup_us: the slowest base lookup block a caller noted (note_lookup: seq's lock apply, a voice report, the remote

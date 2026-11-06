@@ -26,8 +26,10 @@ int g_played = 0, g_from = 0;
 uint32_t g_set_ms = 0, g_now_ms = 0;
 uint32_t g_smooth_ms = kSmoothMs;   // this move's smoothing (the QPERF knob's: its reports' interval)
 int g_src = 0;                      // the fader's last source (Source), 0 none
-// the QPERF knob (Task 47): its macros, whether a position was taken, its last fader value and when
-uint16_t g_qp_mask = 0, g_qp_last = 0;
+// the QPERF knob (Task 47): its macros; the position last acted on (a baseline or a take), -1 none since the link came
+// up (Phase 7 review M2); whether a take since then sets the smoothing's interval, and when
+uint16_t g_qp_mask = 0;
+int g_qp_pos = -1;
 bool g_qp_seen = false;
 uint32_t g_qp_ms = 0;
 int g_rscn = -1;                    // the Rytm's own scene as reported (2D 01 0F), -1 none
@@ -241,13 +243,21 @@ CORE_COLD int fader_source() { return g_src; }
 CORE_COLD void qperf(int pos, uint16_t mask, uint8_t flags) {
   g_qp_mask = (uint16_t)(mask & 0xFFF);
   if (!(flags & kQpMoved) || pos < 0 || pos > 255) return;   // the hello's report before the knob ever sent: no position
+  if (g_qp_pos < 0) {   // the first report since the link came up: a baseline only, the knob takes on a change (M2)
+    g_qp_pos = pos;
+    return;
+  }
+  int d = pos > g_qp_pos ? pos - g_qp_pos : g_qp_pos - pos;
+  if (d == 0) return;   // FUNC or the mask changed: the fader stays where it is
+  // another source has the fader (or a held manual edit plays): a 1-step flicker of the pot does not take it (M1)
+  if ((g_src != kQperf || mod::held_any()) && d < kQpTakeSteps) return;
   uint16_t v = (uint16_t)(pos * kFaderMax / 255);
-  if (g_qp_seen && v == g_qp_last) return;                   // FUNC or the mask changed: the fader stays where it is
   uint32_t ms = now_ms(), gap = ms - g_qp_ms;
   uint32_t sm = g_qp_seen && gap <= kQpSmoothMaxMs ? (gap > kSmoothMs ? gap : kSmoothMs) : kSmoothMs;
-  g_qp_seen = true, g_qp_last = v, g_qp_ms = ms;
+  g_qp_seen = true, g_qp_pos = pos, g_qp_ms = ms;
   move_fader(v, kQperf, sm);
 }
+CORE_COLD void qperf_rebase() { g_qp_pos = -1, g_qp_seen = false; }
 CORE_COLD uint16_t qperf_mask() { return g_src == kQperf ? g_qp_mask : 0; }
 CORE_COLD void rytm_scene_seen(int n) { g_rscn = n >= 0 && n <= kScenes ? n : 0; }
 CORE_COLD int rytm_scene() { return g_rscn; }
@@ -314,7 +324,7 @@ CORE_COLD void reset() {
   g_played = g_from = 0;
   g_set_ms = now_ms(), g_now_ms = g_set_ms;
   g_smooth_ms = kSmoothMs, g_src = 0;
-  g_qp_mask = g_qp_last = 0, g_qp_seen = false, g_qp_ms = 0;
+  g_qp_mask = 0, g_qp_pos = -1, g_qp_seen = false, g_qp_ms = 0;
   g_rscn = -1;
   g_upper = false;
   g_last_a = g_last_b = -1;
