@@ -88,6 +88,10 @@ h1[tabindex="-1"]:focus { outline: none !important; }
 }
 .skip:focus { left: 0.5rem; z-index: 10; background: var(--bg); padding: 0.5rem 1rem; }
 
+/* a box that scrolls sideways contains everything in it, the screen-reader-only text too (absolutely placed: it
+   would otherwise widen the page) */
+.scroller { position: relative; }
+
 .visually-hidden {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }

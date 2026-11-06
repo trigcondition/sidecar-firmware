@@ -1,7 +1,7 @@
 <!-- Library › projects (docs/BUNDLES.md, bundleweb.h; the old page's Project tab): the projects on the card, export to
      the card with its progress, cancel, delete into the trash; the bundles on the card; the trash (restore, remove). -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import Card from "../../ui/Card.vue";
 import { confirmAsk } from "../../lib/confirm";
 import { hb } from "../../lib/fs";
@@ -44,6 +44,7 @@ onMounted(() => {
   poll();
 });
 onUnmounted(() => timer && clearTimeout(timer));
+watch(paired, (p) => p && load()); // (the pairing resumes after the page opens)
 
 const sorted = computed(() => [...projects.value].sort((a, b) => Number(!!b.current) - Number(!!a.current) || b.used - a.used || a.key.localeCompare(b.key)));
 const phase = computed(() => {
@@ -140,7 +141,8 @@ async function removeTrash(t: Trash) {
 <style scoped>
 .job { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
 .scroller { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; }
+table { width: 100%; min-width: 34rem; border-collapse: collapse; }
+td button { white-space: nowrap; }
 th, td { text-align: left; padding: 0.375rem 0.5rem; border-bottom: 1px solid var(--border); }
 th { font-size: var(--label-size); color: var(--label); text-transform: uppercase; letter-spacing: var(--label-tracking); font-weight: 500; }
 .acts { display: flex; flex-wrap: wrap; gap: 0.25rem; }

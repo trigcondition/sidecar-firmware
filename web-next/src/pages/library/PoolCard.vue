@@ -170,7 +170,8 @@ function toggle(r: string) {
 <style scoped>
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .scroller { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+table { width: 100%; min-width: 46rem; border-collapse: collapse; font-size: 0.9375rem; }
+td button { white-space: nowrap; }
 th, td { text-align: left; padding: 0.375rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
 th { font-size: var(--label-size); color: var(--label); text-transform: uppercase; letter-spacing: var(--label-tracking); font-weight: 500; }
 .off td { color: var(--label); }

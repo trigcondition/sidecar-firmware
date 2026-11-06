@@ -30,7 +30,7 @@ export function createFs() {
     addTake: (base, n, chans) => take(base, n, now(), chans),
     ls(p) {
       if (p !== "/" && !files.get(p)?.d) return "404 not found\n";
-      return { path: p, free: 28 << 30, total: 30 << 30, more: false, entries: kids(p).map(([k, v]) => ({ n: name(k), d: v.d ? 1 : 0, s: v.s ?? 0, t: v.t, ro: k.startsWith("/Recordings") || k.startsWith("/USB") ? 0 : 0 })) };
+      return { path: p, free: 28 * 2 ** 30, total: 30 * 2 ** 30, more: false, entries: kids(p).map(([k, v]) => ({ n: name(k), d: v.d ? 1 : 0, s: v.s ?? 0, t: v.t, ro: k.startsWith("/Recordings") || k.startsWith("/USB") ? 0 : 0 })) };
     },
     get(p, off, len) {
       const f = files.get(p);

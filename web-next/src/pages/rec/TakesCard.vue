@@ -43,6 +43,7 @@ async function load() {
   }
 }
 onMounted(load);
+watch(paired, (p) => p && load()); // (the pairing resumes after the page opens)
 // again when a take ends, or a drive comes or goes
 watch(() => [st.value.rec?.state === 0, (st.value.stor?.vols ?? []).map((v: any) => v.name + v.state).join()], (now, was) => { if (was && now.join() !== was.join()) load(); });
 
