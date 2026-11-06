@@ -49,6 +49,11 @@ export function createDevice() {
       ], peq: [0, 0, 64, 64], rep: 1, onmain: 0 },
     },
     fs: createFs(),
+    // seqtop (/status "seqx"): the pattern's key / seed, each seq track's row and its steps' extras
+    seqx: { key: 0, scale: 0, qnt: 0, seed: 1234, fixed: 1, t: [
+      { t: 9, spd: 0, dir: 0, rnd: [0, 36, 1, 0], smod: [0, 8, 0, 0], off: 0, x: [] },
+      { t: 10, spd: 0, dir: 0, rnd: [1, 48, 2, 2], smod: [3, 8, 2, 0], off: 5, x: [{ s: 5, rt: [3, 2, 1, 0, 2, 1, 80], fx: [[13, 3], [0, 0]], r: 0, lc: [[4, 10]], sl: [4] }] },
+    ] },
     // the POOL (poolweb.cpp's /pool): per list, banks of rows [row, type, name, state, path, used, users, size, members, ch, ram]
     pool: {
       smp: { 0: [[1, "sample", "kick 909.wav", "EXACT", "kick 909.wav", 12, 2, 88000, 0, 1, 0], [2, "sample", "snare tape.wav", "CHANGED", "snare tape.wav", 4, 1, 120000, 0, 2, 0], [3, "sample", "gone.wav", "MISSING", "Drums/gone.wav", 0, 0, 0, 0, 0, 0], [4, "sample", "vox chop.wav", "EXACT", "vox chop.wav", 0, 0, 410000, 0, 2, 1]] },
@@ -132,6 +137,8 @@ export function createDevice() {
     library: { state: "ready", files: 1834, bytes: 2.1e9, hashed: 1834, pending: 0, pct: 100, dups: 3, missing: 0 },
     pair: { gate: "on", rng: true, clients: d.pairClients, sessions: 1, locked: false },
     ins: d.ins,
+    seqx: d.seqx,
+    inst: { total: 8, bytes: 98304, noroom: 0, v: [{ m: "juno", path: "inst", inst: 4, lanes: 4, uni: 1, on: 3, clamped: 0 }] },
     lfo: { ...d.lfo, l: d.lfo.l.map((l, i) => ({ ...l, rn: l.sync ? ["1/16", "1/8", "1/4", "1BAR"][i % 4] : "", ph: l.tgt === "OFF" ? 0 : Math.floor(((Date.now() - started) / (800 + 300 * i)) * 1000) % 1000 })) },
     fx: d.fx,
     midibridge: { on: d.bridge.on, state: d.bridge.on ? "waiting" : "off", port: 7320, osUpgrade: d.bridge.os, dataWrites: d.bridge.data, toRytm: 0, fromRytm: 0, drops: 0 },
@@ -186,6 +193,9 @@ export function createDevice() {
     else if ((m = /^seqed=len:(\d+):(\d+):(\d+):(\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) n[4] = +m[4]; d.seq.gen++; }
     else if ((m = /^seqed=move:(\d+):(\d+):(\d+):(\d+):(\d+):(-?\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) { n[0] = +m[4]; n[2] = +m[5]; n[1] = +m[6]; } d.seq.gen++; }
     else if ((m = /^seq=swing:(\d+):(\d+)$/.exec(c))) { d.seq.swing = +m[2]; d.seq.gen++; }
+    else if ((m = /^seq=seed:(free|\d+)$/.exec(c))) { if (m[1] === "free") d.seqx.fixed = 0; else Object.assign(d.seqx, { seed: +m[1], fixed: 1 }); }
+    else if (/^seq=(spd|dir|rnd|smod|rtrg|fx|rndstep|lcond|slide|key):/.test(c)) d.seqxCmd(c);
+    else if (/^seqed=(strum|human|chord|undo|redo):/.test(c)) { d.seq.gen++; d.seq.undo++; }
     else if (/^ins=/i.test(c)) d.mixer(c);
     else if (/^(rec|play|samp|asamp)=/.test(c)) d.recCmd(c);
     else if (/^pool=/.test(c)) d.poolCmd(c);
@@ -363,6 +373,23 @@ export function createDevice() {
   for (const l of ["==== rytm-pi engine ==== Sidecar 0.4.2 (mock000), CPU 1800 MHz", "sidecar: USB-C class compliant, 12 x 12 + MIDI",
     "rytmob: Analog Rytm MKII attached, Overbridge streaming", "web: listening on sidecar-mock.local", "um: 4 packages in /Plugins, U1..U5 resolved",
     "seq: pattern A04, seq tracks T9 T10", "lib: 1834 files indexed, 3 duplicates"]) d.addLog(l);
+
+  const SPDN = ["follow", "1/8", "1/4", "1/2", "3/4", "3/2", "2", "2/3", "5/4", "7/8"], DIRN = ["fwd", "rev", "pend", "ping", "rnd", "brown"];
+  d.seqxCmd = (c) => {
+    let m;
+    const row = (t) => d.seqx.t.find((x) => x.t === +t);
+    if ((m = /^seq=spd:(\d+):(\S+)$/.exec(c)) && row(m[1])) row(m[1]).spd = Math.max(0, SPDN.indexOf(m[2]));
+    else if ((m = /^seq=dir:(\d+):(\w+)$/.exec(c)) && row(m[1])) row(m[1]).dir = Math.max(0, DIRN.indexOf(m[2]));
+    else if ((m = /^seq=rnd:(\d+):mode=(\w+),low=(\d+),oct=(\d+),wght=(\w+)$/.exec(c)) && row(m[1])) row(m[1]).rnd = [["off", "steps", "track"].indexOf(m[2]), +m[3], +m[4], ["flat", "root", "chord", "low", "high", "step"].indexOf(m[5])];
+    else if ((m = /^seq=smod:(\d+):src=(\d+),range=(\d+),quant=(\w+),aff=(\w+)$/.exec(c)) && row(m[1])) row(m[1]).smod = [+m[2], +m[3], ["step", "loop", "bar"].indexOf(m[4]), ["notes", "chance", "order", "all"].indexOf(m[5])];
+    else if ((m = /^seq=rndstep:(\d+):(\d+):([01])$/.exec(c)) && row(m[1])) {
+      const r = row(m[1]);
+      let e = r.x.find((x) => x.s === +m[2]);
+      if (!e) r.x.push((e = { s: +m[2], rt: [0, 0, 0, 0, 0, 0, 0], fx: [[0, 0], [0, 0]], r: 0, lc: [], sl: [] }));
+      e.r = +m[3];
+    }
+    if ((m = /^seq=(spd|dir):(\d+):/.exec(c)) && +m[2] === d.seq.track + 1) { d.seq.speed = row(m[2])?.spd ?? 0; d.seq.dir = row(m[2])?.dir ?? 0; d.seq.gen++; }
+  };
 
   d.seqpos = () => {
     const stepMs = 60000 / 120 / 4;

@@ -8,6 +8,8 @@ import Chip from "../ui/Chip.vue";
 import Fader from "../ui/Fader.vue";
 import Segmented from "../ui/Segmented.vue";
 import PianoRoll from "./seq/PianoRoll.vue";
+import StepEditor from "./seq/StepEditor.vue";
+import { AFFECTS, RND, SEED_QUANT, WEIGHT, humanLine, seedLine, strumLine, trackLines, type TrackSettings } from "../lib/seqx";
 import { RequestError } from "../lib/client";
 import { patternName } from "../lib/status";
 import { DIR, KEYS, POLY_ALLOC, QNT, SCALES, SPD, SUB, cmd as seqCmd, noteName, parseView, pitchWindow, playStep, trackName, type SeqNote, type SeqPos, type SeqView } from "../lib/seq";
@@ -142,6 +144,32 @@ watch(() => view.value && [view.value.key, view.value.scale, view.value.qnt], ()
   if (view.value) pat.value = { key: view.value.key, scale: view.value.scale, qnt: view.value.qnt };
 }, { immediate: true });
 
+// seqtop (/status "seqx"): the shown track's row, the pattern's seed; the old page's forms
+const seqx = computed(() => (status.value as Record<string, any> | null)?.seqx as Record<string, any> | undefined);
+const sxRow = computed(() => seqx.value?.t?.find((t: any) => t.t === T.value + 1));
+const trk = ref<TrackSettings>({ spd: 0, dir: 0, rm: 0, rl: 36, ro: 1, rw: 0, ms: 0, mr: 8, mq: 0, ma: 0 });
+const trkForm = ref<HTMLElement | null>(null);
+watch([sxRow, view], () => {
+  if (trkForm.value?.contains(document.activeElement)) return; // (not while a field is being edited)
+  const r = sxRow.value, v = view.value;
+  if (r) trk.value = { spd: r.spd, dir: r.dir, rm: r.rnd[0], rl: r.rnd[1], ro: r.rnd[2] || 1, rw: r.rnd[3], ms: r.smod[0], mr: r.smod[1] || 8, mq: r.smod[2], ma: r.smod[3] };
+  else if (v) trk.value = { ...trk.value, spd: v.speed, dir: v.dir };
+}, { immediate: true });
+async function sendLines(lines: string[]) {
+  for (const l of lines) await send(l);
+}
+const seed = ref(0), seedFree = ref(true);
+watch(seqx, (x) => { if (x && document.activeElement?.id !== "seed") { seed.value = x.seed ?? 0; seedFree.value = !x.fixed; } }, { immediate: true });
+// strum and humanise over the steps on screen
+const strum = ref(12), hTime = ref(8), hVel = ref(16), hSeed = ref(1);
+const inst = computed(() => (status.value as Record<string, any> | null)?.inst as Record<string, any> | undefined);
+const instText = computed(() => {
+  const i = inst.value;
+  if (!i) return "";
+  const used = (i.v ?? []).reduce((a: number, x: any) => a + (x.path === "inst" ? x.on : 0), 0);
+  return `Instances ${used} of ${i.total}, ${Math.round(i.bytes / 1024)} KB each${i.noroom ? `, ${i.noroom} notes found no free instance` : ""}`;
+});
+
 const transportText = computed(() => ["stopped", "playing", "paused"][pos.value?.transport ?? view.value?.transport ?? 0] ?? "");
 const head = computed(() => playStep(pos.value, T.value));
 const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
@@ -232,20 +260,50 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           <button type="button" :disabled="!paired || !selected" @click="stamp">Stamp on the selected note</button>
         </div>
         <p class="small">The stamp puts the chord's notes on the selected note's step, from its pitch.</p>
+        <span class="label">Steps {{ first + 1 }}–{{ first + count }}</span>
+        <div class="row">
+          <label for="strum">Strum</label>
+          <input id="strum" v-model.number="strum" type="number" min="-96" max="96" />
+          <button type="button" :disabled="!paired" @click="send(strumLine(view.track, first, first + count - 1, strum))">Strum the chords</button>
+        </div>
+        <div class="row">
+          <label for="ht">Humanise time</label><input id="ht" v-model.number="hTime" type="number" min="0" max="96" />
+          <label for="hv">velocity</label><input id="hv" v-model.number="hVel" type="number" min="0" max="127" />
+          <label for="hs">seed</label><input id="hs" v-model.number="hSeed" type="number" min="0" max="9999" />
+          <button type="button" :disabled="!paired" @click="send(humanLine(view.track, first, first + count - 1, hTime, hVel, hSeed))">Humanise</button>
+        </div>
       </Card>
 
       <Card :label="`${trackName(view.track)} settings`">
         <Fader v-model="swing" label="Swing" :min="50" :max="80" unit="%" :disabled="!paired" @commit="(v: number) => send(seqCmd.swing(view!.track, v))" />
-        <div class="row">
-          <label for="spd" class="label">Speed</label>
-          <select id="spd" :value="view.speed" :disabled="!paired" @change="send(seqCmd.spd(view!.track, +($event.target as HTMLSelectElement).value))">
-            <option v-for="(s, i) in SPD" :key="s" :value="i">{{ s }}</option>
-          </select>
-          <label for="dir" class="label">Direction</label>
-          <select id="dir" :value="view.dir" :disabled="!paired" @change="send(seqCmd.dir(view!.track, +($event.target as HTMLSelectElement).value))">
-            <option v-for="(d, i) in DIR" :key="d" :value="i">{{ d }}</option>
-          </select>
-        </div>
+        <form ref="trkForm" class="trk" @submit.prevent="sendLines(trackLines(view!.track + 1, trk, SPD, DIR))">
+          <div class="row">
+            <label for="spd" class="label">Speed</label>
+            <select id="spd" v-model.number="trk.spd"><option v-for="(s, i) in SPD" :key="s" :value="i">{{ s }}</option></select>
+            <label for="dir" class="label">Direction</label>
+            <select id="dir" v-model.number="trk.dir"><option v-for="(d, i) in DIR" :key="d" :value="i">{{ d }}</option></select>
+          </div>
+          <div class="row">
+            <label for="rm" class="label">Random notes</label>
+            <select id="rm" v-model.number="trk.rm"><option v-for="(r, i) in RND" :key="r" :value="i">{{ r }}</option></select>
+            <template v-if="trk.rm">
+              <label for="rl">low note</label><input id="rl" v-model.number="trk.rl" type="number" min="0" max="127" />
+              <label for="ro">octaves</label><input id="ro" v-model.number="trk.ro" type="number" min="1" max="4" />
+              <label for="rw">weight</label><select id="rw" v-model.number="trk.rw"><option v-for="(w, i) in WEIGHT" :key="w" :value="i">{{ w }}</option></select>
+            </template>
+          </div>
+          <div class="row">
+            <label for="ms" class="label">Seed mod</label>
+            <label for="ms">source P (0 off)</label><input id="ms" v-model.number="trk.ms" type="number" min="0" max="16" />
+            <template v-if="trk.ms">
+              <label for="mr">range</label><input id="mr" v-model.number="trk.mr" type="number" min="2" max="64" />
+              <label for="mq">quantise</label><select id="mq" v-model.number="trk.mq"><option v-for="(q, i) in SEED_QUANT" :key="q" :value="i">{{ q }}</option></select>
+              <label for="ma">affects</label><select id="ma" v-model.number="trk.ma"><option v-for="(a, i) in AFFECTS" :key="a" :value="i">{{ a }}</option></select>
+              <span v-if="sxRow" class="small">seed +{{ sxRow.off }}</span>
+            </template>
+          </div>
+          <button type="submit" :disabled="!paired">Set {{ trackName(view.track) }}</button>
+        </form>
         <span class="label">Poly</span>
         <div class="row">
           <label for="pv">Voices</label>
@@ -263,7 +321,10 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           <button type="button" :disabled="!paired" @click="send(seqCmd.poly(view!.track, poly))">Set poly</button>
         </div>
         <p v-if="view.poly.info" class="small">{{ view.poly.info }}</p>
+        <p v-if="instText" class="small">{{ instText }}</p>
       </Card>
+
+      <StepEditor :track="view.track + 1" :step="selected ? selected.step + 1 : null" :seqx="seqx" :length="view.length" :disabled="!paired" @send="sendLines" />
 
       <Card label="Pattern">
         <div class="row">
@@ -275,6 +336,12 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
         <span class="label">Quantise to the scale</span>
         <Segmented label="Quantise" :options="opts(QNT)" :model-value="pat.qnt" @update:model-value="(v: number) => (pat.qnt = v)" />
         <button type="button" :disabled="!paired" @click="send(seqCmd.key(pat.key, pat.scale, pat.qnt))">Set key and scale</button>
+        <div class="row">
+          <label for="seed" class="label">Seed</label>
+          <input id="seed" v-model.number="seed" type="number" min="0" max="9999" :disabled="seedFree" />
+          <label class="check"><input v-model="seedFree" type="checkbox" /> Free (a new one each loop)</label>
+          <button type="button" :disabled="!paired" @click="send(seedLine(seed, seedFree))">Set seed</button>
+        </div>
       </Card>
     </div>
   </template>
@@ -288,4 +355,8 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 0 1.25rem; align-items: start; }
 .danger { border-color: var(--warm); color: var(--warm); }
 input[type="number"] { width: 5.5rem; }
+.trk { display: flex; flex-direction: column; gap: 0.5rem; }
+.trk button { align-self: flex-start; }
+.check { display: inline-flex; align-items: center; gap: 0.375rem; min-height: var(--target); }
+.check input { min-width: 1.25rem; min-height: 1.25rem; }
 </style>
