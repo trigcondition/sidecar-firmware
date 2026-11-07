@@ -827,6 +827,17 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		*pLength = nh + n;
 		*ppContentType = "text/plain; charset=utf-8";
 	}
+	else if (strcmp (pPath, "/prevboot") == 0)	// the last crashed boot's report and log tail (kernel.cpp CrumbToCard; paired only)
+	{
+		core::File f;
+		if (!f.open ("/.rytm/prevboot.txt", core::kRead)) return HTTPNotFound;
+		const unsigned nMax = *pLength < 65536 ? *pLength : 65536;
+		int n = f.read (pBuffer, nMax);
+		f.close ();
+		if (n < 0) return HTTPInternalServerError;
+		*pLength = (unsigned) n;
+		*ppContentType = "text/plain; charset=utf-8";
+	}
 	else if (strcmp (pPath, "/log") == 0)
 	{
 		// "since=N": the first line is "START END", then the log's bytes START..END (the client asks since=END next)

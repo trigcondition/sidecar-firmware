@@ -9,6 +9,7 @@
 #include <circle/bcmpropertytags.h>
 #include <circle/usb/dwhci.h>
 #include <circle/usb/dwhciregister.h>
+#include "ep_stop.h"
 #include <assert.h>
 
 #include "ob_block.h"
@@ -276,7 +277,14 @@ void CNcmEP::OnDeactivate (void)
 	m_bActive = FALSE;
 	m_bBusy = FALSE;
 	m_bHeld = FALSE;
-	CancelTransfer ();
+	Stop ();
+}
+
+// what is armed stopped and waited for (ep_stop.h): CancelTransfer alone panics ("EP7 disabled") once the core has
+// disabled an armed bulk endpoint, as at a link change, a bus suspend and NetDetach
+void CNcmEP::Stop (void)
+{
+	if (IsTransferActive ()) ep_stop::stop (*this, m_nEP, m_Role != RoleOut);
 }
 
 void CNcmEP::OnResume (void)
@@ -306,7 +314,7 @@ void CNcmEP::ArmOut (void)
 
 void CNcmEP::Halt (void)
 {
-	if (m_bBusy) CancelTransfer ();
+	Stop ();
 	m_bBusy = FALSE;
 	m_bHeld = FALSE;
 	// SET_INTERFACE resets the host's data toggle: ours goes back to DATA0 too (the endpoint is disabled now)

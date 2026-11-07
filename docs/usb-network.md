@@ -116,8 +116,11 @@ the function from the USB device altogether (if a computer has trouble with the 
   patch was needed: the endpoints use circle-gadget-mirror.patch's IN and OUT endpoint on one number, the net device is
   Circle's type "Unknown", which CNetSubSystem can be asked for.
 - At a link change (the computer selecting the data interface) both data endpoints are stopped, their data toggles set
-  back to DATA0, and what was queued dropped. The stop uses Circle's asynchronous endpoint disable, as the MIDI endpoints
-  do; a link that goes down and up quickly is one of the things to watch on hardware.
+  back to DATA0, and what was queued dropped. An armed endpoint is stopped and waited for (`pi/engine/ep_stop.h`: an OUT
+  one under the global OUT NAK), at a link change, a bus suspend and when the boot chose Wi-Fi or Ethernet. Circle's
+  plain cancel left the core's "EP disabled" to its interrupt handler, which panics on it for a bulk endpoint; the first
+  hardware tries (Pi 5, 2026-11-07) died about 16 s after the link came up (the watchdog), cause not yet confirmed.
+  `GET /prevboot` (paired) returns the last crashed boot's report and log tail (`/.rytm/prevboot.txt`).
 - The trust is the cable's, not the computer's: a computer that forwards IP traffic between its interfaces could pass
   another machine's packets onto the cable. The Sidecar has no gateway on the cable, so it cannot answer them.
 - The MAC addresses come from the board's serial number (locally administered): stable per Sidecar.

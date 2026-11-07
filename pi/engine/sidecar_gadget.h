@@ -184,8 +184,11 @@ public:
 	boolean Held (void) const			{ return m_bHeld; }
 	void Resume (void);				// OUT: a held endpoint armed again (IRQs masked)
 	unsigned Number (void) const			{ return m_nEP; }
+	void Cancel (void)				{ CancelTransfer (); }	// ep_stop.h
 
 private:
+	void Stop (void);				// what is armed stopped (ep_stop.h), IRQ level or IRQs masked
+
 	CSidecarGadget *m_pSidecar;
 	TRole m_Role;
 	mirror::EpWake m_Wake;
