@@ -16,7 +16,9 @@ const send = useSend();
 const st = computed(() => (status.value ?? null) as Record<string, any> | null);
 const all = computed(() => strips(st.value, levels.value?.strips));
 const sel = ref(0);
-const selected = computed(() => all.value[sel.value]);
+// the detail from the status only: the meters (20 a second) would redraw its dropdowns while one is open (Firefox
+// drops the pick)
+const selected = computed(() => strips(st.value)[sel.value]);
 const mfx = computed(() => st.value?.ins?.mfx as Record<string, any> | undefined);
 const hasIns = computed(() => !!st.value?.ins);
 const master = computed(() => (levels.value ? Math.max(...levels.value.master) : null));

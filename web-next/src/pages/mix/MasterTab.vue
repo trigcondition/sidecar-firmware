@@ -10,10 +10,11 @@ import { mixCmd, strips } from "../../lib/mix";
 import { useSidecar } from "../../lib/useSidecar";
 import { useSend } from "../../lib/useSend";
 
-const { status, levels, paired } = useSidecar();
+const { status, paired } = useSidecar();
 const send = useSend();
 const mfx = computed(() => (status.value as Record<string, any> | null)?.ins?.mfx as Record<string, any> | undefined);
-const master = computed(() => strips(status.value as Record<string, any> | null, levels.value?.strips).find((x) => x.id === "M"));
+// from the status only: the meters (20 a second) would redraw the slots' dropdowns while one is open (Firefox drops the pick)
+const master = computed(() => strips(status.value as Record<string, any> | null).find((x) => x.id === "M"));
 </script>
 
 <template>
