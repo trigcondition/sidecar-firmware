@@ -35,7 +35,7 @@ const missing = computed(() => {
 /* the sections: text tabs on a rule, the current one underlined and bold (a shape change, not only colour); they
    scroll sideways inside themselves on a phone */
 .sub {
-  display: flex; gap: 0.25rem 1.5rem; margin: 0.25rem 0 0.75rem; border-bottom: 1px solid var(--border);
+  display: flex; gap: 0.25rem 1.5rem; margin: 0.25rem 0 1.75rem; border-bottom: 1px solid var(--border);
   overflow-x: auto; scrollbar-width: thin;
 }
 .subtab {
