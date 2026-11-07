@@ -7,10 +7,6 @@ import { Pairing } from "./pairing";
 import type { Hello, Levels, Status } from "./protocol";
 import type { SeqPos } from "./seq";
 
-// The connection is one for the whole page: a hot update can't swap it in place (the old socket closes, a new copy
-// of this module can't find App's), so a change here or in client.ts reloads the page instead (dev server only).
-if (import.meta.hot) import.meta.hot.accept(() => location.reload());
-
 export function wsUrl(loc: { protocol: string; host: string } = location): string {
   return `${loc.protocol === "https:" ? "wss:" : "ws:"}//${loc.host}/ws`;
 }
@@ -35,7 +31,7 @@ export interface Sidecar {
   gate: Ref<string>;
 }
 
-const KEY: InjectionKey<Sidecar> = Symbol.for("sidecar"); // the same across hot updates
+const KEY: InjectionKey<Sidecar> = Symbol.for("sidecar"); // the same across hot updates: a new copy of this module finds App's connection
 
 export function provideSidecar(url = wsUrl()): Sidecar {
   const pairing = new Pairing();
