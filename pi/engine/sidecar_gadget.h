@@ -182,6 +182,7 @@ public:
 	void ArmOut (void);				// OUT: the next block (IRQ level, or IRQs masked)
 	void Halt (void);				// the link down (alt 0): what is armed cancelled
 	boolean Held (void) const			{ return m_bHeld; }
+	boolean IsBusy (void) const			{ return m_bBusy; }
 	void Resume (void);				// OUT: a held endpoint armed again (IRQs masked)
 	unsigned Number (void) const			{ return m_nEP; }
 	void Cancel (void)				{ CancelTransfer (); }	// ep_stop.h
@@ -446,7 +447,22 @@ private:
 		unsigned nTxBlocks, nTxFrames, nTxDown, nUps, nReq, nBadReq;
 	} m_NetStats, m_NetLast;
 	unsigned m_nNetLogSecs;
-	void NetLogStats (CLogger *pLogger);		// a line every 10 s while the link is up, at once when something went wrong
+	void NetLogStats (CLogger *pLogger);
+	// usbnet trace (diagnosis: the Pi 5 died ~16 s after the link came up, 2026-11-07): the network endpoints' events
+	// at IRQ level into a ring, logged by Poll (core 0's loop), with a register line every second for 60 s after the
+	// first SET_INTERFACE of the data interface. At most kNetTraceMax events a boot.
+public:
+	enum TNetTraceCode : u8 { TrSetIntf = 1, TrArmOut, TrOutDone, TrInArm, TrInDone, TrStop, TrActivate, TrDeactivate,
+				  TrHold, TrDetach, TrResume };
+	void NetTrace (u8 uchCode, u32 a = 0, u32 b = 0);	// IRQ level, or IRQs masked
+private:
+	struct TNetEvent { u32 nUs; u8 uchCode; u32 a, b; };
+	static const unsigned NetTraceSize = 256, kNetTraceMax = 3000;
+	TNetEvent m_NetTrace[NetTraceSize];
+	volatile unsigned m_nNetTraceHead = 0;
+	unsigned m_nNetTraceTail = 0, m_nNetTraceLost = 0, m_nNetTraced = 0, m_nNetRecv = 0;
+	u32 m_nNetTraceT0 = 0, m_nNetTraceLastSec = 0;
+	void NetTraceDump (void);		// a line every 10 s while the link is up, at once when something went wrong
 
 	u64 m_nCntFrq, m_nT0;
 	u8 m_uchOutAlt, m_uchInAlt;

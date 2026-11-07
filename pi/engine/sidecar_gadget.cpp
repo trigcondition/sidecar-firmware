@@ -256,6 +256,7 @@ CNcmEP::CNcmEP (const TUSBEndpointDescriptor *pDesc, CSidecarGadget *pGadget, TR
 // link as it was, its transfers started again
 void CNcmEP::OnActivate (void)
 {
+	m_pSidecar->NetTrace (CSidecarGadget::TrActivate, m_nEP | (m_Role << 8), m_bResuming);
 	m_Wake.activated ();
 	m_bActive = TRUE;
 	m_bBusy = FALSE;
@@ -274,6 +275,7 @@ void CNcmEP::OnActivate (void)
 
 void CNcmEP::OnDeactivate (void)
 {
+	m_pSidecar->NetTrace (CSidecarGadget::TrDeactivate, m_nEP | (m_Role << 8), IsTransferActive ());
 	m_bActive = FALSE;
 	m_bBusy = FALSE;
 	m_bHeld = FALSE;
@@ -284,7 +286,9 @@ void CNcmEP::OnDeactivate (void)
 // disabled an armed bulk endpoint, as at a link change, a bus suspend and NetDetach
 void CNcmEP::Stop (void)
 {
-	if (IsTransferActive ()) ep_stop::stop (*this, m_nEP, m_Role != RoleOut);
+	if (!IsTransferActive ()) return;
+	m_pSidecar->NetTrace (CSidecarGadget::TrStop, m_nEP | (m_Role << 8));
+	ep_stop::stop (*this, m_nEP, m_Role != RoleOut);
 }
 
 void CNcmEP::OnResume (void)
@@ -301,13 +305,17 @@ void CNcmEP::Kick (void)
 	if (m_Role == RoleIn) n = m_pSidecar->m_bNetUp ? m_pSidecar->NetForHost (m_Buffer) : 0;
 	else n = m_pSidecar->NetNotification (m_Buffer);
 	if (n == 0) return;
+	m_pSidecar->NetTrace (CSidecarGadget::TrInArm, m_nEP | (m_Role << 8), n);
 	m_bBusy = TRUE;
 	BeginTransfer (TransferDataIn, m_Buffer, n);
 }
 
 void CNcmEP::ArmOut (void)
 {
-	if (!m_bActive || m_bBusy || m_bHeld || m_Role != RoleOut || !m_pSidecar->m_bNetUp || !m_pSidecar->m_bNetAttached) return;
+	const u32 nWhy = (!m_bActive ? 1 : 0) | (m_bBusy ? 2 : 0) | (m_bHeld ? 4 : 0) | (m_Role != RoleOut ? 8 : 0)
+			 | (!m_pSidecar->m_bNetUp ? 16 : 0) | (!m_pSidecar->m_bNetAttached ? 32 : 0);
+	m_pSidecar->NetTrace (CSidecarGadget::TrArmOut, m_nEP, nWhy);	// 0: armed, else why not
+	if (nWhy) return;
 	m_bBusy = TRUE;
 	BeginTransfer (TransferDataOut, m_Buffer, ncm::kNtbOutMax);
 }
@@ -329,6 +337,7 @@ void CNcmEP::Halt (void)
 void CNcmEP::Resume (void)
 {
 	if (!m_bHeld) return;
+	m_pSidecar->NetTrace (CSidecarGadget::TrResume, m_pSidecar->m_NetRx.free ());
 	m_bHeld = FALSE;
 	ArmOut ();
 }
@@ -336,6 +345,7 @@ void CNcmEP::Resume (void)
 void CNcmEP::OnTransferComplete (boolean bIn, size_t nLength)
 {
 	m_bBusy = FALSE;
+	m_pSidecar->NetTrace (bIn ? CSidecarGadget::TrInDone : CSidecarGadget::TrOutDone, m_nEP | (m_Role << 8), nLength);
 	if (m_Role == RoleOut)
 	{
 		m_pSidecar->NetFromHost (m_Buffer, nLength);
@@ -345,6 +355,7 @@ void CNcmEP::OnTransferComplete (boolean bIn, size_t nLength)
 		{
 			m_bHeld = TRUE;
 			m_pSidecar->m_NetStats.nRxHeld++;
+			m_pSidecar->NetTrace (CSidecarGadget::TrHold, m_pSidecar->m_NetRx.free ());
 		}
 		else ArmOut ();
 		return;
@@ -642,6 +653,7 @@ void CSidecarGadget::OutReset (void)
 
 boolean CSidecarGadget::OnSetInterface (u8 uchInterface, u8 uchAlt)
 {
+	if (m_bNet) NetTrace (TrSetIntf, uchInterface, uchAlt);
 #ifdef CIRCLE_GADGET_MIRROR
 	if (m_bShowMirror) return MirrorSetInterface (uchInterface, uchAlt);
 #endif
@@ -1121,6 +1133,7 @@ void CSidecarGadget::Poll (void)
 	if (m_bMirUsed) MirrorPoll ();
 #endif
 	UpdatePlugAndPlay ();
+	NetTraceDump ();
 	if (m_bNetLate && !m_bNetLateLogged)
 	{
 		m_bNetLateLogged = TRUE;
@@ -1249,6 +1262,7 @@ void CSidecarGadget::NetFromHost (const u8 *pBlock, size_t nLength)
 		}, &St);
 	if (r != ncm::kOk) m_NetStats.nRxRefused++;
 	m_NetStats.nRxBad += St.bad;
+	NetTrace (TrOutDone, 0x100 | r, St.datagrams | St.bad << 16);	// (ep 0: the parse) result, datagrams, bad
 }
 
 // the next IN block (gadget IRQ, or IRQs masked): as many queued frames as fit the size the computer asked for
@@ -1305,6 +1319,7 @@ boolean CSidecarGadget::NetReceive (void *pBuffer, unsigned *pLength)
 		memcpy (pBuffer, p, n);
 		*pLength = n;
 		m_NetRx.release ();
+		m_nNetRecv++;
 	}
 	// a held OUT endpoint is armed again whenever there is room, also after a drain or with the queue empty
 	if (m_NetRx.free () >= ncm::kOutMaxDatagrams)
@@ -1331,6 +1346,7 @@ boolean CSidecarGadget::NetLive (void)
 void CSidecarGadget::NetDetach (void)
 {
 	EnterCritical ();
+	NetTrace (TrDetach, m_bNetUp);
 	m_bNetAttached = FALSE;
 	if (m_pNetOut) m_pNetOut->Halt ();
 	m_NetTx.drain ();
@@ -1366,6 +1382,68 @@ void CSidecarGadget::NetLogStats (CLogger *pLogger)
 		"to computer %u blocks %u frames down %u | ntb in %u | req %u bad %u",
 		m_bNetUp ? "up" : "down", s.nUps, s.nRxBlocks, s.nRxFrames, s.nRxBad, s.nRxRefused, s.nRxDrop, s.nRxHeld,
 		s.nTxBlocks, s.nTxFrames, s.nTxDown, m_NcmCtl.ntb_in_size (), s.nReq, s.nBadReq);
+}
+
+void CSidecarGadget::NetTrace (u8 uchCode, u32 a, u32 b)
+{
+	if (m_nNetTraced >= kNetTraceMax) return;
+	m_nNetTraced++;
+	const unsigned h = m_nNetTraceHead;
+	if (h - m_nNetTraceTail >= NetTraceSize) { m_nNetTraceLost++; return; }
+	TNetEvent &e = m_NetTrace[h % NetTraceSize];
+	e.nUs = CTimer::GetClockTicks ();
+	e.uchCode = uchCode;
+	e.a = a;
+	e.b = b;
+	__atomic_store_n (&m_nNetTraceHead, h + 1, __ATOMIC_RELEASE);
+}
+
+// core 0's loop: the events so far, then (for 60 s after the first SET_INTERFACE of the network) a line a second with
+// the network endpoints' registers and counters. Each line flushed as it goes: what came last before a hang is in the log
+void CSidecarGadget::NetTraceDump (void)
+{
+	static const char *const Names[] = {"?", "set_interface", "arm_out", "out_done", "in_arm", "in_done", "stop",
+					    "activate", "deactivate", "hold", "detach", "resume"};
+	if (!m_bNet) return;
+	for (;;)
+	{
+		EnterCritical ();
+		const unsigned h = __atomic_load_n (&m_nNetTraceHead, __ATOMIC_ACQUIRE);
+		boolean bAny = m_nNetTraceTail != h;
+		TNetEvent e = m_NetTrace[m_nNetTraceTail % NetTraceSize];
+		unsigned nLost = m_nNetTraceLost;
+		m_nNetTraceLost = 0;
+		if (bAny) m_nNetTraceTail++;
+		LeaveCritical ();
+		if (nLost) CLogger::Get ()->Write (From, LogNotice, "usbnet trace: %u events lost (ring full)", nLost);
+		if (!bAny) break;
+		if (m_nNetTraceT0 == 0 && e.uchCode == TrSetIntf) m_nNetTraceT0 = e.nUs ? e.nUs : 1;
+		CLogger::Get ()->Write (From, LogNotice, "usbnet trace %u us: %s 0x%X 0x%X", e.nUs,
+					e.uchCode < sizeof Names / sizeof Names[0] ? Names[e.uchCode] : "?", e.a, e.b);
+	}
+	if (m_nNetTraceT0 == 0) return;
+	const u32 nNow = CTimer::GetClockTicks ();
+	if (nNow - m_nNetTraceT0 > 60000000u || nNow - m_nNetTraceLastSec < 1000000u) return;
+	m_nNetTraceLastSec = nNow;
+	EnterCritical ();
+	TNetStats st = m_NetStats;
+	const unsigned nRecv = m_nNetRecv, nRxUsed = m_NetRx.used (), nTxUsed = m_NetTx.used ();
+	const boolean bUp = m_bNetUp, bAtt = m_bNetAttached;
+	const boolean bOutBusy = m_pNetOut != 0 && m_pNetOut->IsBusy (), bOutAct = m_pNetOut != 0 && m_pNetOut->Active ();
+	const boolean bInBusy = m_pNetIn != 0 && m_pNetIn->IsBusy ();
+	LeaveCritical ();
+	const unsigned nOut = sidecar_desc::kEpNetOut & 0x0F, nIn = sidecar_desc::kEpNetIn & 0x0F;
+	CLogger::Get ()->Write (From, LogNotice,
+		"usbnet regs %u ms: up %u att %u out act %u busy %u in busy %u | DOEPCTL %08X DOEPINT %08X DOEPTSIZ %08X DOEPDMA %08X | "
+		"DIEPCTL %08X DIEPINT %08X DIEPTSIZ %08X | GINTSTS %08X GINTMSK %08X DCTL %08X DAINTMSK %08X | rx blocks %u frames %u "
+		"recv %u ring %u | tx frames %u blocks %u ring %u", (nNow - m_nNetTraceT0) / 1000, bUp, bAtt, bOutAct, bOutBusy, bInBusy,
+		CDWHCIRegister (DWHCI_DEV_OUT_EP_CTRL (nOut)).Read (), CDWHCIRegister (DWHCI_DEV_OUT_EP_INT (nOut)).Read (),
+		CDWHCIRegister (DWHCI_DEV_OUT_EP_XFER_SIZ (nOut)).Read (), CDWHCIRegister (DWHCI_DEV_OUT_EP_DMA_ADDR (nOut)).Read (),
+		CDWHCIRegister (DWHCI_DEV_IN_EP_CTRL (nIn)).Read (), CDWHCIRegister (DWHCI_DEV_IN_EP_INT (nIn)).Read (),
+		CDWHCIRegister (DWHCI_DEV_IN_EP_XFER_SIZ (nIn)).Read (), CDWHCIRegister (DWHCI_CORE_INT_STAT).Read (),
+		CDWHCIRegister (DWHCI_CORE_INT_MASK).Read (), CDWHCIRegister (DWHCI_DEV_CTRL).Read (),
+		CDWHCIRegister (DWHCI_DEV_ALL_EPS_INT_MASK).Read (), st.nRxBlocks, st.nRxFrames, nRecv, nRxUsed, st.nTxFrames,
+		st.nTxBlocks, nTxUsed);
 }
 
 void CSidecarGadget::LogStats (CLogger *pLogger)
