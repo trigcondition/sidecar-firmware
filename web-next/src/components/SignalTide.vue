@@ -21,18 +21,28 @@ onMounted(() => {
 });
 onUnmounted(() => mq?.removeEventListener?.("change", onMq));
 
-// one new slice every 80 ms on a clock (the levels come at ~25 Hz; ~900 dots redrawn 12 times a second is plenty),
-// the loudest level since the last slice so no transient is lost. On a clock, not on each new level: between hits the
-// level sits at 0 and does not change, so the band kept still and then jumped. A still band under reduced motion,
-// and no slices while the tab is hidden.
-let peak = 0;
+// Two speeds. Up and down: the whole band follows the level live (an 80 ms clock, quick to rise, ~0.4 s to fall).
+// Sideways: the history moves one column only every 2.5 s (the loudest level in that time), so the band drifts very
+// slowly instead of scrolling. On a clock, not on each new level: between hits the level sits at 0 and does not
+// change. A still band under reduced motion, nothing while the tab is hidden.
+const SLICE_MS = 2500;
+let peak = 0, slicePeak = 0, sliceAt = 0;
+const live = ref(0);
 watch(() => props.level, (l) => { peak = Math.max(peak, l); });
 let clock: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   clock = setInterval(() => {
     if (still.value || document.hidden) return;
-    history.value = [...history.value.slice(1), toLift(peak)];
+    const v = toLift(peak);
     peak = 0;
+    live.value = v > live.value ? v : live.value * 0.8 + v * 0.2;
+    slicePeak = Math.max(slicePeak, v);
+    const now = performance.now();
+    if (now - sliceAt >= SLICE_MS) {
+      sliceAt = now;
+      history.value = [...history.value.slice(1), slicePeak];
+      slicePeak = 0;
+    }
   }, 80);
 });
 onUnmounted(() => clearInterval(clock));
@@ -53,7 +63,7 @@ const dots = computed<TideDot[]>(() => {
   for (let c = 0; c < COLS; c++) {
     const x = c * PITCH + 6;
     // silence (or no Sidecar yet) shows the sketch's band; the level lifts it from there
-    const w = still.value ? shape(x) : shape(x) * (0.85 + 0.6 * history.value[c]);
+    const w = still.value ? shape(x) : shape(x) * (0.85 + 0.6 * (0.45 * history.value[c] + 0.55 * live.value));
     for (let r = 0; r < ROWS; r++) {
       const v = Math.max(0, Math.min(1, w + 0.1 - r * 0.15));
       if (v < 0.1) continue;
