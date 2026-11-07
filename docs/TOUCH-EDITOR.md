@@ -141,6 +141,9 @@ core 0 (LVGL)                         core 3 (control: the console's queue)     
   `seqed=add:T:S:P:M:V:L`, `del:T:S:P`, `move:T:S:P:S2:P2:M2`, `len:T:S:P:L`, `vel:T:S:P:V`,
   `chord:T:S:ROOT:CHD:INV:V:L:STRUM`, `strum:T:S0:S1:A`, `human:T:S0:S1:TIME:VEL:SEED`, `undo:T`, `redo:T`;
   `seqed=show:T` (the shown track), `seqed` (status).
+- NOTE EDIT, the Rytm's multi-note selection, from the web (core/seq `note_edit_line`; docs/SEQUENCER.md "From the
+  web"): `seqed=nsel:T:S:P:ON`, `nset:T:ADD:S.P,S.P,...`, `nclr:T`, `nedit:T:E:D[:F]` (E 0..4 POS NUDG LEN PTCH VEL),
+  `ndel:T`, `noff:T`. Their undo levels go to the same history (`undo:T`).
 - The edits go into core/seq's pattern itself (`edit_track` + `touched`, agreed with seqhost). The Rytm's trig LEDs,
   the remote SEQ page and the debounced save therefore follow, and edits made on the Rytm show here: `stats().edits`
   changes, so the view is republished.

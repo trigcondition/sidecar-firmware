@@ -204,6 +204,25 @@ export function createDevice({ scenario = "" } = {}) {
     else if ((m = /^seqed=vel:(\d+):(\d+):(\d+):(\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) n[3] = +m[4]; d.seq.gen++; }
     else if ((m = /^seqed=len:(\d+):(\d+):(\d+):(\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) n[4] = +m[4]; d.seq.gen++; }
     else if ((m = /^seqed=move:(\d+):(\d+):(\d+):(\d+):(\d+):(-?\d+)$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) { n[0] = +m[4]; n[2] = +m[5]; n[1] = +m[6]; } d.seq.gen++; }
+    // NOTE EDIT (the Rytm's multi-note selection): flags bit 1 marks a selected note; an edit acts on all of them at
+    // once (so a group move cannot land a note on another's old place), one undo step. Units here: a detent = a step
+    // (POS), 1/96 (NUDG), a quarter step (LEN), a semitone (PTCH, no scale), 1 (VEL).
+    else if ((m = /^seqed=nset:(\d+):([01]):([\d.,]+)$/.exec(c))) { const want = m[3].split(",").map((x) => x.split(".").map(Number)); for (const n of d.seq.notes) { const hit = want.some(([st, p]) => n[0] === st && n[2] === p); n[5] = hit ? n[5] | 2 : +m[2] ? n[5] : n[5] & ~2; } d.seq.noteEdit.on = true; d.seq.noteEdit.sel = d.seq.notes.filter((n) => n[5] & 2).length; d.seq.gen++; }
+    else if ((m = /^seqed=nsel:(\d+):(\d+):(\d+):([01])$/.exec(c))) { for (const n of d.seq.notes) if (n[0] === +m[2] && n[2] === +m[3]) n[5] = +m[4] ? n[5] | 2 : n[5] & ~2; d.seq.noteEdit.on = true; d.seq.noteEdit.sel = d.seq.notes.filter((n) => n[5] & 2).length; d.seq.gen++; }
+    else if ((m = /^seqed=(nclr|noff):(\d+)$/.exec(c))) { for (const n of d.seq.notes) n[5] &= ~2; d.seq.noteEdit.sel = 0; if (m[1] === "noff") d.seq.noteEdit.on = false; d.seq.gen++; }
+    else if ((m = /^seqed=ndel:(\d+)$/.exec(c))) { d.seq.notes = d.seq.notes.filter((n) => !(n[5] & 2)); d.seq.noteEdit.sel = 0; d.seq.gen++; d.seq.undo++; }
+    else if ((m = /^seqed=nedit:(\d+):([0-4]):(-?\d+)$/.exec(c))) {
+      const sel = d.seq.notes.filter((n) => n[5] & 2), e = +m[2], dd = +m[3];
+      const cut = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      if (sel.length && e === 0) { const k = cut(dd, -Math.min(...sel.map((n) => n[0])), d.seq.length - 1 - Math.max(...sel.map((n) => n[0]))); for (const n of sel) n[0] += k; }
+      if (sel.length && e === 3) { const k = cut(dd, -Math.min(...sel.map((n) => n[2])), 127 - Math.max(...sel.map((n) => n[2]))); for (const n of sel) n[2] += k; }
+      for (const n of sel) {
+        if (e === 1) n[1] = cut(n[1] + dd, -96, 96);
+        if (e === 2) n[4] = Math.max(24, n[4] + dd * 24);
+        if (e === 4) n[3] = cut(n[3] + dd, 1, 127);
+      }
+      d.seq.gen++; d.seq.undo++;
+    }
     else if ((m = /^seq=swing:(\d+):(\d+)$/.exec(c))) { d.seq.swing = +m[2]; d.seq.gen++; }
     else if ((m = /^seq=seed:(free|\d+)$/.exec(c))) { if (m[1] === "free") d.seqx.fixed = 0; else Object.assign(d.seqx, { seed: +m[1], fixed: 1 }); }
     else if (/^seq=(spd|dir|rnd|smod|rtrg|fx|rndstep|lcond|slide|key):/.test(c)) d.seqxCmd(c);

@@ -594,6 +594,11 @@ void level_taken(int rytm);
 uint32_t note_edit_work();   // tests: the last move's work (targets checked over the shifts tried)
 // the touchscreen moved a note (seqed=move): NOTE EDIT's highlight / selection go with it on Rytm track rytm
 void note_moved(int rytm, int from_idx, int from_pitch, int to_idx, int to_pitch);
+// The web's NOTE EDIT (docs/TOUCH-EDITOR.md "NOTE EDIT from the web"; pi/engine/seqed_pi.cpp): one "seqed=nsel / nset /
+// nclr / nedit / ndel / noff" line run as the Rytm's DATA push and A..E would (one selection, one undo history). shown:
+// the track the web shows (-1: any). -1: not one of these; -2: a bad one; 0: refused or nothing done (out says why); 1:
+// the selection / highlight / NOTE EDIT's state changed; 2: the track's notes changed too (replanned and saved).
+int note_edit_line(const char* line, int shown, char* out, int cap);
 void view_set(int track, int page, int held, bool follow);   // tests and the renderer
 struct Stats {
   uint32_t ticks, ticks_bad, states, switches, notes_on, notes_off, late, late_frames_max, cancelled, dropped_queue;

@@ -1,7 +1,7 @@
 <!-- web-next/src/pages/Seq.vue - the Sidecar sequencer: the shown seq track as a piano roll (the "seq" and "seqpos"
      topics, the touch editor's view), edited with the touch editor's own command lines. One card holds the roll: a
      toolbar on top (mode, the steps and pitches shown, undo, the tools in a drawer), the roll, and an inspector under it
-     (the selected note; its step's options). Below, the track's and the pattern's settings in one panel of tabs (the
+     (the selected note, or several; its step's options). Below, the track's and the pattern's settings in one panel of tabs (the
      old page's Sound › Poly tracks and Sequencer forms). -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, useId, watch } from "vue";
@@ -20,6 +20,8 @@ import { SUB, cmd as seqCmd, noteName, parseView, pitchWindow, playStep, trackNa
 import { lenText, microText, stepsText } from "../lib/sequi";
 import { useSidecar } from "../lib/useSidecar";
 import { coalescer } from "../lib/coalesce";
+import { addKeys, groupDelta, keyOf, sameKey, sameSet, serial, toggleKey, type NoteKey } from "../lib/seqsel";
+import { degreesPerOctave, deviceSelection, groupLines, selectLines } from "../lib/seqgroup";
 
 const { client, cmd, paired, hello, status } = useSidecar();
 const view = shallowRef<SeqView | null>(null);
@@ -80,28 +82,91 @@ function scroll(dp: number, ds: number) {
 // drawing: off by default, as the touchscreen's VIEW (a stray tap during play changes nothing)
 const draw = ref(false);
 
-// the selected note, found again in each new view by its step and pitch
-const selKey = ref<{ step: number; pitch: number } | null>(null);
-const selected = computed(() => (selKey.value && view.value?.notes.find((n) => n.step === selKey.value!.step && n.pitch === selKey.value!.pitch)) || null);
-function select(n: SeqNote | null) {
-  selKey.value = n ? { step: n.step, pitch: n.pitch } : null;
+// the selected notes, found again in each new view by their step and pitch; the last one is "the selected note" (the
+// one the keys, the tools and the Step tab act on)
+const selKeys = ref<NoteKey[]>([]);
+const chosen = computed(() => selKeys.value.flatMap((k) => view.value?.notes.find((n) => sameKey(n, k)) ?? []));
+const selected = computed(() => chosen.value[chosen.value.length - 1] ?? null);
+const many = computed(() => chosen.value.length > 1);
+const inGroup = (n: SeqNote) => many.value && chosen.value.some((g) => sameKey(g, n));
+const multi = ref(false); // Select mode's Multi (for a finger: taps put notes in, a drag draws the rectangle)
+
+// Several notes are the Rytm's NOTE EDIT selection on the Sidecar, edited there as one (lib/seqgroup.ts). The page
+// shows what it asked for until the view agrees (or a while has gone), then the view's: a selection made on the Rytm
+// shows here too. The lines go one after another and all of them (lib/coalesce.ts would drop or reorder them).
+const groupQ = serial(send);
+let asked: NoteKey[] | null = null; // what NOTE EDIT should hold, while the view has not shown it yet
+let heldTimer: ReturnType<typeof setTimeout> | undefined;
+onUnmounted(() => clearTimeout(heldTimer));
+function follow() {
+  const v = view.value;
+  if (!v || asked) return;
+  const dev = deviceSelection(v.notes);
+  // the order kept (the last is the selected note); one plain selection of the page's own stays while NOTE EDIT has none
+  if (dev.length || selKeys.value.length > 1) selKeys.value = addKeys(selKeys.value.filter((k) => dev.some((d) => sameKey(d, k))), dev);
 }
+watch(view, (v) => {
+  if (v && asked && sameSet(deviceSelection(v.notes), asked)) {
+    asked = null;
+    clearTimeout(heldTimer);
+  }
+  follow();
+});
+function hold(lines: string[]) {
+  clearTimeout(heldTimer);
+  void groupQ.push(lines).then(() => {
+    if (groupQ.busy) return;
+    clearTimeout(heldTimer);
+    heldTimer = setTimeout(() => ((asked = null), follow()), 1500); // (refused, or the view did not change)
+  });
+}
+function setSel(keys: NoteKey[]) {
+  const v = view.value;
+  selKeys.value = keys;
+  if (!v) return;
+  const lines = selectLines(v.track, asked ?? deviceSelection(v.notes), keys);
+  if (!lines.length) return;
+  asked = keys.length > 1 ? keys : [];
+  hold(lines);
+}
+const select = (n: SeqNote | null) => setSel(n ? [keyOf(n)] : []);
+const toggle = (n: SeqNote) => setSel(toggleKey(selKeys.value, n));
+const pick = (notes: SeqNote[], add: boolean) => setSel(add ? addKeys(selKeys.value, notes) : notes.map(keyOf));
 
 function add(step: number, pitch: number) {
   const v = view.value;
   if (!v) return;
   send(seqCmd.add(v.track, step, pitch, 0, v.defaults.vel, v.defaults.len));
-  selKey.value = { step, pitch };
+  setSel([{ step, pitch }]);
 }
 function remove(n: SeqNote) {
+  if (inGroup(n)) return removeGroup();
   send(seqCmd.del(T.value, n.step, n.pitch));
-  selKey.value = null;
+  setSel([]);
 }
 function nudge(n: SeqNote, ds: number, dp: number) {
+  if (inGroup(n)) return moveGroup(ds, dp);
   const s2 = Math.max(0, Math.min((view.value?.length ?? 16) - 1, n.step + ds)), p2 = Math.max(0, Math.min(127, n.pitch + dp));
   send(seqCmd.move(T.value, n.step, n.pitch, s2, p2, n.micro));
-  selKey.value = { step: s2, pitch: p2 };
+  setSel([{ step: s2, pitch: p2 }]);
 }
+
+// the group edits: each line acts on the whole selection on the Sidecar (one undo step a line)
+function moveGroup(ds: number, dp: number) {
+  const d = groupDelta(chosen.value, ds, dp, view.value?.length ?? 16);
+  if (!d.ds && !d.dp) return;
+  // the selection moves with its notes (until the view says where they went: a scale moves the pitch by degrees)
+  selKeys.value = selKeys.value.map((k) => ({ step: k.step + d.ds, pitch: k.pitch + d.dp }));
+  if (asked) asked = selKeys.value;
+  hold(groupLines.move(T.value, d.ds, d.dp, degreesPerOctave(view.value?.scale ?? 0, view.value?.qnt ?? 0)));
+}
+function removeGroup() {
+  selKeys.value = [];
+  if (asked) asked = [];
+  hold(groupLines.del(T.value));
+}
+const groupVel = (d: number) => void groupQ.push(groupLines.vel(T.value, d));
+const groupLen = (d: number) => void groupQ.push(groupLines.len(T.value, d));
 // velocity and length by keys: a command per press, the newest wins (lib/coalesce.ts)
 const latest = coalescer(cmd, (e) => (msg.value = e instanceof RequestError ? `Refused (${e.code}): ${e.message}` : (e as Error).message));
 const setVel = (n: SeqNote, v: number) => void latest(seqCmd.vel(T.value, n.step, n.pitch, v));
@@ -110,15 +175,20 @@ const setLen = (n: SeqNote, l: number) => void latest(seqCmd.len(T.value, n.step
 const sentVel = new Map<string, number>(), sentLen = new Map<string, number>();
 const noteKey = (n: SeqNote) => `${T.value}:${n.step}:${n.pitch}`;
 function stepVel(n: SeqNote, d: number) {
+  if (inGroup(n)) return groupVel(d);
   const v = Math.max(1, Math.min(127, (sentVel.get(noteKey(n)) ?? n.vel) + d));
   sentVel.set(noteKey(n), v);
   setVel(n, v);
 }
 function stepLen(n: SeqNote, d: number) {
+  if (inGroup(n)) return groupLen(d);
   const l = Math.max(SUB / 4, (sentLen.get(noteKey(n)) ?? n.len) + d);
   sentLen.set(noteKey(n), l);
   setLen(n, l);
 }
+// the inspector's faders for several notes show the average and move every note by the change on release
+const avg = (f: (n: SeqNote) => number) => Math.round(chosen.value.reduce((a, n) => a + f(n), 0) / Math.max(1, chosen.value.length));
+const groupId = computed(() => chosen.value.map((n) => `${n.step}:${n.pitch}:${n.vel}:${n.len}`).join(","));
 watch(view, () => {
   sentVel.clear();
   sentLen.clear();
@@ -174,6 +244,7 @@ const head = computed(() => playStep(pos.value, T.value));
       <div v-else class="editor">
         <div class="toolbar">
           <Segmented label="Mode" :options="[{ value: false, text: 'Select' }, { value: true, text: 'Draw' }]" :model-value="draw" :disabled="!paired" @update:model-value="(v: boolean) => (draw = v)" />
+          <Chip v-if="!draw || !paired" :pressed="multi" @click="multi = !multi">Multi</Chip>
           <div class="group" role="group" aria-label="Steps on screen">
             <button type="button" class="icon" aria-label="Earlier steps" :disabled="page === 0" @click="scroll(0, -1)">‹</button>
             <span class="small range">Steps <span class="num">{{ stepsText(first, count) }}</span> <span class="of">/ {{ view.length }}</span></span>
@@ -219,8 +290,12 @@ const head = computed(() => playStep(pos.value, T.value));
           :play="head"
           :draw="draw && paired"
           :selected="selected"
+          :group="chosen"
+          :multi="multi && !(draw && paired)"
           :length="view.length"
           @select="select"
+          @toggle="toggle"
+          @pick="pick"
           @add="add"
           @remove="remove"
           @nudge="nudge"
@@ -230,8 +305,9 @@ const head = computed(() => playStep(pos.value, T.value));
           @scroll="scroll"
         />
         <p class="small status">
-          <span class="num">{{ view.notes.length }}</span> notes.
-          <template v-if="!draw"> Select mode: taps only select (Draw adds notes).</template>
+          <span class="num">{{ view.notes.length }}</span> notes<template v-if="many">, <span class="num">{{ chosen.length }}</span> selected</template>.
+          <template v-if="!draw && multi"> Multi: taps put notes in the selection or take them out; drag to select a rectangle (the roll does not scroll by touch).</template>
+          <template v-else-if="!draw"> Select mode: taps only select; drag on empty space to select several, Shift adds (Draw adds notes).</template>
           <template v-else> Draw mode: a tap on an empty cell adds a note; drag a note to move it, its end to resize.</template>
         </p>
         <p v-if="msg" class="small warm" role="status">{{ msg }}</p>
@@ -240,12 +316,23 @@ const head = computed(() => playStep(pos.value, T.value));
           <Tabs v-model="pane" label="Edit the selection" :tabs="PANES">
             <template #before>
               <span class="what">
-                <template v-if="selected"><b>{{ noteName(selected.pitch) }}</b> · step <span class="num">{{ selected.step + 1 }}</span></template>
+                <template v-if="many"><b class="num">{{ chosen.length }}</b> notes selected</template>
+                <template v-else-if="selected"><b>{{ noteName(selected.pitch) }}</b> · step <span class="num">{{ selected.step + 1 }}</span></template>
                 <template v-else>No note selected</template>
               </span>
             </template>
             <div v-if="pane === 'note'">
               <p v-if="!selected" class="small hint">Select a note in the roll (a tap, or Enter on it) to edit it here.</p>
+              <div v-else-if="many" class="notegrid">
+                <Fader :key="'v' + groupId" label="Velocity (all)" :model-value="avg((n) => n.vel)" :min="1" :max="127" :disabled="!paired" @commit="(v: number) => groupVel(v - avg((n) => n.vel))" />
+                <Fader :key="'l' + groupId" label="Length (all)" :model-value="avg((n) => n.len)" :min="SUB / 4" :max="SUB * 16" :step="SUB / 4" :format="lenText" :disabled="!paired" @commit="(v: number) => groupLen(v - avg((n) => n.len))" />
+                <p class="small hint">Micro timing: one note at a time. Each change to the group is one undo step.</p>
+                <div class="acts" role="group" :aria-label="`The ${chosen.length} selected notes`">
+                  <button type="button" aria-label="Move the notes an octave up" :disabled="!paired" @click="moveGroup(0, 12)">Oct <span aria-hidden="true">+</span></button>
+                  <button type="button" aria-label="Move the notes an octave down" :disabled="!paired" @click="moveGroup(0, -12)">Oct <span aria-hidden="true">−</span></button>
+                  <button type="button" class="danger" :disabled="!paired" @click="removeGroup">Delete <span class="num">{{ chosen.length }}</span></button>
+                </div>
+              </div>
               <div v-else class="notegrid">
                 <Fader :key="'v' + selected.step + selected.pitch" label="Velocity" :model-value="selected.vel" :min="1" :max="127" :disabled="!paired" @commit="(v: number) => setVel(selected!, v)" />
                 <Fader :key="'l' + selected.step + selected.pitch" label="Length" :model-value="selected.len" :min="SUB / 4" :max="SUB * 16" :step="SUB / 4" :format="lenText" :disabled="!paired" @commit="(v: number) => setLen(selected!, v)" />

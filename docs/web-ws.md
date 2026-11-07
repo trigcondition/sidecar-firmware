@@ -118,6 +118,12 @@ more 250 ms after that (each only if it changed), so a page shows its own click 
 40 KB (test_ws). Edits are the touch editor's own command lines (`seqed=add:T:S:P:M:V:L`, `del`, `move`, `len`, `vel`,
 `chord`, `strum`, `human`, `undo`, `redo`; docs/TOUCH-EDITOR.md) sent as `cmd`. `seqed=show:T` picks the shown track:
 it is one shown track for the touchscreen and the web together.
+NOTE EDIT's selection is driven with `seqed=nsel:T:S:P:ON`, `nset:T:ADD:S.P,...`, `nclr:T`, `nedit:T:E:D[:F]`,
+`ndel:T` and `noff:T` (docs/SEQUENCER.md "From the web": units, refusals). Their reply line (in `log`) starts
+`seqed: NOTE EDIT T..` when done, `seqed: T..: <reason>` when refused. `noteEdit` (`on`, `step`, `pitch`, `sel`) and a
+note's flags bit 1 (selected) show it while the shown track is the SEQ page's (nsel / nset make it so). A command line
+is at most 191 characters (the console's queue, `TCmd` in pi/engine/shared.h; `/cmd` and `/ws` take 199): about 20
+notes an `nset` line, so a longer one goes as ADD 0 and then ADD 1 lines.
 
 ### `voices` (the touchscreen's VOICE page)
 

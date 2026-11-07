@@ -449,6 +449,7 @@ static void test_soon ()
 static void test_cmd_policy ()
 {
 	CHECK (webcmd::refused ("notes=1", false, false) == 0);
+	CHECK (webcmd::refused ("seqed=nsel:0:4:60:1", true, false) == 0 && webcmd::refused ("seqed=nedit:0:0:1", true, false) == 0);	// NOTE EDIT from the page
 	CHECK (webcmd::refused ("wifi=join:a:b", true, false) == 0);
 	CHECK (webcmd::refused ("wifi=join:a:b", false, false) != 0);
 	CHECK (webcmd::refused ("midibridge=on", true, false) != 0);
