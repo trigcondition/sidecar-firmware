@@ -40,15 +40,15 @@ MAX_IMAGE = 1 << 20
 MAX_ALIGN = 8   # rmp_arena_alloc returns 8-aligned blocks: no input section may need more
 API_H = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sdk", "rmp", "rmp_api.h")
 
-def rmp_api():
-    """RMP_API from sdk/rmp/rmp_api.h (`#define RMP_API <n>u`)."""
+def rmp_api(name="RMP_API"):
+    """RMP_API (or another `#define <name> <n>u`, RMP_API_RMPA: the newest an RMPA package may have) from sdk/rmp/rmp_api.h."""
     try:
         with open(API_H) as f:
-            m = re.search(r"^\s*#\s*define\s+RMP_API\s+(\d+)[uU]?\b", f.read(), re.M)
+            m = re.search(r"^\s*#\s*define\s+" + name + r"\s+(\d+)[uU]?\b", f.read(), re.M)
     except OSError as e:
         raise PackError(f"cannot read {API_H}: {e}")
     if not m:
-        raise PackError(f"no '#define RMP_API <n>u' in {API_H}")
+        raise PackError(f"no '#define {name} <n>u' in {API_H}")
     return int(m.group(1))
 
 def _sections(elf):
@@ -129,6 +129,29 @@ R_AARCH64_ABS64 = 257
 A64_RELATIVE = {260, 261, 262, 273, 274, 275, 276, 277, 278, 279, 280, 282, 283, 284, 285, 286, 299}
 A64_MAX_ALIGN = 4096
 RMP_PLUGIN_BYTES_A64 = 128   # sizeof(rmp_plugin) on AArch64 (16 + 14 pointers)
+# Plugin API 3 (sdk/rmp/rmp_api3.h): reserved[RMP_P_V3 = 4] of the entry table points at an rmp3_plugin (magic "RMP3",
+# kind at +12); the header's flags say so (RMP_HF_API3, RMP_HF_EFFECT in rmp_format.h), so a host's scan knows an effect
+# from a machine without reading the image. RMPA only.
+RMP3_MAGIC, RMP3_PLUGIN_BYTES_A64, RMP3_KIND_MACHINE, RMP3_KIND_EFFECT = 0x33504D52, 136, 1, 2
+RMP_HF_API3, RMP_HF_EFFECT = 0x1000, 0x2000
+
+def api3_flags(image, entry, api):
+    """The header flags an RMPA image's API 3 table asks for (0: none); PackError when it is malformed."""
+    ptr, = struct.unpack_from("<Q", image, entry + 64 + 8 * 4)   # reserved[4] (the link address: the image offset)
+    if not ptr:
+        if api >= 3:
+            raise PackError("an api 3 entry table without its rmp3_plugin in reserved[RMP_P_V3]")
+        return 0
+    if ptr % 8 or ptr + RMP3_PLUGIN_BYTES_A64 > len(image):
+        raise PackError(f"reserved[RMP_P_V3] = {ptr:#x}: not an rmp3_plugin inside the image")
+    magic, size, _minor, kind = struct.unpack_from("<IIII", image, ptr)
+    if magic != RMP3_MAGIC or size < RMP3_PLUGIN_BYTES_A64:
+        raise PackError(f"the rmp3_plugin at {ptr:#x} has a bad magic or size")
+    if kind not in (RMP3_KIND_MACHINE, RMP3_KIND_EFFECT):
+        raise PackError(f"the rmp3_plugin's kind {kind} is neither RMP3_KIND_MACHINE nor RMP3_KIND_EFFECT")
+    if kind == RMP3_KIND_EFFECT and api < 3:
+        raise PackError("an effect (RMP3_KIND_EFFECT) must be API 3 only: .api = 3 (an older host would load it as a machine)")
+    return RMP_HF_API3 | (RMP_HF_EFFECT if kind == RMP3_KIND_EFFECT else 0)
 MAGIC_A64 = 0x41504D52       # "RMPA"
 
 def _sections64(elf):
@@ -199,8 +222,8 @@ def _build64(elf, man, manifest, ver, compat):
     if entry + RMP_PLUGIN_BYTES_A64 > len(image):
         raise PackError(f"rmp_entry at {entry:#x} does not fit inside the image ({len(image)} B)")
     api, = struct.unpack_from("<I", image, entry + 4)
-    if not 1 <= api <= rmp_api():
-        raise PackError(f"entry table api {api} is not 1..{rmp_api()} (sdk/rmp/rmp_api.h)")
+    if not 1 <= api <= rmp_api("RMP_API_RMPA"):
+        raise PackError(f"entry table api {api} is not 1..{rmp_api('RMP_API_RMPA')} (sdk/rmp/rmp_api.h RMP_API_RMPA)")
     data_start = sym.get("__rmp_data_start", -1)
     if data_start < 0 or data_start % 4096 or data_start > len(image) or entry + RMP_PLUGIN_BYTES_A64 > data_start:
         raise PackError("__rmp_data_start missing or not page-aligned after the entry table (link with sdk/rmp/plugin_a64.ld)")
@@ -250,7 +273,8 @@ def _build64(elf, man, manifest, ver, compat):
     body = bytes(image) + b"".join(struct.pack("<II", off | typ << 28, 0) for off, typ in relocs) + manifest
     body += b"\0" * (-len(body) % 4)
     head = struct.pack(HEADER_FMT, MAGIC_A64, package_format(man), api, man["id"].encode(), ver, compat,
-                       len(image), bss, entry, len(relocs), len(manifest), header_flags(man), zlib.crc32(body) & 0xFFFFFFFF,
+                       len(image), bss, entry, len(relocs), len(manifest), header_flags(man) | api3_flags(image, entry, api),
+                       zlib.crc32(body) & 0xFFFFFFFF,
                        struct.pack("<I", data_start) + b"\0" * 16)   # reserved[0..3]: the writable part's offset
     return head + body
 

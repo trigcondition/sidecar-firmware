@@ -456,9 +456,9 @@
       <button id="um-empty" title="every slot of this project explicitly empty: nothing is inherited or filled from the sounds">Start this project empty</button>
       <button id="um-export">Export slot list</button>
       <button id="um-impb">Import slot list</button><input id="um-imp" type="file" accept=".json,.txt,application/json" hidden></div>
-    <div class="tbl"><table><thead><tr><th>Name</th><th class="hm">ID</th><th>Ver</th><th class="r hm">File</th><th class="hm">FP</th>
+    <div class="tbl"><table><thead><tr><th>Name</th><th class="hm">ID</th><th>Ver</th><th title="the plugin API it was built for: 2, or 3 (a dual or API 3 only package)">API</th><th class="r hm">File</th><th class="hm">FP</th>
       <th class="r hm">Code+data</th><th class="r hm">State/voice</th><th class="r">CPU/voice</th><th>Slots</th><th>Fits</th><th></th></tr></thead>
-      <tbody id="um-list"><tr><td colspan="11" class="mut">-</td></tr></tbody></table></div>
+      <tbody id="um-list"><tr><td colspan="12" class="mut">-</td></tr></tbody></table></div>
     <div class="mem" id="um-mem"></div>
     <div id="um-res" class="msg"></div>
     <div class="prog" id="um-prog"></div>
@@ -2144,6 +2144,12 @@ function cpuCell(p) {     // measured once it played (% of one Pi core, us per b
   if (!p.blocks || !p.ns) return `<span class="mut" title="the package's own figure, in % of one Teensy voice budget">${decl}</span>`;
   return `${(100 * p.ns / umBlockNs).toFixed(2)} %<div class="mut" style="font-size:11px" title="measured: one voice's render call (12 frames), mean over ${p.blocks} blocks; declared: the package's own figure (Teensy budget)">${(p.ns / 1000).toFixed(1)} µs/block · ${decl}</div>`;
 }
+// the package list's API cell: the plugin API it was built for (2, or 3: a dual or API 3 only package, /um's "api"), and
+// a user effect marked as one (it plays in a send FX's UFX1..UFX4 TYPE, never in a U slot)
+function umApi(p) {
+  const v = p.api != null ? String(p.api) : "-";
+  return p.effect ? `${esc(v)} <span class="badge" title="a user effect: a send FX TYPE (UFX1..UFX4), not a machine for U1..U5">effect</span>` : esc(v);
+}
 function renderUm(a) {
   const P = a.filter((x) => x.t === "plugin"), S = {}, M = a.filter((x) => x.t === "mem");
   const info = a.find((x) => x.t === "plugins") || {};
@@ -2155,13 +2161,13 @@ function renderUm(a) {
     + (info.scanning ? " · scanning" : "") : "";
   $("#um-list").innerHTML = P.length ? P.map((p, i) => {
     const code = (p.image || 0) + (p.bss || 0), why = p.why || (p.status !== "ok" ? p.status : "");
-    return `<tr><td>${esc(p.name || p.id)}</td><td class="hm">${esc(p.id)}</td><td>${esc(p.ver)}</td><td class="r hm">${hb(p.size)}</td>
+    return `<tr><td>${esc(p.name || p.id)}</td><td class="hm">${esc(p.id)}</td><td>${esc(p.ver)}</td><td>${umApi(p)}</td><td class="r hm">${hb(p.size)}</td>
       <td class="hm">${esc(p.fp)}</td><td class="r hm">${hb(code)}</td><td class="r hm">${hb(p.state)}</td>
       <td class="r">${cpuCell(p)}</td><td>${(p.slots || []).map((s) => "U" + s).join(" ") || "-"}</td>
       <td class="w">${p.fit ? `<span class="badge ok">fits</span>` : `<span class="badge err">no</span> <span class="err">${esc(why)}</span>`}
         <span class="mut hm">${esc(p.target || "")}</span></td>
       <td><button class="sm" data-del="${i}">Delete</button></td></tr>`;
-  }).join("") : `<tr><td colspan="11" class="mut">no machines in /Plugins: upload a .rmp</td></tr>`;
+  }).join("") : `<tr><td colspan="12" class="mut">no machines in /Plugins: upload a .rmp</td></tr>`;
   let slots = "";
   for (let n = 1; n <= 5; n++) {
     const s = S[n] || { state: "EMPTY", id: "" }, st = s.state || "EMPTY";
@@ -2169,7 +2175,7 @@ function renderUm(a) {
     if (st === "MISSING") nm = "!" + (s.name || s.id);
     if (st === "EMPTY") nm = "(empty)";
     let opts = `<option value="">(empty)</option>`, have = !s.id;
-    for (const p of P) if (p.fit) { const sel = p.id === s.id; have = have || sel; opts += `<option value="${esc(p.id)}"${sel ? " selected" : ""}>${esc(p.name || p.id)} ${esc(p.ver)}</option>`; }
+    for (const p of P) if (p.fit && !p.effect) { const sel = p.id === s.id; have = have || sel; opts += `<option value="${esc(p.id)}"${sel ? " selected" : ""}>${esc(p.name || p.id)} ${esc(p.ver)}</option>`; }
     if (!have) opts += `<option value="${esc(s.id)}" selected>!${esc(s.name || s.id)}</option>`;
     const meas = s.blocks && s.ns ? ` · ${(100 * s.ns / umBlockNs).toFixed(2)} %/voice` : "";
     const src = slotSrc(s);

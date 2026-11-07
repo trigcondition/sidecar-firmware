@@ -12,6 +12,8 @@ extern "C" {
 
 #define RMP_API 2u
 #define RMP_API_MIN 1u                 /* the oldest plugin API the host loads */
+#define RMP_API_RMPA 3u                /* the newest API an RMPA (AArch64, the Pi) package may have: API 3 (rmp_api3.h);
+                                          a plugin built against this header still writes .api = 2u (RMP_API) */
 #define RMP_PLUGIN_MAGIC 0x504D5252u   /* "RRMP" little-endian */
 #define RMP_PARAMS 16                  /* P1..P16: SRC page P1..P8, SMPL page P9..P16 */
 
@@ -44,7 +46,8 @@ typedef struct rmp_host {
        n frames from frame pos, the stored channels interleaved, -1..1; returns the frames
        delivered (fewer when not there yet: play silence for the rest). For the voice the host
        is calling. Callable from render().
-     [2..10] later APIs, NULL. */
+     [2] API 3 (rmp_api3.h RMP_H_V3): const rmp3_host *, NULL on an API 2 host.
+     [3..10] later APIs, NULL. */
   void *reserved[11];
 } rmp_host;
 #define RMP_H_POOL_INFO 0
@@ -74,7 +77,8 @@ typedef struct rmp_plugin {
                          0..127) for the preset-role knobs, -1 = untouched; between render calls, guarded
      [RMP_P_VOICE_ENTER] void voice_enter(void *state): after voice_init, each time a voice starts this slot
      [RMP_P_VOICE_LEAVE] void voice_leave(void *state): before the voice leaves this slot or it unloads
-     [4..7] later APIs, NULL */
+     [RMP_P_V3 = 4] API 3 (rmp_api3.h): const rmp3_plugin *, NULL = a plain API 2 plugin
+     [5..7] later APIs, NULL */
   void *reserved[8];
 } rmp_plugin;
 #define RMP_P_PARSE 0
