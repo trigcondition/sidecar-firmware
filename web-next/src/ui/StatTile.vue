@@ -2,9 +2,12 @@
      unit: Doto only here), the tile's own drawing (the default slot), one quiet detail line, and the rest behind
      "More". warn: a mark and the word, never colour alone. The tile is focusable by id (the banner's "Details"). -->
 <script setup lang="ts">
+import { ref } from "vue";
+
 withDefaults(defineProps<{ id: string; label: string; value?: string | null; unit?: string; detail?: string; more?: string[]; warn?: boolean }>(), {
   value: null, unit: "", detail: "", more: () => [], warn: false,
 });
+const open = ref(false); // "More" reads "Less" while open
 </script>
 
 <template>
@@ -18,8 +21,8 @@ withDefaults(defineProps<{ id: string; label: string; value?: string | null; uni
     </div>
     <slot />
     <p v-if="detail" class="detail">{{ detail }}</p>
-    <details v-if="more.length" class="more">
-      <summary>More</summary>
+    <details v-if="more.length" class="more" @toggle="open = ($event.target as HTMLDetailsElement).open">
+      <summary>{{ open ? "Less" : "More" }}</summary>
       <ul>
         <li v-for="(m, i) in more" :key="i">{{ m }}</li>
       </ul>
