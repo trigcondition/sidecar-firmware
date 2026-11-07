@@ -22,7 +22,7 @@ const missing = computed(() => {
 </script>
 
 <template>
-  <h1 class="title" tabindex="-1">{{ parent?.meta.title }}</h1>
+  <h1 class="visually-hidden" tabindex="-1">{{ parent?.meta.title }}</h1>
   <nav class="sub" :aria-label="`${parent?.meta.title} sections`">
     <router-link v-for="t in tabs" :key="t.to" :to="t.to" class="subtab">{{ t.title }}</router-link>
   </nav>
@@ -31,11 +31,11 @@ const missing = computed(() => {
 </template>
 
 <style scoped>
-.title { font-size: 1.75rem; margin: 0.5rem 0 0; }
+/* no visible title: the main tab shows the page; the h1 stays for screen readers and the focus after a page change */
 /* the sections: text tabs on a rule, the current one underlined and bold (a shape change, not only colour); they
    scroll sideways inside themselves on a phone */
 .sub {
-  display: flex; gap: 0.25rem 1.5rem; margin: 0.75rem 0 0.5rem; border-bottom: 1px solid var(--border);
+  display: flex; gap: 0.25rem 1.5rem; margin: 0.25rem 0 0.75rem; border-bottom: 1px solid var(--border);
   overflow-x: auto; scrollbar-width: thin;
 }
 .subtab {

@@ -93,7 +93,7 @@ const source = computed(() => SOURCES[sc.value?.src ?? 0] ?? "");
 </script>
 
 <template>
-  <h1 class="title" tabindex="-1">Morph</h1>
+  <h1 class="visually-hidden" tabindex="-1">Morph</h1>
   <Card v-if="!sc" label="Scenes">
     <p>Morph scenes come with Sidecar 0.5.0. This Sidecar does not report them.</p>
   </Card>
@@ -189,7 +189,6 @@ const source = computed(() => SOURCES[sc.value?.src ?? 0] ?? "");
 </template>
 
 <style scoped>
-.title { font-size: 1.75rem; margin: 0.5rem 0 0; }
 .ends { display: flex; align-items: center; gap: 1rem; }
 .end { display: flex; flex-direction: column; align-items: center; min-width: 3rem; }
 .end b { font-size: 2rem; color: var(--accent); }
