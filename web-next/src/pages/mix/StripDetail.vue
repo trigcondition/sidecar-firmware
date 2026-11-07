@@ -63,7 +63,7 @@ const freqs = ["40", "200", "1.2k", "6k", "16k"];
           :format="valueText(slot, k - 1)"
           @commit="(v: number) => emit('cmd', mixCmd.param(s, slot, k - 1, v))"
         />
-        <Knob v-if="s.chain < 0" label="MIX" :model-value="s.slots[slot].mix ?? 127" @commit="(v: number) => emit('cmd', mixCmd.mfxMix(slot, v))" />
+        <Knob v-if="s.chain < 0" :disabled="disabled" label="MIX" :model-value="s.slots[slot].mix ?? 127" @commit="(v: number) => emit('cmd', mixCmd.mfxMix(slot, v))" />
       </div>
     </section>
 

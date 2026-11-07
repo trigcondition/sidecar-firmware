@@ -1,16 +1,19 @@
-<!-- web-next/src/pages/mix/MasterTab.vue - Mix > Master FX: the master chain, its source, the stem trim, the limiter. -->
+<!-- web-next/src/pages/mix/MasterTab.vue - Mix > Master FX: the master chain, its source, the stem trim, the limiter;
+     under it the chain's four slots and POST EQ (the Mixer's M strip, StripDetail). -->
 <script setup lang="ts">
 import { computed } from "vue";
 import Card from "../../ui/Card.vue";
 import Fader from "../../ui/Fader.vue";
 import Segmented from "../../ui/Segmented.vue";
-import { mixCmd } from "../../lib/mix";
+import StripDetail from "./StripDetail.vue";
+import { mixCmd, strips } from "../../lib/mix";
 import { useSidecar } from "../../lib/useSidecar";
 import { useSend } from "../../lib/useSend";
 
-const { status, paired } = useSidecar();
+const { status, levels, paired } = useSidecar();
 const send = useSend();
 const mfx = computed(() => (status.value as Record<string, any> | null)?.ins?.mfx as Record<string, any> | undefined);
+const master = computed(() => strips(status.value as Record<string, any> | null, levels.value?.strips).find((x) => x.id === "M"));
 </script>
 
 <template>
@@ -27,6 +30,7 @@ const mfx = computed(() => (status.value as Record<string, any> | null)?.ins?.mf
       <button type="button" :disabled="!paired" @click="send('mfx=stats')">Stats to the log</button>
     </div>
   </Card>
+  <StripDetail v-if="mfx && master" :strip="master" :disabled="!paired" @cmd="send" />
 </template>
 
 <style scoped>
