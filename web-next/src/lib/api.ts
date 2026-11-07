@@ -1,11 +1,16 @@
 // web-next/src/lib/api.ts - the Sidecar's HTTP endpoints that have no WebSocket topic (Wi-Fi, pairing, /um, /pool,
 // /fs, /bundle, ...), with the old page's rules (pi/engine/www/index.html's fetch wrapper):
-// - the pairing token in the X-Sidecar-Auth header (never the URL), written with its case kept (a plain object)
+// - the pairing token in the X-Sidecar-Auth header (never the URL), written with its case kept (a plain object); with
+//   no token the header still goes, as NO_TOKEN: on the USB-C cable the Sidecar wants the header (any value) and skips
+//   the pairing, from the first request on (docs/usb-network.md); elsewhere a NO_TOKEN is refused as no header would be
 // - at most 2 requests at once (the Pi serves 4 connections; the WebSocket has its own)
 // - a 503 ("busy") tried again after 0.3, 0.6 and 1.2 s
 // - a reply with X-Sidecar-Pair means the pairing is gone: onPairLost
 // Refusals come back as HTTP 200 with a body: {"ok":false,"code":N,"error":...} (JSON endpoints) or "<code> <msg>"
 // (/fs/*, /cmd); json() and text() leave them to the caller.
+
+/** the X-Sidecar-Auth value without a pairing token: never a valid token (those are 64 hex digits) */
+export const NO_TOKEN = "usb";
 
 export interface ApiOptions {
   base?: string;
@@ -35,8 +40,7 @@ export class Api {
   async request(path: string, init: RequestInit = {}): Promise<Response> {
     const headers: Record<string, string> = {};
     if (init.headers) for (const [k, v] of Object.entries(init.headers as Record<string, string>)) if (k.toLowerCase() !== "x-sidecar-auth") headers[k] = v;
-    const tok = this.opt.token();
-    if (tok) headers["X-Sidecar-Auth"] = tok;
+    headers["X-Sidecar-Auth"] = this.opt.token() || NO_TOKEN;
     for (let i = 0; ; i++) {
       await this.take();
       let r: Response;

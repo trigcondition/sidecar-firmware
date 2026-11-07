@@ -56,8 +56,8 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     lastError: ref(""),
     gate: ref(""),
     trusted,
-    // on the trusted USB-C cable the header still goes (any value): the Sidecar wants it there, another site cannot send it
-    api: new Api({ token: () => pairing.current ?? (trusted.value ? "usb" : null), onPairLost: () => void client.authenticate().catch(() => false) }),
+    // with no token the header still goes (NO_TOKEN): on the USB-C cable the Sidecar wants it, another site cannot send it
+    api: new Api({ token: () => pairing.current, onPairLost: () => void client.authenticate().catch(() => false) }),
     pairing,
     async cmd(c: string) {
       await client.command(c);

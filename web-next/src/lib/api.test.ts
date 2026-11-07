@@ -1,6 +1,6 @@
 // web-next/src/lib/api.test.ts - the HTTP helper's rules: the header, two at a time, 503 retries, pairing lost.
 import { describe, expect, it } from "vitest";
-import { Api, q } from "./api";
+import { Api, NO_TOKEN, q } from "./api";
 
 function resp(status: number, body = "{}", headers: Record<string, string> = {}): Response {
   return new Response(body, { status, headers });
@@ -16,6 +16,19 @@ describe("Api", () => {
     expect(seen[0].url).not.toContain("secret");
     expect((seen[0].init.headers as Record<string, string>)["X-Sidecar-Auth"]).toBe("tok123");
     expect(seen[0].init.body).toBe("ssid=a&psk=secret-pass");
+  });
+
+  it("sends the header without a token too (the USB-C cable wants it from the first request), a caller's never", async () => {
+    const seen: RequestInit[] = [];
+    const api = new Api({ token: () => null, fetchFn: (async (_u: string, init: RequestInit) => (seen.push(init), resp(200))) as unknown as typeof fetch });
+    await api.json("/um/list");
+    await api.json("/x", { headers: { "x-sidecar-auth": "forged" } });
+    for (const init of seen) {
+      const h = init.headers as Record<string, string>;
+      expect(h["X-Sidecar-Auth"]).toBe(NO_TOKEN);
+      expect(Object.keys(h).filter((k) => k.toLowerCase() === "x-sidecar-auth")).toHaveLength(1);
+    }
+    expect(NO_TOKEN).not.toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("keeps at most two requests in flight", async () => {

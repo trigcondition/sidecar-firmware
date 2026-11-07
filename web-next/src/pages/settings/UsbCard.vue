@@ -9,11 +9,14 @@ import { useSetting } from "../../lib/pending";
 import { confirmAsk } from "../../lib/confirm";
 import { useSidecar } from "../../lib/useSidecar";
 import { boxName } from "../../lib/tiles";
+import { usbNetRows } from "../../lib/usbnet";
 
 const { status, cmd, paired, trusted, api } = useSidecar();
 // a computer started its USB-C network after the boot chose Wi-Fi or Ethernet (docs/usb-network.md): offer the reboot
 const late = computed(() => ((status.value ?? {}) as Record<string, any>).usbNet?.late === true);
 const rebootMsg = ref("");
+// the cable's network: address, link, trust (docs/usb-network.md)
+const netRows = computed(() => usbNetRows(status.value));
 async function rebootOntoUsb() {
   const ok = await confirmAsk({
     title: "Reboot onto USB-C",
@@ -61,6 +64,12 @@ async function pick(v: string) {
     <SaveState :state="mode.state.value" :msg="mode.msg.value" />
     <p v-if="um">Now the computer sees {{ shown }}<template v-if="um.from === 'cmdline'"> (from cmdline.txt usb=)</template>.</p>
     <p v-if="mode.value.value === 'overbridge'" class="small warm"><span aria-hidden="true">⚠ </span>Overbridge: the {{ box }}'s requests pass unfiltered, OS updates included.</p>
+    <dl v-if="netRows" class="kv" aria-label="USB-C network">
+      <template v-for="[k, v] in netRows" :key="k">
+        <dt class="label">{{ k }}</dt>
+        <dd>{{ v }}</dd>
+      </template>
+    </dl>
     <div v-if="late" class="late">
       <p>The computer on USB-C started its USB-C network after the Sidecar had chosen Wi-Fi or Ethernet (a Mac locked at the first connection does that). Reboot to use the cable.</p>
       <button type="button" :disabled="!paired" @click="rebootOntoUsb">Reboot onto USB-C</button>
@@ -69,3 +78,8 @@ async function pick(v: string) {
     <p v-if="!um" class="small">This Sidecar has no USB-C device (the Pi 5 without the gadget build).</p>
   </Card>
 </template>
+
+<style scoped>
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; align-items: baseline; }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+</style>
