@@ -181,6 +181,10 @@ uint8_t g_jph = 0;               // the load's phase: 0 the package, 1 the arena
 enum : uint8_t { kJphImage = 0, kJphArena = 1 };
 constexpr uint32_t kZeroStep = 256u << 10;     // the arena zeroed per idle step (the slot LOADING meanwhile)
 constexpr uint32_t kCallLateUs = 500;          // a control call's limit (the proposal's; the Mini's)
+// One API 3 control call longer than the FIFO (2 ms) has already been a dropout of every track: muted at once, not
+// after three (three 15 ms params() were 45 ms of silence on the Pi 5). The host tests move it (call_stall_limit).
+constexpr uint32_t kCallStallUs = 2000;
+uint32_t g_call_stall_us = kCallStallUs;
 // init and each setup call of an API 3 plugin: 1 ms. They run on the control core between blocks; the FIFO holds 2 ms,
 // so a longer call is a dropout of every track. Heavy work goes in pieces: setup returns RMP3_SETUP_MORE and is called
 // again from the next idle step (at most kSetupCallsMax times).
@@ -642,8 +646,8 @@ struct VNow {                              // within a plugin call for voice vi
 // ---- Plugin API 3: the guarded control calls (Exec::guard). Every plugin call on the control core goes through
 // gcall: a fault leaves the call, the slot is muted (silent, no more calls) until it is loaded again, and the engine
 // plays on (before API 3 a fault there stopped the stream and rebooted the board). API 3 plugins are held to the
-// proposal's time limit too: a call over kCallLateUs three times in a row mutes the slot; an older plugin's late calls
-// are only counted (the JSON's "late"): it was never told the limit.
+// proposal's time limit too: a call over kCallLateUs three times in a row mutes the slot, one over kCallStallUs at once;
+// an older plugin's late calls are only counted (the JSON's "late"): it was never told the limit.
 template <class F> struct GThunk {
   static void run(void* c) { (*(F*)c)(); }
 };
@@ -702,6 +706,12 @@ template <class F> bool gcall(int s, const char* what, F f) {
     return true;
   }
   ++g_late_n[s];
+  if (g_v3[s].p3 && us > g_call_stall_us) {
+    sniprintf(w, sizeof w, "muted: %s ran %u us, over the FIFO's %u", what, (unsigned)us,
+              (unsigned)g_call_stall_us);
+    slot_mute(s, w, false);
+    return false;
+  }
   if (g_v3[s].p3 && ++g_late[s] >= 3) {
     sniprintf(w, sizeof w, "muted: %s ran %u us, three late calls in a row (limit %u)", what, (unsigned)us, (unsigned)kCallLateUs);
     slot_mute(s, w, false);
@@ -3128,6 +3138,7 @@ bool idle() {
   return did;
 }
 
+void call_stall_limit(uint32_t us) { g_call_stall_us = us ? us : kCallStallUs; }
 void render_fault(int vi) {
   if (vi >= 0 && vi < core::kVoices) __atomic_or_fetch(&g_render_faults, 1u << vi, __ATOMIC_ACQ_REL);
 }

@@ -218,7 +218,7 @@ typedef void (*rmp3_render_fn)(void *state, const rmp3_block *b);
    past it), and do heavy work (tables, a big arena's layout) in pieces. */
 #define RMP3_SETUP_MORE 0x45524F4D   /* "MORE" */
 /* A dual package (an API 2 table with an rmp3_plugin in reserved[RMP_P_V3]) is held to these limits by an API 3 host
-   from its init() on (the 1 ms, the three late control calls in a row), though an API 2 host, which never reads the
+   from its init() on (the 1 ms, the three late control calls in a row, one control call over 2 ms), though an API 2 host, which never reads the
    rmp3_plugin, holds it to none: adding the table to an API 2 machine means its init() too must fit in 1 ms (move
    table building into setup(), in pieces). */
 /* Host rule (the guarded calls): a host service a plugin can call reads or writes the plugin's memory before it takes

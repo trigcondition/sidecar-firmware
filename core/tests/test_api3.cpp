@@ -248,7 +248,8 @@ int main() {
   v = um::slot_view(0);
   CHECK(v.muted && std::string(v.why).find("muted: crashed in note_on at +0x") == 0);
   cmd("um=reload:1");
-  // three late params() in a row (real time: the probe's ~2 ms loop)
+  // three late params() in a row (real time: the probe's ~2 ms loop; the one-call limit out of the way)
+  um::call_stall_limit(1000000);
   host_fake_time(false, 0);
   report(0, 0, 60, 0);
   report(0, 0, -1, 32);
@@ -258,6 +259,19 @@ int main() {
   v = um::slot_view(0);
   CHECK(v.muted && std::string(v.why).find("muted: params ran ") == 0 && std::string(v.why).find("three late calls") != std::string::npos);
   host_fake_time(true, g_t);
+  cmd("um=reload:1");
+  CHECK(!um::slot_view(0).muted);
+  // one params() longer than the audio buffer: muted at once (here any late call is over the limit: 501 us)
+  um::call_stall_limit(501);
+  host_fake_time(false, 0);
+  report(0, 0, 60, 0);
+  CHECK(!um::slot_view(0).muted);
+  report(0, 0, -1, 32);
+  v = um::slot_view(0);
+  CHECK(v.muted && std::string(v.why).find("muted: params ran ") == 0 &&
+        std::string(v.why).find("us, over the FIFO's 501") != std::string::npos);
+  host_fake_time(true, g_t);
+  um::call_stall_limit(0);
   cmd("um=reload:1");
   CHECK(!um::slot_view(0).muted);
 
@@ -480,12 +494,14 @@ int main() {
   }
   cmd("um=reload:3");   // (now U3 shares U1's fresh image)
   CHECK(!um::slot_view(2).muted);
+  um::call_stall_limit(1000000);
   host_fake_time(false, 0);   // three late params() on U1: U1 muted, U3 (same image) not
   report(0, 0, 60, 0);
   report(0, 0, -1, 32);
   report(0, 0, -1, 32);
   report(0, 0, -1, 32);
   host_fake_time(true, g_t);
+  um::call_stall_limit(0);
   CHECK(um::slot_view(0).muted && !um::slot_view(2).muted);
   cmd("um=reload:1");
   report(0, 0, 60, 0);

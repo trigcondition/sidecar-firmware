@@ -60,7 +60,8 @@ watchdog on core 0), and agents do not build kernels.
   shares the faulting slot's image (its globals may be what the fault damaged): a control call's, a voice's render
   (the board's render guard tells um: `um::render_fault`) and an effect's on core 2; a load never shares a muted
   slot's image. Late calls and slow effects mute only their own slot. API 3 plugins are also held to the
-  time limits: a control call over 500 us three times in a row mutes the slot; `init`, and each `setup` call, over
+  time limits: a control call over 500 us three times in a row mutes the slot, and one over 2 ms (the FIFO: it has
+  already been a dropout of every track) mutes it at once; `init`, and each `setup` call, over
   1 ms refuses the package (one `setup` call up to 2 ms is forgiven: an interrupt in the wall time) (decision 1: `setup` may return `RMP3_SETUP_MORE` and is called again from the next idle
   step, so heavy work goes in pieces). `um=reload:<slot>` loads a slot again.
 - **The slot arena:** `Exec::arena` gives um one pool at boot (the Pi: `plugram=` MB from the heap before the pool
