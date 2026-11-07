@@ -57,7 +57,7 @@ function save(k: "juno" | "fm") {
   <Card label="Presets">
     <p v-if="!paired">The preset lists need the pairing.</p>
     <template v-else>
-      <section v-for="k in (['juno', 'fm'] as const)" :key="k" :aria-label="k === 'juno' ? 'JUNO list' : '6-OP FM list'">
+      <section class="plist" v-for="k in (['juno', 'fm'] as const)" :key="k" :aria-label="k === 'juno' ? 'JUNO list' : '6-OP FM list'">
         <span class="label">{{ k === "juno" ? "JUNO" : "6-OP FM" }} · PAT</span>
         <p v-if="k === 'fm' && lists.fm?.rom" class="small">The 6-OP FM list is its ROM voices (none of your own yet).</p>
         <ol class="list">
@@ -94,8 +94,8 @@ function save(k: "juno" | "fm") {
 </template>
 
 <style scoped>
-section { display: flex; flex-direction: column; gap: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
-section:first-of-type { border-top: 0; padding-top: 0; }
+.plist { display: flex; flex-direction: column; gap: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+.plist:first-of-type { border-top: 0; padding-top: 0; }
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .list li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .name { flex: 1 1 8rem; }
