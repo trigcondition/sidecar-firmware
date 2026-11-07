@@ -8,6 +8,7 @@ import Segmented from "../../ui/Segmented.vue";
 import { confirmAsk } from "../../lib/confirm";
 import { createFs, hb, saveBlob, type FsEntry } from "../../lib/fs";
 import { useLogWait } from "../../lib/logwait";
+import { notify } from "../../lib/notify";
 import { BANKS, answerText, poolAnswer } from "../../lib/pool";
 import { natCmp } from "../../lib/rec";
 import { uploadFile, type Source } from "../../lib/upload";
@@ -31,7 +32,8 @@ try {
 } catch { /* storage blocked */ }
 watch([bank, hidden], ([b, h]) => { try { localStorage.setItem("sidecar.fsbank", String(b)); localStorage.setItem("sidecar.hidden", h ? "1" : "0"); } catch { /* not kept */ } });
 
-function say(t: string, isBad = false) { msg.value = t; bad.value = isBad; }
+// a result shows next to the card and as a toast (the line may be off-screen under a long list); progress only here
+function say(t: string, isBad = false, toast = true) { msg.value = t; bad.value = isBad; if (toast) notify.result(t, isBad); }
 const join = (a: string, b: string) => (a === "/" ? `/${b}` : `${a}/${b}`);
 async function open(p: string) {
   if (!paired.value) return;
@@ -56,9 +58,9 @@ const crumbs = computed(() => {
 const kinds = (x: FsEntry) => (x.d ? [] : /\.(wav|aif|aiff)$/i.test(x.n) ? ["smp", "wt"] : /\.(sfz|elmulti)$/i.test(x.n) ? ["inst"] : []);
 
 async function download(x: FsEntry) {
-  say(`${x.n}: 0 %`);
+  say(`${x.n}: 0 %`, false, false);
   try {
-    saveBlob(await fs.get(join(path.value, x.n), x.s, (n) => say(`${x.n}: ${Math.round((100 * n) / Math.max(1, x.s))} %`)), x.n);
+    saveBlob(await fs.get(join(path.value, x.n), x.s, (n) => say(`${x.n}: ${Math.round((100 * n) / Math.max(1, x.s))} %`, false, false)), x.n);
     say(`${x.n}: downloaded`);
   } catch (e) {
     say(`${x.n}: ${(e as Error).message}`, true);

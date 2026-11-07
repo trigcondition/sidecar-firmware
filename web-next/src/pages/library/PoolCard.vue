@@ -8,6 +8,7 @@ import Segmented from "../../ui/Segmented.vue";
 import { confirmAsk } from "../../lib/confirm";
 import { hb } from "../../lib/fs";
 import { useLogWait } from "../../lib/logwait";
+import { notify } from "../../lib/notify";
 import { BANKS, POOLS, STATE_TONE, answerText, inUse, inUseQuestion, poolAnswer, poolRow, rowName, rowText, unloadLines, type PoolRow } from "../../lib/pool";
 import { useSidecar } from "../../lib/useSidecar";
 
@@ -44,7 +45,8 @@ watch([k, bank], ([kk, b]) => {
   cmd(`pool=${kk}:shown:${BANKS[b]}`).catch(() => undefined); // the sampler's takes go to the bank shown
   load();
 });
-function say(t: string, isBad = false) { msg.value = t; bad.value = isBad; }
+// a result shows next to the card and as a toast (the line may be off-screen under a long list); progress only here
+function say(t: string, isBad = false, toast = true) { msg.value = t; bad.value = isBad; if (toast) notify.result(t, isBad); }
 
 const info = computed(() => data.value?.st?.[k.value] as Record<string, any> | undefined);
 const locked = computed(() => !!info.value?.locked || !!info.value?.ro || !!data.value?.bank?.locked);

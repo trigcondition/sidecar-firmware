@@ -14,6 +14,8 @@ export const notify = {
   info: (title: string, description?: string, id?: string) => toast(title, { description, id }),
   ok: (title: string, description?: string, id?: string) => toast.success(title, { description, id }),
   warn: (title: string, description?: string, id?: string) => toast.warning(title, { description, id }),
+  /** What a finished action did (a card's result line, also shown next to it): ok or not */
+  result: (text: string, bad = false) => (bad ? toast.error(text, { id: `err:${text}` }) : toast.success(text)),
   /** A failed command: one toast per kind of failure (the same text replaces the last one, no pile of copies). */
   error: (e: unknown, title = "The Sidecar did not take that") => {
     const d = errText(e);

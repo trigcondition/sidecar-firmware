@@ -3,6 +3,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import Card from "../../ui/Card.vue";
+import { notify } from "../../lib/notify";
 import { confirmAsk } from "../../lib/confirm";
 import { hb } from "../../lib/fs";
 import { useSidecar } from "../../lib/useSidecar";
@@ -18,7 +19,8 @@ const job = ref<Record<string, any> | null>(null);
 const msg = ref("");
 const bad = ref(false);
 let timer: ReturnType<typeof setTimeout> | null = null;
-function say(t: string, isBad = false) { msg.value = t; bad.value = isBad; }
+// a result shows next to the card and as a toast (the line may be off-screen under a long list); progress only here
+function say(t: string, isBad = false, toast = true) { msg.value = t; bad.value = isBad; if (toast) notify.result(t, isBad); }
 
 async function load() {
   if (!paired.value) return;
