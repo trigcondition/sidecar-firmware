@@ -120,6 +120,8 @@ const lineX = computed(() => W * Math.max(0, Math.min(1, props.level)));
 .tide { display: block; width: 100%; height: 7.75rem; }
 .main { fill: var(--tide-dots); }
 .warm { fill: var(--tide-offset); opacity: 0.3; }
+/* the dots a little soft, so the moving header stays quiet */
+.layer { filter: blur(1.6px); }
 .torn { fill: var(--bg); }
 .glow { opacity: var(--glow-opacity); }
 .g1 { fill: var(--glow-1); }
