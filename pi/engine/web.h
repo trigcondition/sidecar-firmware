@@ -98,6 +98,7 @@ private:
 	static bool WsToken (void *pParam, const char *pToken);
 	static size_t WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size_t nMax);	// the /ws topics' payloads
 	static const char *WsCommand (void *pParam, const char *pCmd);
+	static bool WsStrip (void *pParam, const char *pName);		// the spectrum topic's strip (spectrum_pi.h)
 	void WsRefuse (const char *pStatus, const char *pWhy);
 	CSocket *m_pSocketForWs = 0;
 	unsigned m_nWsSlot = 0;			// which of the MaxWs connections (its own share of the peaks, peak_fan.h)

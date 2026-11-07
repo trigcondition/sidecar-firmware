@@ -62,6 +62,7 @@
 #include "ob_speed.h"
 #include "sendfx_pi.h"
 #include "masterfx_pi.h"		// the master FX chain
+#include "spectrum_pi.h"
 #include "rec_pi.h"
 #include "bridge.h"
 #include "device/device.h"
@@ -1000,6 +1001,7 @@ void CObUsb::FillOut (u8 *pBuf, unsigned nBlocks)
 		if (s_bActive) sendfx_pi::AddReturn (F, ob::kFramesPerBlock, X);	// the send FX's return on 2/3 or 0/1
 		if (s_bActive) CObFollow::Mix (F, ob::kFramesPerBlock);		// a4=1: the A4's MAIN on 2/3 (ob_follow.h)
 		if (s_bActive) masterfx_pi::Process (F, ob::kFramesPerBlock);	// the master chain over all that (masterfx_pi.h)
+		spectrum_pi::FromOut (V, X, F, ob::kFramesPerBlock);	// the spectrum's strip, while a reader wants it (a copy)
 		g_Play.mix (F, ob::kFramesPerBlock);		// a take's playback onto MAIN L / R (rec_play.h; idle: nothing)
 		{
 			u8 nSt = 0;					// the voices on PRE / POST: their take files stereo

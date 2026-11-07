@@ -5,7 +5,7 @@
 export const PROTO = 1;
 
 /** Topics a server of this protocol may serve today, and names reserved for later ones. */
-export type Topic = "status" | "usbMode" | "voices" | "levels" | "scenes" | "log";
+export type Topic = "status" | "usbMode" | "voices" | "levels" | "scenes" | "log" | "spectrum";
 
 export interface Hello {
   proto: number;
@@ -62,7 +62,8 @@ export type ServerMessage =
 // ---- client -> server
 export interface RequestPayloads {
   auth: { token: string };
-  sub: { topics: string[]; ms?: number };
+  /** strip: the "spectrum" topic's strip (V1..V8, B1..B3, M) */
+  sub: { topics: string[]; ms?: number; strip?: string };
   unsub: { topics?: string[] };
   cmd: { c: string };
   ping: Record<string, never>;

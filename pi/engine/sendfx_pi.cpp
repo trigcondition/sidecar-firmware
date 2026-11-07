@@ -5,6 +5,7 @@
 #include "fx/out.h"
 #include "fx/send_fx.h"
 #include "platform.h"
+#include "spectrum_pi.h"
 #include "spsc.h"
 
 #include <string.h>
@@ -123,7 +124,11 @@ void Render() {
     ++k;
   }
   Fx().Process(st, (int)k, o, core::fx::control, m, sl, anyv ? vs : nullptr);
-  core::ins::bus3(b3, (int)k, o, m);   // bus 3: the dry bus's chain onto its pair (nothing while off)
+  float b3o[core::fx::SendFx::kMaxFrames];   // bus 3's chain output (silence while off), for the spectrum (spectrum_pi.h)
+  const bool spec = spectrum_pi::WantBus3();
+  if (spec) memset(b3o, 0, sizeof(float) * k);
+  core::ins::bus3(b3, (int)k, o, m, spec ? b3o : nullptr);   // bus 3: the dry bus's chain onto its pair (nothing while off)
+  if (spec) spectrum_pi::FromBus3(b3o, k);
   float pk = s_Peak, bp[3] = {0.0f, 0.0f, 0.0f};   // bp: the buses' meters (B1, B2: each FX's own return; B3: its input)
   for (unsigned i = 0; i < k; ++i) {
     if (!s_Rets.push(Ret{o[i][0], o[i][1], m[i][0], m[i][1], {sl[i][0], sl[i][1], sl[i][2], sl[i][3]}})) s_nDropOut = s_nDropOut + 1;

@@ -492,3 +492,19 @@ function sceneJson(s) {
   return { a: s.a + 1, b: s.b + 1, fader: s.fader, played: s.fader, sel: s.sel + 1, locked: 0, edit: s.edit ? 1 : 0,
     s: s.s.map((l, i) => ({ n: i + 1, l })).filter((x) => x.l.length), src: s.src, rscn: s.rscn };
 }
+
+// the "spectrum" topic (pi/engine/spectrum.h): a strip's 40 bands, 20 Hz .. 20 kHz, bytes over -90..0 dB. A fake that
+// moves: each strip its own tilt and centre (a kick low, hats high, the buses and master broad), hits at 120 BPM
+export const SPECTRUM_STRIPS = ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "B1", "B2", "B3", "M"];
+export function spectrumFrame(strip, ms) {
+  const i = SPECTRUM_STRIPS.indexOf(strip);
+  if (i < 0) return { strip: null, hz: [20, 20000], db: [-90, 0], b: Array(40).fill(0) };
+  const centre = [6, 14, 18, 10, 12, 16, 32, 28, 22, 20, 18, 16][i], width = i >= 8 ? 14 : i === 0 || i >= 6 ? 6 : 9;
+  const beat = (ms / 500) % 1, hit = Math.exp(-beat * (i === 6 ? 14 : 4));
+  const b = Array.from({ length: 40 }, (_, k) => {
+    const d = (k - centre) / width;
+    const db = -16 - 26 * d * d - 18 * (1 - hit) + 4 * Math.sin(ms / 170 + k * 0.9) + 3 * Math.sin(ms / 53 + k * 2.3);
+    return Math.round(Math.max(0, Math.min(255, ((Math.max(-90, db) + 90) / 90) * 255)));
+  });
+  return { strip, hz: [20, 20000], db: [-90, 0], b };
+}

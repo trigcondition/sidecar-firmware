@@ -1,6 +1,6 @@
 // pi/engine/ws_topics.h - the /ws topics' payloads that are not /status (docs/web-ws.md "Topics"): "levels" (the
-// output's peaks, peak_fan.h) and "log" (the console log's tail). The sequencer's are seqview_json.h. Portable, header
-// only (tests/test_ws.cpp).
+// output's peaks, peak_fan.h), "log" (the console log's tail) and "spectrum" (a strip's bands, spectrum.h). The
+// sequencer's are seqview_json.h. Portable, header only (tests/test_ws.cpp, tests/test_spectrum.cpp).
 #ifndef _ws_topics_h
 #define _ws_topics_h
 
@@ -62,6 +62,19 @@ inline size_t log (unsigned long long from, unsigned long long to, bool gap, con
 		w.s (e);
 	}
 	w.s ("\"}");
+	return w.ok ? w.n : 0;
+}
+
+// {"strip":"V3","hz":[20,20000],"db":[-90,0],"b":[...]}: the strip's bands (spectrum.h), low to high, log-spaced over hz,
+// each 0..255 across db; strip null: none selected (all 0)
+inline size_t spectrum (const char *strip, const uint8_t *b, int n, int loHz, int hiHz, int floorDb, char *pOut, size_t max)
+{
+	wsproto::Writer w (pOut, max);
+	w.s ("{\"strip\":");
+	if (strip) w.str (strip); else w.s ("null");
+	w.s (",\"hz\":[").u ((uint32_t) loHz).s (",").u ((uint32_t) hiHz).s ("],\"db\":[-").u ((uint32_t) -floorDb).s (",0],\"b\":[");
+	for (int i = 0; i < n; i++) w.s (i ? "," : "").u (b[i]);
+	w.s ("]}");
 	return w.ok ? w.n : 0;
 }
 

@@ -749,7 +749,8 @@ void voice_sends(const int16_t (*v)[kVoices], int n, float (*out)[kBuses]);
 bool sends_on();                             // a voice sends to a bus (else voice_sends writes zeros)
 // Bus 3 (the send FX's core, after SendFx::Process): its send mix in[n] (mono) through its chain onto pre / post (the
 // pair route3 names; soft-limited as the send FX's pairs). bus3_on: anything to do (a send and a TYPE, or its tail).
-void bus3(const float* in, int n, float (*pre)[2], float (*post)[2]);
+// mono (optional): the chain's output, (L + R) / 2, before the limit (the Pi's spectrum); untouched while it is off
+void bus3(const float* in, int n, float (*pre)[2], float (*post)[2], float* mono = nullptr);
 bool bus3_on();
 Engine& engine();
 // The DELAY lines: on CORE_HEAP_BUFFERS ports placed by heap_buffers_place (voices.cpp), else a static array.

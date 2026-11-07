@@ -65,10 +65,15 @@ build/test_touch_cal: test_touch_cal.cpp ../../ui/touch_cal.c ../../ui/touch_cal
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $<
 # the send FX's Pi part with the core's (card-free) send FX
-build/test_sendfx_pi: test_sendfx_pi.cpp ../sendfx_pi.cpp ../sendfx_pi.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/stutter_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
+build/test_sendfx_pi: test_sendfx_pi.cpp ../sendfx_pi.cpp ../sendfx_pi.h ../spectrum_pi.cpp ../spectrum_pi.h ../spectrum.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/stutter_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -o $@ $< ../sendfx_pi.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/master.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< ../sendfx_pi.cpp ../spectrum_pi.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/master.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
 # the master FX: the OUT fill's crossfade, the ring to core 2 and back, bit for bit while bypassed, latency, cost
+# the spectrum (spectrum.h: the tap, the FFT bands, the reader; spectrum_pi.cpp: the engine's taps) and its /ws topic, with
+# the analysis's cost on the Mac (printed; the sanitizers make it slower than a plain -O2 build)
+build/test_spectrum: test_spectrum.cpp ../spectrum.h ../spectrum_pi.cpp ../spectrum_pi.h ../ws_topics.h ../ws_session.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $< ../spectrum_pi.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
 build/test_masterfx_pi: test_masterfx_pi.cpp ../masterfx_pi.cpp ../masterfx_pi.h $(CORE)/fx/limiter.h $(CORE)/fx/master.cpp $(CORE)/fx/master.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $< ../masterfx_pi.cpp $(CORE)/fx/master.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp

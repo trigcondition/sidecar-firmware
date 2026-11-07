@@ -86,6 +86,8 @@ interface Pending {
 
 interface Subscription {
   ms?: number;
+  /** the "spectrum" topic's strip, sent with the sub (and again after a reconnect) */
+  strip?: string;
   handlers: Set<Handler<unknown>>;
 }
 
@@ -157,12 +159,17 @@ export class SidecarClient {
   }
 
   /** Subscribes a handler to a topic; the subscription survives reconnects. Returns the unsubscribe. */
-  subscribe<T = unknown>(topic: string, handler: Handler<T>, opts: { ms?: number } = {}): () => void {
+  subscribe<T = unknown>(topic: string, handler: Handler<T>, opts: { ms?: number; strip?: string } = {}): () => void {
     let sub = this.subs.get(topic);
     if (!sub) {
-      sub = { ms: opts.ms, handlers: new Set() };
+      sub = { ms: opts.ms, strip: opts.strip, handlers: new Set() };
       this.subs.set(topic, sub);
-      if (this.stateValue === "open") this.request("sub", { topics: [topic], ms: opts.ms }).catch(() => undefined);
+      if (this.stateValue === "open") this.request("sub", { topics: [topic], ms: opts.ms, ...(opts.strip ? { strip: opts.strip } : {}) }).catch(() => undefined);
+    } else if (opts.strip !== undefined && opts.strip !== sub.strip) {
+      // another strip: one per topic and connection (the last pick wins, as on the Sidecar)
+      sub.strip = opts.strip;
+      if (opts.ms !== undefined && (sub.ms === undefined || opts.ms < sub.ms)) sub.ms = opts.ms;
+      if (this.stateValue === "open") this.request("sub", { topics: [topic], ms: sub.ms, strip: opts.strip }).catch(() => undefined);
     } else if (opts.ms !== undefined && (sub.ms === undefined || opts.ms < sub.ms)) {
       // a second subscriber that needs it faster: the shared subscription speeds up (it stays so until all leave)
       sub.ms = opts.ms;
@@ -315,7 +322,10 @@ export class SidecarClient {
       /* a timeout: the subscriptions still go out, the status topic needs no pairing */
     }
     const byMs = new Map<number | undefined, string[]>();
-    for (const [topic, s] of this.subs) byMs.set(s.ms, [...(byMs.get(s.ms) ?? []), topic]);
+    for (const [topic, s] of this.subs) {
+      if (s.strip) this.request("sub", { topics: [topic], ms: s.ms, strip: s.strip }).catch(() => undefined);
+      else byMs.set(s.ms, [...(byMs.get(s.ms) ?? []), topic]);
+    }
     for (const [ms, topics] of byMs) this.request("sub", ms === undefined ? { topics } : { topics, ms }).catch(() => undefined);
   }
 

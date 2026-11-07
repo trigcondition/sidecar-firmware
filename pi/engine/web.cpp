@@ -37,6 +37,7 @@
 #include "voice_pi.h"
 #include "ws_topics.h"		// its levels and log payloads
 #include "sendfx_pi.h"		// the buses' meters
+#include "spectrum_pi.h"		// the spectrum topic
 #include "shared.h"		// g_Output, g_PeakFan: the levels
 #if SIDECAR_SEQED
 #include "seqed_pi.h"		// the sequencer view (the touch editor's)
@@ -589,6 +590,15 @@ size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size
 				     s_pView->valid ? s_pView->pattern : -1, s_pView->bpm10, pOut, nMax);
 	}
 #endif
+	case wsproto::kSpectrum:
+	{
+		u8 b[spectrum_pi::kBands];
+		int s;
+		boolean bOn = spectrum_pi::Read (b, &s);	// (analysed when due, shared by the connections)
+		if (!bOn) memset (b, 0, sizeof b);
+		return wstopics::spectrum (bOn ? spectrum_pi::StripName (s) : 0, b, spectrum_pi::kBands, spectrum_pi::kLoHz,
+					   spectrum_pi::kHiHz, spectrum_pi::kFloorDb, pOut, nMax);
+	}
 	case wsproto::kVoices:
 	{
 		static sidecar_voice_view_t *s_pVoice = new sidecar_voice_view_t;	// (core 0; ~3 KB, not on the stack)
@@ -642,8 +652,17 @@ const char *CWebServer::WsCommand (void *pParam, const char *pCmd)
 
 static boolean WsStillOn (void) { return paircode_pi::WebOn (); }
 
+// a sub to "spectrum" named its strip: one for all readers, the last pick wins (spectrum_pi.h)
+bool CWebServer::WsStrip (void *pParam, const char *pName)
+{
+	int s = spectrum_pi::StripIndex (pName);
+	if (s < 0) return false;
+	spectrum_pi::Select (s);
+	return true;
+}
+
 // the topics this build serves (the sequencer's only with core/seq in the tree)
-static const unsigned WsTopics = 1u << wsproto::kLevels | 1u << wsproto::kLog | 1u << wsproto::kVoices
+static const unsigned WsTopics = 1u << wsproto::kLevels | 1u << wsproto::kLog | 1u << wsproto::kVoices | 1u << wsproto::kSpectrum
 #if SIDECAR_SEQED
 				 | 1u << wsproto::kSeq | 1u << wsproto::kSeqPos
 #endif
@@ -688,7 +707,7 @@ boolean CWebServer::UpgradeConnection (const char *pPath, CSocket *pSocket)
 		s_bSlot[m_nWsSlot] = TRUE;
 		s_nWsTotal++;
 		CLogger::Get ()->Write (From, LogNotice, "ws: a client connected (%u open)", s_nWs);
-		static const ws_pi::TDevice Device = {0, WsToken, WsBuild, WsTopics, WsCommand, WsStillOn, SIDECAR_VERSION, CWebServer::Commands};
+		static const ws_pi::TDevice Device = {0, WsToken, WsBuild, WsTopics, WsCommand, WsStillOn, SIDECAR_VERSION, CWebServer::Commands, WsStrip};
 		ws_pi::TDevice Dev = Device;
 		Dev.pParam = this;
 		ws_pi::TStats St;

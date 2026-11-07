@@ -76,7 +76,7 @@ same `id`. A `payload` is an object.
 | server | `pub` | `topic`, `seq`, `payload` | a topic's current state |
 | server | `error` | `error` | a message that had no usable `id` |
 | client | `auth` | `id`, `payload.token` | see Auth |
-| client | `sub` | `id`, `payload.topics` [, `payload.ms`] | subscribe; `ms` = the push interval, clamped to 250..10000 (default 1000) |
+| client | `sub` | `id`, `payload.topics` [, `payload.ms`] [, `payload.strip`] | subscribe; `ms` = the push interval, clamped to 250..10000 (default 1000); `strip`: `spectrum`'s strip |
 | client | `unsub` | `id` [, `payload.topics`] | unsubscribe (no list: all) |
 | client | `cmd` | `id`, `payload.c` | one console command (below) |
 | client | `ping` | `id` | `reply` with `payload.t` (the connection's ms clock) |
@@ -98,6 +98,7 @@ connection (1008). Requests are limited to a burst of 20, then 20 a second (429 
 | `seqpos` | `{"pos":steps x 1000 (-1 stopped),"track":T,"transport":0 stop 1 play 2 pause,"pattern":N,"bpm10":tempo x 10}` | every `ms` (33..1000, default 50) when it moved |
 | `log` | `{"from":N,"to":M,"gap":bool,"text":"..."}`: the console log's new bytes, as `GET /log` | when there are new bytes, at most every `ms` (250..10000, default 500), up to 8 KB a push |
 | `voices` | the touchscreen's VOICE page for the selected track (below) | when it changed, at most every `ms` (100..10000, default 200) |
+| `spectrum` | one strip's spectrum, 40 bands (below) | when new, at most every `ms` (50..10000, default 50); unchanged: at least once a second |
 
 Each topic's range is in the hello (`"rates":{"status":[250,1000],"levels":[33,40],...}`, fastest and default), and
 the hello's `topics` lists only what this build serves (`seq` / `seqpos` need core/seq in the tree; the rest are
@@ -136,6 +137,21 @@ frequencies; `multi`: instrument, key zones, keys sounding; `daisy`: model, the 
 `gen`. No scope and no level: the input tap is the display's own (reading it would steal its entries), and the
 meters are `levels`. The track is the Rytm's selected one, or the one `voicepick=T` picked (`-1`: follow the Rytm
 again), one pick for the touchscreen and the web together.
+
+### `spectrum` (a strip's sound, for the EQ)
+
+`{"strip":"V3","hz":[20,20000],"db":[-90,0],"b":[40 bytes]}`: the strip's sound after its POST EQ as 40 bands,
+log-spaced from `hz[0]` to `hz[1]` (the EQ curve's axis), each 0..255 across `db` (255 = a full-scale sine in that
+band). `strip` null: none picked (all 0). The strip is picked by the `sub` itself: `{"type":"sub","id":N,"payload":
+{"topics":["spectrum"],"strip":"V3"}}` (`V1`..`V8`, `B1`..`B3`, `M`; anything else 400); a new `sub` with another strip
+switches it. One strip for all connections: the last pick wins, and `strip` says which one the bands are. No strip in
+the `sub`: the last one picked stays.
+
+What is tapped (`pi/engine/spectrum_pi.h`): a voice's chain output (mono, before the OUT route's LEV / PAN), B1 / B2
+each send FX's own return after its bus chain, B3 the dry bus's chain output, M MAIN L + R as sent to the Rytm (after
+the master chain; the Rytm's own sound is not in it). Silence when nothing is streaming. The analysis (a 2048-point
+FFT, `pi/engine/spectrum.h`) runs on core 0 when a reader asks and 50 ms (`spectrum::kRateHz`, 20 a second) have
+passed, shared by all readers; the audio side only copies samples, and only while someone read in the last second.
 
 Reserved for later (a `sub` lists them under `later`): `usbMode`, `scenes`.
 

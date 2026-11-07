@@ -53,6 +53,7 @@ static bool HToken (void *p, const char *t)		{ const TDevice *d = ((TConn *) p)-
 static size_t HBuild (void *p, wsproto::Topic t, char *o, size_t m)	{ const TDevice *d = ((TConn *) p)->pDevice; return d->Build (d->pParam, t, o, m); }
 static const char *HCmd (void *p, const char *c)	{ const TDevice *d = ((TConn *) p)->pDevice; return d->Command (d->pParam, c); }
 static unsigned HChanges (void *p)			{ const TDevice *d = ((TConn *) p)->pDevice; return d->Changes ? d->Changes () : 0; }
+static bool HStrip (void *p, const char *s)		{ const TDevice *d = ((TConn *) p)->pDevice; return d->Strip ? d->Strip (d->pParam, s) : true; }
 static bool HCanPush (void *p)				{ return ((TConn *) p)->pSocket->GetBytesQueued () < kTxSoft; }
 
 // A close code a peer may send (RFC 6455 7.4): echoed back; anything else is answered with 1002
@@ -98,7 +99,7 @@ void Serve (CSocket *pSocket, const char *pAccept, const TDevice &rDevice, TStat
 	TClock Clock;
 	c->nNow = Clock.Now ();
 	c->nLastTx = c->nNow;
-	wsproto::Host Host = {c, HSend, HToken, HBuild, HCmd, rDevice.pVersion, HCanPush, rDevice.nTopics, HChanges};
+	wsproto::Host Host = {c, HSend, HToken, HBuild, HCmd, rDevice.pVersion, HCanPush, rDevice.nTopics, HChanges, HStrip};
 	wsproto::Session *pSession = new wsproto::Session (Host, c->Out, sizeof c->Out);
 	pSession->open (c->nNow);
 

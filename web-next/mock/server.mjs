@@ -9,11 +9,11 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { createDevice } from "./device.mjs";
+import { createDevice, SPECTRUM_STRIPS, spectrumFrame } from "./device.mjs";
 
 const PROTO = 1, WINDOW = 4, MAX_MS = 10000, MAX_MSG = 4096, BURST = 20, REFILL_MS = 50;
 // the Pi's (ws_session.h kRate): fastest, default, longest silence of an unchanged topic
-const RATE = { status: [250, 1000, 10000], levels: [33, 40, 1000], seq: [100, 250, 10000], seqpos: [33, 50, 1000], log: [250, 500, 10000], voices: [100, 200, 10000] };
+const RATE = { status: [250, 1000, 10000], levels: [33, 40, 1000], seq: [100, 250, 10000], seqpos: [33, 50, 1000], log: [250, 500, 10000], voices: [100, 200, 10000], spectrum: [50, 50, 1000] };
 const TOPICS = Object.keys(RATE);
 const LATER = ["usbMode", "scenes"];
 const NOT_PAIRED = "not paired: pair this browser first (the code is on the Rytm's screen)";
@@ -36,6 +36,7 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
   const tokens = new Set();
   const dev = createDevice({ scenario });
   let requests = 0;
+  let spectrumStrip = null;   // the "spectrum" topic's strip (spectrum_pi.h: the last pick wins)
 
   // a slow swell with some jitter, so the tide moves
   const levels = () => {
@@ -174,6 +175,7 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
       if (topic === "seq") return dev.seq;
       if (topic === "seqpos") return dev.seqpos();
       if (topic === "voices") return dev.voices();
+      if (topic === "spectrum") return spectrumFrame(spectrumStrip, Date.now() - started);
       const since = s.logAt < 0 ? Math.max(0, dev.logTotal - 8192) : s.logAt;
       const l = dev.logSince(since);
       const out = { from: l.from, to: l.to, gap: s.logAt >= 0 && l.from > since, text: l.text };
@@ -213,6 +215,11 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
           if (p.topics !== undefined && !Array.isArray(p.topics)) return bad(id, 400, "topics: not an array");
           if (on && !p.topics) return bad(id, 400, "sub: no topics");
           if (on && p.ms !== undefined && (!Number.isInteger(p.ms) || p.ms < 0)) return bad(id, 400, "ms: not an unsigned integer");
+          if (on && p.strip !== undefined && typeof p.strip !== "string") return bad(id, 400, "strip: not a strip name");
+          if (on && p.strip !== undefined && p.topics?.includes("spectrum")) {
+            if (!SPECTRUM_STRIPS.includes(p.strip)) return bad(id, 400, "strip: not V1..V8, B1..B3 or M");
+            spectrumStrip = p.strip; // one for all connections, as on the Pi
+          }
           const out = { topics: [], later: [], unknown: [] };
           let first;
           if (!on && !p.topics) s.subs.clear();

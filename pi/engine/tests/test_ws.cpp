@@ -258,7 +258,7 @@ struct Rig
 	wsproto::Session *s;
 	Rig (size_t nBuf = 8192, unsigned topics = 0)
 	{
-		wsproto::Host h = {&f, FSend, FTok, FStatus, FCmd, "0.4.2", FRoom, topics, FChanges};
+		wsproto::Host h = {&f, FSend, FTok, FStatus, FCmd, "0.4.2", FRoom, topics, FChanges, 0};
 		s = new wsproto::Session (h, buf, nBuf);
 		s->open (0);
 	}
@@ -363,7 +363,7 @@ static void test_session ()
 	}
 	{	// topics: only the served ones in the hello, the rest "later"; each topic's own range and silence gap
 		Rig r (8192, 1u << wsproto::kLevels);
-		CHECK (has (r.f.sent[0], "\"topics\":[\"status\",\"levels\"]") && has (r.f.sent[0], "\"later\":[\"seq\",\"seqpos\",\"log\",\"voices\",\"usbMode\""));
+		CHECK (has (r.f.sent[0], "\"topics\":[\"status\",\"levels\"]") && has (r.f.sent[0], "\"later\":[\"seq\",\"seqpos\",\"log\",\"voices\",\"spectrum\",\"usbMode\""));
 		CHECK (has (r.f.sent[0], "\"rates\":{\"status\":[250,1000],\"levels\":[33,40]}"));
 		CHECK (wsjson::valid_object (r.f.sent[0].data (), r.f.sent[0].size ()));
 		r.msg ("{\"type\":\"sub\",\"id\":1,\"payload\":{\"topics\":[\"levels\",\"seq\"],\"ms\":1}}");

@@ -36,6 +36,7 @@ struct TDevice
 	boolean (*StillOn) (void);		// the web UI switch (SIDECAR MENU > WEB UI): off ends the connection
 	const char *pVersion;
 	unsigned (*Changes) (void);		// the commands taken so far (wsproto::Host::changes); 0: none
+	bool (*Strip) (void *pParam, const char *pName);	// the spectrum's strip (wsproto::Host::strip); 0: ignored
 };
 
 struct TStats { unsigned nPushes, nCoalesced, nRefused, nBad; u16 nCode; };

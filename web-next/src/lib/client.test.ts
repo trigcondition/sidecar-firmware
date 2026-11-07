@@ -192,6 +192,28 @@ describe("SidecarClient", () => {
     expect(d.backoffMs(1)).toBe(800); // 1000 * 0.8
   });
 
+  it("sends the spectrum's strip with its sub, again on a new strip and after a reconnect", async () => {
+    const c = make({ token: null });
+    c.connect();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+    await flush();
+    const off = c.subscribe("spectrum", () => undefined, { ms: 50, strip: "V3" });
+    expect(ws.last("sub")).toMatchObject({ payload: { topics: ["spectrum"], ms: 50, strip: "V3" } });
+    c.subscribe("spectrum", () => undefined, { strip: "B1" });
+    expect(ws.last("sub")).toMatchObject({ payload: { topics: ["spectrum"], ms: 50, strip: "B1" } });
+    c.subscribe("status", () => undefined);
+    ws.drop();
+    vi.advanceTimersByTime(500);
+    const ws2 = FakeSocket.all[1];
+    ws2.accept();
+    await flush();
+    const subs = ws2.sent.filter((m) => m.type === "sub");
+    expect(subs).toContainEqual(expect.objectContaining({ payload: { topics: ["spectrum"], ms: 50, strip: "B1" } }));
+    expect(subs).toContainEqual(expect.objectContaining({ payload: { topics: ["status"] } }));
+    off();
+  });
+
   it("speeds a shared subscription up for a faster subscriber", async () => {
     const c = make({ token: null });
     c.connect();

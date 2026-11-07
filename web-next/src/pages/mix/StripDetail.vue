@@ -2,7 +2,8 @@
      insert slots (type, P1..P4), and for a voice its output (route, pan, width) and its 3 sends. -->
 <script setup lang="ts">
 import DotFill from "../../ui/DotFill.vue";
-import { computed } from "vue";
+import SpectrumDots from "../../ui/SpectrumDots.vue";
+import { computed, ref } from "vue";
 import Card from "../../ui/Card.vue";
 import Knob from "../../ui/Knob.vue";
 import Segmented from "../../ui/Segmented.vue";
@@ -20,6 +21,7 @@ const labels = (slot: number) => {
 };
 const valueText = (slot: number, k: number) => (v: number) => s.value.slots[slot]?.v?.[k] || String(v);
 const freqs = ["40", "200", "1.2k", "6k", "16k"];
+const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey dots), the curve stays the accent
 </script>
 
 <template>
@@ -30,7 +32,8 @@ const freqs = ["40", "200", "1.2k", "6k", "16k"];
       <div class="curve">
       <svg viewBox="0 0 360 140" class="big" role="img" :aria-label="`EQ curve: ${eqText(s.peq)}`">
         <g class="grid"><line x1="0" y1="70" x2="360" y2="70" /><line x1="90" y1="0" x2="90" y2="140" /><line x1="180" y1="0" x2="180" y2="140" /><line x1="270" y1="0" x2="270" y2="140" /></g>
-        <DotFill :d="eqPath(s.peq, 360, 140)" :width="360" :bottom="140" :step="5.5" :r="1.6" />
+        <SpectrumDots :strip="s.id" :width="360" :bottom="140" :r="1.7" @live="(v: boolean) => (live = v)" /><!-- the strip's sound after its EQ (its own redraws) -->
+        <DotFill :d="eqPath(s.peq, 360, 140)" :width="360" :bottom="140" :step="5.5" :r="1.6" :muted="live" />
         <path class="line" :d="eqPath(s.peq, 360, 140)" />
       </svg>
       <div class="freqs small" aria-hidden="true"><span v-for="f in freqs" :key="f">{{ f }}</span></div>

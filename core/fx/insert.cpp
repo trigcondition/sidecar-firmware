@@ -459,12 +459,14 @@ bool bus3_on() {
          g_engine.Active(kBus0 + 2, control);
 }
 
-void bus3(const float* in, int n, float (*pre)[2], float (*post)[2]) {
+void bus3(const float* in, int n, float (*pre)[2], float (*post)[2], float* mono) {
   if (!g_engine.Active(kBus0 + 2, control)) return;
   float y[128][2];
   if (n > 128) n = 128;
   for (int i = 0; i < n; ++i) y[i][0] = y[i][1] = in[i];
   g_engine.ProcessStereo(kBus0 + 2, y, n, control);
+  if (mono)
+    for (int i = 0; i < n; ++i) mono[i] = 0.5f * (y[i][0] + y[i][1]);
   bool p = control.route3 != 0;
   float (*d)[2] = p ? post : pre;
   const float l = p ? fx::kLimitMain : fx::kLimitFx;

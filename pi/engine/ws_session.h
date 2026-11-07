@@ -36,8 +36,8 @@ static const unsigned kSoonAgainMs = 250;	// out this soon, and once more this m
 						// little after the command); each only if it changed, as any push
 
 // The topics (docs/web-ws.md "Topics"). A build serves the ones its Host's mask names (the hello lists them).
-enum Topic { kStatus, kLevels, kSeq, kSeqPos, kLog, kVoices, kTopics };
-static const char *const kTopicName[kTopics] = {"status", "levels", "seq", "seqpos", "log", "voices"};
+enum Topic { kStatus, kLevels, kSeq, kSeqPos, kLog, kVoices, kSpectrum, kTopics };
+static const char *const kTopicName[kTopics] = {"status", "levels", "seq", "seqpos", "log", "voices", "spectrum"};
 struct Rate { unsigned min, def, gap; };	// ms: the fastest a client may ask, the default, the longest silence for an unchanged topic
 static const Rate kRate[kTopics] = {
 	{kMinMs, kDefaultMs, kMaxMs},	// status: /status
@@ -46,6 +46,7 @@ static const Rate kRate[kTopics] = {
 	{33, 50, 1000},			// seqpos: the play head
 	{250, 500, 10000},		// log: the console log's new bytes (as GET /log)
 	{100, 200, 10000},		// voices: the touchscreen's VOICE page (pushed when it changed)
+	{50, 50, 1000},			// spectrum: a strip's bands (spectrum.h kRateHz analyses a second; pushed when new)
 };
 // Names the protocol reserves for later topics: a sub to one of them is answered as "later", not "unknown", so a
 // client can tell a newer server from a typo
@@ -70,6 +71,9 @@ struct Host
 	// how many commands the device has taken so far (any connection, /cmd included): a change pushes the status
 	// soon (kSoonMs) instead of at the next interval, so a page shows its own click at once. 0: only the interval
 	unsigned (*changes) (void *param);
+	// a sub to "spectrum" with payload.strip ("V1".."V8", "B1".."B3", "M"): the strip to analyse; false: not a strip
+	// (400). 0: the strip is ignored
+	bool (*strip) (void *param, const char *name);
 };
 
 struct Stats
@@ -288,6 +292,9 @@ private:
 		wsjson::Span sm;
 		if (bOn && wsjson::find (p, n, "payload.ms", &sm) && !wsjson::u32 (sm, &ask)) return bad (id, 400, "ms: not an unsigned integer");
 		if (bOn && !bList) return bad (id, 400, "sub: no topics");
+		char Strip[8] = "";				// spectrum's strip (Host::strip)
+		wsjson::Span st;
+		if (bOn && wsjson::find (p, n, "payload.strip", &st) && !wsjson::str (st, Strip, sizeof Strip)) return bad (id, 400, "strip: not a strip name");
 		Writer ans (m_Ans, sizeof m_Ans), unk (m_Unk, sizeof m_Unk), lat (m_Lat, sizeof m_Lat);
 		ans.s ("{\"topics\":[");
 		size_t pos = 0;
@@ -302,6 +309,11 @@ private:
 				const Rate &r = kRate[t];
 				ms = ask == 0 ? r.def : ask < r.min ? r.min : ask > kMaxMs ? kMaxMs : ask;
 				if (nOn == 0) msFirst = ms;
+				if (bOn && t == kSpectrum && Strip[0] && m_Host.strip)
+				{
+					if (!m_Host.strip (m_Host.param, Strip)) return bad (id, 400, "strip: not V1..V8, B1..B3 or M");
+					m_bSent[t] = false;		// the new strip's bands at once
+				}
 				if (bOn && (!m_Sub[t] || m_Ms[t] != ms)) { m_bSent[t] = false; m_Hash[t] = 0; }	// send it now
 				m_Sub[t] = bOn;
 				if (bOn) m_Ms[t] = ms;

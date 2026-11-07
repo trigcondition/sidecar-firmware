@@ -63,6 +63,15 @@ describe("against the mock server", () => {
     expect(views[0]).toMatchObject({ track: 4, mode: "fm" });
     await c.command("voicepick=2");
     await until(() => views.some((v) => v.track === 2 && v.mode === "daisy"));
+    // the spectrum: the strip named in the sub, 40 bands, another strip on a new sub, a bad name refused
+    const frames: { strip: string | null; b: number[] }[] = [];
+    c.subscribe<{ strip: string | null; b: number[] }>("spectrum", (f) => frames.push(f), { ms: 50, strip: "V3" });
+    await until(() => frames.some((f) => f.strip === "V3" && f.b.length === 40 && f.b.some((v) => v > 0)));
+    c.subscribe<{ strip: string | null; b: number[] }>("spectrum", (f) => frames.push(f), { strip: "M" });
+    await until(() => frames.some((f) => f.strip === "M"));
+    const bad = await c.request("sub", { topics: ["spectrum"], strip: "X1" }).catch((x) => x);
+    expect(bad).toBeInstanceOf(RequestError);
+    expect(bad.code).toBe(400);
     // scenes: a lock, A / B and the fader come back on /status
     await c.command("scene=lock:3:v4:p2:50.5");
     await c.command("scene=ab:3:1");
