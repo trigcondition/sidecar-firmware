@@ -821,6 +821,14 @@ Licence: SIL Open Font License 1.1, Copyright 2017 The Archivo Black Project Aut
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+Space Grotesk font (the SIDECAR touchscreen theme's text: pi/ui/fonts/sidecar_sg*.c, Latin subset as LVGL tables)
+Licence: SIL Open Font License 1.1, Copyright 2020 The Space Grotesk Project Authors
+(https://github.com/floriankarsten/space-grotesk). The licence text: licenses/OFL-1.1.txt. The tables are a
+conversion (lv_font_conv) of the unmodified font, not a Modified Version under its own name; they also hold eleven
+Font Awesome 5 Free symbols (below).
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
 Montserrat font (built into LVGL)
 Licence: SIL Open Font License 1.1, Copyright 2011 The Montserrat Project Authors (https://github.com/JulietaUla/Montserrat).
 ------------------------------------------------------------------------------

@@ -25,6 +25,8 @@ Exceptions in this tree, as their headers state:
   plugins/sc_grain/texture_data.h       the GRAIN texture sample: CC0 1.0
                                         (plugins/sc_grain/LICENSE-texture.txt)
   core/ui/fonts/                        own glyphs (core/ui/fonts/LICENSE)
+  pi/ui/fonts/sidecar_sg*.c             Space Grotesk (SIL OFL 1.1, licenses/OFL-1.1.txt)
+                                        and Font Awesome 5 Free symbols, as LVGL tables
 
 No Elektron firmware, and nothing extracted from it, is in this repository. The
 USB descriptor values of the Rytm and the Digitakt in teensy/, core/ and pi/ are
