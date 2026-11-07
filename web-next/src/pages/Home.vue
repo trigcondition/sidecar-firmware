@@ -207,6 +207,7 @@ async function send() {
 
       <StatTile v-if="usbc" id="usbc" label="USB-C" :detail="usbc.detail" :more="usbc.more">
         <template #big><span class="word" :class="{ dim: usbc.mode === 'Off' }">{{ usbc.mode }}</span></template>
+        <router-link to="/settings/usb" class="go">USB-C settings</router-link>
       </StatTile>
 
       <StatTile v-if="rec" id="rec" label="Recorder" :value="rec.state === 2 ? hms(rec.frames / 48000) : null"
