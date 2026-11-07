@@ -20,7 +20,10 @@ const labels = (slot: number) => {
   return INS_LABELS[x.t] ?? ["P1", "P2", "P3", "P4"];
 };
 const valueText = (slot: number, k: number) => (v: number) => s.value.slots[slot]?.v?.[k] || String(v);
-const freqs = ["40", "200", "1.2k", "6k", "16k"];
+// the curve's axis is 20 Hz..20 kHz on a log scale (lib/mix.ts eqPath): each label and grid line at its own frequency
+const at = (hz: number) => Math.log10(hz / 20) / 3; // 0..1 across the curve
+const freqs = [[50, "50"], [200, "200"], [1000, "1k"], [5000, "5k"], [20000, "20k"]].map(([hz, t]) => ({ t: t as string, x: at(hz as number) }));
+const grid = [200, 1000, 5000].map((hz) => at(hz) * 360);
 const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey dots), the curve stays the accent
 </script>
 
@@ -31,12 +34,12 @@ const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey d
       <div class="eqbody">
       <div class="curve">
       <svg viewBox="0 0 360 140" class="big" role="img" :aria-label="`EQ curve: ${eqText(s.peq)}`">
-        <g class="grid"><line x1="0" y1="70" x2="360" y2="70" /><line x1="90" y1="0" x2="90" y2="140" /><line x1="180" y1="0" x2="180" y2="140" /><line x1="270" y1="0" x2="270" y2="140" /></g>
+        <g class="grid"><line x1="0" y1="70" x2="360" y2="70" /><line v-for="x in grid" :key="x" :x1="x" y1="0" :x2="x" y2="140" /></g>
         <SpectrumDots :strip="s.id" :width="360" :bottom="140" :r="1.7" @live="(v: boolean) => (live = v)" /><!-- the strip's sound after its EQ (its own redraws) -->
         <DotFill :d="eqPath(s.peq, 360, 140)" :width="360" :bottom="140" :step="5.5" :r="1.6" :muted="live" />
         <path class="line" :d="eqPath(s.peq, 360, 140)" />
       </svg>
-      <div class="freqs small" aria-hidden="true"><span v-for="f in freqs" :key="f">{{ f }}</span></div>
+      <div class="freqs small" aria-hidden="true"><span v-for="f in freqs" :key="f.t" :style="{ left: `${f.x * 100}%` }">{{ f.t }}</span></div>
       </div>
       <div class="eqctl">
       <div class="knobs">
@@ -107,7 +110,9 @@ const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey d
 .big { display: block; width: 100%; height: auto; }
 .grid line { stroke: var(--border); stroke-width: 1; }
 .line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
-.freqs { display: flex; justify-content: space-between; color: var(--label); }
+.freqs { position: relative; height: 1.4em; color: var(--label); }
+.freqs span { position: absolute; transform: translateX(-50%); }
+.freqs span:last-child { transform: translateX(-100%); }
 .knobs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 :root[data-theme="contrast"] .line { stroke: var(--text); }
