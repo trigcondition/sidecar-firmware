@@ -119,7 +119,10 @@ the function from the USB device altogether (if a computer has trouble with the 
   back to DATA0, and what was queued dropped. An armed endpoint is stopped and waited for (`pi/engine/ep_stop.h`: an OUT
   one under the global OUT NAK), at a link change, a bus suspend and when the boot chose Wi-Fi or Ethernet. Circle's
   plain cancel left the core's "EP disabled" to its interrupt handler, which panics on it for a bulk endpoint; the first
-  hardware tries (Pi 5, 2026-11-07) died about 16 s after the link came up (the watchdog), cause not yet confirmed.
+  hardware tries (Pi 5, 2026-11-07) died about 16 s after the link came up, for another reason: the net device's
+  multicast filter answered Circle's default FALSE, and Circle's IGMP handler asserts on it the first time the link is
+  up (the serial console: igmphandler.cpp(87)); the halted Pi was reset by the watchdog 15 s later. The device takes
+  every frame anyway (NCM has no filter): it answers TRUE.
   `GET /prevboot` (paired) returns the last crashed boot's report and log tail (`/.rytm/prevboot.txt`).
 - The trust is the cable's, not the computer's: a computer that forwards IP traffic between its interfaces could pass
   another machine's packets onto the cable. The Sidecar has no gateway on the cable, so it cannot answer them.

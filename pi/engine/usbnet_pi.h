@@ -33,6 +33,10 @@ public:
 	boolean SendFrame (const void *pBuffer, unsigned nLength) override;
 	boolean ReceiveFrame (void *pBuffer, unsigned *pResultLength) override;
 	boolean IsLinkUp (void) override;
+	// NCM hands over every frame the computer sends: no filter to set, the stack filters by destination. Circle's
+	// default answers FALSE, and CIGMPHandler asserts on JoinLocalGroup's result the first time the link is up (the
+	// Pi 5 halted there on 2026-11-07, the watchdog reset it 15 s later)
+	boolean SetMulticastFilter (const u8 Groups[][MAC_ADDRESS_SIZE]) override	{ return TRUE; }
 
 private:
 	CSidecarGadget *m_pGadget;
