@@ -63,7 +63,7 @@ const powerWarn = computed(() => {
 <style scoped>
 .top { position: relative; background: var(--tide-bg); overflow: hidden; }
 .over {
-  position: absolute; inset: 0 0 auto 0; padding: 1.125rem 1rem;
+  position: absolute; inset: 0 0 auto 0; padding: 1.125rem 1rem; max-width: var(--page); margin-inline: auto;
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem;
 }
 .brand {
@@ -93,7 +93,7 @@ const powerWarn = computed(() => {
 @media (max-width: 40rem) {
   .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; padding-bottom: 0.5rem; }
   .tab { flex: none; padding: 0.625rem 0.875rem; }
-  .over { padding: 0.75rem; }
+  .over { padding: 0.75rem 1rem; }
 }
 .banner { width: calc(100% - 2rem); max-width: calc(var(--page) - 2rem); margin: 0.5rem auto 0; padding: 0.75rem 1rem; border: 2px solid var(--warm); border-radius: var(--radius-control); color: var(--warm); }
 .banner a { color: var(--warm); font-weight: 700; }
