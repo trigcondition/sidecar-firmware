@@ -5,8 +5,8 @@
 //               segments or its hold moved; a tap on a meter shows that channel (TRACK follows the Rytm again)
 //   the keys    FREEZE, the timebase down / up around its value, GAIN (AUTO, x1 .. x64)
 // Every mark goes through th_fill / th_text / th_paint_key, so the OLED theme keeps its dots: the trace in the light
-// print, the graticule dotted, the meters dim grey / white / teal by level (no red); CLASSIC draws the Rytm's display
-// window with the trace in its white, the meters as recessed LED ladders (green, amber, red) in rubber keys.
+// print, the graticule dotted, the meters dim grey / white / teal by level (no red); SIDECAR draws the trace
+// in a card in the accent, the meters as rounded ladders (lavender, magenta, coral) in pill keys.
 #include "sidecar_scope.h"
 #include "sidecar_theme.h"
 #include "sidecar_ui.h"		// the box in use: its word, its voices' names
@@ -70,7 +70,7 @@ static const char *src_name (int s)
 
 // ---- geometry: the 800x480 layouts plus what the screen adds (TH->dx, dy): the trace gets two thirds of the height,
 // the meters the rest, every column wider
-static int PW (void) { return oled () ? TH->w - LU (48) : TH->w; }
+static int PW (void) { return th_page_w (); }
 static int area_h (void) { return oled () ? LU (133) + TH->dy * 2 / 3 : LU (196) + TH->dy * 2 / 3; }
 static int strip_y (void) { return oled () ? LU (18) + area_h () : LU (254) + TH->dy * 2 / 3; }
 static int strip_h (void) { return oled () ? LU (63) + TH->dy / 3 : LU (108) + TH->dy / 3; }
@@ -147,8 +147,8 @@ static void area_draw (lv_event_t *e)
 	}
 	const sidecar_scope_view_t *v = &s_V;
 	int g = s_nShownG, mid = h / 2, amp = h / 2 - 2, n = v->ncols;
-	uint32_t ink = s_bFrozen ? (O ? TH->accent_hi : 0xBFE7F5) : c_ink ();
-	int pa = -1, pb = -1, step = O ? 1 : 2;			// CLASSIC: a 2 px column every 2 px
+	uint32_t ink = s_bFrozen ? (O ? TH->accent_hi : TH->accent_hi) : c_ink ();
+	int pa = -1, pb = -1, step = O ? 1 : 2;			// SIDECAR: a 2 px column every 2 px
 	int xs = l->_clip_area.x1 - c.x1 - 2 * step, xe = l->_clip_area.x2 - c.x1 + step;	// only the columns redrawn
 	xs = xs < 1 ? 1 : xs - (xs - 1) % step;
 	for (int x = xs; n > 0 && x < w - 1 && x <= xe; x += step)
@@ -188,7 +188,7 @@ static void area_draw (lv_event_t *e)
 	if (per >= 1000) lv_snprintf (b, sizeof b, O ? "%d MS/DIV" : "%d ms/div", per / 10);
 	else lv_snprintf (b, sizeof b, O ? "%d.%d MS/DIV" : "%d.%d ms/div", per / 10, per % 10);
 	th_text (l, &c, pad, h - fh - pad + 1, w / 2, fm, c_dim (), LV_TEXT_ALIGN_LEFT, b);
-	if (s_bFrozen) th_text (l, &c, 0, pad, w, fm, O ? TH->accent_hi : 0xBFE7F5, LV_TEXT_ALIGN_CENTER, O ? "FROZEN" : "FROZEN");
+	if (s_bFrozen) th_text (l, &c, 0, pad, w, fm, TH->accent_hi, LV_TEXT_ALIGN_CENTER, O ? "FROZEN" : "FROZEN");
 	else if (v->tb < SSC_TRIG_TBS) th_text (l, &c, 0, pad, w, fm, c_dim (), LV_TEXT_ALIGN_CENTER, O ? "TRIG" : "triggered");
 }
 
@@ -239,11 +239,11 @@ static void bar (lv_layer_t *l, const lv_area_t *c, int x0, int x1, int ybot, in
 			if (O) col = db > -6.0f ? TH->accent : db > -18.0f || i == hold - 1 ? TH->ink : TH->dim;
 			else
 			{
-				col = db > -3.0f ? 0xFF4A3D : db > -12.0f ? 0xE8B040 : 0x34C85A;
-				if (i == hold - 1 && i >= lit) col = 0xF0F0F0;
+				col = db > -3.0f ? TH->bad : db > -12.0f ? TH->lock : TH->accent;
+				if (i == hold - 1 && i >= lit) col = TH->ink;
 			}
 		}
-		else col = O ? 0x262626 : 0x1E2022;
+		else col = O ? 0x262626 : TH->line_step;
 		int y = ybot - i * sp;
 		th_fill (l, c, x0, y - sh + 1, x1, y, col, LV_OPA_COVER, 0);
 	}
@@ -296,9 +296,9 @@ static void meters_draw (lv_event_t *e)
 		{
 			lv_area_t a = {c.x1 + x, c.y1, c.x1 + x + cw - 1, c.y2 - 3};
 			th_paint_key (l, &a, "", 0, fl, TH_KEY, cs.sel, cs.press, 0, 0);
-			th_fill (l, &c, x0 - LU (4), y0 - LU (8), x1 + LU (4), y0 + h + 2, 0x08090A, LV_OPA_COVER, 3);	// the meter's window
-			th_frame (l, &c, x0 - LU (4), y0 - LU (8), x1 + LU (4), y0 + h + 2, 0x3A3C40, 1, 3);
-			th_text (l, &c, x, y0 + h + LU (6), cw, fl, cs.sel ? 0xF0F0F0 : 0xB8BBC0, LV_TEXT_ALIGN_CENTER, src_name (k));
+			th_fill (l, &c, x0 - LU (4), y0 - LU (8), x1 + LU (4), y0 + h + 2, TH->row_out, LV_OPA_COVER, 5);	// the meter's window
+			th_frame (l, &c, x0 - LU (4), y0 - LU (8), x1 + LU (4), y0 + h + 2, TH->win_edge, 1, 5);
+			th_text (l, &c, x, y0 + h + LU (6), cw, fl, cs.sel ? TH->sel_ink : TH->sub, LV_TEXT_ALIGN_CENTER, src_name (k));
 		}
 		// the ladders: MAIN two (L, R), the others one; the clip lamp on top
 		int bw = x1 - x0 + 1, yb = y0 + h - 1;
@@ -314,7 +314,7 @@ static void meters_draw (lv_event_t *e)
 			bar (l, &c, x0 + m, x1 - m, yb, n, cs.lit[0], cs.hold[0]);
 		}
 		if (O) th_fill (l, &c, x0, y0 - 3, x1, y0 - 2, cs.clip ? TH->accent_hi : 0x262626, LV_OPA_COVER, 0);
-		else th_fill (l, &c, x0, y0 - LU (6), x1, y0 - 3, cs.clip ? 0xFF3B30 : 0x3A2A2A, LV_OPA_COVER, 1);
+		else th_fill (l, &c, x0, y0 - LU (6), x1, y0 - 3, cs.clip ? TH->bad : th_mix (TH->row_out, TH->bad, 50), LV_OPA_COVER, 2);
 	}
 }
 

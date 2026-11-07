@@ -4,8 +4,8 @@
 // RYTM: sidecar_seqed.c, sidecar_rytmpat.c). Each page is laid out per theme (docs/UI-THEMES.md):
 //   OLED     400x240 dots (512x300 on 1024x600, 640x360 on 1280x720): a dithered title bar a page, the content left, a fixed navigation
 //            column right (HOME / SEQ / PAT / SONG / SET)
-//   CLASSIC  800x480 (or 1024x600, 1280x720): the title bar with Seq and Settings, the pages below it (the layout of before),
-//            drawn as the Rytm MKII's hardware
+//   SIDECAR  800x480 (or 1024x600, 1280x720): the header band, the pages below it on cards, in the "UV night" palette;
+//            the T1..T8 keys a rail at the right edge from 1024x600 (TH->nav), a row in the header at 800x480
 // The 1024x600 layouts are the 800x480 ones with what the screen adds (TH->dx, dy) given to the panels that grow; 1280x720
 // the same with the base in LU (sidecar_theme.h: 5/4, bigger faces and keys).
 // Both build the same objects (s_*), so the status update below is one code path. Every control sends a console
@@ -16,7 +16,6 @@
 #include "sidecar_vlabel.h"
 #include "lvgl.h"			// the LVGL tree's root (pi/lvgl-test/Makefile, host/Makefile)
 #include "src/misc/lv_area_private.h"	// lv_area_intersect, l->_clip_area (the link banner)
-#include "sidecar_wordmark.h"		// "Sidecar" in the docs site's wordmark face (wordmark.py): CLASSIC's title bar
 #include "sidecar_seqed.h"		// page 4: the touch pattern editor (docs/TOUCH-EDITOR.md)
 #include "sidecar_rytmpat.h"		// page 5: the Rytm pattern, read only
 #include "sidecar_wgview.h"		// page 7: WAVETABLE / GRANULAR, the machine view
@@ -60,7 +59,7 @@ static const int kClockMHz[3] = {1500, 1200, 1000};
 static const char *const kUsbMap[] = {"Class compliant", "Overbridge", ""};	// Settings > Sound: usbmode= (pi/engine/usb_mode.h)
 static const char *const kUsbMap2[] = {"Class", "Overbridge", ""};			// (OLED: the narrow panel)
 static const char *const kUsbCmd[2] = {"usbmode=class", "usbmode=overbridge"};
-static const char *const kStyleMap[] = {"OLED", "Classic", ""};
+static const char *const kStyleMap[] = {"OLED", "Sidecar", ""};
 static const char *const kLookMap[] = {"Studio", "Stage", ""};	// L1: the OLED look
 static const char *const kSendName[SIDECAR_UI_SENDS] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"};
 static const char *const kAboutName[8] = {"Web page", "Address", "IP", "Web server", "Link", "USB-C", "Version", "Libraries"};
@@ -84,11 +83,10 @@ static int s_nMap;			// Settings > Display's touch test (UX review T1)
 static lv_obj_t *s_TouchPanel, *s_InfoPanel, *s_Info[4];
 // UX review N1: one navigation for both themes, mirroring the device's page requests (each key captioned with its key
 // from the device's table, core/ui/page_keys.h: the Rytm's UP + T1..T13). rui1052: the table's first eight rows are
-// this column, in this order, so the captions read T1..T8 top to bottom. OLED: the column at the right edge; CLASSIC: a
-// row in the title bar.
+// this column, in this order, so the captions read T1..T8 top to bottom. OLED: the column at the right edge; SIDECAR: a
+// rail at the right edge from 1024x600, a row in the header at 800x480.
 enum { NAV_HOME, NAV_SEQ, NAV_PAT, NAV_VOICE, NAV_FX, NAV_SONG, NAV_REC, NAV_SET, NAV_N };
 static const char *const kNavName[NAV_N] = {"HOME", "SEQ", "PAT", "VOICE", "FX", "SONG", "REC", "SET"};
-static const char *const kNavNameC[NAV_N] = {"Home", "Seq", "Pat", "Voice", "FX", "Song", "Rec", "Set"};
 static const char *const kNavPage[NAV_N] = {"HOME", "SEQ", "PAT", "VOICE", "INSERT FX", "SONG", "REC", "SET"};	// the table's names
 static const char *nav_t (int i)		// its caption ("T11"; "" when the device has no key for it)
 {
@@ -98,10 +96,10 @@ static const char *nav_t (int i)		// its caption ("T11"; "" when the device has 
 	return b[i];
 }
 // N3: the map's text from the same table (the device's modifier + each page request, then its combos with a map
-// text), two columns (two labels: the CLASSIC font is proportional). Each entry's first word is the key, as on the
-// Rytm; CLASSIC writes the page's words in its case ("T6 Insert FX"): a word of up to three letters is an abbreviation
+// text), two columns (two labels: the SIDECAR font is proportional). Each entry's first word is the key, as on the
+// Rytm; SIDECAR writes the page's words in its case ("T6 Insert FX"): a word of up to three letters is an abbreviation
 // and stays (SEQ, PAT, FX), a plural of one gets a small s (LFOs).
-static void map_word (char *d, const char *s, int classic)
+static void map_word (char *d, const char *s, int mixed)
 {
 	for (int w = 0; *s; w++)
 	{
@@ -110,7 +108,7 @@ static void map_word (char *d, const char *s, int classic)
 		int stem = len >= 2 && s[len - 1] == 'S' && len - 1 <= 3 ? len - 1 : len;
 		for (int k = 0; k < len; k++)
 		{
-			int low = classic && w && k && s[k] >= 'A' && s[k] <= 'Z' && (len > 3 ? stem == len || k == len - 1 : 0);
+			int low = mixed && w && k && s[k] >= 'A' && s[k] <= 'Z' && (len > 3 ? stem == len || k == len - 1 : 0);
 			d[k] = low ? (char) (s[k] + 32) : s[k];
 		}
 		d += len, s += len;
@@ -118,7 +116,7 @@ static void map_word (char *d, const char *s, int classic)
 	}
 	*d = 0;
 }
-static void map_cols (int classic, char *c1, char *c2, int cap)	// c1: the title and the left column; c2 the right
+static void map_cols (int mixed, char *c1, char *c2, int cap)	// c1: the title and the left column; c2 the right
 {
 	const sc_keymap_t *m = sc_keymap ();
 	char col[24][24];
@@ -127,10 +125,10 @@ static void map_cols (int classic, char *c1, char *c2, int cap)	// c1: the title
 	{
 		char b[24];
 		lv_snprintf (b, sizeof b, "%s%d %s", m->map_key, m->pages[i].code, m->pages[i].name);
-		map_word (col[n++], b, classic);
+		map_word (col[n++], b, mixed);
 	}
-	for (int i = 0; i < m->ncombos && n < 24; i++) if (m->combos[i].map) map_word (col[n++], m->combos[i].map, classic);
-	int rows = (n + 1) / 2, a = lv_snprintf (c1, cap, classic ? "%s + key on the Rytm\n" : "%s + KEY ON THE RYTM\n", m->modifier);
+	for (int i = 0; i < m->ncombos && n < 24; i++) if (m->combos[i].map) map_word (col[n++], m->combos[i].map, mixed);
+	int rows = (n + 1) / 2, a = lv_snprintf (c1, cap, mixed ? "%s + key on the Rytm\n" : "%s + KEY ON THE RYTM\n", m->modifier);
 	int b = lv_snprintf (c2, cap, "\n");
 	for (int r = 0; r < rows; r++)
 	{
@@ -139,6 +137,9 @@ static void map_cols (int classic, char *c1, char *c2, int cap)	// c1: the title
 	}
 }
 static lv_obj_t *s_Home, *s_Pages, *s_Pg[PG_N], *s_Nav[NAV_N], *s_SetTitle;
+static lv_obj_t *s_PageName;			// SIDECAR's header from 1024x600: the page's name in the dot font
+static const char *const kPageName[PG_N] = {"HOME", "SOUND", "SEND FX", "ABOUT", "SEQ", "PAT", "DISPLAY", "MACHINE", "VOICE",
+	"INSERT FX", "SONG", "REC", "SCOPE", "STATUS", "PROJECT", "POOL", "SYSTEM", "CHOP", "PRESET", "MASTER FX", "MORPH"};
 static lv_obj_t *s_UsbInfo;			// Settings > Sound: what USB-C is now, OVERBRIDGE's warning
 static lv_obj_t *s_Seg[SEG_N], *s_FifoVal, *s_DroneInfo, *s_FxName[2], *s_Bar[2][SIDECAR_UI_SENDS], *s_Kill;
 static lv_obj_t *s_About[8], *s_Bright, *s_BrightVal, *s_Dim, *s_Power;
@@ -401,6 +402,7 @@ static void show_page (int page)
 		: page == PG_INS || page == PG_MFX || page == PG_MORPH ? NAV_FX : page == PG_SONG ? NAV_SONG : page == PG_REC ? NAV_REC : set || page == PG_POOL || page == PG_PRESET ? NAV_SET : -1;
 	s_nNavLit = nav;
 	for (int i = 0; i < NAV_N; i++) if (s_Nav[i]) th_key_check (s_Nav[i], i == nav);
+	if (s_PageName) set_text (s_PageName, kPageName[page]);
 	if (!oled ())
 	{
 		if (set) lv_obj_remove_flag (s_Seg[SEG_TAB], LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag (s_Seg[SEG_TAB], LV_OBJ_FLAG_HIDDEN);
@@ -473,7 +475,7 @@ static void seg_cb (lv_obj_t *m, int i, void *ud)
 		lv_obj_invalidate (lv_screen_active ());
 		break;
 	case SEG_STYLE:
-		command (i ? "uistyle=classic" : "uistyle=oled");
+		command (i ? "uistyle=sidecar" : "uistyle=oled");
 		lv_async_call (style_async, (void *) (intptr_t) i);	// rebuilt after this event (its key is deleted then)
 		return;
 	case SEG_DRONE:
@@ -840,13 +842,13 @@ static void oled_build (lv_obj_t *scr)
 	oled_nav (scr);
 }
 
-// ---- the CLASSIC layout: 800x480 (1024x600: the same, wider and taller by TH->dx, dy = 224 x 120 px), in the Rytm's
-// hardware look
+// ---- the SIDECAR layout: 800x480 (1024x600: the same, wider and taller by TH->dx, dy = 128 x 120 px, the rail right of it),
+// in the "UV night" look
 
 #define CY(v)	((v) * (LU (358) + TH->dy) / 358)	// a settings page's y, stretched to its panel (358 or 478 px)
 #define CH(v)	(LU (v) + TH->dy / 15)		// a control's height there (48 or 56)
 
-static void classic_sound (lv_obj_t *pg)
+static void sc_sound (lv_obj_t *pg)
 {
 	const lv_font_t *sm = TH->f_small;
 	const int dx = TH->dx / 2, ph = LU (358) + TH->dy;
@@ -876,7 +878,7 @@ static void classic_sound (lv_obj_t *pg)
 	s_Sel[SEG_VOICE] = sidecar_ui_voice_pos (s_nVoice);
 }
 
-static void classic_service (lv_obj_t *pg)	// UX review T18: the engineering controls, for testing
+static void sc_service (lv_obj_t *pg)	// UX review T18: the engineering controls, for testing
 {
 	const lv_font_t *sm = TH->f_small;
 	const int dx = TH->dx, ph = LU (358) + TH->dy;
@@ -899,12 +901,12 @@ static void classic_service (lv_obj_t *pg)	// UX review T18: the engineering con
 	lv_label_set_long_mode (h, LV_LABEL_LONG_MODE_WRAP);
 }
 
-static void classic_fx (lv_obj_t *pg)
+static void sc_fx (lv_obj_t *pg)
 {
 	const int dx = TH->dx, dy = TH->dy;
 	lv_obj_t *p = th_panel (pg, LU (12), 0, LU (776) + dx, LU (358) + dy, "Send FX  -  the Rytm's kit sets these, read only", TH_PANEL_GROUP);
 	for (int k = 0; k < 2; k++)
-		s_FxName[k] = label (p, LU (12) + k * (LU (250) + dx / 4), LU (34), TH->f_big, k ? TH->ink : 0x1E7A3E, "-");
+		s_FxName[k] = label (p, LU (12) + k * (LU (250) + dx / 4), LU (34), TH->f_big, k ? TH->bad : TH->accent, "-");
 	s_Kill = th_key (p, LU (614) + dx, LU (26), LU (150), LU (52), "Kill tails", TH_KEY_DANGER, kill_cb, 0);
 	th_key (p, LU (500) + dx, LU (22), LU (106), LU (20), "Inserts", TH_KEY, ins_cb, 0);	// fx-ins: the INSERT FX page
 	th_key (p, LU (500) + dx, LU (44), LU (106), LU (20), "Master", TH_KEY, mfx_cb, 0);
@@ -918,17 +920,17 @@ static void classic_fx (lv_obj_t *pg)
 		int x = 10 + t * tp;
 		for (int k = 0; k < 2; k++)
 		{
-			s_Bar[k][t] = th_meter (w, x + k * (bw + LU (4)), LU (12), bw, LU (160) + dy, 127, TH_METER_V, k ? 0xE8E8E8 : TH->accent);
+			s_Bar[k][t] = th_meter (w, x + k * (bw + LU (4)), LU (12), bw, LU (160) + dy, 127, TH_METER_V, k ? TH->bad : TH->accent_hi);
 			th_meter_set (s_Bar[k][t], 0);
 		}
 		label (w, x + bw - LU (16), LU (178) + dy, TH->f_body, TH->win_ink, kSendName[t]);
 	}
-	lv_obj_t *h = label_w (p, LU (12), LU (304) + dy, LU (750) + dx, TH->f_small, TH->sub, "Green: FX 1, white: FX 2, per track. A console override "
+	lv_obj_t *h = label_w (p, LU (12), LU (304) + dy, LU (750) + dx, TH->f_small, TH->sub, "Lavender: FX 1, coral: FX 2, per track. A console override "
 			       "(sendlvl=, sendfx=) lasts only until the kit's next message. Kill tails clears both FX at once (the Rytm's double STOP does the same).");
 	lv_label_set_long_mode (h, LV_LABEL_LONG_MODE_WRAP);
 }
 
-static void classic_about (lv_obj_t *pg)
+static void sc_about (lv_obj_t *pg)
 {
 	lv_obj_t *p = th_panel (pg, LU (12), 0, LU (776) + TH->dx, LU (358) + TH->dy, "About", TH_PANEL_WINDOW);
 	const int rp = LU (36) + TH->dy / 8;
@@ -940,7 +942,7 @@ static void classic_about (lv_obj_t *pg)
 	}
 }
 
-static void classic_display (lv_obj_t *pg)
+static void sc_display (lv_obj_t *pg)
 {
 	const lv_font_t *sm = TH->f_small;
 	const int dx = TH->dx, d = (CH (48) - LU (48)) / 2;	// labels stay centred on their taller controls
@@ -948,7 +950,7 @@ static void classic_display (lv_obj_t *pg)
 	label (p, LU (16), CY (36) + LU (14) + d, sm, TH->ink, "UI style");
 	seg (p, SEG_STYLE, LU (190), CY (36), LU (300), CH (48), kStyleMap, TH_KEY);
 	label (p, LU (504), CY (36) + LU (8) + d, sm, TH->sub, "OLED: the screen as dots.");
-	label (p, LU (504), CY (36) + LU (26) + d, sm, TH->sub, "Classic: the Rytm's panel.");
+	label (p, LU (504), CY (36) + LU (26) + d, sm, TH->sub, "Sidecar: cards, the web app's colours.");
 	label (p, LU (16), CY (98) + LU (14) + d, sm, TH->ink, "Screensaver");
 	seg (p, SEG_SAVER, LU (190), CY (98), LU (570) + dx, CH (48), kSaverMap, TH_KEY);
 	label (p, LU (16), CY (160) + LU (14) + d, sm, TH->ink, "Touch test");			// (UX review T1: here, not on Home)
@@ -969,7 +971,7 @@ static void classic_display (lv_obj_t *pg)
 	s_CalState = label_w (p, LU (424), CY (330) + LU (4), LU (336) + dx, sm, TH->sub, "default (the device's range)");
 }
 
-static void classic_home (lv_obj_t *h)
+static void sc_home (lv_obj_t *h)
 {
 	const int dx = TH->dx, dy = TH->dy;
 	const int tw = LU (476) + dx * 3 / 4, th = LU (232) + dy / 2, by = LU (308) + dy / 2, bh = LU (160) + dy / 2;
@@ -984,7 +986,7 @@ static void classic_home (lv_obj_t *h)
 
 	const int sx = LU (24) + tw, sw = LU (800) + dx - LU (12) - sx;		// 500 + 288, or 668 + 344
 	lv_obj_t *sp = th_panel (h, sx, LU (64), sw, th, "Now", TH_PANEL_WINDOW);	// UX review T1 (STATUS: a tap)
-	s_NowPat = label (sp, LU (12), LU (30), TH->f_big, TH->win_ink, "-");
+	s_NowPat = label (sp, LU (12), LU (30), TH->f_hero, TH->win_ink, "-");		// the dot font: the page's hero value
 	s_NowTr = label_w (sp, LU (110), LU (36), sw - LU (122), TH->f_body, TH->win_dim, "-");
 	label (sp, LU (12), LU (80) + dy / 8, TH->f_small, TH->win_dim, "Recorder");
 	s_NowRec = label_w (sp, LU (110), LU (78) + dy / 8, sw - LU (122), TH->f_body, TH->win_ink, "-");
@@ -1041,9 +1043,16 @@ static void classic_home (lv_obj_t *h)
 	lv_obj_add_flag (s_InfoPanel, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void classic_build (lv_obj_t *scr)
+static void logo_draw (lv_event_t *e)
 {
-	const int W = TH->w;
+	lv_area_t c;
+	lv_obj_get_coords (lv_event_get_target_obj (e), &c);
+	th_paint_logo (lv_event_get_layer (e), &c, 0, 0, lv_area_get_width (&c));
+}
+
+static void sc_build (lv_obj_t *scr)
+{
+	const int W = th_page_w ();				// the rail (1024x600 and up) right of the pages
 	s_Home = th_box (scr, 0, 0, W, TH->h);
 	s_Pages = th_box (scr, 0, LU (114), W, TH->h - LU (114));		// the settings pages below their tab strip
 	lv_obj_add_flag (s_Pages, LV_OBJ_FLAG_HIDDEN);
@@ -1054,34 +1063,46 @@ static void classic_build (lv_obj_t *scr)
 			lv_obj_add_flag (s_Pg[i], LV_OBJ_FLAG_HIDDEN);
 		}
 
-	// the title bar: the header strip of the emulator's window, the wordmark, the Rytm's state, Seq and Settings keys
+	// the header: the gradient band, the Docked logo, SIDECAR; from 1024x600 the page's name in the dot font and the Rytm's
+	// state at the right (the T1..T8 keys are the rail), at 800x480 the state under SIDECAR and the keys a row of pills
+	const int rail = TH->nav;
 	lv_obj_t *bar = th_titlebar (scr, 0, 0, W, LU (52));
 	th_titlebar_set (bar, "", "", 0);
-	static const lv_image_dsc_t kWord = {
-		.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_A8, .w = WORDMARK_A8_W, .h = WORDMARK_A8_H,
-			   .stride = WORDMARK_A8_W},
-		.data_size = sizeof WordmarkA8, .data = WordmarkA8};
-	lv_obj_t *word = lv_image_create (bar);
-	lv_image_set_src (word, &kWord);
-	lv_obj_set_pos (word, LU (16), LU (11));
-	lv_obj_set_style_image_recolor (word, lv_color_hex (TH->title_ink), 0);
-	lv_obj_set_style_image_recolor_opa (word, LV_OPA_COVER, 0);
-	lv_obj_t *acc = th_box (bar, LU (17), LU (11) + WORDMARK_A8_H + 3, LU (22), 3);
-	lv_obj_set_style_bg_color (acc, lv_color_hex (TH->accent), 0);
-	lv_obj_set_style_bg_opa (acc, LV_OPA_COVER, 0);
-	lv_obj_t *rule = th_box (bar, LU (16) + WORDMARK_A8_W + LU (10), LU (15), 1, LU (20));
-	lv_obj_set_style_bg_color (rule, lv_color_hex (0x44464A), 0);
-	lv_obj_set_style_bg_opa (rule, LV_OPA_COVER, 0);
-	lv_obj_t *sub = label (bar, LU (16) + WORDMARK_A8_W + LU (21), LU (18), TH->f_micro, TH->win_dim, "EXPANDER");
-	lv_obj_set_style_text_letter_space (sub, 4, 0);
-	s_Rytm = label_w (bar, LU (16) + WORDMARK_A8_W + LU (21), LU (33), LU (120), TH->f_micro, TH->win_dim, "");	// under EXPANDER
-	// the eight navigation keys (UX review N1): 57 px wide at 800, 86 at 1024; the name and its UP + T trig
-	const int nx0 = LU (300), nkw = (W - LU (12) - nx0 + LU (4)) / NAV_N;
-	for (int i = 0; i < NAV_N; i++)
+	lv_obj_t *logo = th_box (bar, LU (14), (LU (52) - LU (40) * 40 / 46) / 2, LU (40), LU (40) * 40 / 46);
+	lv_obj_add_event_cb (logo, logo_draw, LV_EVENT_DRAW_MAIN, 0);
+	lv_obj_t *word = label (bar, LU (64), rail ? (LU (52) - TH->f_small->line_height) / 2 : LU (9), TH->f_small, TH->dim, "SIDECAR");
+	lv_obj_set_style_text_letter_space (word, LU (3), 0);
+	if (rail)
 	{
-		s_Nav[i] = th_key (bar, nx0 + i * nkw, 3, nkw - LU (4), LU (44), kNavNameC[i], i == NAV_SET ? TH_KEY_FUNC : TH_KEY, nav_cb, (void *) (intptr_t) i);
-		th_key_font (s_Nav[i], TH->f_body);
-		th_key_sub (s_Nav[i], nav_t (i));
+		s_PageName = label (bar, LU (64) + th_text_width (TH->f_small, "SIDECAR") + 7 * LU (3) + LU (22), (LU (52) - TH->f_hero->line_height) / 2 + 1,
+				    TH->f_hero, TH->ink, "");
+		s_Rytm = label_w (bar, W - LU (16) - LU (240), (LU (52) - TH->f_small->line_height) / 2, LU (240), TH->f_small, TH->win_dim, "");
+		lv_obj_set_style_text_align (s_Rytm, LV_TEXT_ALIGN_RIGHT, 0);
+		lv_obj_t *r = th_box (scr, W, 0, rail, TH->h);		// the rail: the Rytm's T1..T8, the page's key a light pill
+		lv_obj_set_style_bg_color (r, lv_color_hex (0x0D0A2A), 0);	// (the rail's own night blue; its keys at 0: the border shifts the content by 1)
+		lv_obj_set_style_bg_opa (r, LV_OPA_COVER, 0);
+		lv_obj_set_style_border_color (r, lv_color_hex (TH->win_edge), 0);
+		lv_obj_set_style_border_width (r, 1, 0);
+		lv_obj_set_style_border_side (r, LV_BORDER_SIDE_LEFT, 0);
+		const int p = (TH->h - LU (6)) / NAV_N;
+		for (int i = 0; i < NAV_N; i++)
+		{
+			s_Nav[i] = th_key (r, 0, LU (3) + i * p, rail - 1, p, kNavName[i], TH_KEY_NAV, nav_cb, (void *) (intptr_t) i);
+			th_key_sub (s_Nav[i], nav_t (i));
+		}
+	}
+	else
+	{
+		s_PageName = 0;
+		s_Rytm = label_w (bar, LU (64), LU (30), LU (220), TH->f_micro, TH->win_dim, "");	// under SIDECAR
+		// the eight navigation keys (UX review N1): pills, the name and its UP + T trig
+		const int nx0 = LU (300), nkw = (W - LU (12) - nx0 + LU (4)) / NAV_N;
+		for (int i = 0; i < NAV_N; i++)
+		{
+			s_Nav[i] = th_key (bar, nx0 + i * nkw, 3, nkw - LU (4), LU (46), kNavName[i], i == NAV_SET ? TH_KEY_FUNC : TH_KEY, nav_cb, (void *) (intptr_t) i);
+			th_key_font (s_Nav[i], TH->f_small);
+			th_key_sub (s_Nav[i], nav_t (i));
+		}
 	}
 
 	sidecar_seqed_create (scr, LU (52), seq_cmd, 0);
@@ -1113,12 +1134,12 @@ static void classic_build (lv_obj_t *scr)
 	seg (scr, SEG_TAB, LU (12), LU (60), W - LU (24), LU (48), kTabMap, TH_KEY);
 	th_seg_font (s_Seg[SEG_TAB], TH->f_body);
 	lv_obj_add_flag (s_Seg[SEG_TAB], LV_OBJ_FLAG_HIDDEN);
-	classic_sound (s_Pg[PG_SOUND]);
-	classic_fx (s_Pg[PG_FX]);
-	classic_about (s_Pg[PG_ABOUT]);
-	classic_display (s_Pg[PG_DISPLAY]);
-	classic_service (s_Pg[PG_SERVICE]);
-	classic_home (s_Home);
+	sc_sound (s_Pg[PG_SOUND]);
+	sc_fx (s_Pg[PG_FX]);
+	sc_about (s_Pg[PG_ABOUT]);
+	sc_display (s_Pg[PG_DISPLAY]);
+	sc_service (s_Pg[PG_SERVICE]);
+	sc_home (s_Home);
 }
 
 // ---- the link animation: a banner over the top of the screen when the Rytm's link comes up or drops (not on a page
@@ -1135,7 +1156,7 @@ static int s_ConnUp, s_ConnDur;
 static uint32_t s_ConnT0;
 
 static int conn_h (void) { return LU (oled () ? 26 : 52); }
-static int conn_w (void) { return oled () ? TH->w - LU (48) : TH->w; }
+static int conn_w (void) { return th_page_w (); }
 static int ease_out (int t, int T) { if (t <= 0) return 0; if (t >= T) return 256; int r = T - t; return 256 - r * r * 256 / (T * T); }
 static int ease_in (int t, int T) { if (t <= 0) return 0; if (t >= T) return 256; return t * t * 256 / (T * T); }
 
@@ -1196,7 +1217,7 @@ static void conn_draw_body (lv_event_t *e)
 			const int cx = x0 + i * step, on = up ? i <= p : n - 1 - i > p;
 			if (on && up && p < n - 1 && p - i < 3)			// the glow around the head
 				th_fill (l, &c, cx - LU (9), cy - LU (9), cx + LU (9), cy + LU (9), th_mix (TH->win, lit, 150 - (p - i) * 45), LV_OPA_COVER, LV_RADIUS_CIRCLE);
-			th_fill (l, &c, cx - LU (5), cy - LU (5), cx + LU (5), cy + LU (5), on ? lit : th_mix (TH->win, 0x6E7176, 90), LV_OPA_COVER, LV_RADIUS_CIRCLE);
+			th_fill (l, &c, cx - LU (5), cy - LU (5), cx + LU (5), cy + LU (5), on ? lit : TH->win_edge, LV_OPA_COVER, LV_RADIUS_CIRCLE);
 		}
 		th_text (l, &c, tx, (h - 3 - f->line_height) / 2, tw + LU (8), f, TH->win_ink, LV_TEXT_ALIGN_LEFT, word);
 		if (t < CONN_IN) th_fill (l, &c, vx1 - 3, 0, vx1 - 1, h - 1, lit, LV_OPA_COVER, 0);
@@ -1248,7 +1269,7 @@ static void build (void)
 	memset (s_Seg, 0, sizeof s_Seg);
 	memset (s_Pg, 0, sizeof s_Pg);
 	memset (s_Nav, 0, sizeof s_Nav);
-	s_Title = s_Rytm = s_Rec = s_SetTitle = s_Note = s_Taps2 = s_Touch2 = s_Map = s_Stale = 0;
+	s_Title = s_Rytm = s_Rec = s_SetTitle = s_Note = s_Taps2 = s_Touch2 = s_Map = s_Stale = s_PageName = 0;
 	s_CalOv = s_CalState = 0;					// (the top layer was cleaned)
 	s_nCalStep = -1;
 	s_nCalCal = -1;
@@ -1261,7 +1282,7 @@ static void build (void)
 	lv_obj_set_style_text_color (scr, lv_color_hex (TH->ink), 0);
 	lv_obj_set_style_text_font (scr, TH->f_body, 0);
 	lv_obj_remove_flag (scr, LV_OBJ_FLAG_SCROLLABLE);
-	if (oled ()) oled_build (scr); else classic_build (scr);
+	if (oled ()) oled_build (scr); else sc_build (scr);
 	if (!oled ()) lv_obj_add_flag (s_Seg[SEG_TAB], LV_OBJ_FLAG_HIDDEN);
 
 	// the dot under the finger (top layer, never clickable), the power warning's banner, the dimming layer
@@ -1271,13 +1292,13 @@ static void build (void)
 	lv_obj_set_style_border_color (s_Dot, lv_color_hex (oled () ? TH->ink : TH->accent), 0);
 	lv_obj_set_style_border_width (s_Dot, oled () ? 1 : 2, 0);
 	lv_obj_add_flag (s_Dot, LV_OBJ_FLAG_HIDDEN);
-	s_Power = th_titlebar (top, 0, 0, oled () ? OW : TH->w, oled () ? TBH : LU (52));
+	s_Power = th_titlebar (top, 0, 0, oled () ? OW : th_page_w (), oled () ? TBH : LU (52));
 	lv_obj_add_flag (s_Power, LV_OBJ_FLAG_HIDDEN);
 	conn_build (top);					// under the dimming layer
 	// F2: VOICE, INSERT FX and PAT mirror the Rytm: while it is not connected they say they show the last they had
 	char sb[64];
 	lv_snprintf (sb, sizeof sb, oled () ? "NO %s: SHOWING LAST" : "%s not connected: showing the last", oled () ? s_BoxUp : s_Box);
-	s_Stale = th_label (top, oled () ? OW - LU (172) : TH->w - (TH->big ? 350 : 330), oled () ? 1 : LU (56), TH->big && !oled () ? TH->f_small : TH->f_body, TH->bad, sb);
+	s_Stale = th_label (top, oled () ? OW - LU (172) : th_page_w () - (TH->big ? 350 : 330), oled () ? 1 : LU (56), TH->big && !oled () ? TH->f_small : TH->f_body, TH->bad, sb);
 	th_label_color (s_Stale, TH->bad);
 	lv_obj_add_flag (s_Stale, LV_OBJ_FLAG_HIDDEN);
 	{	// N3: the UP map (every UP + key: the device's table), shown while UP is held alone on the Rytm
@@ -1352,7 +1373,7 @@ static void wipe_cb (lv_timer_t *t)
 
 void sidecar_ui_style (int style)
 {
-	style = style == THEME_CLASSIC ? THEME_CLASSIC : THEME_OLED;
+	style = style == THEME_SIDECAR ? THEME_SIDECAR : THEME_OLED;
 	if (style == s_nStyle && s_nBuilt) return;
 	s_nStyle = style;
 	if (!s_nBuilt) return;					// sidecar_ui_create builds it
@@ -1473,7 +1494,7 @@ static void uslot_paint (void)
 			lv_obj_set_style_bg_color (s_USlot[i], lv_color_hex (TH->accent_hi), 0);
 			lv_obj_set_style_bg_opa (s_USlot[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 		}
-		else th_label_color (s_USlot[i], err ? TH->bad : st == 1 ? ink : dim);	// CLASSIC: the hardware's red LED colour
+		else th_label_color (s_USlot[i], err ? TH->bad : st == 1 ? ink : dim);	// SIDECAR: coral
 	}
 	if (moving && !s_UTimer) s_UTimer = lv_timer_create (uslot_tick, 150, 0);
 	else if (!moving && s_UTimer) { lv_timer_delete (s_UTimer); s_UTimer = 0; }
@@ -1525,7 +1546,7 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 	{
 		lv_snprintf (b, sizeof b, s->rytm ? "%s connected" : "No %s link", s_Box);
 		set_text (s_Rytm, b);
-		th_label_color (s_Rytm, s->rytm ? TH->accent : 0xFF6B6B);
+		th_label_color (s_Rytm, s->rytm ? TH->accent : TH->bad);
 	}
 	s_nRytm = s->rytm;
 	if (s_nLink >= 0 && (s->rytm != 0) != s_nLink) conn_start (s->rytm != 0);	// a transition, not the first status

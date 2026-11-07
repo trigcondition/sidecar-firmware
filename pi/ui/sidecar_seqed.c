@@ -1,5 +1,5 @@
 // pi/ui/sidecar_seqed.c - see sidecar_seqed.h. The page is laid out per theme (sidecar_theme.h, docs/UI-THEMES.md):
-//   CLASSIC (800x480, below the 52 px title bar, page coordinates):
+//   SIDECAR (800x480, below the 52 px header, page coordinates):
 //     header   y 4..52    SIDECAR SEQ, transport and tempo, the pattern / track, the seq tracks, the page strip, RYTM
 //     ruler    y 56..70   grid x 52..692 y 70..350 (rows 14 px), keys x 8..48
 //     lane     y 354..424 the velocity lane (DRAW), or the tool's controls (CHORD / STRUM / HUMAN / KEY / SWING)
@@ -38,7 +38,7 @@ typedef struct
 	int head_w;
 } seq_geo_t;
 
-static const seq_geo_t kGeoClassic = {
+static const seq_geo_t kGeoSidecar = {
 	.pg_h = 428,
 	.strip_x = 430, .strip_y = 4, .strip_w = 222, .strip_h = 48, .cell = 28,
 	.tracks_x = 254, .tracks_y = 4, .tracks_w = 168, .tracks_h = 48,
@@ -68,10 +68,10 @@ static int oled (void) { return TH->id == THEME_OLED; }
 
 // the table now: the theme's 800x480 one, grown by what a 1024x600 screen adds (TH->dx, dy: geo_size)
 static seq_geo_t s_Geo;
-static const seq_geo_t *G = &kGeoClassic;
+static const seq_geo_t *G = &kGeoSidecar;
 
-// 1024x600 (OLED 512x300 dots, CLASSIC 1024x600 px): the roll gets the extra width (whole dots a step: 12 instead of 9
-// at two pages; CLASSIC 27 instead of 20) and two thirds of the extra height (32 rows of 5 dots instead of 24), the lane
+// 1024x600 (OLED 512x300 dots, SIDECAR 928x600 px left of the rail): the roll gets the extra width (whole dots a step: 12
+// instead of 9 at two pages; SIDECAR 24 instead of 20) and two thirds of the extra height (32 rows of 5 dots instead of 24), the lane
 // the other third; the header row, the tools and the right-hand keys move with the edges.
 static void geo_size (const seq_geo_t *b)
 {
@@ -79,8 +79,8 @@ static void geo_size (const seq_geo_t *b)
 	int *f = (int *) &g;					// 1280x720: the whole table in LU
 	for (unsigned i = 0; i < sizeof g / sizeof *f; i++) f[i] = LU (f[i]);
 	int dx = TH->dx, dy = TH->dy, gx = oled () ? dx * 6 / 7 : dx;	// OLED: 96 of the 112 dots (12 a step)
-	// 1280x720: OLED 16 dots a step at two pages (8 at four), CLASSIC 33 px; the pitch keys take what is left
-	if (TH->big) gx = oled () ? 512 - g.grid_w : 1056 - g.grid_w;
+	// 1280x720: OLED 16 dots a step at two pages (8 at four), SIDECAR whole pixels (30: the rail takes 120 px); the pitch keys take what is left
+	if (TH->big) gx = oled () ? 512 - g.grid_w : (g.grid_w + dx) / 32 * 32 - g.grid_w;
 	g.pg_h += dy;
 	g.grid_w += gx;
 	g.grid_h += dy * 2 / 3;
@@ -300,7 +300,7 @@ static int notes_at (int step)
 	return n;
 }
 
-// A note's colour. CLASSIC: green by velocity (dark 1 .. light 127). OLED: the trig LEDs' language - blue a note, cyan
+// A note's colour. SIDECAR: the accent by velocity (darker 1 .. lighter 127), the held one coral, the playing one light. OLED: the trig LEDs' language - blue a note, cyan
 // a chord in the trig LEDs' language, recoloured with the panel's: blue print a note, FUNC teal a chord, brightness the
 // velocity; white while it plays, the teal's tint held (selected), grey muted.
 static uint32_t note_rgb (int step, int micro, int len, int vel, int muted, int sel)
@@ -315,8 +315,9 @@ static uint32_t note_rgb (int step, int micro, int len, int vel, int muted, int 
 		return notes_at (step) > 1 ? th_oled_accent (vel) : th_oled_secondary (vel);
 	}
 	if (muted) return TH->muted;
-	uint32_t c = th_mix (0x16502A, TH->accent_hi, clampi (vel * 256 / 127, 0, 256));
-	return lit ? th_mix (c, 0xFFFFFF, 150) : c;
+	if (sel) return TH->bad;
+	uint32_t c = th_mix (0x6A66CC, TH->accent_hi, clampi (vel * 256 / 127, 0, 256));	// (dark text on it >= 4.5:1)
+	return lit ? th_mix (c, TH->ink, 170) : c;
 }
 
 static int find_note (int step, int pitch)
@@ -378,7 +379,7 @@ static void draw_note (lv_layer_t *l, const lv_area_t *c, int step, int micro, i
 	note_rect (step, micro, pitch, len, &a);
 	if (a.x2 < 0 || a.x1 >= GRID_W || a.y2 < 0 || a.y1 >= GRID_H) return;
 	uint32_t col = note_rgb (step, micro, len, vel, muted, sel);
-	int gx = x_of (step * STEP96), cy = (a.y1 + a.y2) / 2, r = oled () ? 0 : 2;
+	int gx = x_of (step * STEP96), cy = (a.y1 + a.y2) / 2, r = oled () ? 0 : (a.y2 - a.y1) / 2 < LU (5) ? (a.y2 - a.y1) / 2 : LU (5);
 	if (ghost)
 	{
 		frame (l, c, a.x1, a.y1, a.x2, a.y2, oled () ? DOT_DOTTED : TH->win_dim, 1, r);
@@ -408,17 +409,16 @@ static void draw_note (lv_layer_t *l, const lv_area_t *c, int step, int micro, i
 		}
 		return;
 	}
-	if (a.x2 - a.x1 >= 6) fill (l, c, a.x1, a.y1, a.x1 + 1, a.y2, 0xE8E8E8, LV_OPA_40, 0);	// the onset
-	if (sel)
+	if (sel)						// held: coral, a light outline, the resize grip a dark column
 	{
-		frame (l, c, a.x1 - 1, a.y1 - 1, a.x2 + 1, a.y2 + 1, 0xE8E8E8, 2, 3);
-		fill (l, c, a.x2 - 3, a.y1 + 2, a.x2 - 2, a.y2 - 2, 0x101010, LV_OPA_COVER, 0);	// the resize grip
+		frame (l, c, a.x1 - 2, a.y1 - 2, a.x2 + 2, a.y2 + 2, TH->ink, 2, r + 2);
+		fill (l, c, a.x2 - 4, a.y1 + 3, a.x2 - 3, a.y2 - 3, TH->bg, LV_OPA_COVER, 0);
 	}
 	if (s_RowH >= LU (14) && a.x2 - a.x1 >= LU (34) + (TH->big ? 2 : 0))
 	{
 		char b[8];
 		note_name (pitch, b, sizeof b);
-		text (l, c, a.x1 + LU (5), a.y1 + (a.y2 - a.y1 + 1 - LU (14)) / 2, a.x2 - a.x1 - LU (6), TH->f_micro, 0x101010,
+		text (l, c, a.x1 + LU (5), a.y1 + (a.y2 - a.y1 + 1 - LU (14)) / 2, a.x2 - a.x1 - LU (6), TH->f_micro, TH->bg,
 		      LV_TEXT_ALIGN_LEFT, b);
 	}
 }
@@ -444,7 +444,7 @@ static void grid_draw (lv_event_t *e)
 	if (xe < GRID_W)
 	{
 		if (oled ()) fill (l, &c, xe < 0 ? 0 : xe, 0, GRID_W - 1, GRID_H - 1, 0x161616, LV_OPA_COVER, 0);	// past the end: darker, even
-		else fill (l, &c, xe < 0 ? 0 : xe, 0, GRID_W - 1, GRID_H - 1, 0x000000, LV_OPA_50, 0);
+		else fill (l, &c, xe < 0 ? 0 : xe, 0, GRID_W - 1, GRID_H - 1, TH->bg, LV_OPA_60, 0);
 	}
 	// (the lines over it: every visible page keeps its grid - the hardware report, 0.3.0: stopped, the length can read
 	// one page while the window kept more from playing, and the OLED's opaque shade hid the lines past page 1)
@@ -473,7 +473,7 @@ static void grid_draw (lv_event_t *e)
 			lv_area_t a;
 			note_rect (n->step, n->micro, n->pitch, n->len, &a);
 			int m = oled () ? 2 : 3;
-			frame (l, &c, a.x1 - m, a.y1 - m, a.x2 + m, a.y2 + m, oled () ? TH->accent_hi : 0xF0C040, 1, oled () ? 0 : 4);
+			frame (l, &c, a.x1 - m, a.y1 - m, a.x2 + m, a.y2 + m, oled () ? TH->accent_hi : TH->warn, 1, oled () ? 0 : 4);
 		}
 	}
 }
@@ -497,9 +497,9 @@ static void keys_draw (lv_event_t *e)
 				fill (l, &c, KEYS_W - 3, y, KEYS_W - 1, y2 - 1, p % 12 == s_Root % 12 ? TH->accent : TH->dim, LV_OPA_COVER, 0);
 			continue;
 		}
-		fill (l, &c, 0, y, KEYS_W - 1, y2 - 1, black_key (p) ? TH->key_black : TH->key_white, LV_OPA_COVER, 0);
+		fill (l, &c, 0, y + 1, KEYS_W - 1, y2 - 1, black_key (p) ? TH->key_black : TH->key_white, LV_OPA_COVER, 3);
 		if (s_Scale && in_scale (p))
-			fill (l, &c, KEYS_W - 4, y + 2, KEYS_W - 2, y2 - 3, p % 12 == s_Root % 12 ? TH->accent : 0x0D3B1C, LV_OPA_COVER, 1);
+			fill (l, &c, KEYS_W - 4, y + 2, KEYS_W - 2, y2 - 3, p % 12 == s_Root % 12 ? TH->accent : TH->line_beat, LV_OPA_COVER, 1);
 		if (p % 12 == 0 || (p % 12 == s_Root % 12 && s_RowH >= 12))
 		{
 			char b[8];
@@ -538,7 +538,7 @@ static void ruler_draw (lv_event_t *e)
 		else continue;
 		uint32_t ink = s % 16 ? (oled () ? TH->dim : TH->dim) : TH->ink;
 		if (oled ()) fill (l, &c, x, s % 16 ? 6 : 0, x, G->rul_h - 1, s % 16 ? TH->faint : TH->line_page, LV_OPA_COVER, 0);
-		else fill (l, &c, x, s % 16 ? 9 : 0, x, G->rul_h - 1, s % 16 ? 0x6C6E72 : 0x3A3C40, LV_OPA_COVER, 0);
+		else fill (l, &c, x, s % 16 ? 9 : 0, x, G->rul_h - 1, s % 16 ? TH->line_beat : TH->line_page, LV_OPA_COVER, 0);
 		text (l, &c, x + 2, -1, LU (30), f, ink, LV_TEXT_ALIGN_LEFT, b);
 	}
 	// T4 / S3: a step with a trig condition (FILL, A:B, a probability ..) a mark at the ruler's foot
@@ -577,8 +577,8 @@ static void lane_draw (lv_event_t *e)
 	const int ox = GRID_X - LANE_X, top = oled () ? LU (4) : LU (8), h = LANE_H - (oled () ? LU (7) : LU (14));
 	const lv_font_t *f = oled () ? TH->f_micro : TH->f_micro;
 	if (oled ()) frame (l, &c, 0, 0, G->lane_w - 1, LANE_H - 1, DOT_DOTTED, 1, 0);
-	fill (l, &c, ox, top + h, ox + GRID_W - 1, top + h, oled () ? TH->dim : 0x383838, LV_OPA_COVER, 0);
-	fill (l, &c, ox, top + h / 2, ox + GRID_W - 1, top + h / 2, oled () ? DOT_DOTTED : 0x222222, LV_OPA_COVER, 0);
+	fill (l, &c, ox, top + h, ox + GRID_W - 1, top + h, oled () ? TH->dim : TH->line_beat, LV_OPA_COVER, 0);
+	fill (l, &c, ox, top + h / 2, ox + GRID_W - 1, top + h / 2, oled () ? DOT_DOTTED : TH->line_step, LV_OPA_COVER, 0);
 	text (l, &c, oled () ? 3 : 0, oled () ? 3 : LU (4), KEYS_W, f, oled () ? TH->dim : TH->win_dim, LV_TEXT_ALIGN_LEFT, "VEL");
 	// seq-ux: the lock lane over the velocities: a step with parameter locks (the Rytm's hold trig + SRC / SMPL / FX
 	// + a knob) a bar along its width, brighter with more locks (a heatmap)
@@ -590,7 +590,7 @@ static void lane_draw (lv_event_t *e)
 		if (x0 < 0 || x0 >= GRID_W) continue;
 		if (x1 < x0) x1 = x0;
 		int k = nl > SEQED_LOCKS ? SEQED_LOCKS : nl;
-		uint32_t col = oled () ? (k >= 4 ? TH->ink : TH->dim) : (uint32_t) ((0x60 + 0x9F * k / SEQED_LOCKS) << 16 | 0x30 << 8 | (0x60 + 0x9F * k / SEQED_LOCKS));
+		uint32_t col = oled () ? (k >= 4 ? TH->ink : TH->dim) : th_mix (TH->win_edge, TH->lock, 80 + 176 * k / SEQED_LOCKS);
 		fill (l, &c, ox + x0, 0, ox + x1, oled () ? 2 : 4, col, LV_OPA_COVER, 0);
 	}
 	// seqtop: a step's extras, one mark each (the most telling): R a ratchet / arp, F an FX command, ~ random notes,
@@ -618,8 +618,14 @@ static void lane_draw (lv_event_t *e)
 		int x = x_of (n->step * STEP96 + n->micro);
 		if (x < 0 || x >= GRID_W) continue;
 		int bh = vel * h / 127;
-		uint32_t col = sel ? (oled () ? TH->accent_hi : 0xE8E8E8) : note_rgb (n->step, n->micro, n->len, vel, n->flags & 1, 0);
-		fill (l, &c, ox + x, top + h - bh, ox + x + (oled () ? 2 : 3), top + h - 1, col, LV_OPA_COVER, oled () ? 0 : 1);
+		uint32_t col = sel ? (oled () ? TH->accent_hi : TH->bad) : note_rgb (n->step, n->micro, n->len, vel, n->flags & 1, 0);
+		if (oled ()) fill (l, &c, ox + x, top + h - bh, ox + x + 2, top + h - 1, col, LV_OPA_COVER, 0);
+		else						// SIDECAR: a stem with a dot on top (a lollipop)
+		{
+			const int d = LU (3);
+			fill (l, &c, ox + x + 1, top + h - bh + d, ox + x + 2, top + h - 1, col, LV_OPA_COVER, 0);
+			fill (l, &c, ox + x + 1 - d, top + h - bh, ox + x + 2 + d, top + h - bh + 2 * d + 1, sel ? TH->bad : TH->ink, LV_OPA_COVER, LV_RADIUS_CIRCLE);
+		}
 	}
 	if (s_SelStep >= 0)
 	{
@@ -1755,7 +1761,7 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 {
 	s_Cmd = cmd;
 	s_CmdParam = param;
-	geo_size (oled () ? &kGeoOled : &kGeoClassic);
+	geo_size (oled () ? &kGeoOled : &kGeoSidecar);
 	if (!s_bInit)					// the model and the editor's state outlive a theme switch
 	{
 		s_bInit = 1;
@@ -1768,11 +1774,11 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 	else
 	{
 		memset (&g, 0, sizeof g);		// a gesture cut off by the rebuild (its object deleted): no release comes
-		s_RowH = clampi (s_RowH * G->row_h / (oled () ? kGeoClassic.row_h : kGeoOled.row_h), G->row_min, G->row_max);
+		s_RowH = clampi (s_RowH * G->row_h / (oled () ? kGeoSidecar.row_h : kGeoOled.row_h), G->row_min, G->row_max);
 	}
 	memset (s_TrackTxt, 0, sizeof s_TrackTxt);
 	s_TrackMap[0] = 0;
-	const int PW = oled () ? TH->w - LU (48) : TH->w, dx = TH->dx;	// the page's width; what 1024x600 adds
+	const int PW = th_page_w (), dx = TH->dx;	// the page's width; what 1024x600 adds
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, PW, G->pg_h);
 	s_Page = pg;
 	const lv_font_t *mic = TH->f_micro;
@@ -1792,7 +1798,7 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 		lv_obj_t *acc = th_box (pg, LU (12), LU (8), 3, LU (40));
 		lv_obj_set_style_bg_color (acc, lv_color_hex (TH->accent), 0);
 		lv_obj_set_style_bg_opa (acc, LV_OPA_COVER, 0);
-		lv_obj_t *t = label (pg, LU (22), LU (7), TH->f_micro, 0x1E7A3E, "SIDECAR SEQ");
+		lv_obj_t *t = label (pg, LU (22), LU (7), TH->f_micro, TH->accent, "SIDECAR SEQ");
 		lv_obj_set_style_text_letter_space (t, 2, 0);
 		s_Title = label (pg, LU (132), LU (7), TH->f_micro, TH->ink, "");
 		s_Where = label (pg, LU (22), LU (25), TH->f_mid, TH->ink, "-");
@@ -1805,9 +1811,9 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 		s_Snap = button (pg, G->snap_x, G->snap_y, G->snap_w, G->snap_h, snap_text (), TH_KEY, snap_cb, TH->f_micro);
 	}
 	s_Strip = drawn (pg, G->strip_x, G->strip_y, G->strip_w, G->strip_h, strip_draw, strip_cb, 0, 0);
-	lv_obj_add_event_cb (s_Strip, ext_draw, LV_EVENT_REFR_EXT_DRAW_SIZE, 0);	// CLASSIC: the keys' glow
+	lv_obj_add_event_cb (s_Strip, ext_draw, LV_EVENT_REFR_EXT_DRAW_SIZE, 0);	// (a key's outline may reach past it)
 
-	// the roll, in a display window (CLASSIC: the hardware's bezel around it)
+	// the roll, in a display window (SIDECAR: a card around it)
 	if (!oled ()) th_panel (pg, G->keys_x - LU (6), G->rul_y - LU (4), G->grid_x + G->grid_w - G->keys_x + LU (12), G->grid_y + G->grid_h - G->rul_y + LU (10), "", TH_PANEL_WINDOW);
 	s_Ruler = drawn (pg, GRID_X, G->rul_y, GRID_W, G->rul_h, ruler_draw, 0, 0, 0);
 	s_Keys = drawn (pg, G->keys_x, GRID_Y, KEYS_W, GRID_H, keys_draw, keys_cb, TH->win, 1);
@@ -1830,15 +1836,15 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 
 	// the lane, and the tools' controls in its place
 	s_Lane = drawn (pg, LANE_X, G->lane_y, G->lane_w, LANE_H, lane_draw, lane_cb, TH->win, !oled ());
-	if (!oled ()) lv_obj_set_style_radius (s_Lane, 6, 0);
+	if (!oled ()) lv_obj_set_style_radius (s_Lane, TH->radius, 0);
 	for (int t = SEQED_CHORD; t < SEQED_TOOLS; t++)
 	{
 		lv_obj_t *p = th_box (pg, LANE_X, G->lane_y, G->lane_w, LANE_H);
 		if (!oled ())
 		{
-			lv_obj_set_style_border_color (p, lv_color_hex (0x8A8C90), 0);
+			lv_obj_set_style_border_color (p, lv_color_hex (TH->win_edge), 0);
 			lv_obj_set_style_border_width (p, 1, 0);
-			lv_obj_set_style_radius (p, 6, 0);
+			lv_obj_set_style_radius (p, TH->radius, 0);
 		}
 		lv_obj_add_flag (p, LV_OBJ_FLAG_HIDDEN);
 		s_PanelInfo[t] = oled () ? label (p, 3, 1, mic, TH->dim, "") : label (p, LU (8), 2, TH->f_micro, TH->ink, "");
@@ -2019,7 +2025,7 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 		s_Card = th_panel (pg, 0, 0, G->card_w, G->card_h, "", TH_PANEL_WINDOW);
 		lv_obj_set_style_border_color (s_Card, lv_color_hex (TH->accent), 0);
 		lv_obj_set_style_border_width (s_Card, 1, 0);
-		lv_obj_set_style_radius (s_Card, 8, 0);
+		lv_obj_set_style_radius (s_Card, TH->radius, 0);
 		s_CardText = label (s_Card, LU (10), LU (6), TH->f_body, TH->win_ink, "");
 		s_CardSub = label (s_Card, LU (10), LU (30), TH->f_micro, TH->win_dim, "");
 		button (s_Card, G->card_w - LU (52), LU (5), LU (46), LU (44), LV_SYMBOL_TRASH, TH_KEY_DANGER, delete_cb, TH->f_body);
@@ -2027,7 +2033,7 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 	lv_obj_add_flag (s_Card, LV_OBJ_FLAG_HIDDEN);
 	// T5: the toast over the grid's top edge (an edit, or why a tap did not edit)
 	s_Toast = label (pg, GRID_X + LU (4), GRID_Y + 3, oled () ? TH->f_body : TH->f_body, oled () ? TH->ink : TH->win_ink, "");
-	lv_obj_set_style_bg_color (s_Toast, lv_color_hex (oled () ? 0x000000 : 0x202226), 0);
+	lv_obj_set_style_bg_color (s_Toast, lv_color_hex (oled () ? 0x000000 : TH->win), 0);
 	lv_obj_set_style_bg_opa (s_Toast, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_color (s_Toast, lv_color_hex (oled () ? TH->ink : TH->accent), 0);
 	lv_obj_set_style_border_width (s_Toast, 1, 0);

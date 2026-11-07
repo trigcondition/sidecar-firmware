@@ -1,7 +1,7 @@
 // pi/ui/host/shot.c - the Pi screen on the Mac: LVGL renders sidecar_ui into an 800x480 RGB565 buffer (the OLED theme's
 // dots expanded as the Pi's flush expands them: sidecar_dot_expand), with made-up status and touches, written as PPMs.
 // No window, no SDL.
-//   ./shot OUTDIR [WxH]      every page in both themes (WxH: the screen, 800x480, 1024x600 or 1280x720) (OUTDIR/oled-*.ppm, OUTDIR/classic-*.ppm), the controls' commands
+//   ./shot OUTDIR [WxH]      every page in both themes (WxH: the screen, 800x480, 1024x600 or 1280x720) (OUTDIR/oled-*.ppm, OUTDIR/sidecar-*.ppm), the controls' commands
 //                            checked, the SEQ gestures checked against core/seq, the draw costs printed; fails on a miss
 //   ./shot anim OUTDIR [N]   the SEQ piano roll playing in the OLED theme: N frames (default 300) at 20 fps, frame-NNNN.ppm
 #include "lvgl.h"
@@ -870,9 +870,10 @@ static int DX, DY;
 #define OW_HIT_X	(LU (352) + DX - LU (40))						// OLED: the home title bar's REC status
 #define NAV_X		(LU (377) + DX)						// OLED: the navigation column
 #define NAV_Y(i)	((i) * ((LU (240) + DY) / 8) + (LU (240) + DY) / 16 - 1)		// eight keys (UX review N1)
-#define CNAV_X(i)	(LU (300) + (i) * ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8) + ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8 - LU (4)) / 2)	// CLASSIC: the title bar's row
+#define CNAV_X(i)	(TH->nav ? TH->w - TH->nav / 2 : LU (300) + (i) * ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8) + ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8 - LU (4)) / 2)	// SIDECAR: the rail, or the header's row (800x480)
+#define CNAV_Y(i)	(TH->nav ? LU (3) + (i) * ((TH->h - LU (6)) / 8) + (TH->h - LU (6)) / 16 : LU (25))
 #define VS(v)		((v) * (LU (240) + DY - LU (41)) / 199)				// OLED: a settings page's y (sidecar_ui.c)
-#define CY(v)		((v) * (LU (358) + DY) / 358)				// CLASSIC: the same
+#define CY(v)		((v) * (LU (358) + DY) / 358)				// SIDECAR: the same
 #define CH		(LU (48) + DY / 15)
 #define WG_KY		(o ? LU (204) + DY + LU (17) : LU (52) + LU (372) + DY + LU (26))		// the machine view's keys (sidecar_wgview.c)
 #define WG_SRC_X	(o ? LU (264) + 3 * DX / 4 + (LU (88) + DX / 4) / 2 : LU (616) + 3 * DX / 4 + (LU (176) + DX / 4) / 2)
@@ -1843,7 +1844,7 @@ static void theme_run (int style, const char *pre)
 	else
 	{
 		const int x0 = LU (12) + LU (400) + DX / 2 + LU (12), vw = LU (364) + DX / 2, by = LU (308) + DY / 2, e = DY / 6, lw = LU (380) + DX / 2;
-		tap (CNAV_X (7), LU (25));							// Set (the last page: About)
+		tap (CNAV_X (7), CNAV_Y (7));							// SET (the last page: About)
 #define CTAB(k)	(LU (12) + (LU (776) + DX) * (2 * (k) + 1) / 12)
 		tap (CTAB (0), LU (84));								// tab: Sound
 		tap (LU (100), LU (114) + CY (48) + CH / 2);                 EXPECT_CMD ("notes=0");
@@ -1871,7 +1872,7 @@ static void theme_run (int style, const char *pre)
 		tap (LU (190) + LU (60), LU (114) + CY (98) + CH / 2);                      EXPECT_CMD ("screensaver=0");
 		tap (LU (190) + (LU (570) + DX) * 5 / 8 + LU (4), LU (114) + CY (98) + CH / 2);  EXPECT_CMD ("screensaver=60");
 		(void) by; (void) e; (void) lw;
-		tap (CNAV_X (0), LU (25));							// Home
+		tap (CNAV_X (0), CNAV_Y (0));							// HOME
 		sidecar_ui_show (0); run (3);
 		shot ("hidden");
 		sidecar_ui_show (6); run (3);
@@ -1890,7 +1891,7 @@ static void theme_run (int style, const char *pre)
 		{
 			EXPECT (!strcmp (sidecar_ui_nav_page (k), kPage[k]));
 			EXPECT (!strcmp (sidecar_ui_nav_key (k), kKey[k]));
-			if (o) tap (NAV_X, NAV_Y (k)); else tap (CNAV_X (k), LU (25));
+			if (o) tap (NAV_X, NAV_Y (k)); else tap (CNAV_X (k), CNAV_Y (k));
 			if (kPg[k] >= 0) EXPECT (sidecar_ui_page () == kPg[k]);
 			else EXPECT (sidecar_ui_page () == 1 || sidecar_ui_page () == 2 || sidecar_ui_page () == 3 || sidecar_ui_page () == 6 || sidecar_ui_page () == 16);
 			EXPECT (sidecar_ui_nav_lit () == k);
@@ -2303,7 +2304,7 @@ static void theme_run (int style, const char *pre)
 		sidecar_rytmpat_where ("from the Rytm", 0);
 	}
 
-	// ---- cost: the Mac's microseconds; x 34.1 = a Pi 4 estimate (the old CLASSIC home page: 217 us here, 7.4 ms
+	// ---- cost: the Mac's microseconds; x 34.1 = a Pi 4 estimate (the old CLASSIC theme's home page: 217 us here, 7.4 ms
 	// measured on the Pi 4)
 	s_bQuiet = 1;
 	sidecar_ui_show (0); run (3);
@@ -2369,7 +2370,7 @@ static void theme_run (int style, const char *pre)
 	// a theme switch: the rebuild and its first full draw
 	sidecar_ui_show (0); run (3);
 	t0 = now_us ();
-	sidecar_ui_style (o ? THEME_CLASSIC : THEME_OLED);
+	sidecar_ui_style (o ? THEME_SIDECAR : THEME_OLED);
 	double swb = now_us () - t0, band = 0;
 	for (int i = 0; i < 8; i++)				// the wipe: a band a call (the longest one counts)
 	{
@@ -2386,7 +2387,7 @@ static void theme_run (int style, const char *pre)
 	printf ("cost %s (Mac us -> Pi 4 est. ms, x %.1f): home %.0f (%.1f) | SEQ full %.0f (%.1f), grid %.0f (%.1f), note drag frame %.0f (%.2f), "
 		"play head strip %.1f (%.2f), playing frame %.1f (%.2f) | RYTM full %.0f (%.1f) | switch to %s %.0f (%.1f): the rebuild %.0f (%.1f), the longest band %.0f (%.1f)\n",
 		s_Pre, k, home, home * k / 1000, seq, seq * k / 1000, gr, gr * k / 1000, nt, nt * k / 1000, hd, hd * k / 1000,
-		play, play * k / 1000, ry, ry * k / 1000, o ? "CLASSIC" : "OLED", sw, sw * k / 1000, swb, swb * k / 1000, band, band * k / 1000);
+		play, play * k / 1000, ry, ry * k / 1000, o ? "SIDECAR" : "OLED", sw, sw * k / 1000, swb, swb * k / 1000, band, band * k / 1000);
 	s_bQuiet = 0;
 }
 
@@ -2467,10 +2468,10 @@ static void conn_run (const char *dir)
 	s_bQuiet = 1;
 	for (int st = 0; st < 2; st++)
 	{
-		const char *pre = st ? "classic" : "oled";
-		sidecar_ui_style (st ? THEME_CLASSIC : THEME_OLED);
+		const char *pre = st ? "sidecar" : "oled";
+		sidecar_ui_style (st ? THEME_SIDECAR : THEME_OLED);
 		run (12);
-		status_init (st ? THEME_CLASSIC : THEME_OLED);
+		status_init (st ? THEME_SIDECAR : THEME_OLED);
 		s_St.rytm = 0;
 		sidecar_ui_status (&s_St);
 		sidecar_ui_show (0);
@@ -2519,11 +2520,11 @@ static void a4_run (const char *dir)
 	char p[400];
 	for (int st = 0; st < 2; st++)
 	{
-		const char *th = st ? "classic" : "oled";
+		const char *th = st ? "sidecar" : "oled";
 		snprintf (s_Pre, sizeof s_Pre, "a4-%s", th);
-		sidecar_ui_style (st ? THEME_CLASSIC : THEME_OLED);
+		sidecar_ui_style (st ? THEME_SIDECAR : THEME_OLED);
 		run (12);
-		status_init (st ? THEME_CLASSIC : THEME_OLED);
+		status_init (st ? THEME_SIDECAR : THEME_OLED);
 		DX = TH->dx, DY = TH->dy;
 		s_St.box = "A4";
 		for (int v = 0; v < 8; v++) s_St.voice[v] = kT[v];
@@ -2533,7 +2534,7 @@ static void a4_run (const char *dir)
 		run (8);
 		EXPECT (!strcmp (sidecar_ui_box (), "A4") && !strcmp (sidecar_ui_box_up (), "A4") && sidecar_ui_box_names ());
 		EXPECT (!strcmp (sidecar_ui_voice (1), "T2") && sidecar_ui_voice_at (1) == 1 && sidecar_ui_voice_pos (3) == 3);
-		EXPECT (sidecar_ui_get_style () == (st ? THEME_CLASSIC : THEME_OLED));
+		EXPECT (sidecar_ui_get_style () == (st ? THEME_SIDECAR : THEME_OLED));
 		s_St.rytm = 1;
 		sidecar_ui_status (&s_St);			// the link comes up: the connect splash
 		for (int ms = 0; ms <= 700; ms += 20) { lv_timer_handler (); lv_refr_now (NULL); lv_tick_inc (20); }
@@ -2591,11 +2592,11 @@ int main (int argc, char **argv)
 	lv_indev_set_read_cb (ind, pointer);
 	sidecar_ui_create ();
 	sidecar_ui_set_command (on_command, 0);
-	if (argc > 2 && !strcmp (argv[1], "wganim"))		// ./shot wganim OUTDIR [N] [classic]: the machine view, 15 fps
+	if (argc > 2 && !strcmp (argv[1], "wganim"))		// ./shot wganim OUTDIR [N] [sidecar]: the machine view, 15 fps
 	{
-		int n = argc > 3 ? atoi (argv[3]) : 60, cl = argc > 4 && !strcmp (argv[4], "classic");
+		int n = argc > 3 ? atoi (argv[3]) : 60, cl = argc > 4 && !strcmp (argv[4], "sidecar");
 		s_bQuiet = 1;
-		status_init (cl ? THEME_CLASSIC : THEME_OLED);
+		status_init (cl ? THEME_SIDECAR : THEME_OLED);
 		sidecar_ui_status (&s_St);
 		sidecar_ui_show (7);
 		char p[400];
@@ -2631,7 +2632,7 @@ int main (int argc, char **argv)
 	snprintf (s_Dir, sizeof s_Dir, "%s", argc > 1 ? argv[1] : "obj");
 	th_fit_report = fit_painted;
 	theme_run (THEME_OLED, "oled");
-	theme_run (THEME_CLASSIC, "classic");
+	theme_run (THEME_SIDECAR, "sidecar");
 	theme_run (THEME_OLED, "again");		// back: a second switch rebuilds cleanly (again-*.ppm)
 	if (s_nFit) printf ("shot: %d strings do not fit (TEXT-FIT above)\n", s_nFit);
 	printf (s_nFail ? "shot: %d checks FAILED\n" : "shot: all checks ok (both themes)\n", s_nFail);

@@ -1,5 +1,5 @@
 // pi/ui/sidecar_rytmpat.c - see sidecar_rytmpat.h. The page is laid out per theme (sidecar_theme.h):
-//   CLASSIC (800x480, below the title bar, page coordinates):
+//   SIDECAR (800x480, below the header, page coordinates):
 //     header  y 4..52     RYTM PATTERN (read only), project / pattern / kit, where the data is from, pages 1-4 / ALL, SEQ
 //     ruler   y 56..70    track grid x 52..692 y 70..334 (12 rows of 22 px), names x 8..48
 //     locks   y 340..424  the selected track's p-locked parameters, a lane each (value = amber's strength)
@@ -22,7 +22,7 @@ typedef struct
 	int card_x, card_y, card_w, card_h, line;
 } pat_geo_t;
 
-static const pat_geo_t kGeoClassic = {
+static const pat_geo_t kGeoSidecar = {
 	.pg_h = 428, .gx = 52, .gy = 70, .gw = 640, .rowh = 22, .names_x = 8, .names_w = 40, .rul_y = 56, .rul_h = 14,
 	.ly = 340, .lh = 84, .lanes = 4, .lane_h = 17, .lane_y0 = 16, .lane_name_x = 698, .lane_name_w = 92,
 	.card_x = 700, .card_y = 60, .card_w = 92, .card_h = 274, .line = 26,
@@ -35,10 +35,10 @@ static const pat_geo_t kGeoOled = {
 };
 
 // the table now: the theme's 800x480 one, grown by what a 1024x600 screen adds (TH->dx, dy): the grid wider in whole
-// dots a step (OLED 20 instead of 16, CLASSIC 52 instead of 40), the rows taller (13 / 28), up to 6 lock lanes, the
+// dots a step (OLED 20 instead of 16, SIDECAR 46 instead of 40; 58 at 1280x720), the rows taller (13 / 28), up to 6 lock lanes, the
 // step card wider
 static pat_geo_t s_Geo;
-static const pat_geo_t *G = &kGeoClassic;
+static const pat_geo_t *G = &kGeoSidecar;
 
 static void geo_size (const pat_geo_t *b)
 {
@@ -47,7 +47,7 @@ static void geo_size (const pat_geo_t *b)
 	for (unsigned i = 0; i < sizeof g / sizeof *f; i++) f[i] = LU (f[i]);
 	g.lanes = b->lanes;
 	const int dx = TH->dx, dy = TH->dy, o = TH->id == THEME_OLED;
-	const int gx = o ? dx * 4 / 7 : dx * 6 / 7;		// OLED 64 of the 112 dots, CLASSIC 192 of the 224 px
+	const int gx = o ? dx * 4 / 7 : dx * 6 / 7 / 16 * 16;	// OLED 64 of the 112 dots, SIDECAR 96 of the 128 px (whole pixels a step)
 	g.pg_h += dy;
 	g.gw += gx;
 	g.rowh += dy * 2 / 3 / 12;
@@ -94,13 +94,13 @@ static uint32_t vel_rgb (int vel)
 {
 	if (vel > 127) vel = 100;
 	if (oled ()) return th_oled_secondary (vel);		// the panel's blue print, brighter the louder
-	return th_mix (0x16502A, TH->accent_hi, vel * 256 / 127);
+	return th_mix (th_mix (TH->win, TH->accent, 90), TH->accent_hi, vel * 256 / 127);
 }
 
 static uint32_t lock_rgb (int v)
 {
 	if (oled ()) return th_mix (0x3A3A3A, 0xE6E6E6, v * 256 / 127);		// a lock: grey, brighter the higher
-	return th_mix (0x2A1D08, TH->lock, 40 + v * 215 / 127);
+	return th_mix (TH->win, TH->lock, 40 + v * 215 / 127);
 }
 
 static int vel_of (const rytm_track_t *k, int s) { return k->vel[s] == RYTM_DEFAULT ? k->dvel : k->vel[s]; }
@@ -115,7 +115,7 @@ static void grid_draw (lv_event_t *e)
 	{
 		const rytm_track_t *k = &s_P.t[t];
 		int y = t * ROWH;
-		if (t == s_Track) fill (l, &c, 0, y, GW - 1, y + ROWH - 1, o ? 0x262626 : 0x1E1E1E, LV_OPA_COVER, 0);	// even, no checker behind the trigs
+		if (t == s_Track) fill (l, &c, 0, y, GW - 1, y + ROWH - 1, o ? 0x262626 : TH->row_root, LV_OPA_COVER, 0);	// even, no checker behind the trigs
 		for (int i = 0; i < n; i++)
 		{
 			int s = f + i, x = i * w;
@@ -126,9 +126,9 @@ static void grid_draw (lv_event_t *e)
 			}
 			else
 			{
-				uint32_t bg = (s / 4) % 2 ? 0x151515 : 0x1A1A1A;
-				if (t == s_Track) bg = (s / 4) % 2 ? 0x1C1C1C : 0x222222;
-				if (s >= k->steps) bg = 0x0C0C0C;
+				uint32_t bg = (s / 4) % 2 ? TH->row_out : TH->row_in;
+				if (t == s_Track) bg = (s / 4) % 2 ? th_mix (TH->row_root, TH->row_out, 90) : TH->row_root;
+				if (s >= k->steps) bg = TH->bg;
 				fill (l, &c, x + 1, y + 1, x + w - 2, y + ROWH - 2, bg, LV_OPA_COVER, 2);
 			}
 			unsigned tr = k->trig[s];
@@ -162,9 +162,9 @@ static void grid_draw (lv_event_t *e)
 			if (k->cond[s] && (tr & (RYTM_TRIG_ON | RYTM_TRIG_LOCK)))	// a condition: a dotted line under the trig
 			{
 				if (o) fill (l, &c, bx1, y + ROWH - 2, bx2, y + ROWH - 2, DOT_DOTTED, LV_OPA_COVER, 0);
-				else for (int d = bx1; d <= bx2; d += 3) fill (l, &c, d, y + ROWH - 3, d, y + ROWH - 2, 0xE8E8E8, LV_OPA_80, 0);
+				else for (int d = bx1; d <= bx2; d += 3) fill (l, &c, d, y + ROWH - 3, d, y + ROWH - 2, TH->win_ink, LV_OPA_80, 0);
 			}
-			if (t == s_Track && s == s_Step) frame (l, &c, x, y, x + w - 1, y + ROWH - 1, o ? 0xFFFFFF : 0xE8E8E8, o ? 1 : 2, o ? 0 : 3);
+			if (t == s_Track && s == s_Step) frame (l, &c, x, y, x + w - 1, y + ROWH - 1, o ? 0xFFFFFF : TH->bad, o ? 1 : 2, o ? 0 : TH->radius / 3);
 		}
 	}
 }
@@ -185,7 +185,7 @@ static void names_draw (lv_event_t *e)
 			continue;
 		}
 		if (sel) fill (l, &c, 0, y + 1, 39, y + ROWH - 2, TH->accent, LV_OPA_COVER, 3);
-		text (l, &c, 0, y + (ROWH - LU (16)) / 2, LU (40), TH->f_small, sel ? 0x101010 : TH->win_ink, LV_TEXT_ALIGN_CENTER, nm[t]);
+		text (l, &c, 0, y + (ROWH - LU (16)) / 2, LU (40), TH->f_small, sel ? TH->sel_ink : TH->win_ink, LV_TEXT_ALIGN_CENTER, nm[t]);
 	}
 }
 
@@ -201,7 +201,7 @@ static void ruler_draw (lv_event_t *e)
 		int s = f + i;
 		char b[6];
 		if (!wide && s % 16 == 0) lv_snprintf (b, sizeof b, "P%d", s / 16 + 1); else lv_snprintf (b, sizeof b, "%d", s + 1);
-		uint32_t ink = oled () ? (s % 4 ? TH->faint : TH->dim) : (s % 4 ? 0x6C6E72 : TH->win_dim);
+		uint32_t ink = oled () ? (s % 4 ? TH->faint : TH->dim) : (s % 4 ? TH->faint : TH->win_dim);
 		text (l, &c, i * w, -1, w * (wide ? 1 : LU (4)), ft, ink, wide ? LV_TEXT_ALIGN_CENTER : LV_TEXT_ALIGN_LEFT, b);
 	}
 }
@@ -243,7 +243,7 @@ static void locks_draw (lv_event_t *e)
 		const rytm_lock_t *k = &s_P.lock[i];
 		if (k->track != s_Track) continue;
 		int y = G->lane_y0 + lane * G->lane_h + (o ? 0 : 4);
-		text (l, &c, G->lane_name_x, y + (o ? 0 : 1), G->lane_name_w, ft, o ? TH->accent : 0x8A5A10, LV_TEXT_ALIGN_LEFT, rytm_lock_name (k->type));
+		text (l, &c, G->lane_name_x, y + (o ? 0 : 1), G->lane_name_w, ft, o ? TH->accent : TH->lock, LV_TEXT_ALIGN_LEFT, rytm_lock_name (k->type));
 		for (int j = 0; j < n; j++)
 		{
 			int s = f + j, x = GX - (o ? 0 : 2) + j * w, v = k->val[s];
@@ -251,7 +251,7 @@ static void locks_draw (lv_event_t *e)
 			if (v == 0xFF)
 			{
 				if (o) fill (l, &c, x, y + G->lane_h / 2 - 1, x, y + G->lane_h / 2 - 1, 0x1E1E1E, LV_OPA_COVER, 0);
-				else fill (l, &c, x + 1, y + 1, x + w - 2, y + 15, 0x9EA0A4, LV_OPA_COVER, 2);
+				else fill (l, &c, x + 1, y + 1, x + w - 2, y + 15, TH->row_in, LV_OPA_COVER, 2);
 				continue;
 			}
 			if (o)						// a bar: the value as height, the amber ramp as brightness
@@ -264,7 +264,7 @@ static void locks_draw (lv_event_t *e)
 			if (w >= 30)
 			{
 				lv_snprintf (b, sizeof b, "%d", v);
-				text (l, &c, x, y + 1, w, TH->f_micro, v > 70 ? 0x101010 : 0xE8E8E8, LV_TEXT_ALIGN_CENTER, b);
+				text (l, &c, x, y + 1, w, TH->f_micro, v > 70 ? TH->bg : TH->win_ink, LV_TEXT_ALIGN_CENTER, b);
 			}
 		}
 		lane++;
@@ -401,7 +401,7 @@ static void header (void)
 	th_label_set (s_Info, b);
 	lv_snprintf (b, sizeof b, "READ ONLY%s%s", s_From[0] ? "  /  " : "", s_From);
 	th_label_set (s_Where, b);
-	th_label_color (s_Where, s_Stale ? TH->warn : 0x8A5A10);
+	th_label_color (s_Where, s_Stale ? TH->warn : (oled () ? 0x8A5A10 : TH->lock));
 }
 
 static void copy (char *d, const char *s, int cap)
@@ -453,9 +453,9 @@ int sidecar_rytmpat_shown (void) { return s_Page && !lv_obj_has_flag (s_Page, LV
 void sidecar_rytmpat_create (void *parent, int y0, void (*back) (void))
 {
 	s_Back = back;
-	geo_size (oled () ? &kGeoOled : &kGeoClassic);
+	geo_size (oled () ? &kGeoOled : &kGeoSidecar);
 	int o = oled (), dx = TH->dx;
-	const int PW = o ? TH->w - LU (48) : TH->w;			// the page's width
+	const int PW = th_page_w ();			// the page's width
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, PW, G->pg_h);
 	s_Page = pg;
 	static const char *const kPages[] = {"1", "2", "3", "4", "ALL", ""};
@@ -474,7 +474,7 @@ void sidecar_rytmpat_create (void *parent, int y0, void (*back) (void))
 		lv_obj_t *acc = th_box (pg, LU (12), LU (8), 3, LU (40));
 		lv_obj_set_style_bg_color (acc, lv_color_hex (TH->lock), 0);
 		lv_obj_set_style_bg_opa (acc, LV_OPA_COVER, 0);
-		s_Where = th_label (pg, LU (22), LU (7), TH->f_micro, 0x8A5A10, "READ ONLY");
+		s_Where = th_label (pg, LU (22), LU (7), TH->f_micro, TH->lock, "READ ONLY");
 		lv_obj_set_style_text_letter_space (s_Where, 1, 0);
 		lv_obj_set_size (s_Where, LU (376) + dx, LU (16));
 		lv_label_set_long_mode (s_Where, LV_LABEL_LONG_MODE_DOTS);

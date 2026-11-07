@@ -51,10 +51,12 @@ endif
 OBJS += ../ui/sidecar_display.o ../ui/sidecar_ui.o ../ui/sidecar_splash.o ../ui/sidecar_wordmark.o
 # the pattern pages (docs/TOUCH-EDITOR.md): the SEQ editor and the Rytm pattern view, LVGL only
 OBJS += ../ui/sidecar_seqed.o ../ui/sidecar_rytmpat.o ../ui/rytm_pattern.o ../ui/sidecar_theme.o ../ui/sidecar_dot.o ../ui/sidecar_dotfont.o
+# the SIDECAR theme's text faces: Space Grotesk Medium, 12..28 px (pi/ui/fonts/gen.sh)
+OBJS += $(patsubst %,../ui/fonts/sidecar_sg%.o,12 14 16 18 20 22 24 28)
 # the WAVETABLE / GRANULAR machine view (pi/ui/sidecar_wgview.h), filled by wgview_pi.cpp
 OBJS += ../ui/sidecar_wgview.o
 # the CHOP page (pi/ui/sidecar_chop.h), filled by chopview_pi.cpp
-OBJS += ../ui/sidecar_chop.o ../ui/sidecar_font28.o
+OBJS += ../ui/sidecar_chop.o
 # the JUNO / 6-OP FM preset pages (pi/ui/sidecar_preset.h), filled by preset_pi.cpp
 OBJS += ../ui/sidecar_preset.o
 # the touch calibration (pi/ui/touch_cal.h: Settings > Display > Calibrate)

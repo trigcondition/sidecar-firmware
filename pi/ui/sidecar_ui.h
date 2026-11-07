@@ -43,7 +43,7 @@ typedef struct
 	unsigned char	uslot_state[5];			// 0 empty 1 ready 6 loading, else a problem (rmp_slot_state)
 	int		rec;				// the recorder: 0 off, 1 armed (waits for PLAY), 2 recording
 	unsigned	rec_secs;			// the take's length so far
-	int		ui_style;			// the display's theme (sidecar_theme.h THEME_*: 0 OLED, 1 CLASSIC), -1: not known
+	int		ui_style;			// the display's theme (sidecar_theme.h THEME_*: 0 OLED, 1 SIDECAR), -1: not known
 	int		ui_look;			// UX review L1: the OLED look, 0 STUDIO 1 STAGE (sidecar_dot_look), -1: not known
 	unsigned	poly;				// UX review S1: bit v - voice v plays a poly track (a POLY badge on HOME)
 	int		pattern;			// UX review T1: the Rytm's pattern 0..127 (-1 not known) and transport (0 stop,
@@ -94,16 +94,16 @@ int sidecar_ui_touch_test_shown (void);				// HOME shows the touch test (until t
 // pixels: the caller expands them by sidecar_ui_dot () (sidecar_dot_expand, at sidecar_ui_origin ()) and divides its
 // pointer's coordinates the same way (sidecar_ui_to_ui).
 void sidecar_ui_create (void);					// on lv_screen_active ()
-// The theme (THEME_OLED / THEME_CLASSIC): the screen is rebuilt and redrawn at once (core 0's loop only: a few ms of
+// The theme (THEME_OLED / THEME_SIDECAR): the screen is rebuilt and redrawn at once (core 0's loop only: a few ms of
 // object creation plus one full redraw; nothing on the audio cores). A tap on Settings > Display > UI style calls it
-// and sends "uistyle=oled|classic" (stored in /.rytm/display.txt); a status with another ui_style calls it too.
+// and sends "uistyle=oled|sidecar" (stored in /.rytm/display.txt); a status with another ui_style calls it too.
 void sidecar_ui_style (int style);
 int sidecar_ui_get_style (void);
 int sidecar_ui_dot (void);					// physical pixels a UI pixel now: 1 or SIDECAR_DOT
 void sidecar_ui_origin (int *x, int *y);			// where the UI's pixel 0,0 is on the screen (the dot grid centred)
 void sidecar_ui_to_ui (int *x, int *y);				// screen -> UI coordinates (clamped)
 int sidecar_ui_bright (void);					// OLED: the dots' brightness for the expansion, 0..256
-								// (CLASSIC: 256, a black layer dims the picture)
+								// (SIDECAR: 256, a black layer dims the picture)
 void sidecar_ui_status (const sidecar_ui_status_t *s);		// labels change only when their text does
 // The box in use, as the last status said (the Rytm before one): its word ("Rytm", "A4"; upper: "RYTM", "A4") and its voices'
 // names, for every page. A box with its own names lists its voices in their order; the Rytm's in its track order.
