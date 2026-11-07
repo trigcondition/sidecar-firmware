@@ -3,6 +3,7 @@
      step, Up/Down change it (Shift: by 1, else by 8), Home/End the ends. The drawing goes out when let go (one
      command, lfo=N:des:<hex>); it shows at once and holds until the Sidecar reports it (lib/held.ts). -->
 <script setup lang="ts">
+import DotFill from "../../ui/DotFill.vue";
 import { computed, ref } from "vue";
 import { useHeld } from "../../lib/held";
 import { designAt, designDecode, designEncode, dragStep, type DesignStep } from "../../lib/lfo";
@@ -100,6 +101,7 @@ const valueText = computed(() => `Step ${cur.value + 1} of 16: ${steps.value[cur
         <line x1="0" :x2="W" :y1="H / 2" :y2="H / 2" class="mid" />
       </g>
       <rect class="cur" :x="(cur * W) / 16" y="0" :width="W / 16" :height="H" />
+      <DotFill :d="path" :width="W" :bottom="H" :step="6" :r="1.6" />
       <path :d="path" class="wave" />
       <circle v-for="(d, k) in dots" :key="k" :cx="d.x" :cy="d.y" r="3" class="dot" />
       <rect v-if="ph !== undefined" :x="(ph / 1000) * W" y="0" width="2" :height="H" class="ph" />

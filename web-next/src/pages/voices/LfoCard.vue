@@ -1,6 +1,7 @@
 <!-- Voices › one LFO (core/lfo.h, docs/lfo.md; the old page's LFO tab): target and parameter, wave, sync, retrig, rate,
      depth; its shape with the live phase (decorative: the numbers carry it); for DESIGN the 16 steps to draw (DesignPad). -->
 <script setup lang="ts">
+import DotFill from "../../ui/DotFill.vue";
 import { computed, ref } from "vue";
 import DesignPad from "./DesignPad.vue";
 import Fader from "../../ui/Fader.vue";
@@ -24,6 +25,7 @@ function design(hex: string) {
     <div class="head">
       <span class="num id">LFO {{ n }}</span>
       <svg viewBox="0 0 120 40" class="wave" aria-hidden="true">
+        <DotFill :d="path" :width="120" :bottom="40" :step="5" :r="1.4" :muted="off" />
         <path :d="path" />
         <line v-if="!off" :x1="(l.ph / 1000) * 120" :x2="(l.ph / 1000) * 120" y1="0" y2="40" class="ph" />
       </svg>

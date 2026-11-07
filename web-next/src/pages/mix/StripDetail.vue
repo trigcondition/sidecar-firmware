@@ -1,6 +1,7 @@
 <!-- web-next/src/pages/mix/StripDetail.vue - the selected strip: its POST EQ (the curve large, its 4 knobs), its two
      insert slots (type, P1..P4), and for a voice its output (route, pan, width) and its 3 sends. -->
 <script setup lang="ts">
+import DotFill from "../../ui/DotFill.vue";
 import { computed } from "vue";
 import Card from "../../ui/Card.vue";
 import Knob from "../../ui/Knob.vue";
@@ -29,7 +30,7 @@ const freqs = ["40", "200", "1.2k", "6k", "16k"];
       <div class="curve">
       <svg viewBox="0 0 360 140" class="big" role="img" :aria-label="`EQ curve: ${eqText(s.peq)}`">
         <g class="grid"><line x1="0" y1="70" x2="360" y2="70" /><line x1="90" y1="0" x2="90" y2="140" /><line x1="180" y1="0" x2="180" y2="140" /><line x1="270" y1="0" x2="270" y2="140" /></g>
-        <path class="fill" :d="eqPath(s.peq, 360, 140) + ' L360 140 L0 140 Z'" />
+        <DotFill :d="eqPath(s.peq, 360, 140)" :width="360" :bottom="140" :step="5.5" :r="1.6" />
         <path class="line" :d="eqPath(s.peq, 360, 140)" />
       </svg>
       <div class="freqs small" aria-hidden="true"><span v-for="f in freqs" :key="f">{{ f }}</span></div>
@@ -102,7 +103,6 @@ const freqs = ["40", "200", "1.2k", "6k", "16k"];
 .parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17.5rem), 1fr)); gap: 1rem 1.5rem; margin-top: 1rem; }
 .big { display: block; width: 100%; height: auto; }
 .grid line { stroke: var(--border); stroke-width: 1; }
-.fill { fill: var(--accent-tint); }
 .line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
 .freqs { display: flex; justify-content: space-between; color: var(--label); }
 .knobs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
