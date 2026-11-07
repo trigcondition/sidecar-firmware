@@ -45,7 +45,8 @@ const dots = computed<TideDot[]>(() => {
   const out: TideDot[] = [];
   for (let c = 0; c < COLS; c++) {
     const x = c * PITCH + 6;
-    const w = still.value ? shape(x) * 0.8 : 0.12 + 0.95 * history.value[c] * (0.75 + 0.25 * shape(x));
+    // silence (or no Sidecar yet) shows the sketch's band; the level lifts it from there
+    const w = still.value ? shape(x) : shape(x) * (0.85 + 0.45 * history.value[c]);
     for (let r = 0; r < ROWS; r++) {
       const v = Math.max(0, Math.min(1, w + 0.1 - r * 0.15));
       if (v < 0.1) continue;
