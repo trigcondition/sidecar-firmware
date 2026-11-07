@@ -44,8 +44,12 @@ const sel = ref(0);
 </template>
 
 <style scoped>
-.voices { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: 0.5rem; }
-.voices li { border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
+/* the eight voices in one row where they fit, else 4 + 4, else 2 a row: never 7 + 1 */
+.voices { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
+@media (min-width: 40rem) { .voices { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 64rem) { .voices { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+.voices select { min-width: 0; width: 100%; }
+.voices li { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
 .voices li.sel { border-color: var(--accent); }
 .id { font-size: 1.25rem; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
