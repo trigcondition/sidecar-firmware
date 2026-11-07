@@ -14,8 +14,11 @@ export interface VoiceView {
   fm?: FmPanel; multi?: MultiPanel; daisy?: DaisyPanel; gen?: number;
 }
 
-/** P1..P8 that have a label (an unused parameter has none). */
+/** P1..P8 that have a label (an unused parameter has none). A Sidecar voice whose labels all came back empty (an older
+ *  Pi) still shows its eight, named P1..P8. */
 export function params(v: VoiceView): { n: number; label: string; value: number }[] {
+  const named = (v.label ?? []).some((l) => l.trim() !== "");
+  if (!named && v.sidecar && v.val?.length) return v.val.map((value, i) => ({ n: i + 1, label: `P${i + 1}`, value }));
   return (v.label ?? []).map((l, i) => ({ n: i + 1, label: l, value: v.val?.[i] ?? 0 })).filter((p) => p.label.trim() !== "");
 }
 

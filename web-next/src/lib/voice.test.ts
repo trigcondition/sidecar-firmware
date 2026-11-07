@@ -33,3 +33,14 @@ describe("voice", () => {
     expect(pickLine(12)).toBe("voicepick=-1");
   });
 });
+
+describe("params without labels", () => {
+  it("names a Sidecar voice's eight P1..P8 when every label is empty", () => {
+    const v = { valid: true, sidecar: true, val: [45, 64, 64, 64, 64, 64, 64, 100], label: ["", "", "", "", "", "", "", ""] };
+    expect(params(v).map((p) => p.label)).toEqual(["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]);
+    expect(params(v)[7].value).toBe(100);
+  });
+  it("keeps a Rytm machine's unlabelled parameters hidden", () => {
+    expect(params({ valid: true, sidecar: false, val: [1, 2], label: ["", ""] })).toEqual([]);
+  });
+});

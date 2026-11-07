@@ -180,6 +180,18 @@ void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern, bool 
     else
       sniprintf(name, sizeof name, "%s", "TRK+PAD: KNOBS");   // an analog track: its knobs only once the Rytm selects it
   }
+  // the Rytm reports no labels for many Sidecar machines (PLAITS, DSP SAMPLE, WAVETABLE, CHOP...): then the Sidecar's own
+  // (voice_label, as for a picked tile above), so the touchscreen and the web show their knobs
+  if (t >= 0) {
+    int vb = core::ui::remote_track_machine(t), vi = core::ui::remote_track_voice(t);
+    bool none = true;
+    for (int k = 0; k < 8; ++k) none = none && label[k][0] == 0;
+    if (none && vb >= 0 && vb != 0x7F && vi >= 0)
+      for (int k = 0; k < 8; ++k) {
+        const char* l = core::ui::voice_label(vi, k);
+        if (l) sniprintf(label[k], sizeof label[k], "%.4s", l);
+      }
+  }
   sidecar_voice_view_t v;
   memset(&v, 0, sizeof v);
   v.valid = t >= 0;
