@@ -21,21 +21,28 @@ onMounted(() => {
 });
 onUnmounted(() => mq?.removeEventListener?.("change", onMq));
 
-// one new slice per ~80 ms (the levels come at ~25 Hz; ~900 dots redrawn 12 times a second is plenty), the loudest
-// level since the last slice so no transient is lost; a still band under reduced motion
-let peak = 0, at = 0;
-watch(
-  () => props.level,
-  (l) => {
-    if (still.value) return;
-    peak = Math.max(peak, l);
-    const now = performance.now();
-    if (now - at < 80) return;
-    at = now;
-    history.value = [...history.value.slice(1), Math.max(0, Math.min(1, peak))];
+// one new slice every 80 ms on a clock (the levels come at ~25 Hz; ~900 dots redrawn 12 times a second is plenty),
+// the loudest level since the last slice so no transient is lost. On a clock, not on each new level: between hits the
+// level sits at 0 and does not change, so the band kept still and then jumped. A still band under reduced motion,
+// and no slices while the tab is hidden.
+let peak = 0;
+watch(() => props.level, (l) => { peak = Math.max(peak, l); });
+let clock: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  clock = setInterval(() => {
+    if (still.value || document.hidden) return;
+    history.value = [...history.value.slice(1), toLift(peak)];
     peak = 0;
-  },
-);
+  }, 80);
+});
+onUnmounted(() => clearInterval(clock));
+
+// a peak (linear, 0..1) as how far it lifts the band: on a dB scale, -48 dB and below nothing, 0 dB all, so a mix
+// around -20 dB moves it visibly (linear, it moved a few per cent)
+function toLift(p: number): number {
+  if (!(p > 0)) return 0;
+  return Math.max(0, Math.min(1, (20 * Math.log10(p) + 48) / 48));
+}
 
 // a fixed gentle shape (the sketch's) for the still band and as a floor under silence
 const shape = (x: number) => 0.55 + 0.22 * Math.sin(x / 70) + 0.16 * Math.sin(x / 23 + 1) + 0.12 * Math.sin(x / 9.5 + 2);
@@ -46,7 +53,7 @@ const dots = computed<TideDot[]>(() => {
   for (let c = 0; c < COLS; c++) {
     const x = c * PITCH + 6;
     // silence (or no Sidecar yet) shows the sketch's band; the level lifts it from there
-    const w = still.value ? shape(x) : shape(x) * (0.85 + 0.45 * history.value[c]);
+    const w = still.value ? shape(x) : shape(x) * (0.85 + 0.6 * history.value[c]);
     for (let r = 0; r < ROWS; r++) {
       const v = Math.max(0, Math.min(1, w + 0.1 - r * 0.15));
       if (v < 0.1) continue;
