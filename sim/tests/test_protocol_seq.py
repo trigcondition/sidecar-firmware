@@ -243,6 +243,15 @@ class File(unittest.TestCase):
         d = P.decode_rui(P.RUI_MODE, bytes([1, 0x15, 1, 0]))
         self.assertEqual(d["page"] - P.RUI_PAGE_SEQ, 5)
 
+    def test_host_cmd_050(self):
+        """0.5.0: the host command (5A) and the QPERF report's bytes, as rytm-mods 0026 and core/mod/rytm_out.cpp."""
+        self.assertEqual(P.host_mute(0x801, 0x002), bytes([0xF0, 0x7D, 0x52, 0x54, 0x5A, 1, 1, 1, 0x10, 2, 0, 0xF7]))
+        self.assertEqual(P.host_cmd(P.HOST_SCENE, 12), bytes([0xF0, 0x7D, 0x52, 0x54, 0x5A, 1, 2, 12, 0xF7]))
+        self.assertEqual(P.host_cmd(P.HOST_PERF, 1, 127), bytes([0xF0, 0x7D, 0x52, 0x54, 0x5A, 1, 3, 1, 127, 0xF7]))
+        self.assertEqual(P.decode_qperf([1, 0x7F, 0x7F, 0x1F, 3]), dict(pos=255, mask=0xFFF, flags=3))
+        self.assertIsNone(P.decode_qperf([1, 0x7F, 0x7F, 0x1F]))
+        self.assertEqual(len({P.SEQ_QPERF, P.SEQ_SCENE, P.HOST_ACK, P.SEQ_SOLO, P.SEQ_FILL, P.SEQ_DIRTY}), 6)
+
     def test_strum(self):
         n = [(64, 100, 96, 0), (60, 100, 96, 0), (67, 100, 96, 0)]
         self.assertEqual([x[3] for x in P.seq_strum(n, 10)], [10, 0, 20])

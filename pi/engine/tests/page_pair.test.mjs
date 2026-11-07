@@ -188,7 +188,13 @@ function cmdRefusal(body) {
   const i = body.indexOf("if (!FromPage", c);
   const j = body.indexOf("return HTTPBadRequest;", i);
   assert.ok(i > c && j > i && j < body.indexOf("m_pConsole->Command (Cmd)", c), "the refusal comes before the console");
-  return body.slice(i, j);
+  const r = body.slice(i, j);
+  // the list itself lives in web_cmd.h since /ws shares it (docs/web-ws.md): /cmd must call it with the body flag
+  // and the gadget's OS-update state, and the conditions are read from there
+  if (!r.includes("webcmd::refused")) return r;
+  assert.match(r, /webcmd::refused \(Cmd, bForm, pSidecar != 0 && pSidecar->OsUpdate \(\)\)/);
+  const h = readFileSync(join(HERE, "..", "web_cmd.h"), "utf8");
+  return r + h.slice(h.indexOf("inline const char *refused"), h.indexOf("return 0;", h.indexOf("inline const char *refused")));
 }
 
 // usbmidi=os: (and its older name osupdate=) lets OS upgrades through the USB-C MIDI port (usbmidi_os.h), so /cmd
@@ -201,7 +207,7 @@ test("/cmd refuses usbmidi= and osupdate=", () => {
   assert.match(r, /strncmp \(Cmd, "osupdate=", 9\) == 0/);
   assert.doesNotMatch(r, /bForm && strncmp \(Cmd, "usbmidi="/, "refused from the body too, not only the URL");
   // while usbmidi=os: is on, link=tcp:<address> too (the review's L6): the computer's MIDI to any host
-  assert.match(r, /strncmp \(Cmd, "link=tcp:", 9\) == 0 && pSidecar != 0 && pSidecar->OsUpdate \(\)/);
+  assert.match(r, /strncmp \(Cmd, "link=tcp:", 9\) == 0 && (pSidecar != 0 && pSidecar->OsUpdate \(\)|bOsUpdate)/);
   const gadget = readFileSync(join(HERE, "..", "sidecar_gadget.cpp"), "utf8");
   assert.match(gadget, /strncmp \(p, "usbmidi=", 8\) == 0 \|\| strncmp \(p, "osupdate=", 9\) == 0/);
 });

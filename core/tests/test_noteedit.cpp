@@ -325,6 +325,115 @@ static void review_round1() {
   seq::set_undo_hooks(nullptr);
 }
 
+// ---- the web's NOTE EDIT (seqed=nsel / nset / nclr / nedit / ndel / noff; seq::note_edit_line, pi/engine/seqed_pi.cpp):
+// the same selection, gestures and undo levels as the Rytm's DATA push and A..E
+static int ned(const char* l, const char* want = nullptr, int shown = -1) {
+  char b[200] = "";
+  int r = seq::note_edit_line(l, shown, b, sizeof b);
+  printf("  %s -> %d \"%s\"\n", l, r, b);
+  if (want) CHECK(strstr(b, want));
+  return r;
+}
+static int vel_of(const seq::Step& s, int pitch) { int k = find(s, pitch); return k >= 0 ? s.note[k].vel : -1; }
+static void web_note_edit() {
+  seq::UndoHooks h = {undo_save, undo_take};
+  seq::set_undo_hooks(&h);
+  g_undo.clear();
+  CHECK(cmd("seq=track:2:on").find("mask") != std::string::npos);
+  seq::Track* t = bd();
+  CHECK(t);
+  leave();
+  seq::view_set(0, 0, -1, true);
+  // S1 C4 E4, S3 D4, S5 F4, S9 G4
+  seq::clear_steps(*t, 0, seq::kMaxSteps), t->length = 32;
+  seq::add_note(t->step[0], nt(60)), seq::add_note(t->step[0], nt(64)), seq::add_note(t->step[2], nt(62));
+  seq::add_note(t->step[4], nt(65)), seq::add_note(t->step[8], nt(67));
+  seq::touched();
+  // refusals, each before anything changes
+  CHECK(ned("seqed=add:0:0:60:0:100:24") == -1);   // (not one of these: seq_touch's)
+  CHECK(ned("seqed=nsel:0:0:60", "bad line") == -2);
+  CHECK(ned("seqed=nedit:0:7:1", "E 0..4") == -2);
+  CHECK(ned("seqed=nsel:12:0:60:1", "track 12") == -2);
+  CHECK(ned("seqed=nedit:0:4:1", "NOTE EDIT is off") == 0);
+  CHECK(ned("seqed=noff:0", "NOTE EDIT is off") == 0);
+  CHECK(ned("seqed=nsel:0:1:60:1", "no note at step 1 pitch 60") == 0);
+  CHECK(ned("seqed=nsel:5:0:60:1", "not a poly track") == 0);
+  CHECK(ned("seqed=nsel:0:0:60:1", "not the shown track", 1) == 0);
+  CHECK(ned("seqed=nset:0:0:7.99,9.1", "none of those notes") == 0);
+  CHECK(ned("seqed=nset:0:0:1.6x", "bad line") == -2);
+  seq::view_set(0, 0, 5, true);   // (a trig held on the Rytm)
+  CHECK(ned("seqed=nsel:0:0:60:1", "a trig is held") == 0);
+  seq::view_set(0, 0, -1, true);
+  CHECK(!seq::note_edit().on && seq::view().track == 0);
+  // nsel from another SEQ page track (outside seq mode): the page's track becomes T, NOTE EDIT on, the note highlighted
+  seq::view_set(1, 0, -1, true);
+  CHECK(ned("seqed=nsel:0:2:62:1", "1 selected, highlight step 2 pitch 62") == 1);
+  CHECK(seq::view().track == 0 && seq::note_edit().on && seq::note_edit().idx == 2 && seq::note_selected(2, 62));
+  frames();
+  CHECK(shown("SELECTED 1"));
+  CHECK(ned("seqed=nsel:0:4:65:1") == 1 && ned("seqed=nsel:0:0:60:1") == 1);
+  at(0, 60, "nsel S1 C4");
+  CHECK(seq::note_edit().sel == 3);
+  CHECK(ned("seqed=nsel:0:2:62:0", "2 selected") == 1 && !seq::note_selected(2, 62) && seq::note_edit().idx == 2);
+  CHECK(ned("seqed=nedit:1:4:1", "NOTE EDIT is on another track") == 0);
+  // nset: the selection replaced, a note not there skipped; ADD 1 adds
+  CHECK(ned("seqed=nset:0:0:4.65,2.62,0.60,7.99", "3 selected, highlight step 0 pitch 60 (1 not there)") == 1);
+  CHECK(seq::note_selected(0, 60) && seq::note_selected(2, 62) && seq::note_selected(4, 65) && !seq::note_selected(0, 64));
+  CHECK(ned("seqed=nset:0:1:8.67", "4 selected") == 1);
+  // nclr: the selection gone, NOTE EDIT stays on (the Rytm's NO with a selection)
+  CHECK(ned("seqed=nclr:0", "0 selected") == 1 && seq::note_edit().on && seq::note_edit().sel == 0);
+  // nedit on S1 C4, S3 D4, S5 F4 (S1's E4 stays): VEL, LEN, NUDG, PTCH, each knob's detents one undo level
+  CHECK(ned("seqed=nset:0:0:0.60,2.62,4.65") == 1);
+  g_undo.clear();
+  CHECK(ned("seqed=nedit:0:4:5", "VEL +5 on 3 notes") == 2);
+  size_t l0 = g_undo.size();   // (the setup above, an outside edit, became a level of its own first: N3)
+  advance_ms(200);
+  CHECK(ned("seqed=nedit:0:4:3") == 2);
+  CHECK(vel_of(t->step[0], 60) == 108 && vel_of(t->step[2], 62) == 108 && vel_of(t->step[4], 65) == 108);
+  CHECK(vel_of(t->step[0], 64) == 100 && vel_of(t->step[8], 67) == 100 && g_undo.size() == l0);
+  CHECK(ned("seqed=nedit:0:4:-1:1") == 2 && vel_of(t->step[2], 62) == 100);   // FUNC: 8 a detent
+  CHECK(ned("seqed=nedit:0:2:2") == 2 && t->step[2].note[0].len == 72 + 2 * seq::kSub / 16);
+  CHECK(ned("seqed=nedit:0:1:-3") == 2 && t->step[4].note[0].micro == -3);
+  CHECK(ned("seqed=nedit:0:3:1") == 2);   // (no scale: a semitone)
+  CHECK(find(t->step[0], 61) >= 0 && find(t->step[2], 63) >= 0 && find(t->step[4], 66) >= 0 && find(t->step[0], 64) >= 0);
+  CHECK(seq::note_selected(0, 61) && seq::note_selected(2, 63) && seq::note_selected(4, 66) && seq::note_edit().sel == 3);
+  printf("  web nedit: levels %d\n", (int)g_undo.size());
+  CHECK(g_undo.size() == l0 + 3);   // VEL (its three lines one level), then LEN, NUDG, PTCH
+  // PTCH by scale degree (C major, QNT EDIT): E4 -> F4; FUNC: a semitone
+  seq::edit_pattern().key = 0, seq::edit_pattern().scale = seq::kScaleMaj, seq::edit_pattern().qnt = seq::kQntEdit;
+  CHECK(ned("seqed=nset:0:0:0.64") == 1 && ned("seqed=nedit:0:3:1") == 2 && find(t->step[0], 65) >= 0);
+  CHECK(ned("seqed=nedit:0:3:1:1") == 2 && find(t->step[0], 66) >= 0);
+  seq::edit_pattern().scale = 0, seq::edit_pattern().qnt = 0;
+  // a group POS move with a collision: S1 C4 and S4 D4 selected, +1 - S2 keeps a C4 of its own, so the shape moves 2
+  seq::clear_steps(*t, 0, seq::kMaxSteps);
+  seq::add_note(t->step[0], nt(60)), seq::add_note(t->step[1], nt(60)), seq::add_note(t->step[3], nt(62));
+  seq::touched();
+  CHECK(ned("seqed=nset:0:0:0.60,3.62", "2 selected") == 1);
+  g_undo.clear();
+  CHECK(ned("seqed=nedit:0:0:1", "POS +1 on 2 notes") == 2);
+  printf("  web POS: S1 %d S2 %d S3 %d S4 %d S6 %d\n", t->step[0].n, t->step[1].n, t->step[2].n, t->step[3].n, t->step[5].n);
+  CHECK(!t->step[0].n && t->step[1].n == 1 && find(t->step[2], 60) >= 0 && !t->step[3].n && find(t->step[5], 62) >= 0);
+  // (two levels: the setup above, an outside edit, first - N3 - then the move)
+  CHECK(seq::note_selected(2, 60) && seq::note_selected(5, 62) && !seq::note_selected(1, 60) && g_undo.size() == 2);
+  CHECK(ned("seqed=nedit:0:0:-5", "no room there") == 0);   // (S3 back 5: before step 1)
+  // one undo (the Rytm's FUNC + YES, the same history as the touchscreen's UNDO) puts the whole gesture back
+  func_yes();
+  CHECK(find(t->step[0], 60) >= 0 && find(t->step[1], 60) >= 0 && find(t->step[3], 62) >= 0 && !t->step[2].n && !t->step[5].n);
+  // ndel: the selection deleted at once (no second ask, unlike FUNC + NO); one undo brings both back
+  CHECK(ned("seqed=nset:0:0:0.60,3.62") == 1);
+  g_undo.clear();
+  CHECK(ned("seqed=ndel:0", "2 notes deleted") == 2);
+  CHECK(!t->step[0].n && !t->step[3].n && t->step[1].n == 1 && seq::note_edit().sel == 0 && seq::note_edit().idx == 1);
+  CHECK(g_undo.size() == 1);
+  func_yes();
+  CHECK(find(t->step[0], 60) >= 0 && find(t->step[3], 62) >= 0 && t->step[1].n == 1);
+  // noff: NOTE EDIT left; then nothing to edit or leave
+  CHECK(ned("seqed=noff:0", "NOTE EDIT off") == 1 && !seq::note_edit().on);
+  CHECK(ned("seqed=ndel:0", "NOTE EDIT is off") == 0 && t->step[0].n == 1);
+  seq::set_undo_hooks(nullptr);
+  g_undo.clear();
+}
+
 // ---- review round 2 (2026-10-27): the re-review's probe (scratchpad nerev/t.cpp G2 G3 K) and findings N1..N4
 static int g_clears = 0;
 static void undo_clear() { g_undo.clear(), ++g_clears; }
@@ -1075,6 +1184,7 @@ int main() {
   }
   fix1028_window();
   review_round1();
+  web_note_edit();
   review_round3();
   review_round2();
   CHECK(system(("rm -rf '" + card + "'").c_str()) == 0);

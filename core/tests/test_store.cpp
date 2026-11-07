@@ -506,8 +506,8 @@ static void switch_during_fill() {
   CHECK(get("/.rytm/lfo/WA/k009.txt", &d, &n) == kUnknown && get("/.rytm/lfo/WA.txt", &d, &n) == kUnknown);
   // B's LFO and INSERT files (the project's own and 128 kits' each) and its sequencer's (tracks.txt, 128 patterns and
   // their saved states), SONG's .backups.txt (UNDO REPLAY's backup slots), and its kits' saved and kept-aside
-  // records (core/bundle/kits.h)
-  CHECK(entries() == 2 * 129 + 1 + 2 * 128 + 1 + 2 * 128);
+  // records (core/bundle/kits.h); 0.5.0: its scenes' (the project's own and 128 kits', core/mod/scene.h)
+  CHECK(entries() == 2 * 129 + 1 + 2 * 128 + 1 + 2 * 128 + 129);
   printf("store: a switch while a fill runs: only the new project's files\n");
 }
 
@@ -598,11 +598,12 @@ static void wide_fill_card_ops() {
   printf("store: WIDE's fill, %d paths: %u card operations (list %u, open %u, read %u, close %u, exists %u)\n",
          entries(), fill, ops(a, b, cardq::kListReq), ops(a, b, cardq::kOpenReq), ops(a, b, cardq::kReadReq),
          ops(a, b, cardq::kCloseReq), ops(a, b, cardq::kExistsReq));
-  CHECK(entries() == 771 + 1 && present() == 1 && held("/.rytm/seq/WIDE/tracks.txt", "mask=0x737"));
-  // /.rytm/lfo, /.rytm/lfo/WIDE, /.rytm/ins, /.rytm/ins/WIDE, /.rytm/seq/WIDE, /.rytm/songs/WIDE, /.rytm/kits/WIDE
-  CHECK(ops(a, b, cardq::kListReq) == 7);
+  CHECK(entries() == 771 + 1 + 129 && present() == 1 && held("/.rytm/seq/WIDE/tracks.txt", "mask=0x737"));
+  // /.rytm/lfo, /.rytm/lfo/WIDE, /.rytm/ins, /.rytm/ins/WIDE, /.rytm/seq/WIDE, /.rytm/songs/WIDE, /.rytm/kits/WIDE;
+  // 0.5.0 /.rytm/scene, /.rytm/scene/WIDE
+  CHECK(ops(a, b, cardq::kListReq) == 9);
   CHECK(ops(a, b, cardq::kOpenReq) == 1 && ops(a, b, cardq::kReadReq) == 1 && ops(a, b, cardq::kCloseReq) == 1);
-  CHECK(ops(a, b, cardq::kExistsReq) == 0 && fill == 10);
+  CHECK(ops(a, b, cardq::kExistsReq) == 0 && fill == 12);
 }
 
 static void noop_out(const uint8_t*, int) {}

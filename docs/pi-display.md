@@ -10,8 +10,9 @@ the version Circle 51.1.1's `addon/lvgl` submodule pins. The code is in `pi/ui`:
 ## The screen
 
 The display has two themes, OLED (the default: the screen drawn as an Elektron-style dot-matrix OLED, a navigation
-column HOME / SEQ / PAT / SET on the right) and CLASSIC (the layout below, drawn as the Rytm MKII's hardware). Settings >
-Display > UI style switches them live; docs/UI-THEMES.md has the design system. The list below is CLASSIC's layout; OLED
+column HOME / SEQ / PAT / SET on the right) and SIDECAR (the layout below, in the web app's colours: cards on a night
+blue, pill keys, a T1..T8 rail on the right from 1024x600; it replaced CLASSIC, the Rytm MKII's hardware look). Settings >
+Display > UI style switches them live; docs/UI-THEMES.md has the design system. The list below is SIDECAR's layout; OLED
 shows the same content on 400x240 dots (512x300 on a 1024x600 screen).
 
 - Title bar "Sidecar | Expander", with "Rytm connected" (green) or "Rytm not connected" (red) on the right.
@@ -50,15 +51,15 @@ page, the serial console or the display shows on all of them.
     (`sendlvl=`) lasts only until the next 0x20 message.
   - **Kill tails** sends `killfx`: the CC 120 request (`core::fx::all_sound_off`, both FX fade out in about 5 ms, clear and
     return). Needs a build with the cc120-kill change.
-- **Display**: UI style (OLED / CLASSIC, `uistyle=`), screensaver, the home page's touch test, brightness.
+- **Display**: UI style (OLED / SIDECAR, `uistyle=`), screensaver, the home page's touch test, brightness.
 - **About**: the web page address, IP, whether the web server runs (cmdline `web=`, not switchable at run time), link,
   USB-C gadget mode, the engine's build time, Circle and LVGL versions.
 
 **REC** (the Overbridge recorder, docs/pi-engine.md "Recording"; docs/UI-THEMES.md "REC"): UP + T7 on the Rytm, or a
-tap on the home page's REC status (OLED: the title bar's right half; CLASSIC: the Status panel's REC time, the SIDECAR
-panel's Recorder row). REC / STOP, ARM, the take's time, the take, 48 kHz and the bit depth, the card's free space and
+tap on the home page's REC status (OLED: the title bar's right half; SIDECAR: the Status card's REC time, the SIDECAR
+card's Recorder row). REC / STOP, ARM, the take's time, the take, 48 kHz and the bit depth, the card's free space and
 the time it holds; the 23 channels with a meter each (tap: on / off, idle only); TAKES: the newest takes with Delete
-(a confirmation first). No navigation key: HOME (OLED) or Home (CLASSIC) goes back.
+(a confirmation first). No navigation key: HOME (OLED, and SIDECAR's rail or header row) goes back.
 
 **SCOPE** (touch2; `pi/ui/sidecar_scope.c`, filled by `pi/engine/scope_pi.cpp`): UP + T9 on the Rytm, or a tap on the
 VOICE page's scope. An oscilloscope of one Overbridge channel - TRACK (the Rytm's selected track's stem, following it),
@@ -70,7 +71,7 @@ columns), the meters are the recorder's (recorder.h `meter_peaks`, the REC page'
 traces a second while shown; the tap is off again when the page is left.
 
 **SIDECAR STATUS** (touch2; `pi/ui/sidecar_status.c`, filled by kernel.cpp and `pi/engine/status_pi.cpp`): UP + T10 on the
-Rytm, or a tap on the home page's ENGINE panel (OLED) / Status panel below the REC time (CLASSIC). Read only:
+Rytm, or a tap on the home page's ENGINE panel (OLED) / Status card below the REC time (SIDECAR). Read only:
 - VOICES: each voice named by its track(s), in the Rytm's track order, with its machine and render load (a share of one
   render core, from `cores.cpp`'s per-voice ticks; a bar full at 50 %), MUTED when the voice guard muted it.
 - SEND FX: FX 1 / FX 2 TYPE and PRE / POST.
@@ -113,7 +114,7 @@ The title shows the list and the pool RAM (`RAM 412 MB 40%`, `RAM -` until the s
   (SAMPLES / TABLES / INSTR, their counts) on top; a tap on a filled row opens its menu; DONE goes back.
 
 `make -C pi/ui/host` renders every page on the Mac in both themes (no window, no SDL): `pi/ui/host/shots/oled-*.png` and
-`classic-*.png` (home, sound, fx, display, about, hidden, home-info, power, seq-*, rytm-*), with made-up status values and a
+`sidecar-*.png` (home, sound, fx, display, about, hidden, home-info, power, seq-*, rytm-*), with made-up status values and a
 touch at 392,145. It taps the controls through LVGL's pointer input and fails if one does not send its command.
 `make -C pi/ui/host shot.png SIZE=1024x600` does the same on a 1024x600 screen (`shots-1024x600/`, the same checks with
 the taps moved as the layout moves), `make -C pi/ui/host shots-all` both sizes, `make -C pi/ui/host splash-wide` the boot
@@ -181,7 +182,7 @@ redraws the area it uncovers in 48-line bands, about the cost of that first draw
 
 ### Touch calibration
 
-**Settings > Display > Touch cal: CALIBRATE** (CLASSIC: **Touch: Calibrate**) shows a cross at 10 % in from each corner
+**Settings > Display > Touch cal: CALIBRATE** (SIDECAR: **Touch: Calibrate**) shows a cross at 10 % in from each corner
 in turn (top left, top right, bottom right, bottom left). Touch each one precisely; the raw values at each release are
 taken (`pi/ui/touch_cal.c`, unit test `pi/engine/tests/test_touch_cal.cpp`):
 
@@ -407,7 +408,7 @@ A USB mouse on this panel still moves in the panel's portrait range: not handled
 
 ## The boot screen
 
-- Before LVGL: `pi/ui/sidecar_splash.c` draws "SIDECAR / EXPANDER" in the OLED theme's dot-matrix font with a row of 8 segments (CLASSIC, with cmdline `uistyle=classic`: the wordmark and a thin bar) straight into the frame buffer, right after the kernel's first log line (`boot screen: 800x480 in 9585 us`). The bar fills one of 8 steps per boot stage (SD card, send FX, the core's card, the console, cores 1-3, the bench, USB, LVGL); LVGL's home screen replaces it at its first redraw. `display=0`: no boot screen either.
+- Before LVGL: `pi/ui/sidecar_splash.c` draws "SIDECAR / EXPANDER" in the OLED theme's dot-matrix font with a row of 8 segments (SIDECAR, with cmdline `uistyle=sidecar`: the "Docked" logo over the wordmark and a thin lavender bar on the night blue) straight into the frame buffer, right after the kernel's first log line (`boot screen: 800x480 in 9585 us`). The bar fills one of 8 steps per boot stage (SD card, send FX, the core's card, the console, cores 1-3, the bench, USB, LVGL); LVGL's home screen replaces it at its first redraw. `display=0`: no boot screen either.
 - `config.txt`'s `disable_splash=1` (sdboot's block, docs/pi-engine.md) removes the firmware's rainbow square, so the screen stays black until the boot screen.
 - On the Mac: `make -C pi/ui/host splash.png`.
 
@@ -530,7 +531,7 @@ A USB mouse on this panel still moves in the panel's portrait range: not handled
 - The settings are stored in `/.rytm/display.txt` (`screensaver=60`, `brightness=100`, `touchtest=1`, `uistyle=oled`, and
   `res=` when one was added by hand: "Screen sizes"), written by core 0 as a whole file (tmp + rename). `screensaver=`, `brightness=`, `touchtest=` and `uistyle=` in cmdline.txt override
   the file at boot.
-- **UI style:** `uistyle=oled|classic` (console, web page, the Display page): the theme, switched live (docs/UI-THEMES.md).
+- **UI style:** `uistyle=oled|sidecar` (console, web page, the Display page; an older card's `classic` reads as `sidecar`): the theme, switched live (docs/UI-THEMES.md).
 - `/status` carries `screensaver`, `brightness`, `touchtest` (1 shown, 0 hidden), `display` (a display is attached) and `blank`.
 
 ## Cost
@@ -540,14 +541,17 @@ A USB mouse on this panel still moves in the panel's portrait range: not handled
   - text+data+bss is now 2.56 MB, of which the bss is 1.09 MB.
   - Adding the send FX's 2.7 MB of bss gives about 5.3 MB, inside the 8 MB `KERNEL_MAX_SIZE`.
   - Since pi-heap (2026-10-17) the send FX (4.7 MB) and the core's big buffers (578 KB: core/heap_buffers.h) come from Circle's heap at boot (kernel.cpp BootAlloc), not .bss: `_end` went from 0x82ee88 to 0x30e6c8 (bss 5.95 MB to 575 KB).
-  - LVGL is about 549 KB of code and 99 KB of fonts (Montserrat 12-24), plus 1 KB of bss.
+  - LVGL is about 549 KB of code and 99 KB of fonts (Montserrat 12-24), plus 1 KB of bss. Since SIDECAR the pages use
+    Montserrat no more (only LVGL's default, 14, stays referenced); SIDECAR's Space Grotesk tables are 89 KB
+    (`pi/ui/fonts/`, 12-28 px), and the Montserrat 28 table (37 KB, `sidecar_font28.c`) is gone.
 - **Heap**, outside the kernel image (Circle's heap):
   - One draw buffer of 48 lines: 77 KB from `HEAP_DMA30`.
   - LVGL's objects use `malloc` (`LV_STDLIB_CLIB`): tens of KB for this screen.
 - **The frame buffer:** 800x480x16 bit = 750 KB (1024x600: 1.2 MB). It lives in the GPU's memory (`gpu_mem`), not in
   the ARM heap. At 1024x600 the draw buffer is 98 KB and the OLED dot band 66 KB (77 / 51 KB at 800x480).
 - **1024x600 redraws** (1.6x the pixels; Mac `./shot` x34, Pi 4 *estimated*, not measured): a full redraw costs about
-  1.3x the 800x480 one: OLED home 6.6 -> 8.7 ms, SEQ 5.7 -> 7.7 ms, RYTM 5.6 -> 7.3 ms; CLASSIC home 12.9 -> 16.8 ms, SEQ
+  1.3x the 800x480 one: OLED home 6.6 -> 8.7 ms, SEQ 5.7 -> 7.7 ms, RYTM 5.6 -> 7.3 ms; CLASSIC (the theme SIDECAR
+  replaced; SIDECAR's figures: docs/UI-THEMES.md "Cost") home 12.9 -> 16.8 ms, SEQ
   13.1 -> 17.2 ms, RYTM 12.7 -> 16.5 ms. The SEQ grid refresh 1.4 -> 2.2 ms (OLED) / 3.8 -> 5.7 ms (CLASSIC). What runs
   while playing hardly changes (a playing frame 0.45 -> 0.5 ms OLED, 0.84 -> 0.95 ms CLASSIC). A theme switch's longest
   band: 4.3 -> 5.0 ms (to CLASSIC), 2.4 -> 2.9 ms (to OLED). A CLASSIC full redraw at 1024x600 (~17 ms) is the longest

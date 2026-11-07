@@ -131,7 +131,21 @@ void clock_in(uint8_t status, uint16_t spp = 0);
 // The LFOs' (core/lfo.cpp sets them; null without): each knob take_sendfx takes passes knob_filter (the value to play,
 // an LFO's modulation on top), each clock_in byte goes on to clock_listener.
 extern uint8_t (*knob_filter)(int slot, int knob, uint8_t v);
+// The modulation layer's (core/mod/mod.cpp sets it; null without): each track send take_sendfx takes (track t's SEND to
+// FX slot s) passes send_filter, the value to play (mod kSnd: an offset on top of the kit's)
+extern uint8_t (*send_filter)(int track, int slot, uint8_t v);
+// A base written from outside the 0x20 (SONG RECORD's replay): through the filters, so a modulation stays on top
+void set_knob_base(int slot, int knob, uint8_t v);
+void set_send_base(int track, int slot, uint8_t v);
 extern void (*clock_listener)(uint8_t status, uint16_t spp);
+// 0.5.0 (core/mod/mod.cpp sets it; null without): a Sidecar-side edit of a target (mod::Tid: the pages, the console,
+// the touchscreen and the web, never a report or a file load), so it wins over a scene's morph until the fader moves
+// (spec-050 2.5); v the value set, -1 an offset kind's (its knob, read there). An inline variable (one definition, no
+// .cpp): out.cpp, insert.cpp and master.cpp also link without send_fx.cpp (the Pi portable tests' test_ob_usb)
+inline void (*manual_edit)(uint16_t tid, float v) = nullptr;
+inline void edited(uint16_t tid, float v = -1) {
+  if (manual_edit) manual_edit(tid, v);
+}
 // The FX buses' insert chains (core/fx/insert.h, CORE_POLY builds; null without): FX slot s's return y[n] (stereo, before
 // its TYPE fade and the limits) through bus s's chain, in place. The send FX's core.
 extern void (*bus_insert)(int slot, float (*y)[2], int n);

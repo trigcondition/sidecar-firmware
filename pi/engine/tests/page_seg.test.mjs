@@ -101,10 +101,13 @@ test("USB-C mode: chosen, disabled where it cannot run, what USB-C is now, the w
   paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "card", runs: "class", modes: ["class"], shown: "sidecar", boxUp: false } });
   assert.equal(bs[1].disabled, true); assert.match(bs[1].title, /not in this build/);
   assert.equal(el["#usbnow"].textContent, "now: the Sidecar device; not in this build: class compliant runs");
-  // a Pi 5 in 0.4.1 (board 5, no mirror): the page says when it comes
+  // a Pi 5 (board 5) as the Pi 4: OVERBRIDGE there when its build has the mirror, the generic word when not
+  paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "card", runs: "overbridge", modes: ["class", "overbridge"], shown: "box", boxUp: true, board: 5 } });
+  assert.equal(bs[1].disabled, false); assert.equal(bs[1].attrs["aria-checked"], "true");
+  assert.equal(el["#usbnow"].textContent, "now: the Rytm itself");
   paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "card", runs: "class", modes: ["class"], shown: "sidecar", boxUp: false, board: 5 } });
-  assert.equal(bs[1].disabled, true); assert.equal(bs[1].title, "Overbridge on the Pi 5 comes in 0.4.2");
-  assert.equal(el["#usbnow"].textContent, "now: the Sidecar device; Overbridge on the Pi 5 comes in 0.4.2: class compliant runs");
+  assert.equal(bs[1].disabled, true); assert.match(bs[1].title, /not in this build/);
+  assert.equal(el["#usbnow"].textContent, "now: the Sidecar device; not in this build: class compliant runs");
 
   // the warning before it is set: while Overbridge is pending (the click confirmed), and a confirm() before the click
   const pendOb = { want: (k) => (k === "usbmode" ? "overbridge" : undefined) };

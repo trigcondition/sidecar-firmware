@@ -1620,12 +1620,42 @@ and a note's flags bit 1 (selected).
 - It pages the window to that note, and scrolls the note's row to the middle when it is off the window or in its top
   four rows (the card sits above the note).
 - The playhead does not move the window while NOTE EDIT is on, and the Rytm's PAGE does not move it either.
-- The Rytm's selection gets a second frame (amber on CLASSIC, the accent on OLED).
+- The Rytm's selection gets a second frame (light coral on SIDECAR, the accent on OLED).
+
+**From the web** (2026-11-07; `seq::note_edit_line`, run by pi/engine/seqed_pi.cpp on core 3): console lines that do
+what the Rytm's DATA push and A..E do, on the same selection and the same undo history. T is the Rytm track 0..11 (as
+in `seqed=move`), S a step 0..127, P a MIDI note.
+
+| line | what |
+|---|---|
+| `seqed=nsel:T:S:P:ON` | the note (S, P) into the selection (ON 1) or out (0), and highlighted. NOTE EDIT comes on for T if it is off (as DATA's first turn) |
+| `seqed=nset:T:ADD:S.P,S.P,...` | the selection becomes these notes (ADD 1: they are added). Notes not there are skipped and counted; the highlight goes to the first of them in play order. A line is at most 191 characters (the console's queue), about 20 notes: a longer box select goes as ADD 0, then ADD 1 lines |
+| `seqed=nclr:T` | the selection cleared; NOTE EDIT stays on (the Rytm's NO with a selection) |
+| `seqed=nedit:T:E:D[:F]` | knob E (0 POS, 1 NUDG, 2 LEN, 3 PTCH, 4 VEL) turned D detents (-127..127, not 0), F 1 as with FUNC held. It edits the selection, else the highlighted note, exactly as the Rytm's A..E (`ne_enc`) |
+| `seqed=ndel:T` | the selection (else the highlighted note) deleted at once: no second ask, the web asks if it wants to |
+| `seqed=noff:T` | NOTE EDIT left |
+
+One detent: POS a step (FUNC: 1/96 step, as NUDG); NUDG 1/96 step (FUNC 12/96); LEN 1/16 step, 6/96 (FUNC a step);
+PTCH a semitone (FUNC an octave), or a scale degree with the pattern's scale and QNT EDIT / PLAY (FUNC a semitone);
+VEL 1 (FUNC 8). POS and PTCH skip a place that is taken (16 steps / 12 semitones / 7 degrees at most) and stop at the
+track's end and 0..127. One undo level a gesture, as on the Rytm: the same knob within 1 s on the same highlight is one
+level, so a drag's lines are one; UNDO is `seqed=undo:T` (or FUNC + YES on the Rytm).
+
+nsel and nset may bring NOTE EDIT on: outside the Rytm's seq mode the SEQ page's track becomes T (the Rytm's SEQ page,
+if open, shows T). The Rytm then shows what its own entry shows: the page on the notes view at the highlight's page, the
+highlight's step amber and the selected steps green on the trig LEDs, `SELECTED n` in the footer for a second. The
+other lines need NOTE EDIT on T already. Refused, with the reason in the reply line (`seqed: T1: ...`): not a poly
+track; not the shown track; the Rytm's SEQ page asks a question; a trig is held on the Rytm; NOTE EDIT is off / on
+another track; the Rytm's seq mode is on another track; no note at step S pitch P (nsel), none of those notes (nset);
+no note to edit / delete; no room there (POS), no pitch free (PTCH); the project is still loading (nedit, ndel). A
+malformed line is answered `seqed: bad line ...`. The web view (`seq`: `noteEdit` `on` `step` `pitch` `sel`, a note's
+flags bit 1 for selected) carries NOTE EDIT only while the shown track is the SEQ page's track, which nsel / nset make
+so.
 
 ### Code
 
-- core/seq/seq.cpp: the `ne_*` block before `ui_key`, `note_edit()`, `note_selected()`, `note_edit_range()` and
-  `data_wanted()`, the LEDs, and FOLLOW held while NOTE EDIT is on.
+- core/seq/seq.cpp: the `ne_*` block before `ui_key`, `note_edit()`, `note_selected()`, `note_edit_range()`,
+  `note_edit_line()` (the web's lines) and `data_wanted()`, the LEDs, and FOLLOW held while NOTE EDIT is on.
 - core/seq/seq.h: `NoteEdit`.
 - core/ui/page_seq.cpp: `ne_draw`, and the roll's marks.
 - core/ui/remote.cpp: `send_mask`'s `data`.

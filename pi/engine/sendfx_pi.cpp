@@ -5,6 +5,7 @@
 #include "fx/out.h"
 #include "fx/send_fx.h"
 #include "platform.h"
+#include "spectrum_pi.h"
 #include "spsc.h"
 
 #include <string.h>
@@ -16,6 +17,7 @@ namespace sendfx_pi {
 struct Stem { float v[8], vs[3]; };   // vs: the Sidecar voices' sends to the buses (fx-ins)
 struct Ret { float l, r, pl, pr, s[4]; };   // the PRE pair (onto 2/3) and the POST pair (onto 0/1), each slot's effect and STUTTER on the pair its P1 names
 static Spsc<Stem, kRing> s_Stems;
+static volatile float s_BusPk[3];   // the buses' peaks since TakeBusPeaks (core 2 writes, core 0 takes: racy floats, a meter)
 static Spsc<Ret, kRing> s_Rets;
 // Built by Init() (CKernel::Initialize, core 0, after the logger), not as a static object: SendFx is 5.9 MB with
 // lookup tables and a full clear, which would otherwise run inside sysinit's static constructors, before the first
@@ -122,17 +124,37 @@ void Render() {
     ++k;
   }
   Fx().Process(st, (int)k, o, core::fx::control, m, sl, anyv ? vs : nullptr);
-  core::ins::bus3(b3, (int)k, o, m);   // bus 3: the dry bus's chain onto its pair (nothing while off)
-  float pk = s_Peak;
+  float b3o[core::fx::SendFx::kMaxFrames];   // bus 3's chain output (silence while off), for the spectrum (spectrum_pi.h)
+  const bool spec = spectrum_pi::WantBus3();
+  if (spec) memset(b3o, 0, sizeof(float) * k);
+  core::ins::bus3(b3, (int)k, o, m, spec ? b3o : nullptr);   // bus 3: the dry bus's chain onto its pair (nothing while off)
+  if (spec) spectrum_pi::FromBus3(b3o, k);
+  float pk = s_Peak, bp[3] = {0.0f, 0.0f, 0.0f};   // bp: the buses' meters (B1, B2: each FX's own return; B3: its input)
   for (unsigned i = 0; i < k; ++i) {
     if (!s_Rets.push(Ret{o[i][0], o[i][1], m[i][0], m[i][1], {sl[i][0], sl[i][1], sl[i][2], sl[i][3]}})) s_nDropOut = s_nDropOut + 1;
     float a = o[i][0] < 0 ? -o[i][0] : o[i][0], b = m[i][0] < 0 ? -m[i][0] : m[i][0];
     if (b > a) a = b;
     if (a > pk) pk = a;
+    for (int j = 0; j < 4; ++j) {
+      const float x = sl[i][j] < 0 ? -sl[i][j] : sl[i][j];
+      if (x > bp[j >> 1]) bp[j >> 1] = x;
+    }
+    const float x3 = b3[i] < 0 ? -b3[i] : b3[i];
+    if (x3 > bp[2]) bp[2] = x3;
   }
   s_Peak = pk;
+  for (int j = 0; j < 3; ++j)
+    if (bp[j] > s_BusPk[j]) s_BusPk[j] = bp[j];
   s_nFrames = s_nFrames + k;
   s_nCycles = s_nCycles + (uint32_t)(core::cycles() - t0);   // (one block's ticks: far below the 32-bit wrap)
+}
+
+void TakeBusPeaks(float* pk) {
+  for (int j = 0; j < 3; ++j) {
+    const float p = s_BusPk[j];
+    pk[j] = p > 1.0f ? 1.0f : p;
+    s_BusPk[j] = 0.0f;
+  }
 }
 
 static int32_t Add(int32_t a, float x) {

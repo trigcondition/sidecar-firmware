@@ -19,6 +19,8 @@ value (0..127) as a bar along the bottom tile row. Idle, it sends 3C every 250 m
 1022: --mask SPEC: the catch mask (37) sent after every 30 on, SPEC "e=0,3;k=LEFT,NO,0x84" (encoders, key names of
 protocol.RUI_KEYS or codes); --mask-at S=SPEC: a new mask at emulated S. MIDI transport from the Rytm (FA start, FB
 continue, FC stop) and note-ons are logged as {"ev": "rt", "b": byte} / {"ev": "note", "status": .., "note": ..}.
+0.5.0: the Rytm's 2D 01 reports as {"ev": "state", "kind": k, "b": [bytes after the kind]} (QPERF 0E, SCENE 0F, the
+host command's ack 10; the sequencer's kinds too).
 """
 import argparse
 import json
@@ -119,8 +121,8 @@ def main():
     bar = 0
     stats = dict(rects=0, commits=0, bytes=0, keys=0, encs=0)
 
-    def ev(kind, **kw):
-        kw.update(t=round(emu(), 6), ev=kind)
+    def ev(what, **kw):
+        kw.update(t=round(emu(), 6), ev=what)
         if log:
             log.write(json.dumps(kw) + "\n")
             log.flush()
@@ -195,6 +197,9 @@ def main():
             j = rmidi.index(b"\xf7", i)
             msg, rmidi = rmidi[i:j + 1], rmidi[j + 1:]
             r = P.parse(msg)
+            if r and r[0] == P.SEQ_STATE and len(r[1]) >= 2 and r[1][0] == 1:   # 0.5.0: 2D 01 <kind> ... (0E, 0F, 10)
+                ev("state", kind=r[1][1], b=list(r[1][2:]))
+                continue
             if not r or not P.RUI_FIRST <= r[0] <= P.RUI_LAST:
                 continue
             m = P.decode_rui(r[0], r[1])

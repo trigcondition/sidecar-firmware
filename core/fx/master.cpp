@@ -7,6 +7,7 @@
 
 #include "fx/out_mix.h"
 #include "fx/send_fx.h"
+#include "mod/target.h"
 #include "platform.h"
 
 namespace core {
@@ -90,7 +91,7 @@ void send_run(int c, int s, const float* p, const float* x, const float* r, floa
   } else {
     memset(w, 0, sizeof(float) * 2 * (unsigned)m);
   }
-  const float tgt = ins::knob01(control.mix[i]);
+  const float tgt = ins::knob01((uint8_t)played_mix(i));   // the knob + core/mod's offset
   if (!g_mix_set[i]) g_mix[i] = tgt, g_mix_set[i] = true;
   const float a = g_mix[i], b = a + (tgt - a) * ((float)m / ((float)m + 144.0f));   // 3 ms a chunk, as a slot's params
   g_mix[i] = fabsf(b - tgt) < 1e-4f ? tgt : b;
@@ -150,6 +151,11 @@ void set_src(int v) {
 void set_lev(int v) {
   control.lev = (uint8_t)clampi(v, 0, 127);
   ins::touch();
+}
+void mod_offset(int param, int off) {   // never saved, no touch: the knobs are the file's
+  int8_t o = (int8_t)clampi(off, -127, 127);
+  if (param == 0) control.mod_lev = o;
+  else if (param >= 1 && param <= kSlots) control.mod_mix[param - 1] = o;
 }
 void set_trim(int db) {
   control.trim = (uint8_t)clampi(-db, 0, kTrimMax);
@@ -224,6 +230,8 @@ int stems_on_main() {
 
 void reset() {
   clear();
+  control.mod_lev = 0;
+  for (int i = 0; i < kSlots; ++i) control.mod_mix[i] = 0;
   if (g_fx) g_fx->Reset();
   memset(&g_ctl, 0, sizeof g_ctl);
   for (int i = 0; i < kSlots; ++i) g_mix_set[i] = false, g_run_fx[i] = -1;
@@ -243,7 +251,7 @@ void render(float (*y)[2], int n) {
   ins::Engine& e = ins::engine();
   for (int c = ins::kM0; c < ins::kChains; ++c)
     if (e.Active(c, ins::control)) e.ProcessStereo(c, y, n, ins::control);
-  const float t = (float)control.lev * (1.0f / kLevUnity), g0 = g_lev;
+  const float t = (float)played_lev() * (1.0f / kLevUnity), g0 = g_lev;   // the knob + core/mod's offset
   float g1 = g0 + (t - g0) * ((float)n / ((float)n + 144.0f));
   if (fabsf(g1 - t) < 1e-4f) g1 = t;
   g_lev = g1;
@@ -351,7 +359,7 @@ bool command(const char* p, char* o, int cap) {
     else if (same_ci(a, "src")) {
       if (!same_ci(b, "ret") && !same_ci(b, "mix")) return sniprintf(o, cap, "%s", kHelp), true;
       set_src(same_ci(b, "mix") ? kMix : kRet);
-    } else if (same_ci(a, "lev") && num(b) >= 0) set_lev(num(b));
+    } else if (same_ci(a, "lev") && num(b) >= 0) set_lev(num(b)), fx::edited(mod::tid(mod::kMfx, 0, 0));
     else if (same_ci(a, "trim") && trim_word(b) <= 0) set_trim(trim_word(b));
     else if (same_ci(a, "reset")) {
       for (int k = 0; k < kSlots; ++k) ins::set_type(chain(k), slot(k), ins::kOff);
@@ -367,7 +375,7 @@ bool command(const char* p, char* o, int cap) {
         for (int j = 0; j < ins::kEqParams; ++j)
           if (same_ci(b, kK[j])) k = j;
         if (k < 0 || num(v) < 0) return sniprintf(o, cap, "%s", kHelp), true;
-        ins::set_eq(kEqChain, k, num(v));
+        ins::set_eq(kEqChain, k, num(v)), fx::edited(mod::tid(mod::kIns, kEqChain, 8 + k));
       }
     } else if (i >= 0) {
       const int c = chain(i), s = slot(i);
@@ -378,9 +386,10 @@ bool command(const char* p, char* o, int cap) {
         ins::set_type(c, s, t);
         if (ins::control.type[c][s] != t)
           return sniprintf(o, cap, CORE_STR("mfx: %s: %d send TYPEs play on the master at most"), ins::type_name(t), kFxSlots), true;
-      } else if (same_ci(b, "mix") && num(v) >= 0) set_mix(i, num(v));
+      } else if (same_ci(b, "mix") && num(v) >= 0) set_mix(i, num(v)), fx::edited(mod::tid(mod::kMfx, 0, 1 + i));
       else if (same_ci(b, "pair")) set_pair(i, num(v) > 0);
-      else if ((b[0] == 'p' || b[0] == 'P') && b[1] >= '1' && b[1] <= '4' && !b[2] && num(v) >= 0) ins::set_param(c, s, b[1] - '1', num(v));
+      else if ((b[0] == 'p' || b[0] == 'P') && b[1] >= '1' && b[1] <= '4' && !b[2] && num(v) >= 0)
+        ins::set_param(c, s, b[1] - '1', num(v)), fx::edited(mod::tid(mod::kIns, c, s * 4 + b[1] - '1'));
       else return sniprintf(o, cap, "%s", kHelp), true;
     } else {
       return sniprintf(o, cap, "%s", kHelp), true;

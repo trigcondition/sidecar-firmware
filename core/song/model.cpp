@@ -27,7 +27,7 @@ CORE_COLD int type_of(const char* name, int n) {
 CORE_COLD void config_default(MidiConfig* c) {
   memset(c, 0, sizeof *c);
   for (int t = 0; t < kTracks; ++t) c->track_ch[t] = (uint8_t)(t + 1);
-  c->fx_ch = 13, c->auto_ch = 14;
+  c->fx_ch = 13, c->auto_ch = 14, c->perf_ch = 15;
   c->nrpn = 0, c->transport_send = 1, c->transport_receive = 1;
 }
 
@@ -42,6 +42,8 @@ CORE_COLD bool parse_global(const uint8_t* u, int n, MidiConfig* c) {
   c->encoder_ext = u[44] != 0, c->trk_ch = u[46] != 0;
   for (int t = 0; t < kTracks; ++t) c->track_ch[t] = u[12 + t] < 16 ? (uint8_t)(u[12 + t] + 1) : 0;
   c->fx_ch = u[24] < 16 ? (uint8_t)(u[24] + 1) : 0;
+  c->perf_ch = u[kGlobalPerfCh] < 16 ? (uint8_t)(u[kGlobalPerfCh] + 1) : 0;   // (0xff: OFF)
+  if (u[kGlobalAutoCh] < 16) c->auto_ch = (uint8_t)(u[kGlobalAutoCh] + 1);   // [inferred offset: song.h]
   c->valid = true;
   return true;
 }

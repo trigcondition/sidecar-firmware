@@ -23,6 +23,7 @@
 #include "fx/out.h"
 #include "fx/send_fx.h"
 #include "machines.h"
+#include "mod/mod.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
 #include "ui/widgets.h"
@@ -235,7 +236,7 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   sniprintf(val[6], 8, CORE_STR("%d"), ip.busel + 1);
   if (!ip.bus) {
     sniprintf(lab[7], 6, "SEND");
-    sniprintf(val[7], 8, CORE_STR("%d"), ins::control.send[ch][ip.busel]);
+    sniprintf(val[7], 8, CORE_STR("%d"), ins::send_knob(ch, ip.busel));
   } else {
     sniprintf(lab[7], 6, "ROUT");
     if (ip.busel == 2) sniprintf(val[7], 8, "%s", ins::control.route3 ? "POST" : "PRE");
@@ -255,8 +256,8 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
     sniprintf(b, sizeof b, CORE_STR("%s %c %s:%s"), ch < ins::kVoices ? voice_name(ch) : ins::chain_name(ch), 'A' + ip.slot, L.label[e], v);
     footer(c, b, ins::param(ch, ip.slot, e));
   } else if (e == 7 && !ip.bus) {
-    sniprintf(b, sizeof b, CORE_STR("%s SEND BUS %d:%d"), voice_name(ch), ip.busel + 1, ins::control.send[ch][ip.busel]);
-    footer(c, b, ins::control.send[ch][ip.busel]);
+    sniprintf(b, sizeof b, CORE_STR("%s SEND BUS %d:%d"), voice_name(ch), ip.busel + 1, ins::send_knob(ch, ip.busel));
+    footer(c, b, ins::send_knob(ch, ip.busel));
   } else if (!ip.bus && remote_track_machine(tr) == 0x7F) {
     footer(c, "ANALOG TRACK: NO SIDECAR VOICE");
   } else {
@@ -270,7 +271,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
   const int l = list_turn(e, d);   // the slot, type, route, track and bus: lists; the rest values
   if (ip.eq) {   // ins1112: A HPF, B LPF, C LOW, D HIGH; G the bus (FUNC + G another track, as elsewhere)
     int ch = chain_now();
-    if (e < ins::kEqParams) ins::set_eq(ch, e, ins::eq_param(ch, e) + d * (func ? 8 : 1));
+    if (e < ins::kEqParams) ins::set_eq(ch, e, ins::eq_param(ch, e) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIns, ch, 8 + e));
     else if (e == 6) {
       if (func && !ip.bus) ip.track = clampi(track_now() + l, 0, 11), ip.manual = true;
       else ip.busel = clampi(ip.busel + l, 0, ins::kBuses - 1);
@@ -280,12 +281,15 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
   if (ip.out) {   // A OUT, B LEV, C PAN, D WID, E DEC (DSP SAMPLE)
     int vi = voice_now();
     if (e == 0) out::set_route(vi, clampi(out::control.route[vi] + l, 0, out::kRoutes - 1));
-    else if (e <= 3 || (e == 4 && dsp_sample_now())) out::set_param(vi, e - 1, out::param(vi, e - 1) + d * (func ? 8 : 1));
+    else if (e <= 3 || (e == 4 && dsp_sample_now())) {
+      out::set_param(vi, e - 1, out::param(vi, e - 1) + d * (func ? 8 : 1));
+      if (e <= 3) mod::manual_knob(mod::tid(mod::kOut, vi, e - 1));
+    }
     return;
   }
   int ch = chain_now(), t = ins::control.type[ch][ip.slot];
   if (e < 4) {
-    if (t) ins::set_param(ch, ip.slot, e, ins::param(ch, ip.slot, e) + d * (func ? 8 : 1));
+    if (t) ins::set_param(ch, ip.slot, e, ins::param(ch, ip.slot, e) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIns, ch, ip.slot * 4 + e));
     return;
   }
   switch (e) {
@@ -305,11 +309,21 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
       }
       break;
     case 7:
-      if (!ip.bus) ins::set_send(ch, ip.busel, ins::control.send[ch][ip.busel] + d * (func ? 8 : 1));
+      if (!ip.bus) ins::set_send(ch, ip.busel, ins::send_knob(ch, ip.busel) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIsnd, ch, ip.busel));
       else if (ip.busel == 2 && l) ins::set_route3(l > 0);
       break;
     default: break;
   }
+}
+
+// 0.5.0 (EDIT): the target ins_enc's turn of e edits now, as its mod::manual_knob names it (0 none)
+CORE_COLD uint16_t ins_enc_tid(int e) {
+  if (ip.eq) return e < ins::kEqParams ? mod::tid(mod::kIns, chain_now(), 8 + e) : 0;
+  if (ip.out) return e >= 1 && e <= 3 ? mod::tid(mod::kOut, voice_now(), e - 1) : 0;
+  int ch = chain_now();
+  if (e < 4) return ins::control.type[ch][ip.slot] ? mod::tid(mod::kIns, ch, ip.slot * 4 + e) : 0;
+  if (e == 7 && !ip.bus) return mod::tid(mod::kIsnd, ch, ip.busel);
+  return 0;
 }
 
 CORE_COLD bool ins_key(int code) {
@@ -356,7 +370,8 @@ CORE_COLD void ins_open_out() {
   ip.bus = false, ip.out = true, ip.eq = false, ip.track = -1, ip.manual = false, ip.touched = -1;
 }
 
-UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_key, 0xFF, false, nullptr, nullptr, nullptr};
+UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_key, 0xFF, false, nullptr, nullptr, nullptr,
+                                   false, nullptr, ins_enc_tid};
 
 #if CORE_UI_TOOLS
 void ins_page_set(bool bus, int slot, int busel, int track, bool out, bool eq) {   // tests and the renderer

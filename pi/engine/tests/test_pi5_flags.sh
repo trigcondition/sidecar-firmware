@@ -7,13 +7,13 @@
 #      SIDECAR_NO_GADGET nor SIDECAR_PI5_TESTMODE, links the gadget and not card_guard.o, no --wrap; the test build all of it.
 #   3. the sources (pi5_flags_src.py): with the release build's macros no line that the compiler sees names the test
 #      mode (testsecs, /usbtest.log, TestLog, the card gate), and the gadget is started; with SIDECAR_PI5_TESTMODE it is there.
-#   4. usb=mirror is the Pi 4 only in 0.4.1 (docs/usb-mirror.md; the Pi 5 in 0.4.2): build.sh puts the Pi 4's gadget
-#      patches on the pi5usb tree but not the two mirror patches, which it lists apart (MP) so that a tree patched with
-#      them gets their files back clean; with a Circle checkout at hand (CIRCLE_BUILD or pi/circle/build), the Pi 5 stack
-#      applied to a copy of it leaves no CIRCLE_GADGET_MIRROR nor CIRCLE_GADGET_SOFTCONNECT in the gadget header, and the
-#      mirror patches still go on top of it (for 0.4.2) and define both, with what later patches build on (StateDeferred,
-#      m_bForwarded, OnControlAborted: circle-gadget-stray.patch), and the gadget's sources compile (clang++
-#      -fsyntax-only for aarch64, Circle's flags; both stacks): a patch that applies but does not compile is caught here.
+#   4. usb=mirror on the Pi 5 too (docs/usb-mirror.md; in testing for 0.4.2): build.sh puts the Pi 4's gadget patches on
+#      the pi5usb tree, mirror, softconnect and stray included, in the Pi 4 order after circle-pi5-gadget.patch (one list,
+#      PP, whose files are put back clean when its sum changes); with a Circle checkout at hand (CIRCLE_BUILD or
+#      pi/circle/build), the whole Pi 5 stack applied to a copy of it defines CIRCLE_GADGET_MIRROR and
+#      CIRCLE_GADGET_SOFTCONNECT in the gadget header (also seen by the preprocessor with RASPPI=5), has what later patches
+#      build on (StateDeferred, m_bForwarded, OnControlAborted: circle-gadget-stray.patch), and the gadget's sources
+#      compile (clang++ -fsyntax-only for aarch64, Circle's flags): a patch that applies but does not compile is caught here.
 set -euo pipefail
 cd "$(dirname "$0")"
 ENG=$PWD/..
@@ -54,12 +54,9 @@ python3 pi5_flags_src.py "$ENG"
 bash -n "$ENG/build.sh" || fail "build.sh does not parse (an apostrophe in a comment inside its quoted Docker block?)"
 
 P5=$(grep -E '^ *(P=[^;]*; )?PP=' "$ENG/build.sh" | grep -o 'circle-[a-z0-9-]*\.patch' | tr '\n' ' ')
-[ "$P5" = "circle-gadget.patch circle-gadget-wake.patch circle-pi5-gadget.patch circle-gadget-reset.patch " ] \
+[ "$P5" = "circle-gadget.patch circle-gadget-wake.patch circle-pi5-gadget.patch circle-gadget-reset.patch circle-gadget-mirror.patch circle-gadget-softconnect.patch circle-gadget-stray.patch " ] \
   || fail "the Pi 5 gadget patches in build.sh: $P5"
-MP=$(grep -E '^ *MP=' "$ENG/build.sh" | grep -o 'circle-[a-z0-9-]*\.patch' | tr '\n' ' ')
-case "$MP" in "circle-gadget-mirror.patch circle-gadget-softconnect.patch "*) ;;	# (then any that build on them, in order)
-  *) fail "the Pi 5 tree's mirror files restored in build.sh: $MP";; esac
-grep -q 'cat $PP $MP | sed -n' "$ENG/build.sh" || fail "build.sh does not restore the mirror patches' files on the Pi 5 tree"
+grep -q 'cat $PP | sed -n' "$ENG/build.sh" || fail "build.sh does not restore the Pi 5 tree's patched files from the clean tree"
 P4=$(grep -o 'patch -p1 < /repo/pi/circle/circle-gadget[a-z-]*\.patch' "$ENG/build.sh" | sed 's,.*/,,' | tr '\n' ' ')
 [ "$P4" = "circle-gadget.patch circle-gadget-wake.patch circle-gadget-reset.patch circle-gadget-mirror.patch circle-gadget-softconnect.patch circle-gadget-stray.patch " ] \
   || fail "the Pi 4 gadget patches in build.sh: $P4"
@@ -82,17 +79,19 @@ if [ -f "$C/include/circle/usb/gadget/dwusbgadget.h" ]; then
   }
   for f in $P5; do (cd "$T" && patch -s -p1 < "$ENG/../circle/$f") || fail "$f does not apply to the Pi 5 stack"; done
   for m in CIRCLE_GADGET_MIRROR CIRCLE_GADGET_SOFTCONNECT; do
-    ! grep -q "#define $m" "$T/include/circle/usb/gadget/dwusbgadget.h" || fail "the Pi 5 stack (0.4.1) with $m"
+    grep -q "#define $m" "$T/include/circle/usb/gadget/dwusbgadget.h" || fail "the Pi 5 stack without $m"
   done
-  syn "the Pi 5 stack (0.4.1)"
-  for f in $MP; do (cd "$T" && patch -s -p1 < "$ENG/../circle/$f") || fail "$f does not apply to the Pi 5 stack"; done
-  for m in CIRCLE_GADGET_MIRROR CIRCLE_GADGET_SOFTCONNECT; do
-    grep -q "#define $m" "$T/include/circle/usb/gadget/dwusbgadget.h" || fail "the Pi 5 stack with the mirror patches without $m"
-  done
-  grep -q StateDeferred "$T/include/circle/usb/gadget/dwusbgadgetendpoint0.h" || fail "the Pi 5 stack + MP: no StateDeferred"
-  grep -q m_bForwarded "$T/include/circle/usb/gadget/dwusbgadgetendpoint0.h" || fail "the Pi 5 stack + MP: no m_bForwarded"
-  grep -q OnControlAborted "$T/include/circle/usb/gadget/dwusbgadget.h" || fail "the Pi 5 stack + MP: no OnControlAborted"
-  syn "the Pi 5 stack with $MP"
+  grep -q StateDeferred "$T/include/circle/usb/gadget/dwusbgadgetendpoint0.h" || fail "the Pi 5 stack: no StateDeferred"
+  grep -q m_bForwarded "$T/include/circle/usb/gadget/dwusbgadgetendpoint0.h" || fail "the Pi 5 stack: no m_bForwarded"
+  grep -q OnControlAborted "$T/include/circle/usb/gadget/dwusbgadget.h" || fail "the Pi 5 stack: no OnControlAborted"
+  if [ "$SYN" = 1 ]; then	# what the engine sees: CIRCLE_GADGET_MIRROR defined for RASPPI=5 (sidecar_gadget.h, ob_usb.cpp)
+    printf '#include <circle/usb/gadget/dwusbgadget.h>\n#ifndef CIRCLE_GADGET_MIRROR\n#error no CIRCLE_GADGET_MIRROR\n#endif\n' \
+      > "$T/mirror_check.cpp"
+    (cd "$T" && clang++ --target=aarch64-none-elf -fsyntax-only -std=c++17 -ffreestanding -fno-exceptions -fno-rtti -nostdinc \
+      -nostdinc++ -fsigned-char -I include -D__circle__=500000 -DRASPPI=5 -DAARCH=64 -DSTDLIB_SUPPORT=0 \
+      -D__VCCOREVER__=0x04000000 mirror_check.cpp) || fail "RASPPI=5: CIRCLE_GADGET_MIRROR not defined"
+  fi
+  syn "the Pi 5 stack"
 else
   echo "test_pi5_flags: no Circle checkout at $C: the Pi 5 patch stack not applied (the order checked)"
 fi

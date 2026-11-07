@@ -420,7 +420,7 @@ void CEngineCores::Control (void)
 	// the Rytm's SIDECAR MENU > WEB UI (core/ui/page_menu.cpp): paircode_pi's, which only asks core 0 (Poll)
 	bridge::webui_init (paircode_pi::WebOn, paircode_pi::MenuWeb, paircode_pi::MenuGate, paircode_pi::MenuDevices,
 			    paircode_pi::MenuNewCode, paircode_pi::MenuForget);
-	bridge::usb_init (usbc_pi::Mode, usbc_pi::Modes, usbc_pi::Shown, usbc_pi::Ask, usbc_pi::NoOb);	// SIDECAR MENU > USB-C: asks core 0
+	bridge::usb_init (usbc_pi::Mode, usbc_pi::Modes, usbc_pi::Shown, usbc_pi::Ask, nullptr);	// SIDECAR MENU > USB-C: asks core 0
 	// The generic timer's event stream on this core, so the wfe below never sleeps longer than 152 us. A sev from core 0 (a pull from the FIFO) can be
 	// consumed by a wfe inside this core's own work (a spinlock: the logger, the card), and the next sev may be
 	// a poll of core 0 away (1.2..3.3 ms measured on the TCP link): the FIFO then stayed empty and the link sent
@@ -661,6 +661,18 @@ void CEngineCores::Command (const char *p)
 	else if (char Lo[200]; bridge::lfo_command (p, Lo, sizeof Lo))	// lfo, lfo=N:KEY:VALUE: the LFOs (core/lfo.h)
 	{
 		L->Write (From, LogNotice, "%s", Lo);
+	}
+	else if (char Mo[400]; bridge::mod_command (p, Mo, sizeof Mo))	// mod, mod=stats: the modulation layer (core/mod/mod.h)
+	{
+		L->Write (From, LogNotice, "%s", Mo);
+	}
+	else if (char Sc[400]; bridge::scene_command (p, Sc, sizeof Sc))	// scene, scene=...: the morph scenes (core/mod/scene.h)
+	{
+		L->Write (From, LogNotice, "%s", Sc);
+	}
+	else if (static char Le[1600]; bridge::learn_command (p, Le, sizeof Le))	// (32 routes' listing)	// learn, learn=...: MIDI learn (core/mod/learn.h)
+	{
+		L->Write (From, LogNotice, "%s", Le);
 	}
 	else if (sendfx_pi::Command (p))		// sendfx, sendfxout=, sendlvl=, sendknob= (sendfx_pi.h)
 	{

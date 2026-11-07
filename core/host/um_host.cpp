@@ -1,8 +1,13 @@
 // core/host/um_host.cpp - the user machines' executable memory on the Mac (arm64): one MAP_JIT region, a bump
 // allocator of 4096-aligned blocks, the per-thread write toggle, sys_icache_invalidate. The same RMPA images the Pi
 // runs (sdk/rmp/plugin.mk `make a64`) run here, so the core lib (sim/um_link.py, core/tests/test_um.cpp) plays them.
+// On Linux (tools/golden_a64.sh's aarch64 build of the core tests) a plain RWX mapping and the compiler's cache flush.
+#ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
 #include <pthread.h>
+#else
+#define MAP_JIT 0
+#endif
 #include <sys/mman.h>
 
 #include "user/um.h"
@@ -41,11 +46,16 @@ uint8_t* data_alloc(uint32_t bytes) {
   g_dused += bytes;
   return r;
 }
+#ifdef __APPLE__
 void write_begin() { pthread_jit_write_protect_np(0); }
 void sync(void* p, uint32_t n) {
   pthread_jit_write_protect_np(1);
   sys_icache_invalidate(p, n);
 }
+#else
+void write_begin() {}
+void sync(void* p, uint32_t n) { __builtin___clear_cache((char*)p, (char*)p + n); }
+#endif
 const um::Exec kExec = {alloc, reset, write_begin, sync, nullptr, kArena, nullptr, data_alloc};
 }  // namespace
 

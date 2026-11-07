@@ -15,6 +15,9 @@
 #include "fx/out.h"
 #include "inst.h"
 #include "lfo.h"
+#include "mod/mod.h"
+#include "mod/rytm_out.h"
+#include "mod/scene.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "platform.h"
@@ -484,7 +487,8 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
       if (ls->l[i].param < 16) want |= (uint16_t)(1u << ls->l[i].param), nv[ls->l[i].param] = lock_float(ls->l[i].value);
     if (want || L.on) {
       float p[16];
-      for (int k = 0; k < 16; ++k) p[k] = lfo::base_of(vi, k, x.p[k]);   // what plays without an LFO on it
+      uint32_t t0 = now_us();   // the lookups' cost (mod=stats lookup_us): this runs before a render block
+      for (int k = 0; k < 16; ++k) p[k] = mod::base_of(vi, k, x.p[k]);   // what plays without an LFO on it
       for (int k = 0; k < 16; ++k) {
         uint16_t bit = (uint16_t)(1u << k);
         if (want & bit) {
@@ -495,7 +499,8 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
         }
       }
       L.on = want;
-      lfo::voice_params(vi, p, 16, false);   // an LFO on a locked param: the lock is its base
+      mod::voice_params(vi, p, 16);   // an LFO on a locked param: the lock is its base
+      mod::note_lookup(now_us() - t0);
       memcpy(x.p, p, sizeof p);
       voice_params_changed(vi);
       ++st.locks_applied;
@@ -2043,6 +2048,18 @@ CORE_COLD void on_state(const uint8_t* a, int n) {
       if (n < 3) break;
       rec_live = a[1] != 0, rec_grid = a[2] != 0;
       return;
+    case kQperf:     // 2D 01 0E <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>: the QUICK PERF knob (core/mod/scene.h)
+      if (n < 6) break;
+      scene::qperf(a[1] << 7 | a[2], (uint16_t)(a[3] | (a[4] & 0x1F) << 7), a[5]);
+      return;
+    case kSceneRep:  // 2D 01 0F <n>: the Rytm's own scene 1..12, 0 none
+      if (n < 2) break;
+      scene::rytm_scene_seen(a[1]);
+      return;
+    case kHostAck:   // 2D 01 10 <op> <status>: the mod command done (0) or refused (core/mod/rytm_out.h)
+      if (n < 3) break;
+      mod::rytm_ack(a[1], a[2]);
+      return;
     case kTempo: {
       if (n < 4) break;
       int t = a[1] << 14 | a[2] << 7 | a[3];
@@ -3405,13 +3422,14 @@ CORE_COLD bool ne_move(Track& t, int len, bool pos, int d, bool func) {
 }
 // A..E (F..H: the v4 blocks to come, nothing yet): POS NUDG LEN PTCH VEL. A trig held with no notes: the track's note
 // there first (as the step edit's first turn), highlighted.
-CORE_COLD void ne_enc(int e, int d, bool func) {
+// True: done (the web's seqed=nedit says why not: POS / PTCH found no room)
+CORE_COLD bool ne_enc(int e, int d, bool func) {
   int r = ui_track();
   int sc = ne_scope();
   Track* t = ui_track_data(sc >= 0);
-  if (!t) return;
+  if (!t) return false;
   int len = eff_len(t, r);
-  if (e > 4) return;
+  if (e > 4) return false;
   bool filled = false, need = false;
   if (sc >= 0 && sc < len && !t->step[sc].n) {   // (the fill and the turn: one level)
     need = ne_begin(-2), filled = true;
@@ -3420,11 +3438,11 @@ CORE_COLD void ne_enc(int e, int d, bool func) {
     ne_go(sc, t->step[sc].note[0].pitch);
     ui.ne_edits = st.edits;
   }
-  if (!ne_fix()) return;
+  if (!ne_fix()) return false;
   bool done = false;
   if (e == 0 && func) e = 1, func = false;   // FUNC + POS: by 1/96 (as NUDG)
   int n = ne_targets(*t, len, ne_tg);
-  if (!n) return;
+  if (!n) return false;
   if (!filled) need = ne_begin(e);
   if (e == 0 || e == 3) {
     done = ne_move(*t, len, e == 0, d, func);
@@ -3445,24 +3463,26 @@ CORE_COLD void ne_enc(int e, int d, bool func) {
   }
   if (done || filled) replan(r), mark_dirty(), ne_bump();
   ne_commit(e, need, done || filled);
+  return done;
 }
 // FUNC + NO: the targets deleted - more than one asks first (a second FUNC + NO within kNeDelMs); the highlight on to
 // the next note (else the previous), the selection cleared; a step left empty is cleared as a trig off (its locks too)
 constexpr uint32_t kNeDelMs = 2000;
-CORE_COLD void ne_delete() {
+// ask: more than one note asks first (the Rytm's keys; the web's seqed=ndel does not). How many were deleted.
+CORE_COLD int ne_delete(bool ask = true) {
   int r = ui_track();
-  if (!ne_fix()) return;
+  if (!ne_fix()) return 0;
   Track* t = ui_track_data(false);
-  if (!t) return;
+  if (!t) return 0;
   int len = eff_len(t, r), n = ne_targets(*t, len, ne_tg);
-  if (!n) return;
+  if (!n) return 0;
   uint32_t ms = now_ms();
-  if (n > 1 && !(ui.ne_del_ms && ms - ui.ne_del_ms < kNeDelMs && ui.ne_del_n == n)) {
+  if (ask && n > 1 && !(ui.ne_del_ms && ms - ui.ne_del_ms < kNeDelMs && ui.ne_del_n == n)) {
     ui.ne_del_ms = ms | 1, ui.ne_del_n = n;
     char b[28];
     sniprintf(b, sizeof b, CORE_STR("F+NO AGAIN: DEL %d NOTES"), n);
     say(b);
-    return;
+    return 0;
   }
   ui.ne_del_ms = 0;
   bool need = ne_begin(-3);
@@ -3488,6 +3508,7 @@ CORE_COLD void ne_delete() {
   say(b);
   replan(r), mark_dirty();
   ne_commit(-3, need, true);
+  return n;
 }
 // The DATA push: the highlighted note in / out of the selection; FUNC + push: every note, or none when all are in. The
 // footer says what it did (I5: the Rytm drops a DATA turn ~0.55 s after the push: the message is that pause)
@@ -4172,6 +4193,173 @@ CORE_COLD void note_moved(int r, int fi, int fp, int ti, int tp) {
   if (sel) ne_sel_set(fi, fp, false), ne_sel_set(ti, tp, true);
   if (fi == ui.ne_idx && fp == ui.ne_pitch) ne_go(ti, tp);
   ne_bump();
+}
+// ---- the web's NOTE EDIT (seq.h note_edit_line): the same state and gestures as the Rytm's DATA, its push and A..E,
+// so both sides edit one selection and one undo history
+// up to n signed integers separated by ':' (a ':' after the n-th taken too), the count, *end after them; -1 a bad one
+CORE_COLD int ne_ints(const char* p, int* v, int n, const char** end) {
+  int k = 0;
+  while (k < n) {
+    bool neg = *p == '-';
+    if (neg) ++p;
+    if (*p < '0' || *p > '9') return -1;
+    int x = 0;
+    while (*p >= '0' && *p <= '9' && x < 100000) x = x * 10 + (*p++ - '0');
+    v[k++] = neg ? -x : x;
+    if (*p != ':') break;
+    ++p;
+  }
+  *end = p;
+  return k;
+}
+// Why the web may not use NOTE EDIT on track r now (null: it may). enter: it may bring NOTE EDIT on there (the SEQ
+// page's track becomes r, outside the Rytm's seq mode, which holds its own track); else NOTE EDIT must be on r already
+CORE_COLD const char* ne_web_refused(int r, int shown, bool enter) {
+  if (!in_mask(r)) return "not a poly track";
+  if (shown >= 0 && r != shown) return "not the shown track";
+  if (ui.prompt) return "the Rytm's SEQ page asks a question";
+  if (ui.held) return "a trig is held on the Rytm";
+  if (!enter && (!ui.ne || r != ui_track())) return ui.ne ? "NOTE EDIT is on another track" : "NOTE EDIT is off";
+  if (r != ui_track() && seqmode) return "the Rytm's seq mode is on another track";
+  return nullptr;
+}
+CORE_COLD void ne_web_enter(int r) {
+  if (r != ui_track()) ui.track = r, ui.lockpg = -1, ui.touched = -1, ui.cond_e = -1, ui.msg_ms = 0;   // (as selected_track)
+  if (!ui.ne) ne_land();   // (as DATA's first turn)
+  ne_fix();                // (another track or pattern: the selection starts empty)
+  ui.ne_undo_e = -1, ui.ne_del_ms = 0;   // (a new gesture, as the DATA push)
+}
+CORE_COLD void ne_web_said(int r, char* out, int cap) {
+  char b[28];
+  if (ui.ne_nsel) sniprintf(b, sizeof b, CORE_STR("SELECTED %d"), ui.ne_nsel);
+  else sniprintf(b, sizeof b, "NONE SELECTED");
+  say(b, 1000);   // (the Rytm's footer, as after its DATA push)
+  sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT T%d: %d selected, highlight step %d pitch %d"), r + 1, ui.ne_nsel,
+            ui.ne_idx, ui.ne_pitch);
+}
+// nset's list "S.P,S.P,...": each note there into the selection (set) or only counted; the lowest key set; false: bad
+CORE_COLD bool ne_web_list(const char* q, const Track* t, int len, bool set, int* found, int* missing, int* low) {
+  while (*q) {
+    int s = -1, pc = -1;
+    const char* e = nullptr;
+    if (ne_ints(q, &s, 1, &e) != 1 || *e != '.' || ne_ints(e + 1, &pc, 1, &e) != 1 || (*e && *e != ',')) return false;
+    q = *e ? e + 1 : e;
+    bool there = t && s >= 0 && s < len && pc >= 0 && pc <= 127 && ne_has(t->step[s], pc);
+    if (!there) {
+      ++*missing;
+      continue;
+    }
+    ++*found;
+    if (!set) continue;
+    ne_sel_set(s, pc, true);
+    if (*low < 0 || (s << 7 | pc) < *low) *low = s << 7 | pc;
+  }
+  return true;
+}
+CORE_COLD int note_edit_line(const char* p, int shown, char* out, int cap) {
+  static const char* const kOps[] = {"seqed=nsel:", "seqed=nset:", "seqed=nclr:", "seqed=nedit:", "seqed=ndel:", "seqed=noff:"};
+  static const int kArgs[] = {4, 2, 1, 3, 1, 1};
+  int op = 0;
+  while (op < 6 && strncmp(p, kOps[op], strlen(kOps[op]))) ++op;
+  if (op == 6) return -1;
+  if (!cur) reset();
+  int a[4] = {0, 0, 0, 0};
+  const char* end = nullptr;
+  int k = ne_ints(p + strlen(kOps[op]), a, op == 3 ? 4 : kArgs[op], &end);
+  if (k < kArgs[op] || (op != 1 && *end)) {
+    sniprintf(out, cap, CORE_STR("seqed: bad line \"%s\""), p);
+    return -2;
+  }
+  int r = a[0];
+  if (r < 0 || r >= kRytmTracks) {
+    sniprintf(out, cap, CORE_STR("seqed: track %d"), r);
+    return -2;
+  }
+  if (op == 3 && (a[1] < 0 || a[1] > 4 || !a[2] || a[2] < -127 || a[2] > 127)) {
+    sniprintf(out, cap, CORE_STR("seqed: nedit:T:E:D[:F] (E 0..4: POS NUDG LEN PTCH VEL; D -127..127, not 0)"));
+    return -2;
+  }
+  if (const char* why = ne_web_refused(r, shown, op <= 1)) {
+    sniprintf(out, cap, CORE_STR("seqed: T%d: %s"), r + 1, why);
+    return 0;
+  }
+  const Track* t = track_of(*cur, r);
+  int len = eff_len(t, r);
+  int found = 0, missing = 0, low = -1;
+  if (op == 0 && !(t && a[1] >= 0 && a[1] < len && a[2] >= 0 && a[2] <= 127 && ne_has(t->step[a[1]], a[2]))) {
+    sniprintf(out, cap, CORE_STR("seqed: T%d has no note at step %d pitch %d"), r + 1, a[1], a[2]);
+    return 0;
+  }
+  if (op == 1) {   // (checked before anything changes: a bad line, or none of its notes there)
+    if (!ne_web_list(end, t, len, false, &found, &missing, &low)) {
+      sniprintf(out, cap, CORE_STR("seqed: bad line \"%s\""), p);
+      return -2;
+    }
+    if (!found && missing) {
+      sniprintf(out, cap, CORE_STR("seqed: T%d has none of those notes"), r + 1);
+      return 0;
+    }
+  }
+  if ((op == 3 || op == 4) && (g_loading || lock_of(cur->index) == kLockLoading)) {   // (as the Rytm's undo)
+    sniprintf(out, cap, CORE_STR("seqed: T%d: the project is still loading"), r + 1);
+    return 0;
+  }
+  switch (op) {
+    case 0:   // nsel:T:S:P:ON - one note in (ON 1) or out (0), highlighted
+      ne_web_enter(r);
+      ne_go(a[1], a[2]);
+      ne_sel_set(a[1], a[2], a[3] != 0);
+      ne_recount(), ne_bump();
+      ne_web_said(r, out, cap);
+      return 1;
+    case 1: {   // nset:T:ADD:S.P,S.P,... - the selection becomes these notes (ADD 1: they are added); gone ones skipped
+      ne_web_enter(r);
+      if (!a[1]) ne_sel_clear();
+      found = missing = 0;
+      ne_web_list(end, t, len, true, &found, &missing, &low);
+      if (low >= 0) ne_go(low >> 7, low & 0x7F);   // the highlight on the first of them (the Rytm's page follows)
+      ne_recount(), ne_bump();
+      ne_web_said(r, out, cap);
+      if (missing) {
+        int n = (int)strlen(out);
+        sniprintf(out + n, cap - n, CORE_STR(" (%d not there)"), missing);
+      }
+      return 1;
+    }
+    case 2:   // nclr:T - the selection cleared, NOTE EDIT stays on (the Rytm's NO with a selection)
+      ne_sel_clear(), ne_bump();
+      ne_web_said(r, out, cap);
+      return 1;
+    case 3: {   // nedit:T:E:D[:F] - encoder A..E (E 0..4) turned D detents (F 1: FUNC held)
+      static const char* const kKnob[] = {"POS", "NUDG", "LEN", "PTCH", "VEL"};
+      int e = a[1], d = a[2];
+      int n = t && ne_fix() ? ne_targets(*t, len, ne_tg) : 0;
+      if (!n) {
+        sniprintf(out, cap, CORE_STR("seqed: T%d: no note to edit"), r + 1);
+        return 0;
+      }
+      if (!ne_enc(e, d, k == 4 && a[3] != 0)) {
+        sniprintf(out, cap, CORE_STR("seqed: T%d: %s"), r + 1, e == 0 ? "no room there" : e == 3 ? "no pitch free" : "no change");
+        return 0;
+      }
+      sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT T%d: %s %s%d on %d note%s"), r + 1, kKnob[e], d > 0 ? "+" : "", d, n,
+                n == 1 ? "" : "s");
+      return 2;
+    }
+    case 4: {   // ndel:T - the selection (else the highlighted note) deleted at once (the web asks first if it wants)
+      int n = ne_delete(false);
+      if (!n) {
+        sniprintf(out, cap, CORE_STR("seqed: T%d: no note to delete"), r + 1);
+        return 0;
+      }
+      sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT T%d: %d note%s deleted"), r + 1, n, n == 1 ? "" : "s");
+      return 2;
+    }
+    default:   // noff:T - NOTE EDIT left (the Rytm's NO without a selection, or TRIG)
+      ne_leave();
+      sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT off"));
+      return 1;
+  }
 }
 CORE_COLD bool data_wanted() {
   if (!cur) return false;

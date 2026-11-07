@@ -7,6 +7,8 @@
 #include "fx/insert.h"
 #include "keys.h"
 #include "lfo.h"
+#include "mod/learn.h"
+#include "mod/scene.h"
 #include "seq/seq.h"
 #include "song/song.h"
 #if CORE_MSAMP
@@ -15,6 +17,7 @@
 #include "bundle/prjslot.h"
 #include "bundle/projects.h"
 #include "bundle/rename.h"
+#include "msamp/cardq.h"
 #include "msamp/msamp.h"
 #include "presets/preset_index.h"
 #include "msamp/sdtest.h"
@@ -53,6 +56,7 @@ CORE_COLD bool engine_begin() {
     lfo::rekey(project);
 #if CORE_POLY
     ins::rekey(project);
+    scene::rekey(project);
 #endif
     project_fill_begin();
   }
@@ -72,6 +76,7 @@ CORE_COLD bool engine_begin() {
 #if CORE_POLY
   seq::init();   // the Sidecar sequencer (core/seq/seq.h): its pattern buffers; its tracks and A01 once the store is full
   if (card_ok) keys::load();   // the Pi's own keyboards' routing (core/keys.h)
+  if (card_ok) learn::load();   // the MIDI-learn routes (core/mod/learn.h): a box setting
 #endif
 #if CORE_MSAMP
   if (card_ok) sdtest::load();   // the SD card test's last result (msamp/sdtest.h)
@@ -116,6 +121,9 @@ CORE_COLD bool idle_prepare() {
   return T_("prepare", prepare_pending());
 }
 
+static volatile bool g_flush = false;   // idle_flush: a power-off waits for the saves
+CORE_COLD void idle_flush(bool on) { g_flush = on; }
+
 CORE_COLD bool idle_save() {
 #if CORE_MSAMP
   TV_("rename", rename::tick(now_ms()));       // a project rename's looks / moves (card-queue steps) and its question's timeout
@@ -140,15 +148,18 @@ CORE_COLD bool idle_save() {
     return true;
   }
   if (T_("fxin", fxin::save())) return true;
-  bool leaving = device::leaving();   // a restart is coming: what waits for its edits to settle goes now
+  bool leaving = device::leaving() || g_flush;   // a restart or a power-off is coming: what waits for its edits to settle goes now
   if (leaving) lfo::save_due();
   if (T_("lfo", lfo::save())) return true;
 #if CORE_POLY
   if (leaving) ins::settings_due();
   if (T_("ins", ins::save())) return true;
+  if (leaving) scene::save_due();
+  if (T_("scene", scene::save())) return true;
 #endif
 #if CORE_POLY
   if (T_("keys", keys::save())) return true;
+  if (T_("learn", learn::save())) return true;
   if (leaving) seq::save_due();
   if (T_("seq", seq::idle())) return true;   // the sequencer's pattern files: load, prefetch, save
   if (T_("song", song::idle())) return true;  // SONG RECORD: the journal, the song file, a load, a recovery (core/song/song.h)
@@ -164,9 +175,20 @@ CORE_COLD bool idle_save() {
   }
   bool settled = !lfo::dirty() && !fx::card_dirty;
 #if CORE_POLY
-  settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved();
+  settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved() && !scene::dirty();
 #endif
   return T_("device", device::step(settled)) || ix;   // a change of state folder: the last write, behind all of the above
+}
+
+CORE_COLD bool idle_settled() {
+  bool s = !lfo::dirty() && !fx::card_dirty && !project_dirty && !fmt::post_busy() && fmt::unwritten(nullptr) == 0;
+#if CORE_POLY
+  s = s && !ins::settings_dirty(nullptr) && !seq::unsaved();
+#endif
+#if CORE_MSAMP
+  s = s && cardq::pending() == 0;
+#endif
+  return s;
 }
 
 // With the sample RAM: a stream within ~85 ms of running dry first, then MULTISAMPLE's streams and loads, then a load

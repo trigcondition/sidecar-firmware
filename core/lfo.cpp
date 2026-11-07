@@ -7,6 +7,7 @@
 
 #include "fmt/fmt.h"
 #include "hooks.h"
+#include "mod/mod.h"
 #include "platform.h"
 #include "pool/pool.h"
 #if CORE_MSAMP
@@ -38,7 +39,9 @@ namespace {
 UI_ROM_LFO const char kTargetNames[kTargets][4] = {"OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2"
 #if CORE_POLY
                                                   , "I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "B1", "B2", "B3",
-                                                  "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8"
+                                                  "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8",
+                                                  "M1", "M2", "MFX", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8",
+                                                  "S9", "S10", "S11", "S12", "X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8"
 #endif
 };
 UI_ROM_LFO const char kWaveNames[kWaves][7] = {"SINE", "TRI", "SAW+", "SAW-", "SQR", "S&H", "RND", "DESIGN"};
@@ -61,6 +64,9 @@ struct Run {
 };
 Run g_run[kLfos];
 
+#if !CORE_MOD_LFO
+// CORE_MOD_LFO 0 (the rollback, removed in Phase 2): the targets' table of 0.4.0, the LFOs writing their targets
+// themselves. Else core/mod owns the targets (spec-050 1.1): the LFOs hand it one offset each a tick (waves()).
 struct Tgt {
   uint8_t target = 0, param = 0;
   uint8_t state = 0;   // 0 free, 1 live
@@ -73,6 +79,7 @@ uint32_t g_last_us = 0;
 bool g_started = false;
 uint8_t g_vdirty = 0;
 uint32_t g_user_ms[kVoices];
+#endif
 
 struct Clock {
   bool run = false, ticking = false;
@@ -115,14 +122,23 @@ CORE_COLD bool is_voice(int t) { return t >= kTVoice && t < kTVoice + kVoices; }
 CORE_COLD bool is_fx(int t) { return t == kTFx || t == kTFx + 1; }
 #if CORE_POLY
 CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTOut; }   // fx-ins: never true without CORE_POLY
-CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTargets; }   // the OUT route's LEV PAN WID (core/fx/out.h)
+CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTMaster; }   // the OUT route's LEV PAN WID (core/fx/out.h)
+CORE_COLD bool is_mchain(int t) { return t == kTMaster || t == kTMaster + 1; }   // 0.5.0: M1 M2 (insert chains 11, 12)
+CORE_COLD bool is_mfx(int t) { return t == kTMfx; }                               // the master's LEV, MIX1..4
+CORE_COLD bool is_snd(int t) { return t >= kTSnd && t < kTSnd + 12; }             // a Rytm track's FX1 / FX2 send
+CORE_COLD bool is_isnd(int t) { return t >= kTIsnd && t < kTIsnd + 8; }           // a voice's sends to the buses
 #else
 CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTargets; }
 CORE_COLD bool is_out(int) { return false; }
+CORE_COLD bool is_mchain(int) { return false; }
+CORE_COLD bool is_mfx(int) { return false; }
+CORE_COLD bool is_snd(int) { return false; }
+CORE_COLD bool is_isnd(int) { return false; }
 #endif
 
 CORE_COLD void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
 
+#if !CORE_MOD_LFO
 CORE_COLD Tgt* find(int target, int param) {
   for (Tgt& e : g_t)
     if (e.state && e.target == target && e.param == param) return &e;
@@ -131,9 +147,10 @@ CORE_COLD Tgt* find(int target, int param) {
 
 CORE_COLD float current(int target, int param) {   // a new target's base: what plays now
   if (is_voice(target)) return v[target - kTVoice].p[param & 15];
-  if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (lfo_offset), its base the knob
+  if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (mod_offset), its base the knob
   return fx::control.knob[target - kTFx][2 + (param & 3)];
 }
+#endif
 
 CORE_COLD void retrig(int i) {
   Run& r = g_run[i];
@@ -270,6 +287,7 @@ CORE_COLD bool from_line(const char* b) {
   return true;
 }
 
+#if !CORE_MOD_LFO
 // the targets the LFOs leave: back to their bases
 CORE_COLD void restore(Tgt& e) {
   ++g_stats.restores;
@@ -281,12 +299,13 @@ CORE_COLD void restore(Tgt& e) {
     fx::control.knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)e.base;
   }
 #if CORE_POLY
-  else if (is_ins(e.target) && e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, 0);
-  else if (is_ins(e.target)) ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, 0);
-  else if (is_out(e.target)) out::lfo_offset(e.target - kTOut, e.param % 3, 0);
+  else if (is_ins(e.target) && e.param >= 8) ins::eq_mod_offset(e.target - kTIns, (e.param - 8) & 3, 0);
+  else if (is_ins(e.target)) ins::mod_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, 0);
+  else if (is_out(e.target)) out::mod_offset(e.target - kTOut, e.param % 3, 0);
 #endif
   e.state = 0;
 }
+#endif
 
 }  // namespace
 
@@ -357,8 +376,10 @@ CORE_COLD int target_from_name(const char* s) {
 CORE_COLD int params_of(int t) {
   if (is_voice(t)) return 16;
   if (is_fx(t)) return 4;
-  if (is_ins(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
-  if (is_out(t)) return 3;
+  if (is_ins(t) || is_mchain(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
+  if (is_out(t) || is_isnd(t)) return 3;
+  if (is_mfx(t)) return 5;
+  if (is_snd(t)) return 2;
   return 0;
 }
 CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
@@ -372,16 +393,23 @@ CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
     if (l && l->label[p & 3] && *l->label[p & 3]) sniprintf(b, cap, "%s", l->label[p & 3]);
     else sniprintf(b, cap, CORE_STR("P%d"), (p & 3) + 2);
 #if CORE_POLY
-  } else if (is_ins(t) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
+  } else if ((is_ins(t) || is_mchain(t)) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
     sniprintf(b, cap, CORE_STR("Q%.3s"), ins::eq_labels().label[(p - 8) & 3]);
-  } else if (is_ins(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
-    int ty = ins::control.type[t - kTIns][(p >> 2) & 1];
+  } else if (is_ins(t) || is_mchain(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
+    int ty = ins::control.type[is_ins(t) ? t - kTIns : ins::kM0 + t - kTMaster][(p >> 2) & 1];
     const char* l = ins::labels(ty).label[p & 3];
     if (ty && l[0]) sniprintf(b, cap, CORE_STR("%c%.4s"), 'A' + ((p >> 2) & 1), l);
     else sniprintf(b, cap, CORE_STR("%cP%d"), 'A' + ((p >> 2) & 1), (p & 3) + 1);
   } else if (is_out(t)) {   // LEV PAN WID
     static const char* const kO[3] = {"LEV", "PAN", "WID"};
     sniprintf(b, cap, "%s", kO[p % 3]);
+  } else if (is_mfx(t)) {   // 0.5.0: the master's LEV, its slots' MIX
+    if (p % 5) sniprintf(b, cap, CORE_STR("MIX%d"), p % 5);
+    else sniprintf(b, cap, "LEV");
+  } else if (is_snd(t)) {   // a track's send to FX1 / FX2
+    sniprintf(b, cap, CORE_STR("F%d"), (p & 1) + 1);
+  } else if (is_isnd(t)) {   // a voice's send to bus 1..3
+    sniprintf(b, cap, CORE_STR("B%d"), p % 3 + 1);
 #endif
   } else {
     sniprintf(b, cap, "-");
@@ -432,14 +460,25 @@ CORE_COLD float wave_at(const Settings& s, float ph, uint32_t seed) {
 CORE_COLD float phase(int i) { return g_run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].ph; }
 CORE_COLD float out(int i) { return g_run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].w; }
 CORE_COLD bool active(int i) { return i >= 0 && i < kLfos && g_set[i].target && g_set[i].depth; }
-CORE_COLD const Stats& stats() { return g_stats; }
+CORE_COLD const Stats& stats() {
+#if CORE_MOD_LFO
+  const mod::Stats& m = mod::stats();   // the layer's counts under the LFOs' names (the "lfo" line unchanged)
+  g_stats.ticks = m.ticks, g_stats.voice_sets = m.voice_sets, g_stats.user_calls = m.user_calls;
+  g_stats.fx_sets = m.fx_sets, g_stats.restores = m.restores;
+#endif
+  return g_stats;
+}
 
 // ---------------------------------------------------------------------------------------------------- the engine
 
 bool clock_now(float* ticks, float* tick_us) {
   *ticks = g_clk.tp;
   *tick_us = g_clk.tick_us;
+#if CORE_MOD_LFO
+  return mod::stats().ticks != 0;
+#else
   return g_stats.ticks != 0;
+#endif
 }
 
 CORE_COLD void clock(uint8_t status, uint16_t spp) {
@@ -474,6 +513,67 @@ CORE_COLD void midi_in(uint8_t st, uint8_t d1, uint8_t d2) {
   for (int i = 0; i < kLfos; ++i)   // a trig on one of the Rytm's tracks (its note out): the FX targets' TRIG
     if (g_set[i].retrig == kOnTrig && is_fx(g_set[i].target)) g_run[i].retrig = true;
 }
+
+CORE_COLD mod::Tid tid_of(int t, int p) {
+  if (is_voice(t)) return mod::tid(mod::kV, t - kTVoice, p & 15);
+  if (is_fx(t)) return mod::tid(mod::kFx, t - kTFx, p & 3);
+  if (is_ins(t)) return mod::tid(mod::kIns, t - kTIns, p);   // I1..I8 B1..B3: chains 0..10; params 0..11
+  if (is_out(t)) return mod::tid(mod::kOut, t - kTOut, p % 3);
+  if (is_mchain(t)) return mod::tid(mod::kIns, ins::kM0 + t - kTMaster, p);   // 0.5.0: M1 M2, chains 11 12
+  if (is_mfx(t)) return mod::tid(mod::kMfx, 0, p % 5);
+  if (is_snd(t)) return mod::tid(mod::kSnd, t - kTSnd, p & 1);
+  if (is_isnd(t)) return mod::tid(mod::kIsnd, t - kTIsnd, p % 3);
+  return 0;
+}
+
+#if CORE_MOD_LFO
+CORE_COLD void voice_params(int vi, float* p, int np, bool trig) {
+  int t = kTVoice + (vi & 7);
+  mod::voice_params(vi, p, np);   // the bases (core/mod)
+  if (trig)
+    for (int i = 0; i < kLfos; ++i)
+      if (g_set[i].retrig == kOnTrig && (g_set[i].target == t || is_fx(g_set[i].target))) g_run[i].retrig = true;
+}
+CORE_COLD uint8_t fx_knob(int slot, int knob, uint8_t val) { return mod::fx_knob(slot, knob, val); }
+CORE_COLD float base_of(int vi, int k, float cur) { return mod::base_of(vi, k, cur); }
+CORE_COLD void tick(uint32_t us) { mod::tick(us); }
+
+// mod::tick's source, once a millisecond at most (us now, dus since the last, at most 100 ms): the clock position and
+// the waves, each live LFO's offset handed to the layer
+CORE_COLD void waves(uint32_t us, uint32_t dus) {
+  float dt = (float)dus * 1e-6f;
+  // the clock position: locked to the song position while the Rytm plays and ticks, else on at the last tempo
+  Clock& c = g_clk;
+  uint32_t since = us - c.last_us;
+  bool locked = c.run && c.ticking && since < 250000;
+  if (locked && c.pos < 0) c.tp = 0;
+  else if (locked) c.tp = (float)(c.pos % (int32_t)kWrap) + clampf((float)since / c.tick_us, 0.0f, 0.999f);
+  else c.tp = modp(c.tp + (float)dus / c.tick_us, kWrap);
+  if (c.start) c.start = false;
+
+  for (int i = 0; i < kLfos; ++i) {
+    Settings& s = g_set[i];
+    Run& r = g_run[i];
+    if (r.retrig) r.retrig = false, retrig(i);
+    float ph;
+    if (s.sync) {
+      float d = (float)div_ticks(s.rate);
+      float x = s.retrig == kFree ? c.tp : c.tp - r.anchor;
+      if (x < 0) x += kWrap;
+      ph = modp(x, d) / d;
+    } else {
+      ph = wrap1(r.ph + rate_hz(s.rate) * dt);
+    }
+    bool cycle = r.fresh || ph < r.ph;
+    r.fresh = false;
+    r.ph = ph;
+    r.w = shaped(s, ph, r, cycle);
+    if (!s.target) continue;
+    mod::offset(i, tid_of(s.target, s.param), (float)s.depth, r.w);   // never pre-multiplied here (spec-050 1.4)
+  }
+}
+#else
+CORE_COLD void waves(uint32_t, uint32_t) {}
 
 CORE_COLD void voice_params(int vi, float* p, int np, bool trig) {
   int t = kTVoice + (vi & 7);
@@ -545,6 +645,9 @@ CORE_COLD void tick(uint32_t us) {
       r.ph = ph;
       r.w = shaped(s, ph, r, cycle);
       if (!s.target) continue;
+#if CORE_POLY
+      if (s.target >= kTMaster) continue;   // (0.5.0's new targets: the layer's only, not this rollback path)
+#endif
       Tgt* e = find(s.target, s.param);
       if (!e)
         for (Tgt& f : g_t)
@@ -578,15 +681,15 @@ CORE_COLD void tick(uint32_t us) {
       } else if (is_ins(e.target)) {   // fx-ins: the offset itself (the knob / a step lock is the base, insert.cpp)
         int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
         if ((float)iv != e.applied) {
-          if (e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, iv);   // ins1112: the POST EQ
-          else ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, iv);
+          if (e.param >= 8) ins::eq_mod_offset(e.target - kTIns, (e.param - 8) & 3, iv);   // ins1112: the POST EQ
+          else ins::mod_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, iv);
           e.applied = (float)iv;
           ++g_stats.fx_sets;
         }
       } else if (is_out(e.target)) {   // the OUT route's LEV PAN WID: the offset on the knob (out.cpp)
         int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
         if ((float)iv != e.applied) {
-          out::lfo_offset(e.target - kTOut, e.param % 3, iv);
+          out::mod_offset(e.target - kTOut, e.param % 3, iv);
           e.applied = (float)iv;
           ++g_stats.fx_sets;
         }
@@ -614,6 +717,7 @@ CORE_COLD void tick(uint32_t us) {
     voice_params_changed(vi);
   }
 }
+#endif
 
 // ---------------------------------------------------------------------------------------------------- the card
 
@@ -753,12 +857,16 @@ static CORE_COLD bool save_text(bool queue) {
 CORE_COLD bool save() { return save_text(false); }
 
 CORE_COLD void project_changed() {
-  // the old project's (or kit's) targets: voices and FX back to their bases
+  // the old project's (or kit's) targets: voices and FX back to their bases, every dirty voice flushed
+#if CORE_MOD_LFO
+  mod::restore_all();
+#else
   for (Tgt& e : g_t)
     if (e.state) restore(e);
   for (int vi = 0; vi < kVoices; ++vi)
     if (g_vdirty >> vi & 1) voice_params_changed(vi);
   g_vdirty = 0;
+#endif
   // the old one's unsaved edits first, into its own file - never deferred past the load that clears g_dirty
 #if CORE_MSAMP
   // 2026-10-26: its write posted or queued (no wait on the card), its text into the store when the store is its
@@ -891,11 +999,16 @@ CORE_COLD int json(char* o, int cap) {
 CORE_COLD void reset() {
   for (Settings& s : g_set) defaults(&s);
   for (int i = 0; i < kLfos; ++i) g_run[i] = Run(), g_run[i].rng = 0x9E3779B9u * (uint32_t)(i + 1);
-  for (Tgt& e : g_t) e = Tgt();
   g_clk = Clock();
-  g_started = false, g_vdirty = 0, g_dirty = false, g_kit = g_rytm_kit = -1;
-  for (uint32_t& m : g_user_ms) m = 0;
+  g_dirty = false, g_kit = g_rytm_kit = -1;
   g_stats = Stats();
+#if CORE_MOD_LFO
+  mod::reset();   // the targets, the tick's clock, the voice flush, the counts: the layer's
+#else
+  for (Tgt& e : g_t) e = Tgt();
+  g_started = false, g_vdirty = 0;
+  for (uint32_t& m : g_user_ms) m = 0;
+#endif
 }
 
 }  // namespace lfo

@@ -1,5 +1,6 @@
 // core/host_link.cpp - see host_link.h. Per SysEx message, never per sample: cold.
 #include "md/md.h"
+#include "mod/scene.h"
 #include "device/device.h"
 #include "host_link.h"
 #include "inst.h"
@@ -198,6 +199,7 @@ static CORE_COLD void contact() {
 
 CORE_COLD void link_reset(const char* why) {
   for (int vi = 0; vi < kVoices; ++vi) voice_silence(vi);
+  scene::qperf_rebase();   // the QPERF knob's next report a baseline, not a move (core/mod/scene.h)
 #if CORE_MSAMP
   midim::kit_changed();   // the Rytm starts over: PRG and the rest again at the next report
 #endif

@@ -8,6 +8,7 @@
 #include "fx/master.h"
 #include "fx/out.h"
 #include "fx/send_fx.h"
+#include "mod/target.h"
 #include "platform.h"
 
 namespace core {
@@ -55,6 +56,8 @@ int16_t g_lfo[kChains][kSlots][kParams];
 // param space is exactly full at kLockParams = 32 (seq.h), so the post EQ takes LFOs and the knob, not p-locks.
 uint8_t g_eq[kChains][kEqParams];
 int16_t g_eq_lfo[kChains][kEqParams];
+uint8_t g_send_knob[kVoices][kBuses];   // the sends as set (control.send: as they play, + g_send_off)
+int16_t g_send_off[kVoices][kBuses];    // core/mod kIsnd's offsets
 const Labels kEqLabels = {"POST EQ", {"HPF", "LPF", "LOW", "HIGH"}, {0, 0, 64, 64}};
 Stats g_stats;
 bool g_dirty = false;
@@ -91,6 +94,7 @@ void refresh(int c, int s, int k) {
 }
 bool valid(int c, int s, int k = 0) { return c >= 0 && c < kChains && s >= 0 && s < kSlots && k >= 0 && k < kParams; }
 bool eq_valid(int c, int k) { return c >= 0 && c < kChains && k >= 0 && k < kEqParams; }
+void send_refresh(int vi, int b) { control.send[vi][b] = (uint8_t)clampi(g_send_knob[vi][b] + g_send_off[vi][b], 0, 127); }
 void eq_refresh(int c, int k) {
   control.peq[c][k] = (int8_t)eq_store(k, clampi((int)g_eq[c][k] + g_eq_lfo[c][k], 0, 127));
 }
@@ -141,7 +145,7 @@ void clear_settings() {
   for (int c = 0; c < kChains; ++c)
     for (int k = 0; k < kEqParams; ++k) g_eq[c][k] = kEqFlat(k), eq_refresh(c, k);   // ins1112
   for (int v = 0; v < kVoices; ++v)
-    for (int b = 0; b < kBuses; ++b) control.send[v][b] = 0;
+    for (int b = 0; b < kBuses; ++b) g_send_knob[v][b] = 0, send_refresh(v, b);
   control.route3 = 0;
   master::clear();
 }
@@ -308,10 +312,18 @@ void set_param(int c, int s, int k, int v) {
 }
 void set_send(int vi, int b, int v) {
   if (vi < 0 || vi >= kVoices || b < 0 || b >= kBuses) return;
-  control.send[vi][b] = (uint8_t)clampi(v, 0, 127);
+  g_send_knob[vi][b] = (uint8_t)clampi(v, 0, 127);
+  send_refresh(vi, b);
   ++g_stats.sets;
   changed();
 }
+void send_offset(int vi, int b, int off) {
+  if (vi < 0 || vi >= kVoices || b < 0 || b >= kBuses) return;
+  g_send_off[vi][b] = (int16_t)clampi(off, -127, 127);
+  send_refresh(vi, b);
+  ++g_stats.lfo_sets;
+}
+int send_knob(int vi, int b) { return vi >= 0 && vi < kVoices && b >= 0 && b < kBuses ? g_send_knob[vi][b] : 0; }
 void set_route3(int post) {
   control.route3 = post ? 1 : 0;
   changed();
@@ -328,7 +340,7 @@ void set_eq(int c, int k, int v) {
 }
 int eq_param(int c, int k) { return eq_valid(c, k) ? g_eq[c][k] : 0; }
 int eq_playing(int c, int k) { return eq_valid(c, k) ? eq_knob(k, control.peq[c][k]) : 0; }
-void eq_lfo_offset(int c, int k, int off) {
+void eq_mod_offset(int c, int k, int off) {
   if (!eq_valid(c, k)) return;
   g_eq_lfo[c][k] = (int16_t)clampi(off, -127, 127);
   eq_refresh(c, k);
@@ -366,7 +378,7 @@ void lock(int vi, int s, int k, int v) {
   ++g_stats.locks;
 }
 int locked(int c, int s, int k) { return c >= 0 && c < kVoices && valid(c, s, k) ? g_lock[c][s][k] : -1; }
-void lfo_offset(int c, int s, int k, int off) {
+void mod_offset(int c, int s, int k, int off) {
   if (!valid(c, s, k)) return;
   g_lfo[c][s][k] = (int16_t)clampi(off, -127, 127);
   refresh(c, s, k);
@@ -447,12 +459,14 @@ bool bus3_on() {
          g_engine.Active(kBus0 + 2, control);
 }
 
-void bus3(const float* in, int n, float (*pre)[2], float (*post)[2]) {
+void bus3(const float* in, int n, float (*pre)[2], float (*post)[2], float* mono) {
   if (!g_engine.Active(kBus0 + 2, control)) return;
   float y[128][2];
   if (n > 128) n = 128;
   for (int i = 0; i < n; ++i) y[i][0] = y[i][1] = in[i];
   g_engine.ProcessStereo(kBus0 + 2, y, n, control);
+  if (mono)
+    for (int i = 0; i < n; ++i) mono[i] = 0.5f * (y[i][0] + y[i][1]);
   bool p = control.route3 != 0;
   float (*d)[2] = p ? post : pre;
   const float l = p ? fx::kLimitMain : fx::kLimitFx;
@@ -509,14 +523,14 @@ bool command(const char* p, char* o, int cap) {
     int n = sniprintf(o, cap, "ins:");
     for (int c = 0; c < kChains && n < cap; ++c) {
       int a = control.type[c][0], b = control.type[c][1];
-      bool send = c < kVoices && (control.send[c][0] || control.send[c][1] || control.send[c][2]);
+      bool send = c < kVoices && (control.send[c][0] || control.send[c][1] || control.send[c][2]);   // as it plays (a knob 0 + an offset is heard)
       if (!a && !b && !send && !eq_on(c)) continue;
       int k = sniprintf(o + n, cap - n, CORE_STR(" %s %s/%s%s"), kChainNames[c], kLabels[a].name, kLabels[b].name,
                         eq_on(c) ? "/EQ" : "");
       if (k < 0 || k >= cap - n) break;
       n += k;
       if (send) {
-        k = sniprintf(o + n, cap - n, CORE_STR(" send %d/%d/%d"), control.send[c][0], control.send[c][1], control.send[c][2]);
+        k = sniprintf(o + n, cap - n, CORE_STR(" send %d/%d/%d"), g_send_knob[c][0], g_send_knob[c][1], g_send_knob[c][2]);
         if (k < 0 || k >= cap - n) break;
         n += k;
       }
@@ -554,8 +568,8 @@ bool command(const char* p, char* o, int cap) {
       sniprintf(o, cap, "%s", kHelp);
       return true;
     }
-    set_send(c, bus, v);
-    sniprintf(o, cap, CORE_STR("ins: %s send %d/%d/%d"), kChainNames[c], control.send[c][0], control.send[c][1], control.send[c][2]);
+    set_send(c, bus, v), fx::edited(mod::tid(mod::kIsnd, c, bus));
+    sniprintf(o, cap, CORE_STR("ins: %s send %d/%d/%d"), kChainNames[c], g_send_knob[c][0], g_send_knob[c][1], g_send_knob[c][2]);
     return true;
   }
   if (same_ci(b, "route") && c == kBus0 + 2) {
@@ -576,7 +590,7 @@ bool command(const char* p, char* o, int cap) {
         sniprintf(o, cap, "%s", kHelp);
         return true;
       }
-      set_eq(c, k, v);
+      set_eq(c, k, v), fx::edited(mod::tid(mod::kIns, c, 8 + k));
     }
     const Labels& L = eq_labels();
     char v4[kEqParams][8];
@@ -613,7 +627,7 @@ bool command(const char* p, char* o, int cap) {
       sniprintf(o, cap, "%s", kHelp);
       return true;
     }
-    set_param(c, s, key[1] - '1', v);
+    set_param(c, s, key[1] - '1', v), fx::edited(mod::tid(mod::kIns, c, s * 4 + key[1] - '1'));
   } else {
     sniprintf(o, cap, "%s", kHelp);
     return true;
@@ -646,7 +660,7 @@ int json(char* o, int cap) {
     if (k < 0 || k >= cap - n) return cap;
     n += k;
     if (c < kVoices)
-      k = sniprintf(o + n, cap - n, CORE_STR(",\"send\":[%d,%d,%d]}"), control.send[c][0], control.send[c][1], control.send[c][2]);
+      k = sniprintf(o + n, cap - n, CORE_STR(",\"send\":[%d,%d,%d]}"), g_send_knob[c][0], g_send_knob[c][1], g_send_knob[c][2]);
     else
       k = sniprintf(o + n, cap - n, "}");
     if (k < 0 || k >= cap - n) return cap;
@@ -679,7 +693,7 @@ void reset() {
   for (int c = 0; c < kChains; ++c)
     for (int k = 0; k < kEqParams; ++k) g_eq_lfo[c][k] = 0, eq_refresh(c, k);   // ins1112
   for (int v = 0; v < kVoices; ++v)
-    for (int b = 0; b < kBuses; ++b) g_send_g[v][b] = 0.0f;
+    for (int b = 0; b < kBuses; ++b) g_send_g[v][b] = 0.0f, g_send_off[v][b] = 0, send_refresh(v, b);
   g_engine.Reset();
   amp::reset();
   master::reset();

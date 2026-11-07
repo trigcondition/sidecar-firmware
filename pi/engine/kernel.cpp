@@ -19,6 +19,7 @@ static volatile unsigned s_nTempC;	// the SoC temperature as the stats line last
 #include "preset_pi.h"		// the display's JUNO / 6-OP FM preset pages
 #include "chopview_pi.h"		// the display's CHOP page
 #include "song_pi.h"		// the display's SONG page (core/song)
+#include "morph_pi.h"		// 0.5.0: the display's MORPH page (core/mod/scene.h)
 #include "voice_pi.h"		// the display's VOICE page, the Rytm's UP + T1..T5 (rui1036b)
 #include "insfx_pi.h"		// the display's INSERT FX page (fx-ins)
 #include "scope_pi.h"		// touch2: the display's SCOPE page (UP + T9)
@@ -47,6 +48,10 @@ static int s_nRytmPatIndex = -1;
 #include <circle/synchronize.h>
 #include <circle/util.h>
 #include <circle/version.h>
+#if RASPPI >= 5
+#include <circle/bcm2712.h>		// the power button's GPIO
+#include <circle/macros.h>
+#endif
 #include <fatfs/ff.h>
 
 #include "bridge.h"
@@ -71,13 +76,9 @@ static int s_nRytmPatIndex = -1;
 #include "version.h"
 #include <circle/new.h>
 
-// why OVERBRIDGE is not in this build (the boot line for usb=mirror, usbmode=overbridge refused): 0.4.1 builds the
-// mirror for the Pi 4 only (pi/engine/build.sh)
-#if RASPPI >= 5
-static const char NoMirrorWhy[] = "Overbridge passthrough on the Pi 5 comes in 0.4.2";
-#else
+// why OVERBRIDGE is not in this build (the boot line for usb=mirror, usbmode=overbridge refused): the Circle tree has no
+// mirror patches (pi/engine/build.sh puts them on the Pi 4 and the Pi 5 trees)
 static const char NoMirrorWhy[] = "no circle-gadget-mirror.patch";
-#endif
 
 // The Pi 5 engine test mode (PI5_TESTMODE=1 builds only; docs/pi5.md "Engine test mode"): testsecs=, its watchdog and
 // reboot, /usbtest.log, testcard=1. A plain PI5_GADGET=1 build has the gadget and none of this, so a release card takes it.
@@ -291,7 +292,7 @@ boolean CKernel::Initialize (void)
 		unsigned ts = m_Timer.GetClockTicks ();
 		m_pDisplay = new CSidecarDisplay (m_Options.GetWidth (), m_Options.GetHeight ());
 		const char *pStyle = m_Options.GetAppOptionString ("uistyle", 0);	// the card is not read yet: cmdline only
-		sidecar_splash_style (pStyle != 0 && strcmp (pStyle, "classic") == 0 ? 1 : 0);
+		sidecar_splash_style (pStyle != 0 && (strcmp (pStyle, "sidecar") == 0 || strcmp (pStyle, "classic") == 0) ? 1 : 0);
 		if (!m_pDisplay->Splash ()) m_Logger.Write (From, LogNotice, "boot screen: no frame buffer");
 		else m_Logger.Write (From, LogNotice, "boot screen: %ux%u in %u us", m_pDisplay->GetFrameWidth (),
 				     m_pDisplay->GetFrameHeight (), m_Timer.GetClockTicks () - ts);
@@ -563,8 +564,7 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 	pOut->Append (s);
 	{	// the USB-C mode (usb_mode.h): set (chosen), from (card, cmdline, default), runs (set, or class where the unit cannot
 		// show it), modes (what this unit can show; [] no Sidecar gadget), shown (what the computer sees now: sidecar, box,
-		// switching, none), boxUp (the box has been read and is up: shown, or about to be) and board (4, 5: the page names
-		// why OVERBRIDGE is not there on a Pi 5, which gets it in 0.4.2)
+		// switching, none), boxUp (the box has been read and is up: shown, or about to be) and board (4, 5)
 		static const char *const Shown[] = {"none", "sidecar", "box", "switching"};
 		const usb_mode::Mode Runs = usb_mode::effective (k->m_UsbMode, k->m_nUsbModes);
 		s.Format (",\"usbMode\":{\"set\":\"%s\",\"from\":\"%s\",\"runs\":\"%s\",\"modes\":[%s%s%s],\"shown\":\"%s\",\"boxUp\":%s,\"board\":%d}",
@@ -711,6 +711,23 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		bridge::lfo_json (Lfo, sizeof Lfo);
 		pOut->Append (",");
 		pOut->Append (Lfo);
+	}
+	{
+		char Mo[160];			// the modulation layer: live targets, the tick's worst us and counts (core/mod/mod.h)
+		if (bridge::mod_json (Mo, sizeof Mo) > 0)
+		{
+			pOut->Append (",");
+			pOut->Append (Mo);
+		}
+	}
+	{
+		static char Sc[16384];		// the scenes: A / B, the fader, every lock (core/mod/scene.h; core 3's, plain reads)
+		int n = bridge::scene_json (Sc, sizeof Sc);
+		if (n > 0 && n < (int) sizeof Sc)
+		{
+			pOut->Append (",");
+			pOut->Append (Sc);
+		}
 	}
 	{
 		char Bb[128];			// the black box's counts (blackbox_pi.h)
@@ -993,6 +1010,16 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 {
 	CKernel *pThis = (CKernel *) pParam;
 	if (pThis->UsbCommand (pCmd)) return TRUE;			// usbmode= (the USB-C mode)
+	if (strncmp (pCmd, "poweroff", 8) == 0 && (pCmd[8] == 0 || pCmd[8] == '='))	// a clean power-off (docs/pi5.md)
+	{
+#if RASPPI >= 5
+		if (strcmp (pCmd + 8, "=1") == 0) pThis->m_bPowerOff = TRUE;
+		else pThis->m_Logger.Write (From, LogWarning, "poweroff=1: a clean power-off, as the power button");
+#else
+		pThis->m_Logger.Write (From, LogWarning, "poweroff: refused, the Pi 5 only (this board has no power button)");
+#endif
+		return TRUE;
+	}
 	boolean bSaver = strncmp (pCmd, "screensaver", 11) == 0 && (pCmd[11] == 0 || pCmd[11] == '=');
 	boolean bBright = strncmp (pCmd, "brightness", 10) == 0 && (pCmd[10] == 0 || pCmd[10] == '=');
 	if (strncmp (pCmd, "uistyle", 7) == 0 && (pCmd[7] == 0 || pCmd[7] == '='))	// the display's theme
@@ -1000,8 +1027,8 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 		if (pCmd[7] == '=')
 		{
 			int n = strcmp (pCmd + 8, "oled") == 0 || strcmp (pCmd + 8, "0") == 0 ? 0
-				: strcmp (pCmd + 8, "classic") == 0 || strcmp (pCmd + 8, "1") == 0 ? 1 : -1;
-			if (n < 0) pThis->m_Logger.Write (From, LogWarning, "uistyle=oled|classic");
+				: strcmp (pCmd + 8, "sidecar") == 0 || strcmp (pCmd + 8, "classic") == 0 || strcmp (pCmd + 8, "1") == 0 ? 1 : -1;
+			if (n < 0) pThis->m_Logger.Write (From, LogWarning, "uistyle=oled|sidecar");
 			else
 			{
 				pThis->m_nUiStyle = (unsigned) n;
@@ -1013,7 +1040,7 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 				}
 			}
 		}
-		pThis->m_Logger.Write (From, LogNotice, "display: UI style %s", pThis->m_nUiStyle ? "classic" : "oled");
+		pThis->m_Logger.Write (From, LogNotice, "display: UI style %s", pThis->m_nUiStyle ? "sidecar" : "oled");
 		return TRUE;
 	}
 	if (strncmp (pCmd, "uilook", 6) == 0 && (pCmd[6] == 0 || pCmd[6] == '='))	// UX review L1: the OLED look
@@ -1173,8 +1200,9 @@ void CKernel::LoadDisplayRes (boolean bCard)
 	if (m_nResW) m_Logger.Write (From, LogNotice, "display: res=%ux%u", m_nResW, m_nResH);
 }
 
-// /.rytm/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|classic" lines;
-// cmdline.txt's same keys win
+// /.rytm/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|sidecar" lines
+// (SIDECAR replaced the CLASSIC theme under its id 1, so an older card's "classic" is read as "sidecar" and
+// written back as "sidecar" at the next save); cmdline.txt's same keys win
 static core::fmt::KvKeep s_DisplayKeep;		// display.txt's lines a newer build wrote: written back unchanged
 void CKernel::LoadDisplaySettings (boolean bCard)
 {
@@ -1218,12 +1246,13 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 	m_nSaverMin = Value ("screensaver", 60, 0, 1440);
 	m_nBright = Value ("brightness", 100, 5, 100);
 	m_bTouchHidden = Value ("touchtest", 1, 0, 1) == 0;
-	auto Style = [&] (const char *p) -> int		// "oled" / "classic" (or 0 / 1), -1: neither
+	auto Style = [&] (const char *p) -> int		// "oled" / "sidecar" (older cards: "classic"; or 0 / 1), -1: neither
 	{
 		if (p == 0) return -1;
 		auto End = [] (char c) { return c == 0 || c == '\n' || c == '\r'; };
 		if ((strncmp (p, "oled", 4) == 0 && End (p[4])) || (*p == '0' && End (p[1]))) return 0;
-		if ((strncmp (p, "classic", 7) == 0 && End (p[7])) || (*p == '1' && End (p[1]))) return 1;
+		if ((strncmp (p, "sidecar", 7) == 0 && End (p[7])) || (strncmp (p, "classic", 7) == 0 && End (p[7])) || (*p == '1' && End (p[1])))
+			return 1;
 		return -1;
 	};
 	const char *ps = strstr (Text, "uistyle=");
@@ -1254,7 +1283,7 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 	}
 	if (m_pDisplay != 0) m_pDisplay->SetScreensaver (m_nSaverMin);
 	m_Logger.Write (From, LogNotice, "display: screensaver %u min, brightness %u %%, UI style %s (%s)", m_nSaverMin, m_nBright,
-			m_nUiStyle ? "classic" : "oled", Text[0] ? "/.rytm/display.txt" : "defaults");
+			m_nUiStyle ? "sidecar" : "oled", Text[0] ? "/.rytm/display.txt" : "defaults");
 }
 
 void CKernel::SaveDisplaySettings (void)
@@ -1262,7 +1291,7 @@ void CKernel::SaveDisplaySettings (void)
 	m_bSaveDisplay = FALSE;
 	CString s;
 	s.Format ("screensaver=%u\nbrightness=%u\ntouchtest=%u\nuistyle=%s\nuilook=%s\n", m_nSaverMin, m_nBright, m_bTouchHidden ? 0u : 1u,
-		  m_nUiStyle ? "classic" : "oled", s_nUiLook ? "stage" : "studio");
+		  m_nUiStyle ? "sidecar" : "oled", s_nUiLook ? "stage" : "studio");
 	if (m_bTouchCal)
 	{
 		char b[64];
@@ -1567,7 +1596,6 @@ void CKernel::PushUi (void)
 	u.usb_mode = (int) m_UsbMode;		// the USB-C mode (usb_mode.h): Settings > Sound
 	u.usb_modes = (int) m_nUsbModes;
 	u.usb_shown = UsbShown ();
-	u.usb_ob_later = RASPPI >= 5;		// OVERBRIDGE not in this build: the Pi 5 gets it in 0.4.2
 	u.drone = CEngineCores::DroneVoice ();
 	u.fifo = CEngineCores::FifoTarget ();
 	u.web = m_bWeb;
@@ -1702,6 +1730,13 @@ boolean CKernel::UsbCommand (const char *pCmd)
 // the page is filled (kernel's state, status_pi's core part)
 static sidecar_status_view_t s_StatusView;
 
+// the output's peak since the last stats line, shared with the web's "levels" (peak_fan.h)
+static float StatsPeak (void)
+{
+	g_PeakFan.feed_master (g_Output.TakePeak ());
+	return g_PeakFan.take_master (peakfan::kStats);
+}
+
 void CKernel::LogStats (void)
 {
 	m_pTransport->LogStats (&m_Logger);
@@ -1792,7 +1827,7 @@ void CKernel::LogStats (void)
 		s.nFifoMin, s.nFifoMax, CEngineCores::FifoTarget (), g_Output.Underflows (), g_Output.RestartUnderflows (), g_Output.Streams (), s.nBlocks, s.nMaxBlockUs,
 		c1 / 10, c1 % 10, c2 / 10, c2 % 10, c3 / 10, c3 % 10, s.nMaxPassUs, (const char *) Mach, s.nMidiBytes, s_nMidiInLost, s.nSysEx, s.nNotes, (const char *) Chans,
 		m_Usb.MIDIOutBytes (), m_Usb.MIDIOutMessages (), m_Usb.MIDIOutFailed (),
-		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped (), (unsigned) (g_Output.TakePeak () * 1000),
+		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped (), (unsigned) (StatsPeak () * 1000),
 		nTemp);
 	static unsigned s_nPowerTick;
 	if (++s_nPowerTick % 10 == 0) { mbtrace::Scope Mb (1); ReadPower (FALSE); }	// every 10 s (a mailbox call)
@@ -2062,6 +2097,59 @@ void CKernel::StopAndReboot (const char *pWhy, boolean bTryboot)
 	m_Watchdog.Stop ();
 	reboot ();
 }
+
+#if RASPPI >= 5
+void CKernel::StopAndPowerOff (const char *pWhy)
+{
+	m_Logger.Write (From, LogNotice, "power-off: %s - the audio faded, the card's work drained, then off", pWhy);
+	{
+		char Why[68];
+		core_snprintf (Why, sizeof Why, "a planned power-off: %s", pWhy);
+		crumb::Why (Why);
+	}
+	if (m_pDisplay != 0) m_pDisplay->PowerOff ();		// dark at once: the press was seen
+	CObUsb::FadeOut ();
+	m_Timer.MsDelay (30);					// the 20 ms fade out to the Rytm: no click
+	g_Rec.stop ();						// a take ends: its files closed in the drain
+	m_pTransport->Stop ();
+	if (m_pTransport != &m_Usb) m_Usb.Stop ();
+	if (m_bSaveDisplay) SaveDisplaySettings ();
+	bridge::save_flush (true);				// core 3's idle saves: the settle waits skipped
+	// the drain: the card queue (core 3's posted writes), the recorder's ring and close, until all idle for 100 ms
+	pwrbtn::Drain Drain (m_Timer.GetClockTicks ());
+	rec::Status s;
+	boolean bDone;
+	do
+	{
+		bridge::card_service (8);
+		rec_pi::Poll ();
+		g_Rec.status (&s, false);
+		asm volatile ("dsb sy; sev");			// core 3 out of its wfe: its idle saves run
+		bDone = Drain.Done (s.state == rec::Recorder::kIdle && bridge::save_settled (), m_Timer.GetClockTicks ());
+	}
+	while (!bDone);
+	if (Drain.TimedOut (m_Timer.GetClockTicks ()))
+		m_Logger.Write (From, LogWarning, "power-off: the card's work did not finish in %u s (recorder %d, saves %s): off anyway",
+				pwrbtn::kDrainCapUs / 1000000, s.state, bridge::save_settled () ? "done" : "pending");
+	else
+		m_Logger.Write (From, LogNotice, "power-off: the card's work done in %u ms",
+				(m_Timer.GetClockTicks () - Drain.nStart) / 1000);
+	m_Timer.MsDelay (50);					// the log line out
+	blackbox_pi::Flush ();
+	m_Watchdog.Stop ();
+	poweroff ();
+}
+
+void CKernel::PowerButtonPoll (void)
+{
+	unsigned nNow = m_Timer.GetClockTicks ();
+	if (nNow - m_nButtonAt < pwrbtn::kPollUs) return;
+	m_nButtonAt = nNow;
+	// active low; the 50 ms debounce (Circle's) only once it reads pressed
+	if (m_Button.Poll (!(read32 (ARM_GPIO1_DATA0) & BIT (20)), [] { return is_power_button_pressed () != FALSE; }))
+		StopAndPowerOff ("the power button");
+}
+#endif
 
 #ifdef SIDECAR_PI5_TESTMODE
 void CKernel::UsbTestTick (void)
@@ -2365,7 +2453,9 @@ void CKernel::Run (void)
 				{
 					s_nInsAt = nNow;
 					float Pk[8][2];
-					g_Output.TakeVoicePeaks (Pk);	// the OUT route's meters (PRE / POST voices)
+					g_Output.TakeVoicePeaks (Pk);	// the OUT route's meters (PRE / POST voices),
+					g_PeakFan.feed_voices (Pk);	// shared with the web's "levels" (peak_fan.h)
+					g_PeakFan.take_voices (peakfan::kDisplay, Pk);
 					insfx_pi::Fill (&s_InsView, Pk);
 					sidecar_insfx_set (&s_InsView);
 				}
@@ -2381,6 +2471,13 @@ void CKernel::Run (void)
 					insfx_pi::FillMaster (&s_MfxView);
 					sidecar_mfx_set (&s_MfxView);
 				}
+			}
+			{	// 0.5.0: the MORPH page, its view built on core 3 (morph_pi), the newest taken here
+				static sidecar_morph_view_t s_MorphView;
+				static unsigned s_nMorphSeen;
+				morph_pi::Want (sidecar_morph_shown (), sidecar_morph_top ());
+				if (sidecar_morph_shown () && morph_pi::View (&s_MorphView, &s_nMorphSeen))
+					sidecar_morph_set (&s_MorphView);
 			}
 			if (sidecar_wgview_shown ())		// the machine view: ~10 frames a second, redrawn only on a change
 			{
@@ -2447,6 +2544,10 @@ void CKernel::Run (void)
 		if (bridge::take_restart ()) StopAndReboot ("another device's state folder");
 		CSdFiles::TReboot SdReboot = CSdFiles::TakeReboot ();
 		if (SdReboot != CSdFiles::RebootNone) StopAndReboot ("asked on the SD file port", SdReboot == CSdFiles::RebootTry);
+#if RASPPI >= 5
+		if (m_bPowerOff) StopAndPowerOff ("asked on the console (poweroff=1)");
+		PowerButtonPoll ();
+#endif
 		if (m_Timer.GetTicks () - m_nLastStats >= HZ || m_Console.TakeStatsNow ())
 		{
 			m_nLastStats = m_Timer.GetTicks ();

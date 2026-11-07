@@ -8,6 +8,7 @@
 
 #include "check.h"
 #include "engine.h"
+#include "ui/extra.h"
 #include "ui/page_keys.h"
 #include "ui/remote.h"
 
@@ -24,23 +25,34 @@ static void from_rytm(uint8_t cmd, uint8_t a, uint8_t b, uint8_t c) {
 }
 
 int main() {
-  // ---- the table: one page request a code 1..13, a name each; the combos the host asks for by id
+  // ---- the table: one page request a code 1..14, a name each; the combos the host asks for by id. 0.5.0: T14 MORPH
+  // (spec-050 2.6, a key stock and every other row leave free; 0026 forwards it from the 0.5.0 flash on)
   const sc_keymap_t* m = sc_keymap();
-  CHECK(sc_page_max() == 13 && m->npages == 13 && sc_streq(m->modifier, "UP"));
-  for (int c = 1; c <= 13; ++c) CHECK(sc_page_of_code(c) && sc_page_of_code(c)->name && sc_page_of_code(c)->name[0]);
-  CHECK(!sc_page_of_code(0) && !sc_page_of_code(14));
+  CHECK(sc_page_max() == 14 && m->npages == 14 && sc_streq(m->modifier, "UP"));
+  for (int c = 1; c <= 14; ++c) CHECK(sc_page_of_code(c) && sc_page_of_code(c)->name && sc_page_of_code(c)->name[0]);
+  CHECK(!sc_page_of_code(0) && !sc_page_of_code(15));
   // rui1052: the order, as the rows stand - T1..T8 the touchscreen's sidebar top to bottom, then the rest
-  static const char* const kOrder[13] = {"HOME", "SEQ",  "PAT",     "VOICE",  "INSERT FX", "SONG",   "REC",
-                                         "SET",  "SCOPE", "STATUS", "SAMPLE", "PROJECT",   "POOL"};
-  for (int c = 1; c <= 13; ++c) {
+  static const char* const kOrder[14] = {"HOME", "SEQ",  "PAT",     "VOICE",  "INSERT FX", "SONG",   "REC",
+                                         "SET",  "SCOPE", "STATUS", "SAMPLE", "PROJECT",   "POOL",  "MORPH"};
+  for (int c = 1; c <= 14; ++c) {
     CHECK(sc_streq(sc_page_of_code(c)->name, kOrder[c - 1]));
     CHECK(sc_page_of_name(kOrder[c - 1])->code == c);            // and back, one key a page
     CHECK(sc_page_of_code(c) == &m->pages[c - 1]);               // the rows in that order, no gap
   }
   CHECK(!sc_page_of_name("NOPE"));
   // the touchscreen's own pages are the rows with no title on the Rytm's screen (their keys, not a leading run)
-  for (int c = 1; c <= 13; ++c)
+  for (int c = 1; c <= 14; ++c)
     CHECK(!sc_page_of_code(c)->rytm == (c <= 5 || c == 8));
+  {   // 0.5.0: MORPH's key is free - no other row, no combo, the page an ExtraPage of that title on the MENU
+    CHECK(sc_streq(sc_page_of_code(14)->rytm, "MORPH"));
+    int n = 0;
+    for (int i = 0; i < m->npages; ++i) n += m->pages[i].code == 14;
+    for (int i = 0; i < m->ncombos; ++i) CHECK(!strstr(m->combos[i].keys, "T14"));
+    bool page = false, row = false;
+    for (int k = 0; k < ui::extra_pages(); ++k) page |= !strcmp(ui::extra_page(k).title, "MORPH");
+    for (int i = 0; i < ui::menu_rows(); ++i) row |= ui::menu_row_page(i) && !strcmp(ui::menu_row_page(i), "MORPH");
+    CHECK(n == 1 && page && row);
+  }
   CHECK(!strcmp(sc_combo_keys("pages"), "UP+YES") && !strcmp(sc_combo_keys("seq"), "UP+TRIG") &&
         !strcmp(sc_combo_keys("lfo"), "UP+LFO") && !strcmp(sc_combo_keys("ins"), "UP+FX") && !strcmp(sc_combo_keys("out"), "UP+AMP") &&
         !strcmp(sc_combo_keys("srclist"), "UP+SRC") && !strcmp(sc_combo_keys("copy"), "T+UP+REC") && !*sc_combo_keys("x"));
@@ -67,17 +79,17 @@ int main() {
 
   // ---- the Pi's routing: each code to its touchscreen page (sidecar_ui.h's numbers), SAMPLE none
   ui::remote_reset();
-  static const int want[14] = {-1, 0, 4, 5, 8, 9, 10, 11, 1, 12, 13, -1, 14, 15};   // (4: VOICE, an analog track)
+  static const int want[15] = {-1, 0, 4, 5, 8, 9, 10, 11, 1, 12, 13, -1, 14, 15, 20};   // (4: VOICE, an analog track)
   uint32_t seen = 0, tseen = 0;
   voice_pi::Seen(&seen, &tseen);
-  for (int c = 1; c <= 13; ++c) {
+  for (int c = 1; c <= 14; ++c) {
     from_rytm(0x49, 1, (uint8_t)c, 0);
     int pg = voice_pi::Request(&seen, false, &tseen);
     printf("  49 1 %d (%s) -> touchscreen page %d\n", c, sc_page_of_code(c)->name, pg);
     CHECK(pg == want[c]);
   }
   CHECK(voice_pi::Request(&seen, false, &tseen) == -1);   // nothing new
-  from_rytm(0x49, 1, 14, 0);                               // past the table: not a request
+  from_rytm(0x49, 1, 15, 0);                               // past the table: not a request
   CHECK(voice_pi::Request(&seen, false, &tseen) == -1);
 
   // ---- OwnPages: the pages with a title on the Rytm's screen that the touchscreen has (SONG REC SCOPE STATUS PROJECT
@@ -85,10 +97,10 @@ int main() {
   // up" signal (remote_display_present), so it is false until OwnPages and false again when the pages are given back.
   CHECK(!ui::remote_display_present());
   voice_pi::OwnPages();
-  for (int c = 1; c <= 13; ++c) CHECK(ui::remote_display_owned(c) == (c == 6 || c == 7 || c == 9 || c == 10 || c == 12 || c == 13));
+  for (int c = 1; c <= 14; ++c) CHECK(ui::remote_display_owned(c) == (c == 6 || c == 7 || c == 9 || c == 10 || c == 12 || c == 13));
   CHECK(ui::remote_display_present());
   ui::remote_display_owns(0);
   CHECK(!ui::remote_display_present());
-  printf("test_page_keys: ok (the table in sidebar order; UP + T1..T13 routed, T11 SAMPLE the Rytm's; OwnPages 6 7 9 10 12 13)\n");
+  printf("test_page_keys: ok (the table in sidebar order; UP + T1..T14 routed, T11 SAMPLE the Rytm's; OwnPages 6 7 9 10 12 13)\n");
   return 0;
 }

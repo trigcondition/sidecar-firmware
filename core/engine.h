@@ -27,5 +27,9 @@ void idle_stream();    // the streams' top-ups (the neediest first) and the samp
 struct IdleSlow { const char* name; uint32_t us, sum; };
 IdleSlow idle_slowest_take();
 void idle_note(const char* name, uint32_t us);
+// A power-off (the Pi 5's button): idle_flush(true) makes idle_save write the edits that wait to settle now, as a change
+// of state folder does. idle_settled: nothing unsaved, nothing queued or posted for the card. Any core (plain reads).
+void idle_flush(bool on);
+bool idle_settled();
 
 }  // namespace core

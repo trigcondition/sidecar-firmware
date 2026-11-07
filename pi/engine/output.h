@@ -95,6 +95,9 @@ class Output {
   // each PRE / POST voice's pair (L, R) as it went into its pair since the last call (0 for TRK voices); any core
   // (racy floats: a meter)
   void TakeVoicePeaks(float (*pk)[2]);
+  // each voice's peak on its own track (TRK, 0..1, after the main gain) since the last call, for the voices routed
+  // TRK, which TakeVoicePeaks leaves at 0: the web's level meters (peak_fan.h). Its reader's core (racy: a meter)
+  void TakeTrkPeaks(float* pk);
   Output();
 
  private:
@@ -122,4 +125,6 @@ class Output {
   bool armed_ = false;                                  // the FIFO reached its target since the last Reset
   float peak_ = 0.0f;
   volatile float vpk_[kVoices][2] = {};
+  volatile int32_t tpk_[kVoices] = {};                  // TakeTrkPeaks: |int16| a voice, merged once a Pull
+  volatile float tgain_ = 1.0f;
 };

@@ -1,5 +1,5 @@
 // pi/ui/host/splash.c - the boot screen (sidecar_splash.c) on the Mac: 800x480 (or WxH), 3 of 8 stages, as a PPM.
-// splash OUT [STYLE [WxH]] (STYLE 0 OLED, 1 CLASSIC).
+// splash OUT [STYLE [WxH]] (STYLE 0 OLED, 1 SIDECAR).
 #include "../sidecar_splash.h"
 #include <stdio.h>
 static int W = 800, H = 480;

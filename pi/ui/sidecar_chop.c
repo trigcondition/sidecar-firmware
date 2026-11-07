@@ -1,5 +1,5 @@
 // pi/ui/sidecar_chop.c - see sidecar_chop.h. Code-drawn areas (the waveform, the pads, the list) and theme keys; every
-// mark through th_fill / th_text / th_paint_key, so the OLED theme keeps its dots and CLASSIC its hardware look.
+// mark through th_fill / th_text / th_paint_key, so the OLED theme keeps its dots and SIDECAR its cards.
 #include "sidecar_chop.h"
 #include "sidecar_theme.h"
 #include "lvgl.h"
@@ -293,7 +293,7 @@ static int list_rows (void)
 	lv_obj_get_coords (s_List, &c);
 	return (lv_area_get_height (&c) - row_h () - 2) / row_h ();
 }
-static int nf (void) { return (oled () ? 1 : 2) + (TH->dx > 0); }	// the settings' columns: OLED 1, CLASSIC 2 (+1 wide)
+static int nf (void) { return (oled () ? 1 : 2) + (TH->dx > 0); }	// the settings' columns: OLED 1, SIDECAR 2 (+1 wide)
 static void col_x (int w, int *x)	// S START LEN F1..Fnf (x[3 + nf]: the end)
 {
 	int O = oled (), n = nf ();
@@ -480,7 +480,7 @@ static void zoom_cb (lv_obj_t *o, int idx, void *ud)
 static void layout (void)
 {
 	int O = oled (), u = U ();
-	int pw = O ? TH->w - LU (48) : TH->w;
+	int pw = th_page_w ();
 	int x0 = O ? 0 : LU (8), top = LU (O ? 15 : 8), kh = LU (O ? 22 : 52);
 	int ph = O ? TH->h : LU (428) + TH->dy;
 	int ky = ph - kh - (O ? 0 : LU (4));
@@ -497,7 +497,7 @@ static void layout (void)
 void sidecar_chop_create (void *parent, int y0)
 {
 	int O = oled (), u = U ();
-	int pw = O ? TH->w - LU (48) : TH->w;
+	int pw = th_page_w ();
 	layout ();
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, pw, O ? TH->h : LU (428) + TH->dy);
 	s_Page = pg;

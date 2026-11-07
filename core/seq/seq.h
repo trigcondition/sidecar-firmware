@@ -51,7 +51,9 @@ constexpr int kTracks = 4;     // seq tracks at once
 constexpr int kRytmTracks = 12;
 constexpr uint8_t kTickCmd = 0x2C, kStateCmd = 0x2D, kMaskCmd = 0x2E, kPageLedsCmd = 0x2F;
 enum : uint8_t { kTransport = 1, kPattern = 2, kSwitch = 3, kScale = 4, kMutes = 5, kRec = 6, kTempo = 7, kSeqMode = 8,
-                 kPos = 9, kEdit = 10, kDirty = 11, kFill = 12, kSolo = 13 };   // kSolo: fix1049 (rytm-mods 0026 1049)
+                 kPos = 9, kEdit = 10, kDirty = 11, kFill = 12, kSolo = 13,   // kSolo: fix1049 (rytm-mods 0026 1049)
+                 kQperf = 14, kSceneRep = 15,   // 0.5.0: the QUICK PERF knob, the Rytm's scene (core/mod/scene.h)
+                 kHostAck = 16 };   // 0.5.0: the mod command's answer (core/mod/rytm_out.h)
 // 2D 0A EDIT's ops (rytm-mods 0026 "1033"): the stock edit functions the Rytm ran (src 0) or seq mode's own gesture
 // (src 1: a host trig / PAGE held + FUNC + RECORD / STOP / PLAY)
 enum : uint8_t { kPCopy = 1, kPPaste, kPClear, kPUndo, kTCopy, kTPaste, kTClear, kTUndo, kGCopy, kGPaste, kGClear, kGUndo,
@@ -592,6 +594,11 @@ void level_taken(int rytm);
 uint32_t note_edit_work();   // tests: the last move's work (targets checked over the shifts tried)
 // the touchscreen moved a note (seqed=move): NOTE EDIT's highlight / selection go with it on Rytm track rytm
 void note_moved(int rytm, int from_idx, int from_pitch, int to_idx, int to_pitch);
+// The web's NOTE EDIT (docs/TOUCH-EDITOR.md "NOTE EDIT from the web"; pi/engine/seqed_pi.cpp): one "seqed=nsel / nset /
+// nclr / nedit / ndel / noff" line run as the Rytm's DATA push and A..E would (one selection, one undo history). shown:
+// the track the web shows (-1: any). -1: not one of these; -2: a bad one; 0: refused or nothing done (out says why); 1:
+// the selection / highlight / NOTE EDIT's state changed; 2: the track's notes changed too (replanned and saved).
+int note_edit_line(const char* line, int shown, char* out, int cap);
 void view_set(int track, int page, int held, bool follow);   // tests and the renderer
 struct Stats {
   uint32_t ticks, ticks_bad, states, switches, notes_on, notes_off, late, late_frames_max, cancelled, dropped_queue;

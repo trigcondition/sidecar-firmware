@@ -372,7 +372,7 @@ machine lines). Core 2's worst for SAT, every bus and master slot on it (10 ster
 - **The UI rendered, not asserted by return value**: `build/rui_pages/ins1112_1_track_view.png`, `_2_eq_view.png`,
   `_3_eq_bus_view.png`, `_4_bus_view.png`, `_5_eq_no_slots.png` (RIGHT in, the knobs turned, YES to the bus, LEFT and
   NO out, and the EQ view with no slot set at all), plus a pixel check that the strip's POST EQ box is filled while
-  the EQ is on. The touchscreen: `pi/ui/host/shots*/oled-insfx-voice.png` and `classic-insfx-voice.png` (the hint
+  the EQ is on. The touchscreen: `pi/ui/host/shots*/oled-insfx-voice.png` and `sidecar-insfx-voice.png` (the hint
   line and the bus line's `> POST EQ`).
 
 ## Files

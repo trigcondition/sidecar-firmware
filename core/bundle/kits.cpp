@@ -15,6 +15,7 @@
 #include "../store/store.h"
 #if CORE_POLY
 #include "../fx/insert.h"
+#include "../mod/scene.h"
 #endif
 
 namespace core {
@@ -26,10 +27,12 @@ const Feature kFeatures[] = {
     {"lfo"},
 #if CORE_POLY
     {"ins"},
+    {"scene"},   // 0.5.0 (core/mod/scene.h): up to 12 x 64 locks, ~18 KB - more than kPostMax, written through the queue
 #endif
 };
 constexpr int kNumFeatures = sizeof kFeatures / sizeof kFeatures[0];
-constexpr uint32_t kRecMax = 3 * fmt::kPostMax;   // a record: the features' files (each at most kPostMax as saved)
+// a record: the features' files (the LFOs' and the inserts' at most kPostMax as saved, the scenes' up to ~13 KB more)
+constexpr uint32_t kRecMax = 3 * fmt::kPostMax + 13 * 1024;
 
 struct Ev { uint8_t op, kit, src; uint32_t gen; };
 Ev g_q[kPending];
@@ -60,7 +63,7 @@ CORE_COLD void work_path(const Feature& f, const char* key, int kit, char* out, 
 CORE_COLD bool live(int k) {
   return lfo::kit() == k
 #if CORE_POLY
-         || ins::kit() == k
+         || ins::kit() == k || scene::kit() == k
 #endif
       ;
 }
@@ -68,6 +71,7 @@ CORE_COLD void modules_again() {   // each saves its unsaved edits (queued, into
   lfo::project_changed();
 #if CORE_POLY
   ins::project_changed();
+  scene::project_changed();
 #endif
 }
 

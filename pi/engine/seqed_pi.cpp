@@ -101,6 +101,12 @@ bool Command(const char* p, char* out, int cap) {
     sniprintf(out, cap, "seqed: showing T%d", g_show + 1);
     return true;
   }
+  // the web's NOTE EDIT (nsel nset nclr nedit ndel noff): core/seq runs them as the Rytm's gestures, their undo levels
+  // through the hooks below (no level_taken: the level is NOTE EDIT's own)
+  if (seq::note_edit_line(p, shown(seq::view()), out, cap) != -1) {
+    g_force = true;
+    return true;
+  }
   // review round 2 (N3): an UNDO of a track the Rytm's NOTE EDIT edited, then something outside it: that state first
   // becomes a level (core/seq undo_prepare), so the UNDO takes back the outside edit alone
   // round 3 (NB-1): a REDO too, and either ends the Rytm's snapshot (its state is history's now)

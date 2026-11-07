@@ -36,7 +36,7 @@ static int oled (void) { return TH->id == THEME_OLED; }
 static uint32_t c_ink (void) { return oled () ? TH->ink : TH->win_ink; }
 static uint32_t c_dim (void) { return oled () ? TH->dim : TH->win_dim; }
 static uint32_t c_bg (void) { return oled () ? TH->bg : TH->win; }
-static uint32_t c_rytm (void) { return oled () ? th_oled_secondary (110) : 0x5A8FD8; }	// the panel's blue print
+static uint32_t c_rytm (void) { return oled () ? th_oled_secondary (110) : TH->accent; }	// the panel's blue print (SIDECAR: lavender)
 static uint32_t c_side (void) { return oled () ? th_oled_accent (110) : TH->accent; }	// the FUNC teal / the accent
 
 static void cmd (const char *c) { if (s_Cmd) s_Cmd (c); }
@@ -365,7 +365,7 @@ void sidecar_song_create (void *parent, int y0, sidecar_song_cmd_t c)
 	s_bExplain = 0;
 	memset (&s_V, 0, sizeof s_V);
 	// 1024x600 (TH->dx, dy): the timeline gets the extra room, the keys wider, the overlay stays its size, centred
-	const int dx = TH->dx, dy = TH->dy, W = O ? TH->w - LU (48) : TH->w, H = O ? TH->h : LU (428) + dy;
+	const int dx = TH->dx, dy = TH->dy, W = th_page_w (), H = O ? TH->h : LU (428) + dy;
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, W, H);
 	s_Page = pg;
 	static const char *const kKeys[8] = {"ARM", "REPLAY", "<", ">", "ZOOM -", "ZOOM +", "FOLLOW", "CFG"};	// (T12: zoom named)

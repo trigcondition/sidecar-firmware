@@ -129,7 +129,7 @@ A CHOP track's VOICE page (UP + T4 on the Rytm, the VOICE key) after the MPC Liv
   move it (sent at the release), tap a slice to select it, drag elsewhere to pan, **ZOOM - / +** around the selection
   (the whole sample down to 1/64 of it); LAZY: the markers so far and the sample's playhead.
 - **16 pads** with bank tabs **A..D** (slices 1..16 .. 49..64): a tap selects and auditions; LAZY: a tap is a tap.
-- **the slice list** (the M8's): the slice, its start and length in ms, and the settings in columns (OLED one, CLASSIC
+- **the slice list** (the M8's): the slice, its start and length in ms, and the settings in columns (OLED one, SIDECAR
   two, three on 1024x600), the cursor's cell framed; **arrows** move the cursor (row, column), **- / +** edit it (x10 on
   the long ranges).
 - **keys**: LAZY (again: STOP), TAP, UNDO, GRID (4 8 16 32), TRANS, ADD (split the selection), DEL, RSMP; an offer:

@@ -83,7 +83,7 @@ extern void (*send_insert)(int c, int s, const float* p, const float* x, const f
 struct Control {
   volatile uint8_t type[kChains][kSlots];
   volatile uint8_t play[kChains][kSlots][kParams];   // 0..127 as it plays (insert.cpp: knob / lock + LFO)
-  volatile uint8_t send[kVoices][kBuses];            // 0..127: voice v's send to bus b (bus 1 / 2: the send FX)
+  volatile uint8_t send[kVoices][kBuses];            // 0..127: voice v's send to bus b as it plays (the knob + mod's offset)
   volatile uint8_t route3;                           // bus 3: 0 PRE (host -> Rytm 2/3), 1 POST (0/1)
   volatile int8_t peq[kChains][kEqParams];           // ins1112 the POST EQ as it plays (eq_store: 0 = does nothing)
   volatile uint8_t mpair[kMasters][kSlots];          // the master's AMP slots: 1 an L/R pair (amp.h), 0 one instance on (L + R) / 2
@@ -703,7 +703,7 @@ const Labels& eq_labels();
 void set_eq(int c, int k, int v);
 int eq_param(int c, int k);     // the knob as set
 int eq_playing(int c, int k);   // the knob as it plays (the LFO's offset on top)
-void eq_lfo_offset(int c, int k, int off);   // -127..127, on the knob (core/lfo.cpp targets I1..I8 / B1..B3, params 8..11)
+void eq_mod_offset(int c, int k, int off);   // -127..127, on the knob (core/mod kIns params 8..11: E1..E4)
 bool eq_on(int c);              // chain c's post EQ is off its flat defaults
 bool eq_any_on();
 void eq_value_text(int k, int v, char* b, int cap);   // "OFF" "420" "6.2K" / "FLAT" "+3.0DB" (<= 7 chars)              // kOff's: "OFF", empty labels
@@ -727,8 +727,13 @@ int param(int c, int s, int k);              // the knob (0..127)
 // -1 the knob again
 void lock(int vi, int s, int k, int v);
 int locked(int c, int s, int k);             // the lock's value, -1 none
-// The Sidecar's LFOs (core/lfo.cpp, targets I1..I8 B1..B3): an offset (-127..127) on top of the knob / lock
-void lfo_offset(int c, int s, int k, int off);
+// The modulation layer (core/mod kIns: I1..I8 B1..B3 M1 M2; the LFOs, a device's envelopes): an offset (-127..127)
+// on top of the knob / lock
+void mod_offset(int c, int s, int k, int off);
+// core/mod kIsnd (X1..X8:B1..B3): an offset (-127..127) on voice vi's send to bus `bus`; control.send plays the knob +
+// the offset, clamped, the knob (send_knob) is what the INSERT file, the console and the pages keep
+void send_offset(int vi, int bus, int off);
+int send_knob(int vi, int bus);              // the send as set (0..127)
 bool any_on();                               // a chain has a TYPE
 void touch();                                // the settings changed (the card file written a second later): OUT's
 
@@ -744,7 +749,8 @@ void voice_sends(const int16_t (*v)[kVoices], int n, float (*out)[kBuses]);
 bool sends_on();                             // a voice sends to a bus (else voice_sends writes zeros)
 // Bus 3 (the send FX's core, after SendFx::Process): its send mix in[n] (mono) through its chain onto pre / post (the
 // pair route3 names; soft-limited as the send FX's pairs). bus3_on: anything to do (a send and a TYPE, or its tail).
-void bus3(const float* in, int n, float (*pre)[2], float (*post)[2]);
+// mono (optional): the chain's output, (L + R) / 2, before the limit (the Pi's spectrum); untouched while it is off
+void bus3(const float* in, int n, float (*pre)[2], float (*post)[2], float* mono = nullptr);
 bool bus3_on();
 Engine& engine();
 // The DELAY lines: on CORE_HEAP_BUFFERS ports placed by heap_buffers_place (voices.cpp), else a static array.

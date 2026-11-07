@@ -253,9 +253,9 @@ static bool save_text(bool queue) {
     add(b, n);
   }
   for (int v = 0; v < kVoices; ++v) {
-    if (!control.send[v][0] && !control.send[v][1] && !control.send[v][2]) continue;
-    add(b, sniprintf(b, sizeof b, CORE_STR("SEND %s %d %d %d\n"), chain_name(v), control.send[v][0],
-                     control.send[v][1], control.send[v][2]));
+    if (!send_knob(v, 0) && !send_knob(v, 1) && !send_knob(v, 2)) continue;   // the knobs, never a modulation (core/mod)
+    add(b, sniprintf(b, sizeof b, CORE_STR("SEND %s %d %d %d\n"), chain_name(v), send_knob(v, 0), send_knob(v, 1),
+                     send_knob(v, 2)));
   }
   if (control.route3) {
     static const char kR[] = "ROUTE B3 POST\n";

@@ -1200,7 +1200,7 @@ function paintSeg() {
       const noUsb = k === "usbmode" && !!status && !!status.usbMode && !(status.usbMode.modes || []).includes(b.dataset.val);
       b.disabled = gone || noUsb;
       b.title = k === "mac" && gone && online ? "not in this gadget mode"
-        : noUsb ? ((status.usbMode.modes || []).length ? (status.usbMode.board === 5 ? "Overbridge on the Pi 5 comes in 0.4.2" : "not in this build (no circle-gadget-mirror.patch)") : "USB-C is not the Sidecar's device here (cmdline.txt gadget=)") : b.title;
+        : noUsb ? ((status.usbMode.modes || []).length ? "not in this build (no circle-gadget-mirror.patch)" : "USB-C is not the Sidecar's device here (cmdline.txt gadget=)") : b.title;
     });
   });
   const st = status || {}, v = +$("#mvoice").value, m = st.machines && st.machines[v] ? st.machines[v].toLowerCase() : "";
@@ -1210,7 +1210,7 @@ function paintSeg() {
   $("#usbnow").textContent = !u ? "" : !(u.modes || []).length ? "not here: cmdline.txt gadget=" + (st.gadget || "")
     : (u.shown === "box" ? "now: the Rytm itself" : u.shown === "switching" ? "now: replugging" : "now: the Sidecar device"
       + (u.set === "overbridge" && u.runs === "overbridge" ? " (no box read yet)" : ""))
-      + (u.set !== u.runs ? (u.board === 5 ? "; Overbridge on the Pi 5 comes in 0.4.2: class compliant runs" : "; not in this build: class compliant runs") : "") + (u.from === "cmdline" ? " (cmdline.txt usb=)" : "");
+      + (u.set !== u.runs ? "; not in this build: class compliant runs" : "") + (u.from === "cmdline" ? " (cmdline.txt usb=)" : "");
   $("#usb-warn").hidden = !u || (u.set !== "overbridge" && pend.want("usbmode") !== "overbridge");   // set, or being set
 }
 function settle() {       // /status after a change: confirm what matches

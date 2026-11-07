@@ -34,6 +34,9 @@
 #include "usb_mode.h"
 #include "touch_cal.h"		// pi/ui: the touch calibration (touchcal=)
 #include "sidecar_ui.h"
+#if RASPPI >= 5
+#include "pwrbtn.h"		// the power button (docs/pi5.md "Power button")
+#endif
 
 class CWifi;				// wifi.h: Wi-Fi (off by default)
 class CSidecarDisplay;			// pi/ui/sidecar_display.h: the HDMI display (docs/pi-display.md)
@@ -156,7 +159,7 @@ private:
 	volatile boolean	m_bTouchHidden;		// touchtest=0: the home page's touch test is hidden
 	boolean			m_bTouchCal;		// touchcal=X0,X1,Y0,Y1,SWAP (pi/ui/touch_cal.h): the 4-point calibration
 	touch_cal_t		m_TouchCal;
-	unsigned		m_nUiStyle;		// uistyle=oled|classic: the display's theme (sidecar_theme.h), 0 OLED
+	unsigned		m_nUiStyle;		// uistyle=oled|sidecar ("classic" read as 1): the theme (sidecar_theme.h), 0 OLED
 	volatile boolean	m_bSaveDisplay;		// written by core 0's loop (tmp + rename)
 	unsigned		m_nResW, m_nResH;	// res=800x480|1024x600|1280x720 (display.txt / cmdline): the UI's size, 0: automatic
 	unsigned		m_nResFileW, m_nResFileH;	// display.txt's res= alone (kept when the file is written)
@@ -169,6 +172,13 @@ private:
 #endif
 	void SaveDisplaySettings (void);
 	CWifi			*m_pWifi;		// wifi.h: always made (its console commands), the chip only with wifi=1|scan
+#if RASPPI >= 5
+	void StopAndPowerOff (const char *pWhy);	// the audio faded, the card's work drained (3 s at most), then PSCI off
+	void PowerButtonPoll (void);			// core 0's loop: the button read every 20 ms
+	volatile boolean	m_bPowerOff = FALSE;	// poweroff=1 (any task on core 0): the loop powers off
+	unsigned		m_nButtonAt = 0;
+	pwrbtn::Button		m_Button;
+#endif
 };
 
 #endif

@@ -16,7 +16,9 @@ namespace store {
 
 enum State : uint8_t { kUnknown = 0, kAbsent, kPresent, kLocked };
 
-constexpr int kMaxEntries = 1024;  // a project's paths: 2 x 129 LFO / INSERT files, 257 of the sequencer's; a put beyond is refused
+// a project's paths: 2 x 129 LFO / INSERT files, 257 of the sequencer's, 256 kit records, the song backups; 0.5.0 the
+// scenes' 129 (901 in all: test_scene_file store_entries_headroom); a put beyond is refused
+constexpr int kMaxEntries = 1536;
 constexpr int kPathMax = 96;       // longest path held (with its NUL)
 
 void clear();   // every entry dropped, every buffer freed (and, with the fill, every wanted path; a fill abandoned)
