@@ -6,27 +6,28 @@ for all three sizes ("Sizes" below):
 | theme | what | default |
 |---|---|---|
 | **OLED** | The whole screen as a zoomed-in Elektron OLED: 400x240 dots, each a 2x2-pixel cell with a darker grid between, black, our own pixel font, dotted outlines, grey dithered title bars, inverted selection, knobs as dot rings, greys plus the Rytm panel's FUNC teal and blue print. A fixed navigation column on the right. | yes |
-| **CLASSIC** | The 800x480 layout of before, its controls drawn as the Analog Rytm MKII's hardware (as rytm-emu's panel draws it): dark rubber keys with their print, trig keys with LEDs, pads, knob caps with LED rings, the teal FUNC key, the light grey panel with dark print and blue sub-labels, black display windows for the data. | |
+| **SIDECAR** | The web app's look on the touchscreen: a UV night-blue screen (`#08071a`), cards (`#110f28`, a `#2c2950` border, radius 12-15 px) with their title as a lavender pill on the top edge, pill keys and segments (selected: filled lavender, dark text), knobs as 270° arcs with the value inside, rounded meters lavender -> magenta -> coral, the piano roll's notes rounded (the selected one coral). A header with a flat gradient (no blur) carries the "Docked" logo, SIDECAR and the page's name in the dot face; from 1024x600 a T1..T8 rail on the right (the page's key a light pill), at 800x480 the same keys as a row of pills in the header. Text in Space Grotesk, big numbers (the pattern, knob values, the page title) in the dot face with round dots. It replaced CLASSIC (the Rytm's hardware look) under the same id. | |
 
-**Switching:** Settings > Display > **UI style: OLED / CLASSIC**, or the console / web command `uistyle=oled|classic`.
+**Switching:** Settings > Display > **UI style: OLED / SIDECAR**, or the console / web command `uistyle=oled|sidecar`.
 - Applied at once, no reboot (`sidecar_ui_style`).
-- Stored as `uistyle=oled|classic` in `/.rytm/display.txt`, with the screensaver, brightness and touch test settings.
-- `uistyle=` in cmdline.txt overrides the file. It is also the only way to give the boot screen the CLASSIC look, because the boot screen is drawn before the card is read.
+- Stored as `uistyle=oled|sidecar` in `/.rytm/display.txt`, with the screensaver, brightness and touch test settings.
+- **From CLASSIC:** SIDECAR took CLASSIC's id 1, so a card or cmdline.txt that says `uistyle=classic` (or `1`) comes up in SIDECAR, and the next save of the display settings writes `uistyle=sidecar`. `classic` stays accepted by the command as well. A build from before SIDECAR does not know `sidecar` and falls back to OLED, the default.
+- `uistyle=` in cmdline.txt overrides the file. It is also the only way to give the boot screen the SIDECAR look (`uistyle=sidecar`: the logo over the wordmark on the night blue), because the boot screen is drawn before the card is read.
 
 Every page exists in both themes: home, Settings (Sound, Send FX, Display, About), SEQ (the piano roll with chord stamp, strum, humanise, key, swing, velocity lane, page strip), RYTM (the pattern and its p-locks), REC (the Overbridge recorder: "REC" below), SCOPE and SIDECAR STATUS ("SCOPE", "SIDECAR STATUS" below), the machine view (GRANULAR, WAVETABLE, MULTISAMPLE), the boot screen and the power warning.
 
 The display has no LFO, Wi-Fi or preset/pool browser pages. Those live on the web page and the Rytm's remote pages, which are outside `pi/ui` and unchanged.
 
-Renders: `make -C pi/ui/host` writes `pi/ui/host/shots/{oled,classic}-*.png`, `make -C pi/ui/host shot.png SIZE=1024x600` the same at 1024x600 (`shots-1024x600/`), `SIZE=1280x720` at 1280x720, `make -C pi/ui/host bounds` compares the 1024x600 and 1280x720 layouts (`check_bounds.py`), `make -C pi/ui/host splash.png` the boot screens and `make -C pi/ui/host anim` an animation of the OLED piano roll (`seq-oled.mp4`, `seq-oled.gif`).
+Renders: `make -C pi/ui/host` writes `pi/ui/host/shots/{oled,sidecar}-*.png`, `make -C pi/ui/host shot.png SIZE=1024x600` the same at 1024x600 (`shots-1024x600/`), `SIZE=1280x720` at 1280x720, `make -C pi/ui/host bounds` compares the 1024x600 and 1280x720 layouts (`check_bounds.py`), `make -C pi/ui/host splash.png` the boot screens and `make -C pi/ui/host anim` an animation of the OLED piano roll (`seq-oled.mp4`, `seq-oled.gif`).
 
 ## Sizes (800x480, 1024x600, 1280x720)
 
 - **Which:** the display hands LVGL a screen of 800x480 or 1024x600 (docs/pi-display.md "Screen sizes": the frame
   buffer's size, `res=`, else 800x480 centred), or 1280x720 on Touch Display 2. `sidecar_ui_create` passes it to
   `sidecar_theme_screen`: 1024x600 (or more) gives the wide layouts, 1280x720 (or more) the big ones.
-- **The theme table carries the size:** `TH->w, h` (OLED 400x240 or 512x300 dots, CLASSIC 800x480 or 1024x600 px),
+- **The theme table carries the size:** `TH->w, h` (OLED 400x240 or 512x300 dots, SIDECAR 800x480 or 1024x600 px less the rail, `TH->nav`),
   `TH->bw, bh` (the 800x480 layout's size in the theme's pixels) and `TH->dx, dy` (what the screen adds: 0 x 0, or OLED
-  112 x 60 dots, CLASSIC 224 x 120 px). The dot stays 2x2 pixels, the fonts the same faces: text keeps its physical
+  112 x 60 dots, SIDECAR 128 x 120 px: 224 less the 96 px rail). The dot stays 2x2 pixels, the fonts the same faces: text keeps its physical
   size, touch targets stay at least 21 dots (42 px) / 48 px.
 - **One layout, grown:** every page is written once, as its 800x480 layout plus `dx`/`dy` (no second copy). What grows
   gets the extra room, what sits at an edge moves with it:
@@ -34,28 +35,29 @@ Renders: `make -C pi/ui/host` writes `pi/ui/host/shots/{oled,classic}-*.png`, `m
     moves to the right edge, its five keys 59 dots high instead of 47.
   - Settings pages: positions and heights stretched to the taller panel (`VS`, `CY`/`CH` in `sidecar_ui.c`).
   - SEQ (`sidecar_seqed.c` `geo_size`): the roll gets the width in whole dots a step (OLED 12 instead of 9 at two pages,
-    CLASSIC 27 instead of 20) and two thirds of the height (32 rows of 5 dots instead of 24; CLASSIC 360 px of rows instead of
-    280), the lane the rest (OLED 64 dots instead of 44: the tools' controls taller); the page strip's cells 27 dots wide.
-  - RYTM (`sidecar_rytmpat.c` `geo_size`): 20 dots a step instead of 16 (CLASSIC 52 / 40), rows of 13 dots (28 px), up
+    SIDECAR whole pixels a step from the width left of the rail) and two thirds of the height (32 rows of 5 dots instead
+    of 24; SIDECAR 360 px of rows instead of 280), the lane the rest (OLED 64 dots instead of 44: the tools' controls taller); the page strip's cells 27 dots wide.
+  - RYTM (`sidecar_rytmpat.c` `geo_size`): 20 dots a step instead of 16 (SIDECAR: the width left of the rail, in whole pixels), rows of 13 dots (28 px), up
     to 6 lock lanes instead of 4, a wider step card.
   - VOICE, MACHINE, INSERT FX, SONG: the picture, the list (more rows), the timeline get the room; the overlays keep their
     size, centred.
   - SCOPE: the trace gets two thirds of the extra height, the meters the rest (taller ladders), every column wider;
     the keys row keeps its height. SIDECAR STATUS: wider columns, taller rows.
-  - REC: the channel rows get the height (OLED 28 dots instead of 21, CLASSIC 57 px instead of 42), the columns and
+  - REC: the channel rows get the height (OLED 28 dots instead of 21, SIDECAR 57 px instead of 42), the columns and
     their meters the width (more segments); the transport row keeps its height; the takes' rows grow the same way
-    (CLASSIC: 8 rows of 54 px instead of 7 of 44); the delete's confirmation keeps its size, centred.
-- **Unchanged at 800x480:** the host renders at 800x480 are pixel-identical to before the change.
-- **1280x720 (640x360 dots, CLASSIC 1280x720 px):** the panel is 7" like the 1024x600 ones, so its pixels are smaller
+    (SIDECAR: 8 rows of 54 px instead of 7 of 44); the delete's confirmation keeps its size, centred.
+- **Unchanged at 800x480:** the OLED host renders at 800x480 are pixel-identical to before the change.
+- **1280x720 (640x360 dots, SIDECAR 1280x720 px, the rail 120 of them):** the panel is 7" like the 1024x600 ones, so its pixels are smaller
   (0.12 mm against 0.15) and the same pixel sizes would read a fifth smaller. The layout is not a scaled picture:
   - **`LU (n)`** (`sidecar_theme.h`), n x 5/4 here and n elsewhere, wraps the base layout's numbers. The base comes out at
     500x300 dots / 1000x600 px; `TH->dx, dy` is what is left on top (140 x 60 dots, 280 x 120 px) and goes where it goes at
     1024x600. A key's height, a row, a margin are in LU; a line stays one dot wide, a grid stays in whole dots.
   - **Faces:** OLED micro 5x9, body and title 6x11 (DOT 5x9 a column wider and two rows taller, `dotfont.py`), big 6x11 bold at
-    2x. CLASSIC Montserrat 16 / 18 / 20 / 22 / 24 / 28 instead of 12 / 14 / 16 / 18 / 20 / 22 / 24 (the pages take them from
-    `TH->f_*`; 28 is off in Circle's lv_conf.h, so `sidecar_font28.c` compiles LVGL's table itself).
-  - **Touch:** a key row 26 dots (52 px), CLASSIC 60 px or more; `TH->gap` one more; the tightest rows (SEQ's tool column, a few short keys in the lanes, CHOP's tabs) 40-46 px. The nav icons have each dot doubled.
-  - SEQ: OLED 16 dots a step at two pages (8 at four, whole), CLASSIC 33 px. RYTM: 25 dots a step, CLASSIC 65 px.
+    2x. SIDECAR Space Grotesk 16 / 18 / 20 / 22 / 24 / 28 instead of 12 / 14 / 16 / 18 / 20 / 22 / 24 (the pages take them from
+    `TH->f_*`; the tables are `pi/ui/fonts/sidecar_sg*.c`, made by `pi/ui/fonts/gen.sh`), the numbers' dot face 5x9
+    bold instead of 5x7 and the page title 6x11 at 3x instead of 5x9.
+  - **Touch:** a key row 26 dots (52 px), SIDECAR 60 px or more; `TH->gap` one more; the tightest rows (SEQ's tool column, a few short keys in the lanes, CHOP's tabs) 40-46 px. The nav icons have each dot doubled.
+  - SEQ: OLED 16 dots a step at two pages (8 at four, whole), SIDECAR whole pixels from the width left of the rail. RYTM: 25 dots a step, SIDECAR whole pixels from the width left of the rail.
   - SCOPE, VOICE and GRANULAR draw more pixels than their view has columns: only here the columns are joined by a slope.
   - `make -C pi/ui/host bounds`: every object of every page against 1024x600: on the screen, the page filling it, no
     control lost, every touch target at least 1.12 x its size there (or 60 px), no clickable siblings overlapping.
@@ -98,7 +100,7 @@ Renders: `make -C pi/ui/host` writes `pi/ui/host/shots/{oled,classic}-*.png`, `m
 - **Black is black:** the background (`bg`) is `#000000`, an unlit dot is written as 0 (its grid lines then too). A
   dark navy look on an HDMI panel is the panel's black level / backlight.
 - **Title bars:** 13 dots high, the text starts 7 dots in from the left edge.
-- **Brightness** is applied in the expansion as well: the lit dots are scaled, and no dimming layer is drawn. CLASSIC keeps its black dimming layer.
+- **Brightness** is applied in the expansion as well: the lit dots are scaled, and no dimming layer is drawn. SIDECAR keeps a black dimming layer.
 
 ## Font (OLED)
 
@@ -142,8 +144,8 @@ Both themes take their colours from one token table, `sidecar_theme_t` in `sidec
     `#303030`, muted `#707070`.)
   - bright: `#E6E6E6` (the panel's light print), for text
   - white: for what plays
-- **One accent, the FUNC key's teal.** rytm-emu's `#2B5A6E` (CLASSIC's `HW_FUNC`) at full dot brightness, with its hue kept, is `#5ABCE6`. Its light tint `#9CD7F0` marks the selection and anything that needs attention.
-- **One secondary, the panel's blue print** (`#2C5C9E`, CLASSIC's `sub`), brightened, for single notes and FX 1.
+- **One accent, the FUNC key's teal.** rytm-emu's `#2B5A6E` (the Rytm's FUNC key) at full dot brightness, with its hue kept, is `#5ABCE6`. Its light tint `#9CD7F0` marks the selection and anything that needs attention.
+- **One secondary, the panel's blue print** (`#2C5C9E`, the panel's sub-label print), brightened, for single notes and FX 1.
 
 Different states are told apart mostly by brightness, dither and outline, not by hue. The piano roll matches the look of the SEQ animation (`seq-oled.mp4`).
 
@@ -169,29 +171,40 @@ Different states are told apart mostly by brightness, dither and outline, not by
 
 The trig keys on the Rytm itself keep core/seq's LED colours (note 47, chord 79, play 111, held 63). The screen follows the same order (note / chord / play / held) in panel colours.
 
-**CLASSIC** takes its colours from rytm-emu's `src/gui/hw.rs` (our own code):
-- Panel `#B3B5B8`.
-- Keys `#2B2D30`, with `#E8E8E8` print, a `#7E8084` drop shadow and a `#141517` edge.
-- The FUNC key `#2B5A6E`, pads `#E4E5E6`.
-- Dark print `#25272A`, blue sub-labels `#2C5C9E`.
-- Display windows `#08090A` with a `#3A3C40` bezel.
-- A lit key: a 2 px frame in its LED's colour, a glow ring, and LED-tinted print.
+**SIDECAR** takes the web app's palette (`UV_*` in `sidecar_theme.c`); every pair checked for contrast at the size it is
+used (WCAG: text 4.5:1, controls 3:1):
+
+| token | colour | used for | contrast |
+|---|---|---|---|
+| screen | `#08071a` | the background | |
+| card | `#110f28`, border `#2c2950` | panels, windows, rows, the rail `#0d0a2a` | |
+| control border | `#6a64a0` | key and segment outlines | 3.5:1 on a card |
+| text | `#eeedff` | values, names | 16:1 on a card |
+| labels | `#bdb9e8` | captions, hints, secondary text | 10:1 |
+| faint | `#8a85c0` | disabled text | 5.5:1 |
+| accent (lavender) | `#9a97ff` | selection (dark text on it), values, arcs, FX 1, the A side, meters | 7.3:1; `#08071a` on it 7.8:1 |
+| coral | `#ff7a5c` | recording, the selected note, FM carriers, FX 2, the B side, LEV knobs, alerts, a hot meter's top | 7.3:1 |
+| magenta | `#d46cff` | p-locks, a meter between -12 and -3 dB, the crossfader's middle | 6.6:1 |
+| header | `#1a1150` -> `#14103a` -> `#2a1033` -> `#120e36` | the title bar, a flat gradient of three fills (no blur, no shadow) | |
+
+Touch targets are 46 px or more at 800x480 and 1024x600 (`TH->touch`), 57 px at 1280x720 (the T1..T8 rail's keys
+72 px tall at 1024x600, 86 at 1280x720); `make -C pi/ui/host bounds` checks them against 1024x600.
 
 ## Components
 
 Every widget is a plain `lv_obj` drawn in its `DRAW_MAIN` by the current theme's painter. There are no LVGL themes and no styles per state, so a switch only changes a table pointer and rebuilds the pages.
 
-| widget | OLED | CLASSIC |
+| widget | OLED | SIDECAR |
 |---|---|---|
-| `th_key` (kinds: key, accent, danger, FUNC, trig, pad, nav) | black, a 1-dot frame; checked: inverted (light grey, black text); pressed: dithered; disabled: a dotted frame, faint text; accent: a double frame; danger: the teal's tint; an LED: a corner block, or a bar under the text on trig and nav keys | the rubber key; FUNC teal; trig keys with an underlined number; pads light and lit through by their LED; checked = the LED lit (green, or the key's own LED) |
+| `th_key` (kinds: key, accent, danger, FUNC, trig, pad, nav) | black, a 1-dot frame; checked: inverted (light grey, black text); pressed: dithered; disabled: a dotted frame, faint text; accent: a double frame; danger: the teal's tint; an LED: a corner block, or a bar under the text on trig and nav keys | a pill (radius 12-15) with a `#6a64a0` outline; checked: filled lavender, dark text; FUNC / accent tinted, danger coral; trig keys with a bar, pads a tile with an outline; an LED a corner dot; nav: the rail's key, the page's a light pill with dark text, its T number small in the corner |
 | `th_seg` (one checked; rows with `"\n"`) | items as keys | items as keys |
-| `th_panel` (group / window / bare) | a dotted frame, the title in a notch of the top edge | group: a printed hairline frame and dark title; window: the Rytm's display bezel |
-| `th_titlebar` (+ LED, alert) | the dithered bar, bold black text left, text right, an LED block | the emulator's dark header strip |
-| `th_meter` (bar, vertical, knob) | LED ladders of dots; the knob is a dot ring (19 dots on a big knob, 13 on a small one, lit to the value) around a dotted cap with a black pointer | recessed grooves lit in LED colour; the knob is a knob cap lit from the top left inside an LED ring |
-| `th_slider` | a dotted track, a solid value, a 5-dot handle | a groove, an LED fill, a small key as the handle |
+| `th_panel` (group / window / bare) | a dotted frame, the title in a notch of the top edge | a card, its title a lavender pill (dark text) straddling the top edge |
+| `th_titlebar` (+ LED, alert) | the dithered bar, bold black text left, text right, an LED block | the gradient header with a hairline under it; an alert: coral, dark text |
+| `th_meter` (bar, vertical, knob) | LED ladders of dots; the knob is a dot ring (19 dots on a big knob, 13 on a small one, lit to the value) around a dotted cap with a black pointer | rounded bars (lavender, magenta above 70 %, coral above 90 %); the knob a 270° arc (track `#2c2950`, value lavender, coral for a level) with the value inside in the dot face |
+| `th_slider` | a dotted track, a solid value, a 5-dot handle | a rounded track, a lavender value, a round light handle |
 | `th_fill`, `th_frame`, `th_text`, `th_paint_key`, `th_paint_knob` | painters for the code-drawn areas (the roll, the grid, the strip) | the same |
 
-**Layout.** Each page lays itself out per theme. `sidecar_ui.c` has an `oled_*` and a `classic_*` builder for every page, which create the same objects, so the status update stays one code path. `sidecar_seqed.c` and `sidecar_rytmpat.c` keep a geometry table per theme (`kGeoOled`, `kGeoClassic`), and their drawing code asks the theme for colours, fonts and line styles.
+**Layout.** Each page lays itself out per theme. `sidecar_ui.c` has an `oled_*` and an `sc_*` builder for every page, which create the same objects, so the status update stays one code path. `sidecar_seqed.c` and `sidecar_rytmpat.c` keep a geometry table per theme (`kGeoOled`, `kGeoSidecar`), and their drawing code asks the theme for colours, fonts and line styles.
 
 The OLED screen (400x240 dots):
 - **Navigation column** at x 355-399: HOME, SEQ, PAT, SONG, SET, each 45 x 47 dots: a 15 x 11 dot icon (a house, a
@@ -213,7 +226,7 @@ The OLED screen (400x240 dots):
 - **RYTM:** pages and ALL; a grid of 12 x 16 cells, 16 x 10 dots each (4 x 10 at ALL); the step card at the right, in
   words now (NOTE, VEL, LEN, MIC, the condition, the flags, LOCKS, the first lock by name); the lock lanes at the bottom.
 - **VOICE:** the eight knobs in one row (43 x 52), the machine's panel the full width under them (349 x 110): the
-  MULTISAMPLE keyboard as a piano (seven white keys an octave, 7-9 dots each, the black keys narrower over them; CLASSIC
+  MULTISAMPLE keyboard as a piano (seven white keys an octave, 7-9 dots each, the black keys narrower over them; SIDECAR
   keeps equal keys), its zones and the envelope; the 6-OP FM algorithm; the DAISYSP modes or string; the scope. The
   p-locks heatmap at the foot.
 - **MACHINE (GRANULAR / WAVETABLE):** the picture 346 x 178 (the granular waveform as joined top and bottom outlines),
@@ -221,7 +234,7 @@ The OLED screen (400x240 dots):
 - **MACHINE (MULTISAMPLE)** (touch2): the instrument's zones (two rows alternating, as tall as their velocity layers; the
   blue print by layers, white while a key in it sounds; the root a tick) over a piano of its span in whole octaves (the
   keys sounding teal, each C named); SOURCES the same bank list as GRANULAR's, of INST.
-- **SEQ tools** (touch2): DRAW CHORD STRUM HUMAN KEY SWING, 40 dots each at 400x240 (CLASSIC: a column of six 42 px keys);
+- **SEQ tools** (touch2): DRAW CHORD STRUM HUMAN KEY SWING, 40 dots each at 400x240 (SIDECAR: a column of six 42 px keys);
   SWING's lane: the info line, then - / the presets 50 .. 80 / + (21 dots tall).
 - **SCOPE** (touch2; `sidecar_scope.c`; UP + T9, or a tap on VOICE's scope; no navigation key):
   - The trace (y 15-147, the content's width): min / max columns joined to their neighbours (no gaps on a slope), in
@@ -234,16 +247,14 @@ The OLED screen (400x240 dots):
     the channel under it (narrow columns: the first track's name, `RS`); the channel shown: a white frame and its name
     inverted; a press: dithered. The twelfth place is TRACK (FUNC, the followed track under it; checked while following).
   - The keys (y 218-239): FREEZE (FUNC, checked while frozen), the timebase < its value >, GAIN (AUTO, X1 .. X64).
-  - CLASSIC: the trace in the Rytm's display window (its white; the graticule dark grey lines), the meters as rubber keys
-    with recessed LED ladders (green, amber above -12 dB, red above -3 dB, a white held peak, a red clip lamp; the
-    channel shown: the key lit), the keys 52 px.
+  - SIDECAR: the trace in a card in the accent, the meters as pill keys with rounded ladders (lavender, magenta above
+    -12 dB, coral above -3 dB, a light held peak, a coral clip lamp; the channel shown: the key selected), the keys 52 px.
 - **SIDECAR STATUS** (touch2; `sidecar_status.c`; UP + T10, or a tap on the home page's ENGINE panel; no navigation key):
   two columns of dotted panels, captions in the micro face, values in the body face - VOICES (the eight voices by
   track: the track's name in the blue print, the machine, a dot ladder of the render load, full at 50 % of a core, the
   percent), SEND FX, VERSIONS | CPU (four ladders, then the longest block / pass, underruns, FIFO and temperature),
   LINKS. Errors and limits (MUTED, underruns, a core over 80 %, a pass over 2 ms, a block over 8 budgets, the network
-  down, under 1 GB free, an update over 16 ms) in the teal's tint (CLASSIC: red). CLASSIC: the same panels as display
-  windows on the grey panel.
+  down, under 1 GB free, an update over 16 ms) in the teal's tint (SIDECAR: coral). SIDECAR: the same panels as cards.
 - **INSERT FX, SONG:** the same layout as before at the new scale; SONG's lane names 45 dots wide (7 characters).
   SONG: UP + T6 on the Rytm (rui1052; its navigation key captioned T6); PROJECT UP + T12, POOL UP + T13.
 - **REC** (`sidecar_rec.c`; UP + T7 on the Rytm, or a tap on the home page's REC status; no navigation key, none checked):
@@ -265,19 +276,18 @@ The OLED screen (400x240 dots):
     dots, 28 on the wide screen; the row's whole width except DEL) plays it (`play=toggle:TAKE`: its MASTER mix if the
     take has one, else its first file), a second tap pauses it, a tap on the paused take goes on from there, a tap on
     another take switches to it from its start. STOP (`play=stop`, in ARM's place while TAKES shows) resets to the
-    start. The playing row: a play triangle (paused: two bars) in the tint, a frame (OLED) or a tinted row (CLASSIC),
+    start. The playing row: a play triangle (paused: two bars) in the tint, a frame (OLED) or a tinted row (SIDECAR),
     the length column turned into `elapsed / length` over the size and files columns, and a thin progress bar under
-    the name (dotted track, the played part solid; CLASSIC a recessed track, the played part green). Idle rows carry a
+    the name (dotted track, the played part solid; SIDECAR a rounded track, the played part lavender). Idle rows carry a
     faint triangle. Playback goes on when the page is left and shows again on return; it ends at the take's end,
     when a recording starts or arms, and when its take is deleted. A tap while a take records does nothing. Only the
     bar's strip is redrawn as the position moves (at most 10 a second); the label changes once a second.
-  - CLASSIC: the same content in the Rytm's hardware look: a display window with red segment digits while recording
-    (amber armed), REC as a rubber key with a red record lamp and its red LED frame while recording, the channels as
-    rubber keys with a round red LED when recorded and the meter in a recessed black window (green, amber above -12 dB,
-    red above -3 dB, a white held peak, a red clip block), the group names in the panel's blue print.
+  - SIDECAR: the same content as cards: coral segment digits while recording (a light coral armed), REC as a pill key
+    with a coral record dot, the channels as pill keys with a coral dot when recorded and the meter in a rounded dark
+    window (lavender, magenta above -12 dB, coral above -3 dB, a light held peak, a coral clip block).
   - Cost: the meters are the only thing redrawn 25 times a second, each cell's strip alone when only it moved
     (`meter_dyn`; the draw skips the other cells), the clock once a second. Mac (`./shot` prints it): a frame with all 23
-    meters moving 24 us OLED / 35 us CLASSIC (Pi 4 est. 0.8 / 1.2 ms), 1024x600 34 / 68 us (1.1 / 2.3 ms); the full page
+    meters moving 24 us OLED / 35 us CLASSIC (Pi 4 est. 0.8 / 1.2 ms; SIDECAR: "Cost"), 1024x600 34 / 68 us (1.1 / 2.3 ms); the full page
     250 / 460 us (8.5 / 15.8 ms), 1024x600 345 / 576 us (11.8 / 19.7 ms; a page change only).
 
 ## The device's shortcuts (rui1046; UP + AMP rui1047; POLY CONFIG rui1048; the order rui1052)
@@ -316,7 +326,7 @@ UP + key on one screen, two columns; the trigs lit in their pages' colours), the
 splash's footer (`UP+YES: SIDECAR PAGES`), the SEQ page's LFO hint, the page requests (`49 1 <code>`:
 `core/ui/remote.cpp display_remote_page`, `pi/engine/voice_pi.cpp Request` / `OwnPages`), the touchscreen's navigation
 captions (each key's corner says its own key: T1..T8 down the column) and its map (UP held: the same two columns, OLED
-and CLASSIC; CLASSIC writes the page's words in its case, abbreviations of up to three letters as they are). A page
+and SIDECAR; SIDECAR writes the page's names in capitals in its header row at 800x480). A page
 request whose page is not in the list now (PROJECT without the bundle feed, POOL without the pools) pops
 `PROJECT: NOT HERE NOW` on the Rytm instead of opening on another page; SONG is asked to show (`song=show`: its ARM).
 
@@ -374,7 +384,27 @@ view), `core/build/rui_pool/`, `core/build/rui_project/`.
 
 ## Cost
 
-Measured on the Mac by `./shot` (it prints them).
+Measured on the Mac by `./shot` (it prints them). The tables after the first name CLASSIC, the theme SIDECAR replaced; the
+first one has SIDECAR's figures against CLASSIC's last run (same Mac, the same day).
+
+SIDECAR against CLASSIC (Mac us, Pi 4 est. ms at x34.1; one run each, a few % of noise):
+
+| redraw | CLASSIC 800x480 | SIDECAR 800x480 | CLASSIC 1024x600 | SIDECAR 1024x600 | CLASSIC 1280x720 | SIDECAR 1280x720 |
+|---|---|---|---|---|---|---|
+| home, full | 459 (15.6) | 469 (16.0) | 606 (20.7) | 608 (20.7) | 804 (27.4) | 880 (30.0) |
+| SEQ, full | 531 (18.1) | 553 (18.9) | 700 (23.9) | 764 (26.0) | 905 (30.8) | 1056 (36.0) |
+| SEQ grid | 142 (4.9) | 143 (4.9) | 216 (7.4) | 197 (6.7) | 281 (9.6) | 253 (8.6) |
+| SEQ playing frame | 37 (1.28) | 36 (1.21) | 41 (1.41) | 39 (1.31) | 40 (1.35) | 39 (1.32) |
+| RYTM, full | 489 (16.7) | 513 (17.5) | 630 (21.5) | 696 (23.7) | 856 (29.2) | 958 (32.7) |
+| REC, full | 610 (20.8) | 637 (21.7) | 785 (26.8) | 848 (28.9) | 1026 (35.0) | 1156 (39.4) |
+| REC, all 23 meters | 46 (1.6) | 46 (1.6) | 94 (3.2) | 75 (2.5) | 126 (4.3) | 109 (3.7) |
+| SCOPE, full | 496 (16.9) | 501 (17.1) | 660 (22.5) | 684 (23.3) | 914 (31.2) | 952 (32.5) |
+| STATUS, full | 626 (21.3) | 633 (21.6) | 772 (26.3) | 795 (27.1) | 1031 (35.2) | 1114 (38.0) |
+| WAVETABLE frame | 304 (10.4) | 285 (9.7) | 473 (16.1) | 402 (13.7) | 684 (23.3) | 582 (19.8) |
+
+The full redraws (page changes) cost 0-17 % more than CLASSIC's: the larger corner radius, the arcs and the header's
+three gradient fills. What repeats (the playing frame, the meters, the machine view) costs the same or less. No shadow,
+blur or opacity layer is drawn.
 
 1280x720 against 1024x600 (a Mac run of each, Mac us; about 1.35 x):
 
@@ -430,15 +460,15 @@ At **1024x600** (1.6x the pixels) a full redraw costs about 1.3x (the text and k
 | RYTM, full | 212 us | 7.3 ms | 485 us | 16.5 ms |
 | GRANULAR / WAVETABLE frame | 145 / 200 us | 4.9 / 6.9 ms | 245 / 360 us | 8.3 / 12.2 ms |
 
-**Why OLED is about 2x cheaper:** LVGL renders 96,000 dots instead of 384,000 pixels (42,560 on the 3x3 grid, which made it about 3x cheaper), and the expansion is 4 stores a dot. Every full redraw stays under 15 ms in both themes at 800x480; at 1024x600 OLED stays under 9 ms, CLASSIC's full redraws reach about 17 ms (page changes only).
+**Why OLED is about 2x cheaper:** LVGL renders 96,000 dots instead of 384,000 pixels (42,560 on the 3x3 grid, which made it about 3x cheaper), and the expansion is 4 stores a dot. Every full redraw stays under 15 ms in both themes at 800x480; at 1024x600 OLED stays under 9 ms, CLASSIC's full redraws reach about 17 ms (page changes only; SIDECAR: the table above).
 
 **Theme switch.** It runs on core 0's loop only. Rendering (cores 1-2), control (core 3) and the IRQ-driven audio paths are untouched, so the audio cannot glitch.
 - **Rebuild:** the pages are rebuilt with invalidation off, about 0.8-1.4 ms on the Mac. That is ~10 ms on the Pi 4 if CPU-bound (inferred, x8) and ~48 ms at the draw factor (x34, the upper bound).
-- **Redraw:** in bands, one band per core 0 Update (4 for OLED, 6 for CLASSIC): at most 0.11 ms on the Mac, ~4 ms on the Pi 4. On screen it is a wipe from the top.
+- **Redraw:** in bands, one band per core 0 Update (4 for OLED, 6 for SIDECAR): at most 0.11 ms on the Mac, ~4 ms on the Pi 4. On screen it is a wipe from the top.
 - **Delay:** core 0's loop (MIDI to the Rytm, the console, the TCP link) waits once, for the rebuild.
 - **To check on hardware:** the `longest update` in the engine's 10 s line, during a switch.
 
-**Pi 5 on scaled HDMI:** the expanded 800x480 goes through the existing scaler (`CSidecarDisplay::Put`), so a dot becomes a cell of 4-6 frame-buffer pixels with its grid lines scaled along. That costs the same as CLASSIC's scaled full redraw.
+**Pi 5 on scaled HDMI:** the expanded 800x480 goes through the existing scaler (`CSidecarDisplay::Put`), so a dot becomes a cell of 4-6 frame-buffer pixels with its grid lines scaled along. That costs the same as SIDECAR's scaled full redraw.
 
 ## Adding a theme
 
@@ -447,7 +477,7 @@ At **1024x600** (1.6x the pixels) a full redraw costs about 1.3x (the text and k
 3. **Layout.**
    - The layouts grow from `TH->dx, dy` ("Sizes"); a new theme with its own grid needs `kGeo*` tables in
      `sidecar_seqed.c` and `sidecar_rytmpat.c` (their `geo_size` grows them for 1024x600), and builders in `sidecar_ui.c`.
-   - A theme with the same pixel size reuses the OLED or CLASSIC layout (`oled ()` asks for the id).
+   - A theme with the same pixel size reuses the OLED or SIDECAR layout (`oled ()` asks for the id).
    - A new screen size: `sidecar_theme_screen` and `sidecar_theme_set` (the table's `w, h, dx, dy`), and the checks in
      `shot.c` (`DX`, `DY`).
 4. **Expansion.** A dot size other than 1 or 2 needs `sidecar_dot_expand` generalised; today it is written for 2.
@@ -463,6 +493,8 @@ At **1024x600** (1.6x the pixels) a full redraw costs about 1.3x (the text and k
 | `pi/ui/sidecar_status.{h,c}` | SIDECAR STATUS, filled by `pi/engine/kernel.cpp` (the stats, the links) and `status_pi.cpp` (machines, the mod level) |
 | `pi/ui/sidecar_dot.{h,c}` | the dot expansion, the pattern colours, the LED palette, plain dot-font drawing (no LVGL) |
 | `pi/ui/dotfont.py`, `sidecar_dotfont.{h,c}` | the pixel fonts (generated) |
+| `pi/ui/fonts/gen.sh`, `fonts/sidecar_sg*.c` | SIDECAR's text faces: Space Grotesk Medium 12-28 px + 11 Font Awesome symbols, 4 bpp (generated; SIL OFL 1.1) |
+| `pi/ui/sidecar_logo.h` | the "Docked" logo's dots (the header, the SIDECAR boot screen) |
 | `pi/ui/sidecar_ui.{h,c}` | the pages, both layouts, `sidecar_ui_style`, `sidecar_ui_dot` / `origin` / `to_ui` / `bright` |
 | `pi/ui/sidecar_seqed.c`, `sidecar_rytmpat.c` | the pattern pages with a geometry table per theme |
 | `pi/ui/sidecar_splash.{h,c}` | the boot screen in both looks (`sidecar_splash_style`) |
@@ -480,4 +512,4 @@ At **1024x600** (1.6x the pixels) a full redraw costs about 1.3x (the text and k
 - **Alerts** (OLED): the attention colour (`TH->bad`, the FUNC teal's tint) is never plain text: `th_label_color`
   inverts the label (black on teal), so teal means "look here". HOME's U1..U5 errors blink for 3 s, then stay inverted,
   with the reason spelled out; loading is dim with moving dots. Playing is white (REC's playing take), the selection
-  inverted grey, single notes and FX 1 the panel's blue. CLASSIC keeps the hardware's LED colours for the same tokens.
+  inverted grey, single notes and FX 1 the panel's blue. SIDECAR uses coral for the same tokens (an inverted label: dark on coral).

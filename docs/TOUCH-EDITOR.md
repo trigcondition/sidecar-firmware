@@ -21,7 +21,7 @@ is made up (`pi/ui/host/rytm_fake.c`); only the record layout is the Rytm's (POL
 
 ## Screens (rendered by the real UI code, `make -C pi/ui/host`)
 
-Since ui-oled the pages have two themes (docs/UI-THEMES.md): the files below are `shots/classic-*.png`; the OLED theme's
+Since ui-oled the pages have two themes (docs/UI-THEMES.md): the files below are `shots/sidecar-*.png` (SIDECAR, which replaced CLASSIC); the OLED theme's
 are `shots/oled-*.png` (the same states on 400x240 dots, notes in the trig LEDs' colours), and `make -C pi/ui/host anim`
 renders the OLED piano roll playing (`seq-oled.mp4`, `seq-oled.gif`).
 
@@ -280,7 +280,7 @@ its pattern, with the same undo semantics as its panel. Path 2 should stay out.
   - The play head's strips stay small (about 8 x 660 frame-buffer pixels).
   - Edits and full redraws cost several times the Pi 4's [inferred: not measured on hardware]. Still core 0 only.
 - **1024x600** (a 1024x600 HDMI panel, docs/pi-display.md "Screen sizes"): the roll shows 32 rows instead of 24 at
-  12 dots a step (OLED; CLASSIC 27 px), and a full redraw costs about 1.3x the 800x480 one (docs/UI-THEMES.md "Cost").
+  12 dots a step (OLED; SIDECAR whole pixels from the width left of its rail), and a full redraw costs about 1.3x the 800x480 one (docs/UI-THEMES.md "Cost").
 - **DSI** (official 7" and compatibles): native 800x480 on both boards, no scaling, the Pi 4 numbers apply.
   - On the Pi 5 the touch is polled over I2C from the display's `Update` every 10 ms, already counted in the
     `longest update` line.

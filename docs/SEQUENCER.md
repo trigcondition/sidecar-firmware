@@ -1620,7 +1620,7 @@ and a note's flags bit 1 (selected).
 - It pages the window to that note, and scrolls the note's row to the middle when it is off the window or in its top
   four rows (the card sits above the note).
 - The playhead does not move the window while NOTE EDIT is on, and the Rytm's PAGE does not move it either.
-- The Rytm's selection gets a second frame (amber on CLASSIC, the accent on OLED).
+- The Rytm's selection gets a second frame (light coral on SIDECAR, the accent on OLED).
 
 ### Code
 

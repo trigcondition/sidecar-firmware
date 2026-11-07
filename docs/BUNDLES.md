@@ -395,7 +395,7 @@ instruments, 4 MB each for texts and the dedupe index, the entry tables) [inferr
 Pi 4B first, then Pi 5; the Rytm in Overbridge mode, 8 voices incl. DSP SAMPLE and a streaming MULTISAMPLE; a FAT32
 (MBR) USB 3 stick in a blue port. For each, watch `/status` (`bundle`, `stor`, underruns, core0 loop, `pass max`):
 
-1. Touchscreen PROJECT page: opens from the home page's PROJECT panel in OLED and CLASSIC (800x480 and 1024x600 if you
+1. Touchscreen PROJECT page: opens from the home page's PROJECT panel in OLED and SIDECAR (800x480 and 1024x600 if you
    have it); the list matches the web page; taps hit (rows, picker, keys); progress updates smoothly.
 2. Export a ~1 GB project to the card, stopped: 0 underruns, 0 Overbridge gaps, cardq `taken_back` 0, `pass max` < 2 ms.
 3. The same with a pattern playing: the job shows WAITING (PLAYING) in WRITE, goes on at STOP; no underruns.
