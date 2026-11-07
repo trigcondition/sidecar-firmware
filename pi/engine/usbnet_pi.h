@@ -61,7 +61,7 @@ boolean Trusted (void);
 usbnet::Iface Iface (void);
 
 // /status: ,"net":"usb|wifi|ethernet","usbNet":{...} (no MAC addresses: the computer's is personal enough)
-void Status (CString *pOut, boolean bFunction, boolean bLinkUp);
+void Status (CString *pOut, boolean bFunction, boolean bLinkUp, boolean bLate);
 
 }	// namespace usbnet_pi
 

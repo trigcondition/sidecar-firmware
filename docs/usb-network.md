@@ -78,7 +78,7 @@ For debugging: `net=wifi` or `net=lan` takes the cable out of the picture; `net=
 the function from the USB device altogether (if a computer has trouble with the composite device).
 
 `/status` says which one runs: `"net":"usb|wifi|ethernet"` and `"usbNet":{"function","link","setting","ip",
-"computer","trusted","why"}` (`why`: the boot's reason, as in the log line `network: net=auto: ...`). The log has a
+"computer","trusted","late","why"}` (`late`: a computer started its USB-C network after the boot chose Wi-Fi or Ethernet) (`why`: the boot's reason, as in the log line `network: net=auto: ...`). The log has a
 `usbnet` line every 10 s while the link is up (blocks and frames each way, malformed blocks, drops, requests).
 
 ## Interplay
@@ -95,7 +95,12 @@ the function from the USB device altogether (if a computer has trouble with the 
 
 ## Computers
 
-- **macOS**: its own NCM driver; nothing to install.
+- **macOS**: its own NCM driver; nothing to install. **Unlock the Mac the first time the Sidecar is plugged in**: macOS
+  does not attach a new network interface while the screen is locked (its log: "Console locked, network interface[new]
+  ignored"), so the Sidecar sees no driver within `usbwait` and boots on Wi-Fi or Ethernet. Seen on hardware
+  2026-11-07; whether a known interface comes up while locked later is not yet checked. When a computer starts its
+  USB-C network after the boot's choice, the log says so (`usbnet: a computer started its USB-C network after the boot
+  chose Wi-Fi or Ethernet ...`) and `/status` has `"usbNet":{"late":true}`: reboot the Sidecar (or set `net=usb`).
 - **Linux**: `cdc_ncm`; nothing to install.
 - **Windows 11**: its own NCM driver (UsbNcm); nothing to install.
 - **Windows 10**: may not pick a driver for it by itself (newer Windows 10 builds have UsbNcm; not yet tried). In Device Manager: the "Sidecar |

@@ -114,15 +114,15 @@ usbnet::Iface Iface (void)
 	return s_Iface;
 }
 
-void Status (CString *pOut, boolean bFunction, boolean bLinkUp)
+void Status (CString *pOut, boolean bFunction, boolean bLinkUp, boolean bLate)
 {
 	static const char *const Names[] = {"none", "ethernet", "wifi", "usb"};
 	CString s;
 	s.Format (",\"net\":\"%s\",\"usbNet\":{\"function\":%s,\"link\":%s,\"setting\":\"%s\",\"ip\":\"%u.%u.%u.%u\","
-		  "\"computer\":\"%u.%u.%u.%u\",\"trusted\":%s,\"why\":\"%s\"}",
+		  "\"computer\":\"%u.%u.%u.%u\",\"trusted\":%s,\"late\":%s,\"why\":\"%s\"}",
 		  Names[s_Iface <= usbnet::kIfUsb ? s_Iface : 0], bFunction ? "true" : "false", bLinkUp ? "true" : "false",
 		  usbnet::net_name (s_Net), s_IP[0], s_IP[1], s_IP[2], s_IP[3], s_Client[0], s_Client[1], s_Client[2], s_Client[3],
-		  Trusted () ? "true" : "false", s_pWhy);
+		  Trusted () ? "true" : "false", bLate ? "true" : "false", s_pWhy);
 	pOut->Append (s);
 }
 

@@ -352,7 +352,7 @@ static const unsigned TonePeriod[18] = {480, 400, 320, 300, 240, 200, 192, 160, 
 CSidecarGadget::CSidecarGadget (CInterruptSystem *pInterrupt)
 :	CDWUSBGadget (pInterrupt, HighSpeed),
 	m_pIso {0, 0, 0, 0}, m_pMIDIOut (0), m_pMIDIIn (0), m_pNetNotify (0), m_pNetIn (0), m_pNetOut (0), m_nConfig (0),
-	m_bNetWanted (FALSE), m_bNet (FALSE), m_bNetUp (FALSE), m_bNetAttached (TRUE), m_bNetRxFlush (FALSE), m_uchNetAlt (0), m_nNotify (0), m_nNtbSeq (0),
+	m_bNetWanted (FALSE), m_bNet (FALSE), m_bNetUp (FALSE), m_bNetAttached (TRUE), m_bNetLate (FALSE), m_bNetLateLogged (FALSE), m_bNetRxFlush (FALSE), m_uchNetAlt (0), m_nNotify (0), m_nNtbSeq (0),
 	m_uchOutAlt (0), m_uchInAlt (0), m_bMac (TRUE), m_bTest (FALSE), m_bFake (FALSE), m_bRytmMIDI (FALSE),
 	m_bMirror (FALSE), m_bMirUsed (FALSE),
 	m_bUsbReboot (FALSE),
@@ -1113,6 +1113,13 @@ void CSidecarGadget::Poll (void)
 	if (m_bMirUsed) MirrorPoll ();
 #endif
 	UpdatePlugAndPlay ();
+	if (m_bNetLate && !m_bNetLateLogged)
+	{
+		m_bNetLateLogged = TRUE;
+		CLogger::Get ()->Write (From, LogWarning, "usbnet: a computer started its USB-C network after the boot chose "
+					"Wi-Fi or Ethernet (a Mac locked at first connection?): reboot the Sidecar to use it "
+					"(cmdline net=usb forces it)");
+	}
 	if (m_Gate.Quiet (m_ToRytmPath.Filter ().OsMessages (), CTimer::GetClockTicks ()))	// an aborted upgrade's sender stopped
 	{
 		UpdateOsPass (FALSE, 0);		// the pass on again: from a new start (ApplyGate)
@@ -1199,6 +1206,7 @@ void CSidecarGadget::NetSetAlt (u8 uchAlt)
 		return;
 	}
 	m_NetStats.nUps++;
+	if (!m_bNetAttached) m_bNetLate = TRUE;		// told "not connected" below; Poll logs it once
 	m_nNotify = 2;					// the speed, then "connected"
 	if (m_pNetNotify) m_pNetNotify->Kick ();
 	if (m_pNetOut) m_pNetOut->ArmOut ();

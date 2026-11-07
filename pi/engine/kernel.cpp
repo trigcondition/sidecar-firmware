@@ -609,7 +609,8 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  ST.gap_us, ST.at_frames, ST.gaps_over_2ms, ST.sec_us[0], ST.sec_us[1], ST.sec_us[2], ST.sec_us[3], ST.sec_us[4],
 		  ST.sec_us[5], CEngineCores::StallStep (), ST.step_us, ST.step_sum, ST.here_us);	// -1: did not happen
 	pOut->Append (s);
-	usbnet_pi::Status (pOut, k->m_pSidecar != 0 && k->m_pSidecar->NetInDevice (), k->m_pSidecar != 0 && k->m_pSidecar->NetUp ());
+	usbnet_pi::Status (pOut, k->m_pSidecar != 0 && k->m_pSidecar->NetInDevice (), k->m_pSidecar != 0 && k->m_pSidecar->NetUp (),
+			   k->m_pSidecar != 0 && k->m_pSidecar->NetLate ());	// late: reboot to use the cable
 	{	// the USB-C mode (usb_mode.h): set (chosen), from (card, cmdline, default), runs (set, or class where the unit cannot
 		// show it), modes (what this unit can show; [] no Sidecar gadget), shown (what the computer sees now: sidecar, box,
 		// switching, none), boxUp (the box has been read and is up: shown, or about to be) and board (4, 5)

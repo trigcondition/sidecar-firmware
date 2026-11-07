@@ -74,6 +74,7 @@ public:
 	boolean NetUp (void) const			{ return FALSE; }
 	boolean NetLive (void)				{ return FALSE; }
 	void NetDetach (void)				{}
+	boolean NetLate (void) const			{ return FALSE; }
 	boolean NetSend (const void *, unsigned)	{ return FALSE; }
 	boolean NetReceive (void *, unsigned *)		{ return FALSE; }
 	boolean NetRoom (void) const			{ return FALSE; }
@@ -298,6 +299,7 @@ public:
 	boolean NetUp (void) const			{ return m_bNetUp; }	// the computer's network driver has the link
 	boolean NetLive (void);				// NetUp, attached, and the bus not suspended: frames can go
 	void NetDetach (void);				// the stack is not on USB-C this boot: the link reported down, nothing read
+	boolean NetLate (void) const			{ return m_bNetLate; }	// a computer's driver took the link after NetDetach
 	boolean NetSend (const void *pFrame, unsigned nLength);	// one Ethernet frame to the computer (FALSE: no room)
 	boolean NetReceive (void *pBuffer, unsigned *pLength);	// one from the computer (FALSE: none)
 	boolean NetRoom (void) const			{ return m_NetTx.free () != 0; }
@@ -423,6 +425,8 @@ private:
 	boolean m_bNetWanted, m_bNet;			// usbnet= on; and in the device (not an OVERBRIDGE boot)
 	volatile boolean m_bNetUp;			// alt 1: the link
 	volatile boolean m_bNetAttached;		// the stack runs on USB-C (until NetDetach)
+	volatile boolean m_bNetLate;			// alt 1 after NetDetach (a Mac unlocked later than usbwait): reboot to use it
+	boolean m_bNetLateLogged;
 	volatile boolean m_bNetRxFlush;			// the link changed: the reader drops what is queued (it owns the ring's read end)
 	u8 m_uchNetAlt;
 	unsigned m_nNotify;				// notifications owed: 2 speed + connection, 1 connection, 0 none
