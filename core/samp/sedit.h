@@ -10,6 +10,12 @@
 //
 // The edit and spare buffers are private pcache blocks (alloc_private at the open, released at close), each the
 // loaded length: a crop shortens frames, never the blocks, so undo can give the old length back. Pi and Mac only.
+//
+// Live play (an open from a track): two int16 play buffers ((frames + 1) x ch each, from the same open) take turns.
+// After each change the one not in the voice's override (voices.h dsps_override) is refilled in pieces, then becomes
+// the override: the track hears the edit from its next trig. A buffer a voice still reads is never written or freed: the
+// refill waits for the note to end (or the voice's next trig), and a close leaves such a buffer on a retired list that
+// step() frees once no voice reads it. preview() plays the region once on the track's voice (dsps_preview).
 #pragma once
 #include <stdint.h>
 
@@ -51,7 +57,8 @@ int undo();
 // next with room); the editor then edits that copy (its source, undo 0, dirty 0). use: then use_saved(track, code).
 int save(bool use);
 int preview();
-// SAVE + USE: the opening track moved to the saved row (Task 4 writes it to the Rytm; here the request is noted)
+// SAVE + USE: the track's SMP written to the saved row on the Rytm (48), STA 0 / END 120 too when the edit's length is
+// not the one the track's STA / END were for; the live play follows the track to the new row
 int use_saved(int track, int code);
 
 bool step();                    // one bounded piece of the job in hand; true: it did work

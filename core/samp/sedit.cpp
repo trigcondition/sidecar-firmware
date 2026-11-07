@@ -7,6 +7,7 @@
 #include <strings.h>
 
 #include "../lib/pools.h"
+#include "../lib/srclib.h"
 #include "../machines.h"
 #include "../pool/pcache.h"
 #include "../pool/pool.h"
@@ -61,6 +62,18 @@ struct Ed {
   char target[cardq::kPathMax] = "";
   // a close while a card job runs: the job finishes out of sight, then everything goes
   bool drain = false;
+  // live play (a track's open): the edit as int16 in two play buffers that take turns, the one not in the voice's
+  // override refilled after each change; a buffer a voice still reads is never written or freed
+  int16_t* p[2] = {nullptr, nullptr};
+  int bp[2] = {-1, -1};             // their pcache blocks
+  uint32_t pcap = 0;                // their frames (the loaded length; + a guard frame)
+  int cur = -1;                     // the one in the override (-1 none)
+  int8_t vi = -1;                   // the track's voice
+  int slot = 0;                     // the pool slot the override plays for (pool_slot)
+  uint32_t tlen = 0;                // the length the track's STA / END are for
+  bool rf = false;                  // a refill in hand (into p[rt] from rpos)
+  uint8_t rt = 0;
+  uint32_t rpos = 0;
   // the outline: built into wlo / whi a few columns a step, published to lo / hi when whole
   bool ol = false;
   int col = 0;
@@ -69,6 +82,14 @@ struct Ed {
 };
 Ed e;
 Loader g_load;
+// Play buffers let go (a close) while a voice still read them: released by step() once none does
+struct Retired {
+  int blk;
+  const int16_t *lo, *hi;
+};
+constexpr int kRetired = 8;
+Retired g_ret[kRetired];
+int g_nret = 0;
 Saver g_save;
 Namer g_name;
 
@@ -96,9 +117,54 @@ CORE_COLD void ol_start() {   // the outline of the window, from its first colum
   e.ol = true;
   e.col = 0;
 }
-// The private seam after every change of the edit (apply, undo, crop): the outline rebuilt. (Task 4: the int16 refill of
-// the play buffer DSP SAMPLE reads, then the outline.)
-CORE_COLD void play_changed() { ol_start(); }
+// After every change of the edit (the load, apply, undo, crop): the play buffer not in the override refilled (a track's
+// open), the outline rebuilt
+CORE_COLD void play_changed() {
+  if (e.p[0]) {
+    e.rf = true;
+    e.rt = e.cur == 0 ? 1 : 0;
+    e.rpos = 0;
+  }
+  ol_start();
+}
+// The pool slot a SAMPLES row plays as (pool_slot of its SMP value)
+CORE_COLD int slot_of(int code) {
+  return pool_slot((float)(code % srclib::kBankRows) + (float)srclib::lo_of(code) / 128.0f);
+}
+CORE_COLD const int16_t* play_end(int k) { return e.p[k] + (size_t)(e.pcap + 1) * e.ch; }
+// The track's voice on play buffer cur from its next trig: the whole edit when its length is not the one STA / END are for
+CORE_COLD void publish() {
+  bool whole = e.frames != e.tlen;
+  DspOverride o = {e.p[e.cur], e.frames, (float)e.rate, e.ch, e.slot, whole ? 0 : -1, whole ? (int32_t)e.frames : -1};
+  dsps_override(e.vi, &o);
+}
+// A play buffer's block given back now if no voice reads it, else onto the retired list
+CORE_COLD void retire(int blk, const int16_t* lo, const int16_t* hi) {
+  dsps_detach_idle(lo, hi);
+  if (!dsps_reads(lo, hi)) pcache::release(blk);
+  else if (g_nret < kRetired) g_ret[g_nret++] = {blk, lo, hi};
+  // (full: kept - never freed under a voice; start_open refuses an open that could fill it)
+}
+CORE_COLD void retired_step() {
+  for (int i = 0; i < g_nret;) {
+    dsps_detach_idle(g_ret[i].lo, g_ret[i].hi);
+    if (dsps_reads(g_ret[i].lo, g_ret[i].hi)) {
+      ++i;
+      continue;
+    }
+    pcache::release(g_ret[i].blk);
+    g_ret[i] = g_ret[--g_nret];
+  }
+}
+// The track back on its own sample (the override cleared first), the play buffers let go
+CORE_COLD void release_play() {
+  if (e.vi >= 0) dsps_override(e.vi, nullptr);
+  for (int k = 0; k < 2; ++k) {
+    if (e.bp[k] >= 0) retire(e.bp[k], e.p[k], play_end(k));
+    e.bp[k] = -1, e.p[k] = nullptr;
+  }
+  e.cur = -1, e.vi = -1, e.rf = false;
+}
 
 CORE_COLD void clamp() {   // the region within the sample (sedit_dsp.h clamp_region)
   int64_t a = e.a, b = e.b;
@@ -110,6 +176,7 @@ CORE_COLD void whole_window() {
 }
 
 CORE_COLD void release_all() {
+  release_play();
   if (e.bx >= 0) pcache::release(e.bx);
   if (e.by >= 0) pcache::release(e.by);
   e.bx = e.by = -1;
@@ -127,7 +194,7 @@ CORE_COLD void fail(const char* m) {   // the open or the job ends here: nothing
 CORE_COLD void job_done() {
   e.job = kNoJob;
   e.progress = 100;
-  if (!e.ol) e.st = kReady;
+  if (!e.ol && !e.rf) e.st = kReady;
   touch();
 }
 CORE_COLD bool refuse_busy() {
@@ -165,6 +232,21 @@ CORE_COLD bool step_load() {
     return true;
   }
   e.y = (float*)p;
+  if (e.track >= 0) {   // the play buffers: (frames + a guard frame) x ch int16 each
+    e.pcap = e.frames;
+    for (int k = 0; k < 2; ++k) {
+      void* q = nullptr;
+      e.bp[k] = pcache::alloc_private((uint64_t)(e.frames + 1) * e.ch * 2, &q);
+      if (e.bp[k] < 0) {
+        fail(err_text(kErrRam));
+        return true;
+      }
+      e.p[k] = (int16_t*)q;
+    }
+    e.tlen = e.frames;
+    e.vi = (int8_t)ui::remote_track_voice(e.track);
+    e.slot = slot_of(e.code);
+  }
   if (e.track >= 0) {   // STA..END (0..120 onto frames - 1, either way round, END inclusive)
     float lo = e.sta < e.end ? e.sta : e.end, hi = e.sta < e.end ? e.end : e.sta;
     if (lo < 0) lo = 0;
@@ -178,7 +260,7 @@ CORE_COLD bool step_load() {
   whole_window();
   e.undo = e.dirty = false;
   e.msg[0] = 0;
-  ol_start();
+  play_changed();
   job_done();
   return true;
 }
@@ -380,6 +462,33 @@ CORE_COLD bool step_save() {
   return true;
 }
 
+// ---- the refill: the edit as int16 into the play buffer not in the override, at most kEditPiece frames a step
+
+// Before the first piece: a voice still reading the buffer holds the refill (a note keeps its buffer to its end or the
+// voice's next trig); a stopped one lets it go
+CORE_COLD bool refill_waits() {
+  if (e.rpos) return false;
+  const int16_t *lo = e.p[e.rt], *hi = play_end(e.rt);
+  dsps_detach_idle(lo, hi);
+  return dsps_reads(lo, hi);
+}
+CORE_COLD bool step_refill() {
+  const uint32_t ch = e.ch, s = e.rpos, t = min32(s + kEditPiece, e.frames);
+  int16_t* d = e.p[e.rt];
+  for (size_t i = (size_t)s * ch; i < (size_t)t * ch; ++i) d[i] = pcm16(e.x[i]);
+  e.rpos = t;
+  e.step_frames = t - s;
+  if (t < e.frames) return true;
+  if (e.frames)   // the guard frame (the engine's interpolation reads one past the last): the last again
+    for (uint32_t c = 0; c < ch; ++c) d[(size_t)e.frames * ch + c] = d[(size_t)(e.frames - 1) * ch + c];
+  e.cur = e.rt;
+  e.rf = false;
+  publish();
+  if (e.job == kNoJob && !e.ol && (e.st == kLoading || e.st == kBusy)) e.st = kReady;
+  touch();
+  return true;
+}
+
 // ---- the outline: whole columns, at most kEditPiece frames a step
 
 CORE_COLD bool step_outline() {
@@ -408,7 +517,7 @@ CORE_COLD bool step_outline() {
     memcpy(e.lo, e.wlo, sizeof e.lo);
     memcpy(e.hi, e.whi, sizeof e.hi);
     e.ol = false;
-    if (e.st == kLoading || e.st == kBusy) e.st = kReady;
+    if (!e.rf && (e.st == kLoading || e.st == kBusy)) e.st = kReady;
     touch();
   }
   return true;
@@ -424,7 +533,8 @@ CORE_COLD int start_open(int code, int track, float sta, float end) {
     say("NO SAMPLE");
     return -1;
   }
-  if (e.drain || (e.st != kReady && e.st != kClosed && e.st != kError)) {
+  // (BUSY too while the retired list could not take this open's play buffers at its close)
+  if (e.drain || (e.st != kReady && e.st != kClosed && e.st != kError) || g_nret > kRetired - 2) {
     say("BUSY");
     return -1;
   }
@@ -499,6 +609,7 @@ CORE_COLD int open_track(int track) {
 CORE_COLD int open_code(int code) { return start_open(code, -1, 0, 120); }
 
 CORE_COLD void close() {
+  release_play();   // the track on its own sample first (the save in flight reads the float edit only)
   // a card job in flight (the load, the name's listing, the save) is finished by step() first; then the buffers go
   if (e.job == kLoad || e.job == kSave) e.drain = true;
   else {
@@ -634,11 +745,21 @@ CORE_COLD int preview() {
     say("NO TRACK");
     return -1;
   }
-  return 0;   // (the region played on the track's voice: Task 4's dsps_preview)
+  if (e.cur >= 0) dsps_preview(e.vi, e.a, e.b);
+  return 0;
 }
 
 CORE_COLD int use_saved(int track, int code) {
-  // Task 4 writes the track's SMP to the saved row (and STA / END when the length changed); here the request is noted
+  ui::remote_track_write(track, 10, code % srclib::kBankRows, srclib::lo_of(code), 0);   // SMP: the saved row
+  if (track == e.track) {
+    if (e.frames != e.tlen) {   // another length: STA 0, END 120 (the whole of it)
+      ui::remote_track_write(track, 12, 0, 0, 0);
+      ui::remote_track_write(track, 13, 120, 0, 0);
+      e.tlen = e.frames;
+    }
+    e.slot = slot_of(code);   // the override follows the track to the new row
+    if (e.cur >= 0) publish();
+  }
   char row[8];
   pools::row_text(code, row);
   char m[32];
@@ -649,11 +770,17 @@ CORE_COLD int use_saved(int track, int code) {
 
 CORE_COLD bool step() {
   e.step_frames = 0;
+  if (g_nret) retired_step();
   switch (e.job) {
     case kLoad: return step_load();
     case kApply: return step_apply();
     case kSave: return step_save();
     default: break;
+  }
+  if (e.rf && e.x) {
+    if (!refill_waits()) return step_refill();
+    if (e.ol) return step_outline();
+    return true;   // (waiting for the voice: nothing done)
   }
   if (e.ol && e.x) return step_outline();
   return false;
