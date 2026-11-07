@@ -476,6 +476,7 @@ boolean CKernel::Initialize (void)
 		WifiMode = m_pWifi->Mode ();
 	}
 	if (!bUsbNet && m_pSidecar != 0 && m_pSidecar->NetInDevice ()) m_pSidecar->NetDetach ();	// told "not connected"
+	usbnet_pi::Gadget (m_pSidecar);			// its late link: the page offers a reboot onto USB-C
 	u8 UsbClient[4];
 	usbnet::client_ip (UsbOpt.ip, UsbClient);
 	if (bUsbNet)
@@ -2624,6 +2625,7 @@ void CKernel::Run (void)
 		if (m_pSidecar != 0 && m_pSidecar->TakeReboot ()) StopAndReboot ("asked on the USB-C MIDI port (usbreboot=1)");
 		if (g_Guard.FatalWhy () != 0) StopAndReboot (g_Guard.FatalWhy ());
 		if (m_pWifi->TakeReboot ()) StopAndReboot ("the Wi-Fi settings (a join, or a failed one's revert)");
+		if (usbnet_pi::TakeReboot ()) StopAndReboot ("the page's reboot onto USB-C (a computer started its USB-C network late)");
 		if (bridge::take_restart ()) StopAndReboot ("another device's state folder");
 		CSdFiles::TReboot SdReboot = CSdFiles::TakeReboot ();
 		if (SdReboot != CSdFiles::RebootNone) StopAndReboot ("asked on the SD file port", SdReboot == CSdFiles::RebootTry);

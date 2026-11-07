@@ -104,6 +104,33 @@ void Use (usbnet::Iface Iface, const usbnet::Options &rOpt, const char *pWhy)
 	s_pWhy = pWhy ? pWhy : "";
 }
 
+static CSidecarGadget *s_pGadget = 0;
+static volatile boolean s_bReboot = FALSE;
+
+void Gadget (CSidecarGadget *pGadget)
+{
+	s_pGadget = pGadget;
+}
+
+boolean Late (void)
+{
+	return s_pGadget != 0 && s_pGadget->NetLate ();
+}
+
+boolean RequestReboot (void)
+{
+	if (!Late ()) return FALSE;
+	s_bReboot = TRUE;
+	return TRUE;
+}
+
+boolean TakeReboot (void)
+{
+	if (!s_bReboot) return FALSE;
+	s_bReboot = FALSE;
+	return TRUE;
+}
+
 boolean Trusted (void)
 {
 	return usbnet::trusted (s_Iface, s_bTrust);

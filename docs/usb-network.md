@@ -100,7 +100,9 @@ the function from the USB device altogether (if a computer has trouble with the 
   ignored"), so the Sidecar sees no driver within `usbwait` and boots on Wi-Fi or Ethernet. Seen on hardware
   2026-11-07; whether a known interface comes up while locked later is not yet checked. When a computer starts its
   USB-C network after the boot's choice, the log says so (`usbnet: a computer started its USB-C network after the boot
-  chose Wi-Fi or Ethernet ...`) and `/status` has `"usbNet":{"late":true}`: reboot the Sidecar (or set `net=usb`).
+  chose Wi-Fi or Ethernet ...`) and `/status` has `"usbNet":{"late":true}`. The page (on Wi-Fi or Ethernet) then offers **Reboot onto USB-C** in its
+  USB-C settings (`POST /usbnet/reboot`: gated, this page only, refused unless a late USB-C network was seen); or set
+  `net=usb`.
 - **Linux**: `cdc_ncm`; nothing to install.
 - **Windows 11**: its own NCM driver (UsbNcm); nothing to install.
 - **Windows 10**: may not pick a driver for it by itself (newer Windows 10 builds have UsbNcm; not yet tried). In Device Manager: the "Sidecar |

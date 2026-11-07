@@ -293,6 +293,7 @@
         <div class="seg" role="radiogroup" aria-labelledby="l-usbmode" data-key="usbmode"><button type="button" role="radio" aria-checked="false" data-cmd="usbmode=class" data-val="class">Class compliant</button><button type="button" role="radio" aria-checked="false" data-cmd="usbmode=overbridge" data-val="overbridge">Overbridge</button></div>
         <span id="usbnow" class="mut"></span>
         <span class="fb" data-fb="usbmode" role="status" aria-live="polite"></span></div>
+      <p class="note" id="usbnet-late" hidden>The computer on USB-C started its USB-C network after this Sidecar had already chosen Wi-Fi or Ethernet (a Mac locked at the first connection does that). Reboot to use the cable: the page is then at <code>http://172.31.77.1</code>. <button type="button" id="usbnet-reboot">Reboot onto USB-C</button> <span id="usbnet-msg" role="status"></span></p>
       <p class="note" id="usb-warn" hidden>Overbridge passes the Rytm through: its vendor requests and the Overbridge async channel reach it unfiltered, so an OS update from the computer (Transfer, Overbridge) can reach the Rytm. <code>usbmidi=os:</code> filters MIDI only (docs/usb-mirror.md).</p>
       <div class="row"><label for="mvoice">Machine</label>
         <select id="mvoice"></select>
@@ -960,6 +961,11 @@ async function mbSet(f) {
   say($("#mb-msg"), r.ok === false ? r.error : "", r.ok === false);
   if (r.ok !== false) { mbRender(r); if (r.token) { mbTok = r.token; $("#mb-tok").textContent = mbTok; $("#mb-tokrow").hidden = false; } }
 }
+$("#usbnet-reboot").onclick = async () => {
+  if (!confirm("Reboot the Sidecar onto the USB-C network? Audio stops for the reboot; this page then moves to http://172.31.77.1.")) return;
+  const r = await wfPost("/usbnet/reboot", {});
+  say($("#usbnet-msg"), r.ok === false ? r.error : "Rebooting… open http://172.31.77.1 in a moment.", r.ok === false);
+};
 $("#mb-on").onclick = () => mbSet({ on: "1" });
 $("#mb-off").onclick = () => mbSet({ on: "0" });
 $("#mb-os").onchange = () => {
@@ -1216,6 +1222,7 @@ function paintSeg() {
     : (u.shown === "box" ? "now: the Rytm itself" : u.shown === "switching" ? "now: replugging" : "now: the Sidecar device"
       + (u.set === "overbridge" && u.runs === "overbridge" ? " (no box read yet)" : ""))
       + (u.set !== u.runs ? "; not in this build: class compliant runs" : "") + (u.from === "cmdline" ? " (cmdline.txt usb=)" : "");
+  $("#usbnet-late").hidden = !(st.usbNet && st.usbNet.late);   // docs/usb-network.md: the page's reboot onto USB-C
   $("#usb-warn").hidden = !u || (u.set !== "overbridge" && pend.want("usbmode") !== "overbridge");   // set, or being set
 }
 function settle() {       // /status after a change: confirm what matches

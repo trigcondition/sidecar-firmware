@@ -84,7 +84,7 @@ test("USB-C mode: chosen, disabled where it cannot run, what USB-C is now, the w
   const btn = (val) => ({ dataset: { val }, title: "", disabled: false, tabIndex: 0, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, classList: { toggle() {} } });
   const bs = [btn("class"), btn("overbridge")];
   const group = { dataset: { key: "usbmode" }, classList: { toggle() {} }, setAttribute() {}, querySelectorAll: () => bs, querySelector: () => bs[0] };
-  const el = { "#usbnow": { textContent: "" }, "#usb-warn": { hidden: true }, "#mvoice": { value: "0" }, "#mcur": { textContent: "" }, "#fifocur": { textContent: "" } };
+  const el = { "#usbnow": { textContent: "" }, "#usb-warn": { hidden: true }, "#usbnet-late": { hidden: true }, "#mvoice": { value: "0" }, "#mcur": { textContent: "" }, "#fifocur": { textContent: "" } };
   const docU = { querySelectorAll: (q) => (q === ".seg[data-key]" ? [group] : []) };
   const run = new Function("document", "$", "pend", "online", "st0", `let status = st0; ${page.slice(c, d)}; paintSeg(); return chosen("usbmode");`);
   const pend = { want: () => undefined };
@@ -93,6 +93,11 @@ test("USB-C mode: chosen, disabled where it cannot run, what USB-C is now, the w
   assert.equal(paint({ gadget: "sidecar", usbMode: { set: "class", from: "default", runs: "class", modes: ["class", "overbridge"], shown: "sidecar", boxUp: true } }), "class");
   assert.equal(bs[0].attrs["aria-checked"], "true"); assert.equal(bs[1].disabled, false);
   assert.equal(el["#usbnow"].textContent, "now: the Sidecar device"); assert.equal(el["#usb-warn"].hidden, true);
+  assert.equal(el["#usbnet-late"].hidden, true);          // the reboot onto USB-C only for a late USB-C network
+  paint({ gadget: "sidecar", usbNet: { late: true }, usbMode: { set: "class", from: "default", runs: "class", modes: ["class", "overbridge"], shown: "sidecar", boxUp: true } });
+  assert.equal(el["#usbnet-late"].hidden, false);
+  paint({ gadget: "sidecar", usbNet: { late: false }, usbMode: { set: "class", from: "default", runs: "class", modes: ["class", "overbridge"], shown: "sidecar", boxUp: true } });
+  assert.equal(el["#usbnet-late"].hidden, true);
 
   assert.equal(paint({ gadget: "sidecar", usbMode: { set: "overbridge", from: "cmdline", runs: "overbridge", modes: ["class", "overbridge"], shown: "box", boxUp: true } }), "overbridge");
   assert.equal(bs[1].attrs["aria-checked"], "true");

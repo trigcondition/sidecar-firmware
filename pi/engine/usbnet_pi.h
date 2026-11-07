@@ -60,6 +60,15 @@ boolean Trusted (void);
 
 usbnet::Iface Iface (void);
 
+// the gadget whose late link the page's button reacts to (kernel.cpp, once); Late: a computer started the USB-C
+// network after the boot chose Wi-Fi or Ethernet (CSidecarGadget::NetLate)
+void Gadget (CSidecarGadget *pGadget);
+boolean Late (void);
+
+// the page's "Reboot onto USB-C" (POST /usbnet/reboot, web.cpp): accepted only while Late; the kernel's loop takes it
+boolean RequestReboot (void);
+boolean TakeReboot (void);
+
 // /status: ,"net":"usb|wifi|ethernet","usbNet":{...} (no MAC addresses: the computer's is personal enough)
 void Status (CString *pOut, boolean bFunction, boolean bLinkUp, boolean bLate);
 

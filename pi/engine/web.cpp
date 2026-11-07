@@ -1108,6 +1108,25 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		*pLength = n;
 		*ppContentType = "application/json";
 	}
+	else if (strcmp (pPath, "/usbnet/reboot") == 0)	// docs/usb-network.md: the page's "Reboot onto USB-C"
+	{
+		// gated (above), from this page only (strict), and only while a computer's USB-C network started after the
+		// boot chose Wi-Fi or Ethernet: not a general reboot button
+		CString s;
+		if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+			s = "{\"ok\":false,\"error\":\"not from this page (the same-origin check)\"}";
+		else if (!usbnet_pi::RequestReboot ())
+			s = "{\"ok\":false,\"error\":\"no computer started a USB-C network late: nothing to reboot for\"}";
+		else
+		{
+			s = "{\"ok\":true}";
+			CLogger::Get ()->Write (From, LogNotice, "the page asked for a reboot onto the USB-C network");
+		}
+		unsigned n = s.GetLength () < *pLength ? s.GetLength () : *pLength;
+		memcpy (pBuffer, (const char *) s, n);
+		*pLength = n;
+		*ppContentType = "application/json";
+	}
 	else if (strncmp (pPath, "/bundle", 7) == 0 || strcmp (pPath, "/time") == 0 || strncmp (pPath, "/usb/", 5) == 0)
 	{						// project bundles (bundleweb.h): every POST from this page only
 		bundleweb::Reply r;
