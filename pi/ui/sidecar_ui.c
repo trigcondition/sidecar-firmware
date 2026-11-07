@@ -144,6 +144,12 @@ static lv_obj_t *s_UsbInfo;			// Settings > Sound: what USB-C is now, OVERBRIDGE
 static lv_obj_t *s_Seg[SEG_N], *s_FifoVal, *s_DroneInfo, *s_FxName[2], *s_Bar[2][SIDECAR_UI_SENDS], *s_Kill;
 static lv_obj_t *s_About[8], *s_Bright, *s_BrightVal, *s_Dim, *s_Power;
 static char s_Banner[96];				// the warning banner's text (s_Power draws it itself: tests read it here)
+// The supply warning's close key (an x at the banner's right end, the top layer): a tap hides that warning for the rest
+// of this boot - s_PowerShut keeps the text it closed (never reset: RAM, so a restart that still finds the supply weak
+// shows it once again); another text (another supply, the warning changed) shows the banner again. HOME's Health line
+// keeps saying it while it lasts. The temperature banner has no close key: it changes with the heat and wants a look.
+static lv_obj_t *s_PowerX;
+static char s_PowerShut[48];
 
 // ---- state (kept across a theme switch)
 static int s_nStyle = THEME_OLED, s_nBuilt, s_nStyleSeen = -1;
@@ -1142,6 +1148,46 @@ static void sc_build (lv_obj_t *scr)
 	sc_home (s_Home);
 }
 
+// ---- the supply warning's close key (s_PowerShut above): an x painted at the banner's right end, its touch target
+// the size of the small keys (OLED: 30 x 22 dots, reaching below the 13-dot bar; SIDECAR: the 52 px bar's height)
+static void power_x_draw (lv_event_t *e)
+{
+	lv_obj_t *o = lv_event_get_target_obj (e);
+	lv_layer_t *l = lv_event_get_layer (e);
+	lv_area_t c;
+	lv_obj_get_coords (o, &c);
+	const int bh = oled () ? TBH : lv_area_get_height (&c);			// the bar's height (the rest: touch only)
+	const int n = oled () ? 9 : LU (18), t = oled () ? 1 : LU (3);		// the x's size and stroke
+	const int x0 = lv_area_get_width (&c) - (oled () ? LU (7) : LU (20)) - n, y0 = (bh - n) / 2;
+	const uint32_t ink = oled () ? 0x000000 : TH->bg;			// the banner's text colour
+	for (int i = 0; i <= n - t; i++)
+	{
+		th_fill (l, &c, x0 + i, y0 + i, x0 + i + t - 1, y0 + i + t - 1, ink, LV_OPA_COVER, 0);
+		th_fill (l, &c, x0 + n - t - i, y0 + i, x0 + n - 1 - i, y0 + i + t - 1, ink, LV_OPA_COVER, 0);
+	}
+}
+static void power_x_cb (lv_event_t *e)
+{
+	if (lv_event_get_code (e) != LV_EVENT_CLICKED) return;
+	lv_snprintf (s_PowerShut, sizeof s_PowerShut, "%s", s_Banner);	// the supply's text (the key shows only with it)
+	lv_obj_add_flag (s_Power, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_flag (s_PowerX, LV_OBJ_FLAG_HIDDEN);
+	if (s_bHaveSt)						// at once: a temperature warning under it shows now
+	{
+		sidecar_ui_status_t st = s_St;
+		sidecar_ui_status (&st);
+	}
+}
+static void power_x_build (lv_obj_t *top)
+{
+	const int w = oled () ? LU (30) : LU (56), h = oled () ? LU (22) : LU (52);
+	s_PowerX = th_box (top, (oled () ? OW : th_page_w ()) - w, 0, w, h);
+	lv_obj_add_flag (s_PowerX, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_add_event_cb (s_PowerX, power_x_draw, LV_EVENT_DRAW_MAIN, 0);
+	lv_obj_add_event_cb (s_PowerX, power_x_cb, LV_EVENT_CLICKED, 0);
+	lv_obj_add_flag (s_PowerX, LV_OBJ_FLAG_HIDDEN);
+}
+
 // ---- the link animation: a banner over the top of the screen when the Rytm's link comes up or drops (not on a page
 // change or a rebuild: only a change of s->rytm). The Rytm's own CONNECTED splash is the model (core/ui/remote.cpp:
 // a 150 ms ease-out slide, a short hold): the banner opens as a curtain from the left (CONN_IN), the word slides in
@@ -1294,6 +1340,7 @@ static void build (void)
 	lv_obj_add_flag (s_Dot, LV_OBJ_FLAG_HIDDEN);
 	s_Power = th_titlebar (top, 0, 0, oled () ? OW : th_page_w (), oled () ? TBH : LU (52));
 	lv_obj_add_flag (s_Power, LV_OBJ_FLAG_HIDDEN);
+	power_x_build (top);
 	conn_build (top);					// under the dimming layer
 	// F2: VOICE, INSERT FX and PAT mirror the Rytm: while it is not connected they say they show the last they had
 	char sb[64];
@@ -1529,6 +1576,7 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 		if (oled ()) lv_obj_invalidate (lv_screen_active ());
 	}
 	int power = s->note && strncmp (s->note, "POWER", 5) == 0;	// the supply warning (power_state.h)
+	int shut = power && strcmp (s->note, s_PowerShut) == 0;		// its close key took this text away (this boot)
 	if (oled ())
 	{
 		{
@@ -1551,12 +1599,13 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 	s_nRytm = s->rytm;
 	if (s_nLink >= 0 && (s->rytm != 0) != s_nLink) conn_start (s->rytm != 0);	// a transition, not the first status
 	s_nLink = s->rytm != 0;
-	if (power)
+	if (power && !shut)
 	{
 		lv_snprintf (b, sizeof b, "%s", s->note);
 		th_titlebar_set (s_Power, b, "", 1);
 		lv_snprintf (s_Banner, sizeof s_Banner, "%s", b);
 		lv_obj_remove_flag (s_Power, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_remove_flag (s_PowerX, LV_OBJ_FLAG_HIDDEN);
 	}
 	else if (s->temp_warn)		// the temperature warning (pi/engine/thermal.h): the same banner; the supply's warning wins
 	{
@@ -1571,8 +1620,13 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 		th_titlebar_set (s_Power, b, "", 1);
 		lv_snprintf (s_Banner, sizeof s_Banner, "%s", b);
 		lv_obj_remove_flag (s_Power, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_add_flag (s_PowerX, LV_OBJ_FLAG_HIDDEN);
 	}
-	else lv_obj_add_flag (s_Power, LV_OBJ_FLAG_HIDDEN);
+	else
+	{
+		lv_obj_add_flag (s_Power, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_add_flag (s_PowerX, LV_OBJ_FLAG_HIDDEN);
+	}
 	{	// HOME's NOW panel (UX review T1): the pattern, the transport, the recorder, one health line (an alert inverted)
 		uint32_t ink = oled () ? TH->ink : TH->win_ink, dim = oled () ? TH->dim : TH->win_dim;
 		if (s->pattern >= 0) lv_snprintf (b, sizeof b, "%c%02d", 'A' + s->pattern / 16 % 8, s->pattern % 16 + 1);
@@ -1589,10 +1643,11 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 		int hi = -1, hc = -1;
 		for (int c = 0; c < SIDECAR_UI_CORES; c++) if (s->load[c] > hi) hi = s->load[c], hc = c;
 		if (s->underruns) lv_snprintf (b, sizeof b, oled () ? "UNDERRUNS %u" : "%u underruns", s->underruns);
+		else if (power) lv_snprintf (b, sizeof b, "%s", oled () ? "POWER TOO WEAK" : "power too weak");	// (its banner's reminder)
 		else if (hi >= 85) lv_snprintf (b, sizeof b, oled () ? "CORE %d AT %d%%" : "core %d at %d %%", hc, hi);
 		else lv_snprintf (b, sizeof b, oled () ? "ALL FINE" : "all fine");
 		set_text (s_Health, b);
-		if (s_Health) th_label_color (s_Health, s->underruns || hi >= 85 ? TH->bad : ink);
+		if (s_Health) th_label_color (s_Health, s->underruns || power || hi >= 85 ? TH->bad : ink);
 	}
 	lv_snprintf (b, sizeof b, "%u", s->blocks);
 	set_text (s_Blocks, b);
@@ -1774,6 +1829,16 @@ const char *sidecar_ui_banner (void)
 {
 	return s_Power && !lv_obj_has_flag (s_Power, LV_OBJ_FLAG_HIDDEN) ? s_Banner : 0;
 }
+int sidecar_ui_banner_close (int *x, int *y)
+{
+	if (!s_PowerX || lv_obj_has_flag (s_PowerX, LV_OBJ_FLAG_HIDDEN)) return 0;
+	lv_area_t a;
+	lv_obj_get_coords (s_PowerX, &a);
+	if (x) *x = (a.x1 + a.x2) / 2;
+	if (y) *y = (a.y1 + a.y2) / 2;
+	return 1;
+}
+void sidecar_ui_banner_reopen (void) { s_PowerShut[0] = 0; }
 int sidecar_ui_page (void) { return s_nPage; }
 int sidecar_ui_nav_lit (void) { return s_nNavLit; }
 const char *sidecar_ui_nav_page (int i) { return i >= 0 && i < NAV_N ? kNavPage[i] : 0; }

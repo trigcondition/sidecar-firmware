@@ -1940,9 +1940,36 @@ static void theme_run (int style, const char *pre)
 	// the power warning (power_state.h's short text, red), over the title bar
 	status_init (style);
 	s_St.note = "POWER TOO WEAK: use 15 W supply";	// (power_state.cpp short_warning)
+	sidecar_ui_banner_reopen ();				// (a boot of its own: the other theme's run closed it)
 	sidecar_ui_status (&s_St);
 	sidecar_ui_show (0); run (80); shot ("power");		// (run: past the Rytm's connect animation, which covers the banner)
 	EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), "POWER TOO WEAK"));
+	EXPECT (text_shown (lv_screen_active (), o ? "POWER TOO WEAK" : "power too weak"));	// HOME's Health line says it too
+	// its x closes it for this boot: the same text stays away (the status each second, a rebuild), Health keeps saying it;
+	// another text shows it again with its x
+	{
+		int px, py;
+		EXPECT (sidecar_ui_banner_close (&px, &py));
+		tap (px, py); run (2); shot ("power-closed");
+		EXPECT (sidecar_ui_banner () == 0 && !sidecar_ui_banner_close (0, 0));
+		EXPECT (sidecar_ui_page () == 0);			// the tap reached only the x
+		EXPECT (text_shown (lv_screen_active (), o ? "POWER TOO WEAK" : "power too weak"));
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () == 0);
+		s_St.note = "POWER TOO WEAK: use 27 W adapter";
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), "27 W") && sidecar_ui_banner_close (0, 0));
+		EXPECT (sidecar_ui_banner_close (&px, &py));
+		tap (px, py); run (2);
+		EXPECT (sidecar_ui_banner () == 0);
+		s_St.temp_c = 81, s_St.temp_warn = 1;			// closed: a temperature warning shows (no x: it wants a look)
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), o ? "SOC 81C" : "SoC 81") && !sidecar_ui_banner_close (0, 0));
+		s_St.temp_c = 50, s_St.temp_warn = 0, s_St.note = "POWER TOO WEAK: use 15 W supply";
+		sidecar_ui_banner_reopen ();
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), "POWER TOO WEAK"));
+	}
 	// the temperature warning's banner (thermal.h): the same banner; on, off, and under the supply's warning (that wins)
 	status_init (style);
 	run (80);

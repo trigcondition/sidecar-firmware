@@ -80,6 +80,8 @@ void sidecar_ui_show (int page);
 void sidecar_ui_combo_map (int on);
 int sidecar_ui_combo_map_shown (void);
 const char *sidecar_ui_banner (void);				// the warning banner's text while it is shown (the supply's, or the temperature's), else 0 (tests)
+int sidecar_ui_banner_close (int *x, int *y);			// 1: the supply warning's close key is shown, at x, y (its middle, UI coordinates; tests)
+void sidecar_ui_banner_reopen (void);				// forget the closed supply warning (tests: a new boot)
 int sidecar_ui_page (void);					// the page shown
 int sidecar_ui_nav_lit (void);					// the navigation key lit for it (-1: none; tests)
 // rui1052: navigation key i (0..7 top to bottom), its page's name in the device's table and the caption painted on the
