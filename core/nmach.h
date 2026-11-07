@@ -13,6 +13,7 @@
 #include "seq/rytm_dump.h"
 #include "msamp/msamp.h"
 #include "pool/pool.h"
+#include "samp/sedit.h"
 #include "wavetable/wavetable.h"
 
 namespace core {
@@ -115,7 +116,7 @@ inline bool render_add(int vi, float* out, int n) {
 }
 inline bool command(const char* p, char* out, int cap) {
   return wt::command(p, out, cap) || gr::command(p, out, cap) || chop::command(p, out, cap) || pools::command(p, out, cap) ||
-         srclib::command(p, out, cap);
+         srclib::command(p, out, cap) || sedit::command(p, out, cap);
 }
 // engine_begin / engine_idle: the new machines' boot and card steps (msamp's are engine.cpp's own)
 inline void begin(bool card) {
@@ -125,16 +126,18 @@ inline void begin(bool card) {
   wt::begin(card);
   gr::begin(card);
   chop::begin(card);
+  sedit::begin(card);    // the sample editor (core/samp/sedit.h): closed
 }
 inline bool step() {   // they take turns (a long load or a folder's listing does not hold the others)
   static int t = 0;
   t = t == 3 ? 0 : t + 1;
   if (pools::step()) return true;   // (its card work is posted to the card core: a step never waits on the card)
   pool_sync();                      // DSP SAMPLE's slots follow the SAMPLES pool (rui1045: all eight banks)
-  return t == 0 ? (wt::step() || gr::step() || chop::step() || srclib::step())
-       : t == 1 ? (gr::step() || chop::step() || srclib::step() || wt::step())
-       : t == 2 ? (chop::step() || srclib::step() || wt::step() || gr::step())
-                : (srclib::step() || wt::step() || gr::step() || chop::step());
+  // (the sample editor's step first in each: a bounded piece, kEditPiece frames at most - core/samp/sedit.h)
+  return t == 0 ? (sedit::step() || wt::step() || gr::step() || chop::step() || srclib::step())
+       : t == 1 ? (sedit::step() || gr::step() || chop::step() || srclib::step() || wt::step())
+       : t == 2 ? (sedit::step() || chop::step() || srclib::step() || wt::step() || gr::step())
+                : (sedit::step() || srclib::step() || wt::step() || gr::step() || chop::step());
 }
 
 }  // namespace nm

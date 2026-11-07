@@ -75,8 +75,8 @@ void report_fn(cardq::Req* r) {
 
 CORE_COLD const char* err_text(int err) {
   static UI_ROM const char* const t[] = {"CAN'T OPEN", "NOT 16/24/32-BIT PCM WAV", "TOO LONG (MAX 87 S)", "NO RAM",
-                                         "WRITE FAILED", "NAME TAKEN", "NAME TOO LONG"};
-  return err <= kErrOpen && err >= kErrName ? t[-err - 1] : "";
+                                         "WRITE FAILED", "NAME TAKEN", "NAME TOO LONG", "BUSY"};
+  return err <= kErrOpen && err >= kErrBusy ? t[-err - 1] : "";
 }
 
 CORE_COLD void edit_name_from(const char* stem, const int* taken, int ntaken, char* out, int cap) {
@@ -86,27 +86,27 @@ CORE_COLD void edit_name_from(const char* stem, const int* taken, int ntaken, ch
   sniprintf(out, cap, "%.*s-ed%d.wav", base_len(stem), stem, best + 1);
 }
 
-CORE_COLD int edit_name(const char* src_path, char* out, int cap) {
+// src_path's folder length (dl) and its stem (minus -ed<k>) into g_stem; 0, -1 too long, -2 no folder
+CORE_COLD static int stem_of(const char* src_path, int* dl) {
   const char* sl = strrchr(src_path, '/');
   if (!sl) return -2;
-  int dl = (int)(sl - src_path);
+  *dl = (int)(sl - src_path);
   const char* name = sl + 1;
   const char* dot = strrchr(name, '.');
   int sn = dot ? (int)(dot - name) : (int)strlen(name);
-  if (dl >= cardq::kPathMax || sn >= (int)sizeof g_stem) return -1;
+  if (*dl >= cardq::kPathMax || sn >= (int)sizeof g_stem) return -1;
   memcpy(g_stem, name, sn);
   g_stem[sn] = 0;
   g_stem[base_len(g_stem)] = 0;
-  static cardq::Req r;
-  r.kind = cardq::kFnReq, r.fn = list_fn, r.f = nullptr, r.buf = nullptr, r.len = 0, r.off = 0, r.got = -1;
-  sniprintf(r.path, sizeof r.path, "%.*s", dl ? dl : 1, dl ? src_path : "/");
-  // One listing, waited for: on the card core when it takes it in time, else taken back and run here
-  if (!cardq::post(&r)) cardq::run_here(&r);
-  uint32_t t0 = now_us();
-  while (!cardq::idle(&r))
-    if (now_us() - t0 > cardq::kTakeBackUs && cardq::take_back(&r)) break;
-  r.state = cardq::kFree;
-  int top = r.got;
+  return 0;
+}
+// list_fn's request for the folder of src_path (dl bytes; "/" for the root)
+CORE_COLD static void list_req(cardq::Req* r, const char* src_path, int dl) {
+  r->fn = list_fn;
+  sniprintf(r->path, sizeof r->path, "%.*s", dl ? dl : 1, dl ? src_path : "/");
+}
+// The name from the listing's highest k (top < 0: no folder)
+CORE_COLD static int name_from(const char* src_path, int dl, int top, char* out, int cap) {
   if (top < 0) return -2;
   char nm[300];
   edit_name_from(g_stem, &top, 1, nm, sizeof nm);
@@ -114,9 +114,50 @@ CORE_COLD int edit_name(const char* src_path, char* out, int cap) {
   return n < 0 || n >= cap ? -1 : 0;
 }
 
+CORE_COLD int edit_name(const char* src_path, char* out, int cap) {
+  int dl = 0, e = stem_of(src_path, &dl);
+  if (e) return e;
+  static cardq::Req r;
+  r.kind = cardq::kFnReq, r.f = nullptr, r.buf = nullptr, r.len = 0, r.off = 0, r.got = -1;
+  list_req(&r, src_path, dl);
+  // One listing, waited for: on the card core when it takes it in time, else taken back and run here
+  if (!cardq::post(&r)) cardq::run_here(&r);
+  uint32_t t0 = now_us();
+  while (!cardq::idle(&r))
+    if (now_us() - t0 > cardq::kTakeBackUs && cardq::take_back(&r)) break;
+  r.state = cardq::kFree;
+  return name_from(src_path, dl, r.got, out, cap);
+}
+
+// ---- Namer
+
+CORE_COLD int Namer::begin(const char* src_path, char* out, int cap) {
+  if (!cardq::idle(&r_)) return kErrBusy;
+  on_ = false;
+  if (strlen(src_path) >= sizeof src_) return -1;
+  int e = stem_of(src_path, &dl_);
+  if (e) return e;
+  sniprintf(src_, sizeof src_, "%s", src_path);
+  out_ = out, cap_ = cap;
+  r_.state = cardq::kFree;
+  list_req(&r_, src_, dl_);
+  on_ = true;
+  return 0;
+}
+
+CORE_COLD int Namer::step() {
+  if (!on_) return -2;
+  char path[cardq::kPathMax];   // (async copies its path argument into the request: kept from begin)
+  sniprintf(path, sizeof path, "%s", r_.path);
+  if (!cardq::async(&r_, cardq::kFnReq, nullptr, path, 0, nullptr, 0)) return 1;
+  on_ = false;
+  return name_from(src_, dl_, r_.got, out_, cap_);
+}
+
 // ---- Loader
 
 CORE_COLD int Loader::begin(const char* path) {
+  if (!cardq::idle(&r_)) return kErrBusy;
   if (strlen(path) >= sizeof path_) return kErrName;
   sniprintf(path_, sizeof path_, "%s", path);
   r_.state = cardq::kFree;
@@ -188,6 +229,7 @@ CORE_COLD int Loader::step() {
 // ---- Saver
 
 CORE_COLD int Saver::begin(const char* target, const float* x, int ch, int bits, uint32_t rate, uint32_t frames) {
+  if (!cardq::idle(&r_)) return kErrBusy;
   st_ = kOver;
   if (strlen(target) + 4 >= sizeof tmp_) return kErrName;
   if ((ch != 1 && ch != 2) || (bits != 16 && bits != 24 && bits != 32)) return kErrFormat;
