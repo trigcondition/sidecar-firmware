@@ -1,18 +1,23 @@
 <!-- web-next/src/pages/Seq.vue - the Sidecar sequencer: the shown seq track as a piano roll (the "seq" and "seqpos"
-     topics, the touch editor's view), edited with the touch editor's own command lines; its notes, chords, undo; the
-     track's and the pattern's settings (the old page's Sound › Poly tracks and Sequencer forms). -->
+     topics, the touch editor's view), edited with the touch editor's own command lines. One card holds the roll: a
+     toolbar on top (mode, the steps and pitches shown, undo, the tools in a drawer), the roll, and an inspector under it
+     (the selected note; its step's options). Below, the track's and the pattern's settings in one panel of tabs (the
+     old page's Sound › Poly tracks and Sequencer forms). -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, useId, watch } from "vue";
 import Card from "../ui/Card.vue";
 import Chip from "../ui/Chip.vue";
 import Fader from "../ui/Fader.vue";
 import Segmented from "../ui/Segmented.vue";
 import PianoRoll from "./seq/PianoRoll.vue";
 import StepEditor from "./seq/StepEditor.vue";
-import { AFFECTS, RND, SEED_QUANT, WEIGHT, humanLine, seedLine, strumLine, trackLines, type TrackSettings } from "../lib/seqx";
+import SeqSettings from "./seq/SeqSettings.vue";
+import SeqTools, { type Tool } from "./seq/SeqTools.vue";
+import Tabs from "./seq/Tabs.vue";
 import { RequestError } from "../lib/client";
 import { patternName } from "../lib/status";
-import { DIR, KEYS, POLY_ALLOC, QNT, SCALES, SPD, SUB, cmd as seqCmd, noteName, parseView, pitchWindow, playStep, trackName, type SeqNote, type SeqPos, type SeqView } from "../lib/seq";
+import { SUB, cmd as seqCmd, noteName, parseView, pitchWindow, playStep, trackName, type SeqNote, type SeqPos, type SeqView } from "../lib/seq";
+import { lenText, microText, stepsText } from "../lib/sequi";
 import { useSidecar } from "../lib/useSidecar";
 import { coalescer } from "../lib/coalesce";
 
@@ -120,92 +125,89 @@ watch(view, () => {
 });
 const setMicro = (n: SeqNote, m: number) => send(seqCmd.move(T.value, n.step, n.pitch, n.step, n.pitch, m));
 
-// the chord stamp
-const chord = ref(1);
-const inv = ref(0);
-function stamp() {
-  const v = view.value, at = selected.value;
-  if (!v || !at) return;
-  send(seqCmd.chord(v.track, at.step, at.pitch, chord.value, inv.value, v.defaults.vel, v.defaults.len, 0));
-}
-
-// the track's and the pattern's settings
-const swing = ref(50);
-watch(() => view.value?.swing, (s) => typeof s === "number" && (swing.value = s), { immediate: true });
-const polyRow = computed(() => {
-  const p = (status.value as Record<string, any> | null)?.poly;
-  return Array.isArray(p) ? p.find((x: any) => x.t === T.value + 1) : undefined;
-});
-const poly = ref({ voices: 0, alloc: 0, unison: 1, detune: 0, spread: 0 });
-watch([() => view.value?.poly, polyRow], () => {
-  const v = view.value?.poly, r = polyRow.value;
-  if (v) poly.value = { voices: v.voices, alloc: v.alloc, unison: Math.max(1, v.unison), detune: r?.d ?? poly.value.detune, spread: r?.s ?? poly.value.spread };
-}, { immediate: true });
-const pat = ref({ key: 0, scale: 0, qnt: 0 });
-watch(() => view.value && [view.value.key, view.value.scale, view.value.qnt], () => {
-  if (view.value) pat.value = { key: view.value.key, scale: view.value.scale, qnt: view.value.qnt };
-}, { immediate: true });
-
-// seqtop (/status "seqx"): the shown track's row, the pattern's seed; the old page's forms
-const seqx = computed(() => (status.value as Record<string, any> | null)?.seqx as Record<string, any> | undefined);
-const sxRow = computed(() => seqx.value?.t?.find((t: any) => t.t === T.value + 1));
-const trk = ref<TrackSettings>({ spd: 0, dir: 0, rm: 0, rl: 36, ro: 1, rw: 0, ms: 0, mr: 8, mq: 0, ma: 0 });
-const trkForm = ref<HTMLElement | null>(null);
-watch([sxRow, view], () => {
-  if (trkForm.value?.contains(document.activeElement)) return; // (not while a field is being edited)
-  const r = sxRow.value, v = view.value;
-  if (r) trk.value = { spd: r.spd, dir: r.dir, rm: r.rnd[0], rl: r.rnd[1], ro: r.rnd[2] || 1, rw: r.rnd[3], ms: r.smod[0], mr: r.smod[1] || 8, mq: r.smod[2], ma: r.smod[3] };
-  else if (v) trk.value = { ...trk.value, spd: v.speed, dir: v.dir };
-}, { immediate: true });
 async function sendLines(lines: string[]) {
   for (const l of lines) await send(l);
 }
-const seed = ref(0), seedFree = ref(true);
-watch(seqx, (x) => { if (x && document.activeElement?.id !== "seed") { seed.value = x.seed ?? 0; seedFree.value = !x.fixed; } }, { immediate: true });
-// strum and humanise over the steps on screen
-const strum = ref(12), hTime = ref(8), hVel = ref(16), hSeed = ref(1);
-const inst = computed(() => (status.value as Record<string, any> | null)?.inst as Record<string, any> | undefined);
-const instText = computed(() => {
-  const i = inst.value;
-  if (!i) return "";
-  const used = (i.v ?? []).reduce((a: number, x: any) => a + (x.path === "inst" ? x.on : 0), 0);
-  return `Instances ${used} of ${i.total}, ${Math.round(i.bytes / 1024)} KB each${i.noroom ? `, ${i.noroom} notes found no free instance` : ""}`;
-});
+const seqx = computed(() => (status.value as Record<string, any> | null)?.seqx as Record<string, any> | undefined);
 
+// the tools (chord, strum, humanise): one at a time, in a drawer under the toolbar; Escape closes it
+const tool = ref<Tool | null>(null);
+const drawerId = useId();
+const TOOLS: { id: Tool; text: string }[] = [{ id: "chord", text: "Chord" }, { id: "strum", text: "Strum" }, { id: "human", text: "Humanise" }];
+const toolBtns = ref<Record<string, HTMLButtonElement | null>>({});
+function toggleTool(t: Tool) {
+  tool.value = tool.value === t ? null : t;
+}
+function closeTool() {
+  const t = tool.value;
+  tool.value = null;
+  if (t) nextTick(() => toolBtns.value[t]?.focus());
+}
+
+// the inspector under the roll: the selected note, or its step's options
+const pane = ref<"note" | "step">("note");
+const PANES = [{ id: "note" as const, text: "Note" }, { id: "step" as const, text: "Step" }];
 const transportText = computed(() => ["stopped", "playing", "paused"][pos.value?.transport ?? view.value?.transport ?? 0] ?? "");
 const head = computed(() => playStep(pos.value, T.value));
-const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
 </script>
 
 <template>
-  <h1 class="title" tabindex="-1">Seq</h1>
+  <h1 class="visually-hidden" tabindex="-1">Seq</h1>
   <p v-if="!served" class="card">This Sidecar's build has no sequencer view (no core/seq in it).</p>
   <p v-else-if="!got" class="card">Waiting for the sequencer…</p>
   <p v-else-if="!view" class="card">No Sidecar sequencer in this build.</p>
   <template v-else>
     <Card :label="view.track >= 0 ? `${trackName(view.track)} · ${view.machine || 'seq track'}` : 'Sequencer'">
-      <div class="facts">
-        <span>Pattern <b class="num">{{ patternName(view.pattern) || "–" }}</b></span>
-        <span v-if="view.bpm10"><b class="num">{{ (view.bpm10 / 10).toFixed(1) }}</b> BPM</span>
-        <span>{{ transportText }}</span>
-        <span v-if="view.project">{{ view.project }}</span>
-        <span><span class="num">{{ view.length }}</span> steps</span>
-      </div>
-      <div v-if="view.tracks.some((t) => t >= 0)" class="row" role="group" aria-label="Seq tracks">
-        <span class="label">Track</span>
-        <Chip v-for="t in view.tracks.filter((x) => x >= 0)" :key="t" :pressed="t === view.track" :disabled="!paired" @click="send(seqCmd.show(t))">{{ trackName(t) }}</Chip>
+      <div class="head">
+        <div v-if="view.tracks.some((t) => t >= 0)" class="group" role="group" aria-label="Seq tracks">
+          <Chip v-for="t in view.tracks.filter((x) => x >= 0)" :key="t" :pressed="t === view.track" :disabled="!paired" @click="send(seqCmd.show(t))">{{ trackName(t) }}</Chip>
+        </div>
+        <div class="facts">
+          <span>Pattern <b class="num">{{ patternName(view.pattern) || "–" }}</b></span>
+          <span v-if="view.bpm10"><b class="num">{{ (view.bpm10 / 10).toFixed(1) }}</b> BPM</span>
+          <span>{{ transportText }}</span>
+          <span v-if="view.project">{{ view.project }}</span>
+          <span><span class="num">{{ view.length }}</span> steps</span>
+        </div>
       </div>
       <p v-if="view.track < 0">None of this pattern's tracks is a seq track. Make one on the Rytm (TRK + the SEQ page).</p>
-      <template v-else>
-        <div class="row">
-          <Segmented label="Mode" :options="[{ value: false, text: 'View' }, { value: true, text: 'Draw' }]" :model-value="draw" :disabled="!paired" @update:model-value="(v: boolean) => (draw = v)" />
-          <button type="button" :disabled="page === 0" @click="scroll(0, -1)">‹ Steps</button>
-          <span class="small">steps <span class="num">{{ first + 1 }}–{{ first + count }}</span> of {{ view.length }}</span>
-          <button type="button" :disabled="first + count >= view.length" @click="scroll(0, 1)">Steps ›</button>
-          <button type="button" @click="scroll(1, 0)">Octave up</button>
-          <button type="button" @click="scroll(-1, 0)">Octave down</button>
-          <Segmented v-if="!narrow" label="Cell size" :options="[{ value: false, text: 'Normal' }, { value: true, text: 'Large cells' }]" :model-value="large" @update:model-value="(v: boolean) => (large = v)" />
+      <div v-else class="editor">
+        <div class="toolbar">
+          <Segmented label="Mode" :options="[{ value: false, text: 'Select' }, { value: true, text: 'Draw' }]" :model-value="draw" :disabled="!paired" @update:model-value="(v: boolean) => (draw = v)" />
+          <div class="group" role="group" aria-label="Steps on screen">
+            <button type="button" class="icon" aria-label="Earlier steps" :disabled="page === 0" @click="scroll(0, -1)">‹</button>
+            <span class="small range">Steps <span class="num">{{ stepsText(first, count) }}</span> <span class="of">/ {{ view.length }}</span></span>
+            <button type="button" class="icon" aria-label="Later steps" :disabled="first + count >= view.length" @click="scroll(0, 1)">›</button>
+          </div>
+          <div class="group" role="group" aria-label="Pitches on screen">
+            <span class="small range" aria-hidden="true">Oct</span>
+            <button type="button" class="icon" aria-label="Show an octave higher" @click="scroll(1, 0)">▲</button>
+            <button type="button" class="icon" aria-label="Show an octave lower" @click="scroll(-1, 0)">▼</button>
+          </div>
+          <Chip v-if="!narrow" :pressed="large" @click="large = !large">Large cells</Chip>
+          <div class="group" role="group" aria-label="History">
+            <button type="button" :disabled="!paired || !view.undo" @click="send(seqCmd.undo(view.track))"><span aria-hidden="true">↶ </span>Undo <span class="num">{{ view.undo || "" }}</span></button>
+            <button type="button" :disabled="!paired || !view.redo" @click="send(seqCmd.redo(view.track))"><span aria-hidden="true">↷ </span>Redo <span class="num">{{ view.redo || "" }}</span></button>
+          </div>
+          <div class="group tools" role="group" aria-label="Tools" @keydown.esc="closeTool">
+            <button
+              v-for="t in TOOLS"
+              :key="t.id"
+              :ref="(el) => (toolBtns[t.id] = el as HTMLButtonElement | null)"
+              type="button"
+              class="tool"
+              :aria-expanded="tool === t.id"
+              :aria-controls="drawerId"
+              @click="toggleTool(t.id)"
+            >
+              {{ t.text }} <span aria-hidden="true">{{ tool === t.id ? "▴" : "▾" }}</span>
+            </button>
+          </div>
         </div>
+        <div :id="drawerId">
+          <SeqTools v-if="tool" :tool="tool" :view="view" :selected="selected" :first="first" :count="count" :disabled="!paired" @send="send" @close="closeTool" />
+        </div>
+
         <PianoRoll
           :notes="view.notes"
           :first="first"
@@ -227,140 +229,72 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           @len-to="setLen"
           @scroll="scroll"
         />
-        <p class="small">{{ view.notes.length }} notes. <template v-if="!draw">Drawing is off: taps only select.</template></p>
+        <p class="small status">
+          <span class="num">{{ view.notes.length }}</span> notes.
+          <template v-if="!draw"> Select mode: taps only select (Draw adds notes).</template>
+          <template v-else> Draw mode: a tap on an empty cell adds a note; drag a note to move it, its end to resize.</template>
+        </p>
         <p v-if="msg" class="small warm" role="status">{{ msg }}</p>
-      </template>
+
+        <section class="inspector" aria-label="Selection">
+          <Tabs v-model="pane" label="Edit the selection" :tabs="PANES">
+            <template #before>
+              <span class="what">
+                <template v-if="selected"><b>{{ noteName(selected.pitch) }}</b> · step <span class="num">{{ selected.step + 1 }}</span></template>
+                <template v-else>No note selected</template>
+              </span>
+            </template>
+            <div v-if="pane === 'note'">
+              <p v-if="!selected" class="small hint">Select a note in the roll (a tap, or Enter on it) to edit it here.</p>
+              <div v-else class="notegrid">
+                <Fader :key="'v' + selected.step + selected.pitch" label="Velocity" :model-value="selected.vel" :min="1" :max="127" :disabled="!paired" @commit="(v: number) => setVel(selected!, v)" />
+                <Fader :key="'l' + selected.step + selected.pitch" label="Length" :model-value="selected.len" :min="SUB / 4" :max="SUB * 16" :step="SUB / 4" :format="lenText" :disabled="!paired" @commit="(v: number) => setLen(selected!, v)" />
+                <Fader :key="'m' + selected.step + selected.pitch" label="Micro timing" :model-value="selected.micro" :min="-96" :max="96" :format="microText" :disabled="!paired" @commit="(v: number) => setMicro(selected!, v)" />
+                <div class="acts" role="group" aria-label="The selected note">
+                  <button type="button" aria-label="Move the note an octave up" :disabled="!paired" @click="nudge(selected, 0, 12)">Oct <span aria-hidden="true">+</span></button>
+                  <button type="button" aria-label="Move the note an octave down" :disabled="!paired" @click="nudge(selected, 0, -12)">Oct <span aria-hidden="true">−</span></button>
+                  <button type="button" class="danger" :disabled="!paired" @click="remove(selected)">Delete</button>
+                </div>
+              </div>
+            </div>
+            <StepEditor v-else :track="view.track + 1" :step="selected ? selected.step + 1 : null" :seqx="seqx" :length="view.length" :disabled="!paired" @send="sendLines" />
+          </Tabs>
+        </section>
+      </div>
     </Card>
 
-    <div v-if="view.track >= 0" class="grid">
-      <Card :label="selected ? `Note ${noteName(selected.pitch)} · step ${selected.step + 1}` : 'Note'">
-        <p v-if="!selected">Select a note in the roll (a tap, or Enter on it).</p>
-        <template v-else>
-          <Fader :key="'v' + selected.step + selected.pitch" label="Velocity" :model-value="selected.vel" :min="1" :max="127" :disabled="!paired" @commit="(v: number) => setVel(selected!, v)" />
-          <Fader :key="'l' + selected.step + selected.pitch" label="Length" :model-value="selected.len" :min="SUB / 4" :max="SUB * 16" :step="SUB / 4" :format="(v: number) => `${+(v / SUB).toFixed(2)} steps`" :disabled="!paired" @commit="(v: number) => setLen(selected!, v)" />
-          <Fader :key="'m' + selected.step + selected.pitch" label="Micro timing" :model-value="selected.micro" :min="-96" :max="96" :format="(v: number) => `${v > 0 ? '+' : ''}${v}/96`" :disabled="!paired" @commit="(v: number) => setMicro(selected!, v)" />
-          <div class="row">
-            <button type="button" :disabled="!paired" @click="nudge(selected, 0, 12)">Octave up</button>
-            <button type="button" :disabled="!paired" @click="nudge(selected, 0, -12)">Octave down</button>
-            <button type="button" class="danger" :disabled="!paired" @click="remove(selected)">Delete</button>
-          </div>
-        </template>
-      </Card>
-
-      <Card label="Tools">
-        <div class="row">
-          <button type="button" :disabled="!paired || !view.undo" @click="send(seqCmd.undo(view.track))">Undo <span class="num">{{ view.undo || "" }}</span></button>
-          <button type="button" :disabled="!paired || !view.redo" @click="send(seqCmd.redo(view.track))">Redo <span class="num">{{ view.redo || "" }}</span></button>
-        </div>
-        <div class="row">
-          <label for="chd" class="label">Chord</label>
-          <select id="chd" v-model.number="chord">
-            <option v-for="(c, i) in view.chords" :key="i" :value="i" :disabled="i === 0">{{ c }}</option>
-          </select>
-          <label for="inv" class="label">Inversion</label>
-          <select id="inv" v-model.number="inv">
-            <option v-for="i in 4" :key="i" :value="i - 1">{{ i - 1 }}</option>
-          </select>
-          <button type="button" :disabled="!paired || !selected" @click="stamp">Stamp on the selected note</button>
-        </div>
-        <p class="small">The stamp puts the chord's notes on the selected note's step, from its pitch.</p>
-        <span class="label">Steps {{ first + 1 }}–{{ first + count }}</span>
-        <div class="row">
-          <label for="strum">Strum</label>
-          <input id="strum" v-model.number="strum" type="number" min="-96" max="96" />
-          <button type="button" :disabled="!paired" @click="send(strumLine(view.track, first, first + count - 1, strum))">Strum the chords</button>
-        </div>
-        <div class="row">
-          <label for="ht">Humanise time</label><input id="ht" v-model.number="hTime" type="number" min="0" max="96" />
-          <label for="hv">velocity</label><input id="hv" v-model.number="hVel" type="number" min="0" max="127" />
-          <label for="hs">seed</label><input id="hs" v-model.number="hSeed" type="number" min="0" max="9999" />
-          <button type="button" :disabled="!paired" @click="send(humanLine(view.track, first, first + count - 1, hTime, hVel, hSeed))">Humanise</button>
-        </div>
-      </Card>
-
-      <Card :label="`${trackName(view.track)} settings`">
-        <Fader v-model="swing" label="Swing" :min="50" :max="80" unit="%" :disabled="!paired" @commit="(v: number) => send(seqCmd.swing(view!.track, v))" />
-        <form ref="trkForm" class="trk" @submit.prevent="sendLines(trackLines(view!.track + 1, trk, SPD, DIR))">
-          <div class="row">
-            <label for="spd" class="label">Speed</label>
-            <select id="spd" v-model.number="trk.spd"><option v-for="(s, i) in SPD" :key="s" :value="i">{{ s }}</option></select>
-            <label for="dir" class="label">Direction</label>
-            <select id="dir" v-model.number="trk.dir"><option v-for="(d, i) in DIR" :key="d" :value="i">{{ d }}</option></select>
-          </div>
-          <div class="row">
-            <label for="rm" class="label">Random notes</label>
-            <select id="rm" v-model.number="trk.rm"><option v-for="(r, i) in RND" :key="r" :value="i">{{ r }}</option></select>
-            <template v-if="trk.rm">
-              <label for="rl">low note</label><input id="rl" v-model.number="trk.rl" type="number" min="0" max="127" />
-              <label for="ro">octaves</label><input id="ro" v-model.number="trk.ro" type="number" min="1" max="4" />
-              <label for="rw">weight</label><select id="rw" v-model.number="trk.rw"><option v-for="(w, i) in WEIGHT" :key="w" :value="i">{{ w }}</option></select>
-            </template>
-          </div>
-          <div class="row">
-            <label for="ms" class="label">Seed mod</label>
-            <label for="ms">source P (0 off)</label><input id="ms" v-model.number="trk.ms" type="number" min="0" max="16" />
-            <template v-if="trk.ms">
-              <label for="mr">range</label><input id="mr" v-model.number="trk.mr" type="number" min="2" max="64" />
-              <label for="mq">quantise</label><select id="mq" v-model.number="trk.mq"><option v-for="(q, i) in SEED_QUANT" :key="q" :value="i">{{ q }}</option></select>
-              <label for="ma">affects</label><select id="ma" v-model.number="trk.ma"><option v-for="(a, i) in AFFECTS" :key="a" :value="i">{{ a }}</option></select>
-              <span v-if="sxRow" class="small">seed +{{ sxRow.off }}</span>
-            </template>
-          </div>
-          <button type="submit" :disabled="!paired">Set {{ trackName(view.track) }}</button>
-        </form>
-        <span class="label">Poly</span>
-        <div class="row">
-          <label for="pv">Voices</label>
-          <select id="pv" v-model.number="poly.voices"><option v-for="v in 9" :key="v" :value="v - 1">{{ v === 1 ? "AUTO" : v - 1 }}</option></select>
-          <label for="pa">Allocation</label>
-          <select id="pa" v-model.number="poly.alloc"><option v-for="(a, i) in POLY_ALLOC" :key="a" :value="i">{{ a }}</option></select>
-          <label for="pu">Unison</label>
-          <select id="pu" v-model.number="poly.unison"><option v-for="u in 8" :key="u" :value="u">{{ u === 1 ? "OFF" : u }}</option></select>
-        </div>
-        <div class="row">
-          <label for="pd">Detune</label>
-          <input id="pd" v-model.number="poly.detune" type="number" min="0" max="127" />
-          <label for="ps">Spread</label>
-          <input id="ps" v-model.number="poly.spread" type="number" min="0" max="127" />
-          <button type="button" :disabled="!paired" @click="send(seqCmd.poly(view!.track, poly))">Set poly</button>
-        </div>
-        <p v-if="view.poly.info" class="small">{{ view.poly.info }}</p>
-        <p v-if="instText" class="small">{{ instText }}</p>
-      </Card>
-
-      <StepEditor :track="view.track + 1" :step="selected ? selected.step + 1 : null" :seqx="seqx" :length="view.length" :disabled="!paired" @send="sendLines" />
-
-      <Card label="Pattern">
-        <div class="row">
-          <label for="key" class="label">Key</label>
-          <select id="key" v-model.number="pat.key"><option v-for="(k, i) in KEYS" :key="k" :value="i">{{ k }}</option></select>
-          <label for="scale" class="label">Scale</label>
-          <select id="scale" v-model.number="pat.scale"><option v-for="(s, i) in SCALES" :key="s" :value="i">{{ s }}</option></select>
-        </div>
-        <span class="label">Quantise to the scale</span>
-        <Segmented label="Quantise" :options="opts(QNT)" :model-value="pat.qnt" @update:model-value="(v: number) => (pat.qnt = v)" />
-        <button type="button" :disabled="!paired" @click="send(seqCmd.key(pat.key, pat.scale, pat.qnt))">Set key and scale</button>
-        <div class="row">
-          <label for="seed" class="label">Seed</label>
-          <input id="seed" v-model.number="seed" type="number" min="0" max="9999" :disabled="seedFree" />
-          <label class="check"><input v-model="seedFree" type="checkbox" /> Free (a new one each loop)</label>
-          <button type="button" :disabled="!paired" @click="send(seedLine(seed, seedFree))">Set seed</button>
-        </div>
-      </Card>
-    </div>
+    <SeqSettings v-if="view.track >= 0" :view="view" :disabled="!paired" @send="sendLines" />
   </template>
 </template>
 
 <style scoped>
-.title { font-size: 1.75rem; margin: 0.5rem 0 0; }
+.head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1.25rem; }
 .facts { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; color: var(--label); }
 .facts b { color: var(--text); }
-.row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 0 1.25rem; align-items: start; }
+.group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
+.editor { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
+/* the toolbar sits on the roll: one row where there is room, groups that wrap whole on a phone */
+.toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+  padding: 0.5rem; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--bg);
+}
+.toolbar .tools { margin-left: auto; }
+.icon { padding: 0.5rem; font-size: 1.125rem; line-height: 1; }
+.range { color: var(--label); white-space: nowrap; }
+.range .num { color: var(--text); font-size: 1rem; }
+.tool[aria-expanded="true"] { border-color: var(--accent); border-width: 2px; background: var(--accent-tint); font-weight: 700; }
+.status { margin: 0; color: var(--label); }
+/* the inspector: part of the roll's card, under the velocity lane */
+.inspector { border-top: 1px solid var(--border); padding-top: 0.25rem; margin-top: 0.25rem; }
+.what { min-width: 8rem; color: var(--label); }
+.what b { color: var(--text); font-size: 1.125rem; }
+.hint { margin: 0; color: var(--label); }
+.notegrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 0.5rem 1.25rem; align-items: end; }
+.acts { display: flex; flex-wrap: wrap; gap: 0.375rem; padding-bottom: 1.75rem; }
 .danger { border-color: var(--warm); color: var(--warm); }
-input[type="number"] { width: 5.5rem; }
-.trk { display: flex; flex-direction: column; gap: 0.5rem; }
-.trk button { align-self: flex-start; }
-.check { display: inline-flex; align-items: center; gap: 0.375rem; min-height: var(--target); }
-.check input { min-width: 1.25rem; min-height: 1.25rem; }
+@media (max-width: 48rem) {
+  .notegrid { grid-template-columns: minmax(0, 1fr); }
+  .acts { padding-bottom: 0; }
+  .toolbar .tools { margin-left: 0; }
+}
 </style>
