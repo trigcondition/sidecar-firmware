@@ -8,6 +8,8 @@ import SignalTide from "./components/SignalTide.vue";
 import ConfirmDialog from "./ui/ConfirmDialog.vue";
 import Toasts from "./ui/Toasts.vue";
 import { notify } from "./lib/notify";
+import { boxName } from "./lib/tiles";
+import type { Status } from "./lib/protocol";
 import { routes } from "./router";
 import { provideSidecar } from "./lib/useSidecar";
 import { usePrefs } from "./lib/usePrefs";
@@ -50,6 +52,17 @@ watch(state, (v) => {
     lost = true;
     notify.warn("Lost the Sidecar", "Trying again; the page catches up when it is back.", "conn");
   }
+});
+// the drum machine on the Pi's USB: a toast when it comes or goes (not at the page's first status)
+const boxOn = computed(() => {
+  const st = status.value as { streaming?: unknown; rytmMidi?: unknown } | null;
+  return st && st.streaming !== undefined ? !!(st.streaming || st.rytmMidi) : null;
+});
+watch(boxOn, (now, before) => {
+  if (now === null || before === null || before === undefined || now === before) return;
+  const b = boxName(status.value as Status | null);
+  if (now) notify.ok(`${b} connected`, undefined, "box");
+  else notify.warn(`${b} not seen`, "Check its USB cable to the Pi.", "box");
 });
 watch(paired, (now, before) => {
   if (before && !now && state.value === "open") notify.warn("This browser is no longer paired", "Pair it again in Settings to change things.", "pair");
