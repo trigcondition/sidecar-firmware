@@ -32,12 +32,19 @@ export const lfoParams: (tgt: string, par: number, pn: string) => string[] = sha
 export const lfoRateText: (sync: number, rate: number) => string = shared.lfoRateText;
 export const designDecode: (hex: string) => { v: number; s: number }[] = shared.designDecode;
 export const designAt: (steps: { v: number; s: number }[], ph: number) => number = shared.designAt;
+export type DesignStep = { v: number; s: number };
+export const LFO_SHAPES: string[] = shared.LFO_SHAPES;
+export const designEncode: (steps: DesignStep[]) => string = shared.designEncode;
+/** a drag point (x, y in a w x h box) sets its step's value (-64..63) and the brush's shape; returns the step */
+export const dragStep: (steps: DesignStep[], x: number, y: number, w: number, h: number, shape?: number) => number = shared.dragStep;
 
 /** lfo=N:KEY:VALUE (N 1..8, core/lfo.cpp; the old page's lines). */
 export const lfoCmd = {
   target: (n: number, tgt: string) => (tgt === "OFF" ? `lfo=${n}:off` : `lfo=${n}:tgt:${tgt.toLowerCase()}`),
   set: (n: number, key: "par" | "wav" | "sync" | "trig" | "rate" | "dep", v: number) => `lfo=${n}:${key}:${Math.round(v)}`,
   preset: (n: number, name: string) => `lfo=${n}:pre:${name}`,
+  /** the DESIGN wave's 16 steps (designEncode's hex) */
+  design: (n: number, hex: string) => `lfo=${n}:des:${hex}`,
 };
 
 /** The wave's shape over one cycle as an SVG path (w x h), for the card; DESIGN draws its 16 steps. */

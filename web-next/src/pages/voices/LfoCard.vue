@@ -1,10 +1,11 @@
 <!-- Voices › one LFO (core/lfo.h, docs/lfo.md; the old page's LFO tab): target and parameter, wave, sync, retrig, rate,
-     depth; its shape with the live phase (decorative: the numbers carry it). -->
+     depth; its shape with the live phase (decorative: the numbers carry it); for DESIGN the 16 steps to draw (DesignPad). -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import DesignPad from "./DesignPad.vue";
 import Fader from "../../ui/Fader.vue";
 import Segmented from "../../ui/Segmented.vue";
-import { LFO_PRESETS, LFO_RETRIGS, LFO_TARGETS, LFO_WAVES, lfoCmd, lfoParams, lfoRateText, wavePath, type LfoState } from "../../lib/lfo";
+import { LFO_PRESETS, LFO_RETRIGS, LFO_SHAPES, LFO_TARGETS, LFO_WAVES, lfoCmd, lfoParams, lfoRateText, wavePath, type LfoState } from "../../lib/lfo";
 
 const props = defineProps<{ n: number; lfo: LfoState; disabled: boolean }>();
 const emit = defineEmits<{ cmd: [string] }>();
@@ -12,6 +13,10 @@ const l = computed(() => props.lfo);
 const off = computed(() => l.value.tgt === "OFF");
 const params = computed(() => lfoParams(l.value.tgt, l.value.par, l.value.pn));
 const path = computed(() => wavePath(l.value, 120, 40));
+const brush = ref(0);
+function design(hex: string) {
+  emit("cmd", lfoCmd.design(props.n, hex));
+}
 </script>
 
 <template>
@@ -48,10 +53,18 @@ const path = computed(() => wavePath(l.value, 120, 40));
       <Segmented label="Retrig" :options="LFO_RETRIGS.map((r, i) => ({ value: i, text: r }))" :model-value="l.trig" :disabled="disabled" @update:model-value="(v: number) => emit('cmd', lfoCmd.set(n, 'trig', v))" />
       <Fader label="Rate" :model-value="l.rate" :min="0" :max="l.sync ? 18 : 127" :format="(v: number) => lfoRateText(l.sync, v)" :disabled="disabled" @commit="(v: number) => emit('cmd', lfoCmd.set(n, 'rate', v))" />
       <Fader label="Depth" :model-value="l.dep" :min="-64" :max="63" :disabled="disabled" @commit="(v: number) => emit('cmd', lfoCmd.set(n, 'dep', v))" />
-      <div v-if="l.wav === 7" class="row">
+      <template v-if="l.wav === 7">
         <span class="label">Design</span>
-        <button v-for="p in LFO_PRESETS" :key="p" type="button" :disabled="disabled" @click="emit('cmd', lfoCmd.preset(n, p))">{{ p }}</button>
-      </div>
+        <DesignPad :des="l.des" :brush="brush" :ph="l.ph" :disabled="disabled" @commit="design" />
+        <div class="row">
+          <span class="label">Brush</span>
+          <Segmented label="Brush" :options="LFO_SHAPES.map((s, i) => ({ value: i, text: s }))" :model-value="brush" @update:model-value="(v: number) => (brush = v)" />
+        </div>
+        <div class="row">
+          <span class="label">Presets</span>
+          <button v-for="p in LFO_PRESETS" :key="p" type="button" :disabled="disabled" @click="emit('cmd', lfoCmd.preset(n, p))">{{ p }}</button>
+        </div>
+      </template>
     </template>
   </section>
 </template>
