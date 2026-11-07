@@ -3,10 +3,10 @@
      remove), copy and clear. Each edit is a console line (scene=...); the state comes back on /status "scene". A build
      without scenes (0.4.x) says so. -->
 <script setup lang="ts">
+import { notify } from "../lib/notify";
 import { computed, ref, watch } from "vue";
 import Card from "../ui/Card.vue";
 import Fader from "../ui/Fader.vue";
-import { RequestError } from "../lib/client";
 import { coalescer } from "../lib/coalesce";
 import { confirmAsk } from "../lib/confirm";
 import { useSidecar } from "../lib/useSidecar";
@@ -17,14 +17,15 @@ import {
 
 const { status, cmd, paired } = useSidecar();
 const sc = computed(() => sceneView(status.value as Record<string, unknown> | null));
-const msg = ref("");
-const fail = (e: unknown) => (msg.value = e instanceof RequestError ? `Refused (${e.code}): ${e.message}` : (e as Error).message);
-async function send(line: string) {
-  msg.value = "";
+const fail = (e: unknown) => notify.error(e);
+/** true when the Sidecar took it; a refusal is a toast */
+async function send(line: string): Promise<boolean> {
   try {
     await cmd(line);
+    return true;
   } catch (e) {
     fail(e);
+    return false;
   }
 }
 const live = coalescer(cmd, fail); // the fader and the lock values while they move: the newest wins
@@ -75,8 +76,7 @@ const addOk = computed(() => !!targetName(addName.value));
 async function add() {
   const n = targetName(addName.value);
   if (!n) return;
-  await send(lockLine(sel.value, n, addValue.value * 128));
-  if (!msg.value) addName.value = "";
+  if (await send(lockLine(sel.value, n, addValue.value * 128))) addName.value = "";
 }
 const copyTo = ref(1);
 async function copy() {
@@ -185,7 +185,6 @@ const source = computed(() => SOURCES[sc.value?.src ?? 0] ?? "");
         <button type="button" class="danger" :disabled="!paired || !locks.length" @click="clear">Clear scene {{ sel + 1 }}</button>
       </div>
     </Card>
-    <p v-if="msg" class="small warm" role="status">{{ msg }}</p>
   </template>
 </template>
 

@@ -1059,6 +1059,12 @@ Licence: MIT. Vue: Copyright (c) 2018-present, Yuxi (Evan) You; Vue Router: Copy
 Martin Morote. Full texts: web-next/public/licenses/MIT-vue.txt and MIT-vue-router.txt, shipped with the app.
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+vue-sonner 2.0.9 (the toasts; bundled into the app's JavaScript and CSS)
+Copyright (c) 2022 Yunwei Xiao. Licence: MIT. Full text: web-next/public/licenses/MIT-vue-sonner.txt, shipped with the
+app.
+------------------------------------------------------------------------------
+
 
 ##############################################################################
 # RYTM MODS (patch files)

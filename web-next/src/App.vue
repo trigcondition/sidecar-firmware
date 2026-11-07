@@ -2,10 +2,12 @@
      status pill (pattern, tempo, play state, connection) laid over it, the page tabs as pills (the current one
      filled), the page. A skip link first. -->
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import Logo from "./components/Logo.vue";
 import SignalTide from "./components/SignalTide.vue";
 import ConfirmDialog from "./ui/ConfirmDialog.vue";
+import Toasts from "./ui/Toasts.vue";
+import { notify } from "./lib/notify";
 import { routes } from "./router";
 import { provideSidecar } from "./lib/useSidecar";
 import { usePrefs } from "./lib/usePrefs";
@@ -28,6 +30,30 @@ const powerWarn = computed(() => {
   const w = (status.value as { power?: { warn?: string } } | null)?.power?.warn;
   return w ? w.charAt(0).toUpperCase() + w.slice(1) : "";
 });
+// closed by its button: hidden in this tab until the warning says something else (Home's "Power" pill stays)
+const POWER_KEY = "sidecar.powerClosed";
+const readClosed = () => { try { return sessionStorage.getItem(POWER_KEY) ?? ""; } catch { return ""; } };
+const powerClosed = ref(readClosed());
+const showPower = computed(() => !!powerWarn.value && powerClosed.value !== powerWarn.value);
+function closePower() {
+  powerClosed.value = powerWarn.value;
+  try { sessionStorage.setItem(POWER_KEY, powerWarn.value); } catch { /* private window: closed until a reload */ }
+}
+
+// the connection and the pairing as toasts: only changes after it was up once, not every reconnect attempt
+let wasOpen = false, lost = false;
+watch(state, (v) => {
+  if (v === "open") {
+    if (lost) notify.ok("Back in touch with the Sidecar", undefined, "conn");
+    wasOpen = true; lost = false;
+  } else if (wasOpen && !lost && (v === "connecting" || v === "closed")) {
+    lost = true;
+    notify.warn("Lost the Sidecar", "Trying again; the page catches up when it is back.", "conn");
+  }
+});
+watch(paired, (now, before) => {
+  if (before && !now && state.value === "open") notify.warn("This browser is no longer paired", "Pair it again in Settings to change things.", "pair");
+});
 </script>
 
 <template>
@@ -49,7 +75,10 @@ const powerWarn = computed(() => {
   <nav aria-label="Pages" class="tabs">
     <router-link v-for="r in tabs" :key="String(r.name)" :to="r.path" class="tab">{{ r.meta?.title }}</router-link>
   </nav>
-  <p v-if="powerWarn" class="banner" role="alert"><span aria-hidden="true">⚠ </span>{{ powerWarn }} (Wi-Fi and the web page suffer first). <router-link :to="{ path: '/', query: { show: 'power' } }">Details</router-link></p>
+  <div v-if="showPower" class="banner power" role="alert">
+    <p><span aria-hidden="true">⚠ </span>{{ powerWarn }} (Wi-Fi and the web page suffer first). <router-link :to="{ path: '/', query: { show: 'power' } }">Details</router-link></p>
+    <button type="button" class="close" aria-label="Close the power warning" @click="closePower"><span aria-hidden="true">✕</span></button>
+  </div>
   <div v-if="buildMsg && buildSeen !== buildMsg" class="banner build" role="status">
     <span>{{ buildMsg }}</span>
     <button type="button" @click="buildSeen = buildMsg">Got it</button>
@@ -58,6 +87,7 @@ const powerWarn = computed(() => {
     <router-view />
   </main>
   <ConfirmDialog />
+  <Toasts />
 </template>
 
 <style scoped>
@@ -97,6 +127,13 @@ const powerWarn = computed(() => {
 }
 .banner { width: calc(100% - 2rem); max-width: calc(var(--page) - 2rem); margin: 0.5rem auto 0; padding: 0.75rem 1rem; border: 2px solid var(--warm); border-radius: var(--radius-control); color: var(--warm); }
 .banner a { color: var(--warm); font-weight: 700; }
+.banner.power { display: flex; align-items: flex-start; gap: 0.75rem; }
+.banner.power p { margin: 0; flex: 1; }
+.banner .close {
+  flex: none; min-width: var(--target); min-height: var(--target); margin: -0.5rem -0.5rem -0.5rem 0;
+  background: none; border: none; color: var(--warm); font-size: 1.125rem; border-radius: var(--radius-pill); cursor: pointer;
+}
+.banner .close:hover { background: var(--warm-tint); }
 .banner.build { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; color: var(--text); }
 main { max-width: var(--page); margin: 0 auto; padding: 1rem 1rem 2rem; }
 </style>

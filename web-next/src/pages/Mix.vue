@@ -2,13 +2,13 @@
      with their POST EQ curves, inserts, meters (the "levels" topic) and levels; the selected strip's detail below; the
      master FX, the send FX, and the sidechain's place (0.5.0). -->
 <script setup lang="ts">
+import { notify } from "../lib/notify";
 import { computed, ref } from "vue";
 import Card from "../ui/Card.vue";
 import Fader from "../ui/Fader.vue";
 import Segmented from "../ui/Segmented.vue";
 import StripView from "./mix/StripView.vue";
 import StripDetail from "./mix/StripDetail.vue";
-import { RequestError } from "../lib/client";
 import { mixCmd, strips } from "../lib/mix";
 import { useSidecar } from "../lib/useSidecar";
 import { coalescer } from "../lib/coalesce";
@@ -24,11 +24,9 @@ const mfx = computed(() => st.value?.ins?.mfx as Record<string, any> | undefined
 const fx = computed(() => (st.value?.fx ?? []) as Record<string, any>[]);
 const hasIns = computed(() => !!st.value?.ins);
 const master = computed(() => (levels.value ? Math.max(...levels.value.master) : null));
-const msg = ref("");
 // dials and faders: the newest value of each control wins while one is on its way (lib/coalesce.ts)
-const latest = coalescer(cmd, (e) => (msg.value = e instanceof RequestError ? `Refused (${e.code}): ${e.message}` : (e as Error).message));
+const latest = coalescer(cmd, (e) => notify.error(e));
 function send(c: string) {
-  msg.value = "";
   void latest(c);
 }
 // a strip's fader: a voice's OUT level, the master's MFX level, none for a bus
@@ -57,7 +55,6 @@ function setLevel(i: number, v: number) {
         />
       </div>
     </div>
-    <p v-if="msg" class="small warm" role="status">{{ msg }}</p>
   </Card>
 
   <div class="grid">
