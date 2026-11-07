@@ -292,7 +292,7 @@ boolean CKernel::Initialize (void)
 		unsigned ts = m_Timer.GetClockTicks ();
 		m_pDisplay = new CSidecarDisplay (m_Options.GetWidth (), m_Options.GetHeight ());
 		const char *pStyle = m_Options.GetAppOptionString ("uistyle", 0);	// the card is not read yet: cmdline only
-		sidecar_splash_style (pStyle != 0 && strcmp (pStyle, "classic") == 0 ? 1 : 0);
+		sidecar_splash_style (pStyle != 0 && (strcmp (pStyle, "sidecar") == 0 || strcmp (pStyle, "classic") == 0) ? 1 : 0);
 		if (!m_pDisplay->Splash ()) m_Logger.Write (From, LogNotice, "boot screen: no frame buffer");
 		else m_Logger.Write (From, LogNotice, "boot screen: %ux%u in %u us", m_pDisplay->GetFrameWidth (),
 				     m_pDisplay->GetFrameHeight (), m_Timer.GetClockTicks () - ts);
@@ -1027,8 +1027,8 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 		if (pCmd[7] == '=')
 		{
 			int n = strcmp (pCmd + 8, "oled") == 0 || strcmp (pCmd + 8, "0") == 0 ? 0
-				: strcmp (pCmd + 8, "classic") == 0 || strcmp (pCmd + 8, "1") == 0 ? 1 : -1;
-			if (n < 0) pThis->m_Logger.Write (From, LogWarning, "uistyle=oled|classic");
+				: strcmp (pCmd + 8, "sidecar") == 0 || strcmp (pCmd + 8, "classic") == 0 || strcmp (pCmd + 8, "1") == 0 ? 1 : -1;
+			if (n < 0) pThis->m_Logger.Write (From, LogWarning, "uistyle=oled|sidecar");
 			else
 			{
 				pThis->m_nUiStyle = (unsigned) n;
@@ -1040,7 +1040,7 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 				}
 			}
 		}
-		pThis->m_Logger.Write (From, LogNotice, "display: UI style %s", pThis->m_nUiStyle ? "classic" : "oled");
+		pThis->m_Logger.Write (From, LogNotice, "display: UI style %s", pThis->m_nUiStyle ? "sidecar" : "oled");
 		return TRUE;
 	}
 	if (strncmp (pCmd, "uilook", 6) == 0 && (pCmd[6] == 0 || pCmd[6] == '='))	// UX review L1: the OLED look
@@ -1200,8 +1200,9 @@ void CKernel::LoadDisplayRes (boolean bCard)
 	if (m_nResW) m_Logger.Write (From, LogNotice, "display: res=%ux%u", m_nResW, m_nResH);
 }
 
-// /.rytm/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|classic" lines;
-// cmdline.txt's same keys win
+// /.rytm/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|sidecar" lines
+// (SIDECAR replaced the CLASSIC theme under its id 1, so an older card's "classic" is read as "sidecar" and
+// written back as "sidecar" at the next save); cmdline.txt's same keys win
 static core::fmt::KvKeep s_DisplayKeep;		// display.txt's lines a newer build wrote: written back unchanged
 void CKernel::LoadDisplaySettings (boolean bCard)
 {
@@ -1245,12 +1246,13 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 	m_nSaverMin = Value ("screensaver", 60, 0, 1440);
 	m_nBright = Value ("brightness", 100, 5, 100);
 	m_bTouchHidden = Value ("touchtest", 1, 0, 1) == 0;
-	auto Style = [&] (const char *p) -> int		// "oled" / "classic" (or 0 / 1), -1: neither
+	auto Style = [&] (const char *p) -> int		// "oled" / "sidecar" (older cards: "classic"; or 0 / 1), -1: neither
 	{
 		if (p == 0) return -1;
 		auto End = [] (char c) { return c == 0 || c == '\n' || c == '\r'; };
 		if ((strncmp (p, "oled", 4) == 0 && End (p[4])) || (*p == '0' && End (p[1]))) return 0;
-		if ((strncmp (p, "classic", 7) == 0 && End (p[7])) || (*p == '1' && End (p[1]))) return 1;
+		if ((strncmp (p, "sidecar", 7) == 0 && End (p[7])) || (strncmp (p, "classic", 7) == 0 && End (p[7])) || (*p == '1' && End (p[1])))
+			return 1;
 		return -1;
 	};
 	const char *ps = strstr (Text, "uistyle=");
@@ -1281,7 +1283,7 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 	}
 	if (m_pDisplay != 0) m_pDisplay->SetScreensaver (m_nSaverMin);
 	m_Logger.Write (From, LogNotice, "display: screensaver %u min, brightness %u %%, UI style %s (%s)", m_nSaverMin, m_nBright,
-			m_nUiStyle ? "classic" : "oled", Text[0] ? "/.rytm/display.txt" : "defaults");
+			m_nUiStyle ? "sidecar" : "oled", Text[0] ? "/.rytm/display.txt" : "defaults");
 }
 
 void CKernel::SaveDisplaySettings (void)
@@ -1289,7 +1291,7 @@ void CKernel::SaveDisplaySettings (void)
 	m_bSaveDisplay = FALSE;
 	CString s;
 	s.Format ("screensaver=%u\nbrightness=%u\ntouchtest=%u\nuistyle=%s\nuilook=%s\n", m_nSaverMin, m_nBright, m_bTouchHidden ? 0u : 1u,
-		  m_nUiStyle ? "classic" : "oled", s_nUiLook ? "stage" : "studio");
+		  m_nUiStyle ? "sidecar" : "oled", s_nUiLook ? "stage" : "studio");
 	if (m_bTouchCal)
 	{
 		char b[64];

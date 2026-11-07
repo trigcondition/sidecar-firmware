@@ -159,7 +159,7 @@ private:
 	volatile boolean	m_bTouchHidden;		// touchtest=0: the home page's touch test is hidden
 	boolean			m_bTouchCal;		// touchcal=X0,X1,Y0,Y1,SWAP (pi/ui/touch_cal.h): the 4-point calibration
 	touch_cal_t		m_TouchCal;
-	unsigned		m_nUiStyle;		// uistyle=oled|classic: the display's theme (sidecar_theme.h), 0 OLED
+	unsigned		m_nUiStyle;		// uistyle=oled|sidecar ("classic" read as 1): the theme (sidecar_theme.h), 0 OLED
 	volatile boolean	m_bSaveDisplay;		// written by core 0's loop (tmp + rename)
 	unsigned		m_nResW, m_nResH;	// res=800x480|1024x600|1280x720 (display.txt / cmdline): the UI's size, 0: automatic
 	unsigned		m_nResFileW, m_nResFileH;	// display.txt's res= alone (kept when the file is written)
