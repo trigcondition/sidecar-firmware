@@ -1,5 +1,5 @@
 <!-- web-next/src/ui/SpectrumDots.vue - a strip's live spectrum (the "spectrum" topic, src/lib/useSpectrum.ts) as columns
-     of dots (DotFill's look: accent dots on a grid, brightest at the top), one column of whole dots per band. Goes inside
+     of dots (DotFill's look in the second accent, coral, so it stands apart from the curve and its fill; brightest at the top), one column of whole dots per band. Goes inside
      an <svg>, under the curve it belongs to; decoration only (aria-hidden). It subscribes while it is mounted and redraws
      on its own, so the page around it does not redraw at the spectrum's rate (a select there would lose its pick). The
      axis: 20 Hz .. 20 kHz across `width`, log (as the EQ curve's). -->
@@ -39,5 +39,5 @@ watch(() => levels.value.length > 0, (v) => emit("live", v), { immediate: true }
 </template>
 
 <style scoped>
-.dot { fill: var(--accent); opacity: 0.9; }
+.dot { fill: var(--warm); }
 </style>

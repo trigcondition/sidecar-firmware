@@ -31,5 +31,5 @@ const area = computed(() => `${props.d} L${props.width} ${props.bottom} L0 ${pro
 
 <style scoped>
 .dot { fill: var(--accent); opacity: 0.85; }
-.dot.muted { fill: var(--control-border); }
+.dot.muted { fill: var(--control-border); opacity: 0.5; }
 </style>
