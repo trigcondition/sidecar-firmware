@@ -1,6 +1,8 @@
 # The USB-C network: the web page over the USB-C cable
 
-Current state (2026-11-07): built for 0.5.0 (target), not yet run on hardware. The portable parts are tested on the
+Current state (2026-11-07): built for 0.5.0 (target). Runs on the Pi 5 with a Mac (macOS's own NCM driver, Mac
+unlocked): the boot chose USB-C 0.8 s after the gadget's start, DHCP lease, ping under 1 ms, the page, `/status` and
+`sdboot.py ls` over 172.31.77.1, audio device still present. Still to try on hardware: see "Not yet tested". The portable parts are tested on the
 host (`make -C pi/engine/tests`: `test_ncm_ntb`, `test_dhcpd_lite`, `test_usbnet_cfg`, `test_usbnet_ring`,
 `test_sidecar_desc`); the gadget, the net device and the boot's choice need a computer on USB-C (see "Not yet tested").
 
@@ -135,8 +137,7 @@ the function from the USB device altogether (if a computer has trouble with the 
 
 ## Not yet tested
 
-Everything that needs a computer on the USB-C port: enumeration of the composite device on macOS, Windows 11, Windows 10
-and Linux (Pi 4 first; the Pi 5's direct Apple Silicon port question in `docs/pi5.md` stays open), the DHCP lease, the
-page and /ws, an `sdboot.py` install over the cable, the boot's choice with each of the three cases above, audio and
-MIDI running alongside the network, OVERBRIDGE mode with `usbnet=on`, and a bus suspend and resume (the computer
-asleep).
+Tried on the Pi 5 with a Mac: enumeration, net=auto choosing the cable, the DHCP lease, the page, `/status`, reading
+the card with `sdboot.py`. Not yet: Windows 11, Windows 10, Linux, the Pi 4, /ws over the cable, an `sdboot.py` install
+over the cable, a computer asleep and awake (bus suspend and resume), unplugging and plugging back, audio and MIDI
+under network load, OVERBRIDGE mode with `usbnet=on`, the late link and its Reboot onto USB-C button.
