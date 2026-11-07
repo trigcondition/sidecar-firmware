@@ -3,7 +3,7 @@
      scale, quantise, seed). Each group goes out with its own button, as the command lines need: the track's form is a
      batch of lines (lib/seqx.ts trackLines), poly one line; swing goes out when the fader is let go. -->
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, watch } from "vue";
 import Card from "../../ui/Card.vue";
 import Fader from "../../ui/Fader.vue";
 import Segmented from "../../ui/Segmented.vue";
@@ -17,6 +17,12 @@ const emit = defineEmits<{ send: [string[]] }>();
 const { status } = useSidecar();
 const T = computed(() => props.view.track);
 const tab = ref<"track" | "poly" | "pattern">("track");
+// a wide screen shows the three side by side, without tabs; a narrow one as tabs
+const wideQuery = window.matchMedia("(min-width: 72rem)");
+const wide = ref(wideQuery.matches);
+const onWide = (e: MediaQueryListEvent) => (wide.value = e.matches);
+wideQuery.addEventListener("change", onWide);
+onScopeDispose(() => wideQuery.removeEventListener("change", onWide));
 const tabs = computed(() => [
   { id: "track" as const, text: trackName(T.value) },
   { id: "poly" as const, text: "Poly" },
@@ -67,8 +73,10 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
 
 <template>
   <Card label="Settings">
-    <Tabs v-model="tab" label="Settings" :tabs="tabs">
-      <div v-if="tab === 'track'" class="panel">
+    <Tabs v-model="tab" label="Settings" :tabs="tabs" :flat="wide">
+      <div :class="{ cols: wide }">
+      <section v-show="wide || tab === 'track'" class="panel" :aria-labelledby="wide ? 'set-track' : undefined">
+        <h3 v-if="wide" id="set-track" class="colhead">{{ tabs[0].text }}</h3>
         <Fader v-model="swing" class="wide" label="Swing" :min="50" :max="80" unit="%" :disabled="disabled" @commit="(v: number) => emit('send', [seqCmd.swing(T, v)])" />
         <p class="small note">Swing goes out when the fader is let go; the rest with the button below.</p>
         <form ref="trkForm" class="form" @submit.prevent="emit('send', trackLines(T + 1, trk, SPD, DIR))">
@@ -97,9 +105,10 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           </div>
           <div class="act"><button type="submit" class="primary" :disabled="disabled">Set {{ trackName(T) }}</button></div>
         </form>
-      </div>
+      </section>
 
-      <div v-else-if="tab === 'poly'" class="panel">
+      <section v-show="wide || tab === 'poly'" class="panel" :aria-labelledby="wide ? 'set-poly' : undefined">
+        <h3 v-if="wide" id="set-poly" class="colhead">{{ tabs[1].text }}</h3>
         <form class="form" @submit.prevent="emit('send', [seqCmd.poly(T, poly)])">
           <label for="pv" class="label">Voices</label>
           <div class="ctl"><select id="pv" v-model.number="poly.voices"><option v-for="v in 9" :key="v" :value="v - 1">{{ v === 1 ? "AUTO" : v - 1 }}</option></select></div>
@@ -115,9 +124,10 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
         </form>
         <p v-if="view.poly.info" class="small note">{{ view.poly.info }}</p>
         <p v-if="instText" class="small note">{{ instText }}</p>
-      </div>
+      </section>
 
-      <div v-else class="panel">
+      <section v-show="wide || tab === 'pattern'" class="panel" :aria-labelledby="wide ? 'set-pattern' : undefined">
+        <h3 v-if="wide" id="set-pattern" class="colhead">{{ tabs[2].text }}</h3>
         <form class="form" @submit.prevent="emit('send', [seqCmd.key(pat.key, pat.scale, pat.qnt)])">
           <label for="key" class="label">Key</label>
           <div class="ctl"><select id="key" v-model.number="pat.key"><option v-for="(k, i) in KEYS" :key="k" :value="i">{{ k }}</option></select></div>
@@ -135,13 +145,19 @@ const opts = (names: string[]) => names.map((n, i) => ({ value: i, text: n }));
           </div>
           <div class="act"><button type="submit" class="primary" :disabled="disabled">Set seed</button></div>
         </form>
+      </section>
       </div>
     </Tabs>
   </Card>
 </template>
 
 <style scoped>
-.panel { display: flex; flex-direction: column; gap: 0.75rem; max-width: 44rem; }
+.panel { display: flex; flex-direction: column; gap: 0.75rem; max-width: 44rem; min-width: 0; }
+.cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem 2rem; }
+.cols .panel { max-width: none; }
+.cols .form { grid-template-columns: 7.5rem minmax(0, 1fr); }
+.cols .wide { max-width: none; }
+.colhead { margin: 0; font-size: 1rem; font-weight: 700; padding-bottom: 0.375rem; border-bottom: 1px solid var(--border); }
 .wide { max-width: 28rem; }
 .note { margin: 0; color: var(--label); }
 /* one label column, one control column: every row lines up */

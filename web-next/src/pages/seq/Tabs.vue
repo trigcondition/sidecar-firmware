@@ -1,11 +1,12 @@
 <!-- Seq › tabs: a few views of one panel (the ARIA tabs pattern: arrows, Home and End inside the list, Tab on into the
      panel). The current tab is bold and underlined (a shape, not only a colour). Slots: "before" and "after" sit on
-     the tab row (a title, actions), the default slot is the current tab's panel. -->
+     the tab row (a title, actions), the default slot is the current tab's panel. flat: no tabs at all (the caller shows every
+     panel, e.g. side by side on a wide screen); the slot is then plain content. -->
 <script setup lang="ts" generic="T extends string">
 import { nextTick, ref, useId } from "vue";
 import { tabMove } from "../../lib/sequi";
 
-const props = defineProps<{ label: string; tabs: { id: T; text: string }[]; modelValue: T }>();
+const props = defineProps<{ label: string; tabs: { id: T; text: string }[]; modelValue: T; flat?: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [T] }>();
 const base = useId();
 const list = ref<HTMLElement | null>(null);
@@ -21,6 +22,8 @@ function key(e: KeyboardEvent) {
 </script>
 
 <template>
+  <div v-if="flat"><slot /></div>
+  <template v-else>
   <div class="tabrow">
     <slot name="before" />
     <div ref="list" role="tablist" :aria-label="label" class="tablist" @keydown="key">
@@ -44,6 +47,7 @@ function key(e: KeyboardEvent) {
   <div :id="`${base}-panel`" role="tabpanel" class="tabpanel" :aria-labelledby="`${base}-${modelValue}`">
     <slot />
   </div>
+  </template>
 </template>
 
 <style scoped>
