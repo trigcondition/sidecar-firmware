@@ -13,7 +13,8 @@ const parent = computed(() => route.matched[0]);
 const tabs = computed(() =>
   (parent.value?.children ?? [])
     .filter((c) => c.meta?.title && (!c.meta.needs || has(status.value, c.meta.needs as Feat)))
-    .map((c) => ({ to: `${parent.value.path}/${c.path}`, title: String(c.meta!.title) })),
+    // "/" + "" is "/", "/" + "log" is "/log" (Home's sections), "/mix" + "master" is "/mix/master"
+    .map((c) => ({ to: `${parent.value.path.replace(/\/$/, "")}/${c.path}` || "/", title: String(c.meta!.title) })),
 );
 const missing = computed(() => {
   const n = route.meta.needs as Feat | undefined;

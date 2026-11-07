@@ -19,7 +19,17 @@ function sections(path: string, name: string, title: string, list: Section[]): R
 }
 
 export const routes: RouteRecordRaw[] = [
-  { path: "/", name: "home", component: Home, meta: { title: "Home" } },
+  // Home: the overview at / itself, the box's tracks and the log as its other sections (Home.vue's view)
+  {
+    path: "/",
+    component: SubPage,
+    meta: { title: "Home" },
+    children: [
+      { path: "", name: "home", component: Home, props: { view: "overview" }, meta: { title: "Overview" } },
+      { path: "tracks", component: Home, props: { view: "tracks" }, meta: { title: "Tracks" } },
+      { path: "log", component: Home, props: { view: "log" }, meta: { title: "Log and console" } },
+    ],
+  },
   sections("/voices", "voices", "Voices", [
     { path: "voice", title: "Voice", component: () => import("./pages/voices/VoiceTab.vue") },
     { path: "modulation", title: "Modulation", component: () => import("./pages/voices/ModulationTab.vue") },

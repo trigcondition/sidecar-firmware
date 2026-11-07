@@ -18,7 +18,7 @@ import { WEB_BUILD, buildNote } from "./lib/build";
 
 usePrefs();
 const { state, paired, levels, status, seqpos, hello } = provideSidecar();
-const tabs = routes.filter((r) => r.name);
+const tabs = routes.filter((r) => r.meta?.title); // the pages (not the catch-all)
 const masterLevel = computed(() => (levels.value ? Math.max(...levels.value.master) : 0));
 const conn = computed(() =>
   state.value === "open" ? (paired.value ? "Live" : "Live, not paired") : state.value === "connecting" ? "Connecting…" : state.value === "incompatible" ? "Incompatible" : "Offline",
@@ -87,7 +87,7 @@ watch(paired, (now, before) => {
   </header>
   <nav aria-label="Pages" class="tabs">
     <!-- a page with sections stays the current tab on every section (/library/pool): aria-current by hand -->
-    <router-link v-for="r in tabs" :key="String(r.name)" v-slot="{ href, navigate, isActive }" :to="r.path" custom>
+    <router-link v-for="r in tabs" :key="r.path" v-slot="{ href, navigate, isActive }" :to="r.path" custom>
       <a :href="href" class="tab" :aria-current="isActive ? 'page' : undefined" @click="navigate">{{ r.meta?.title }}</a>
     </router-link>
   </nav>

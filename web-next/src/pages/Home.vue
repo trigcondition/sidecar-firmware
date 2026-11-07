@@ -1,8 +1,8 @@
-<!-- web-next/src/pages/Home.vue - the Sidecar at a glance (the old page's Status tab and its Log & console): a health row
-     (one pill per area, coral when it needs looking at), then the tiles in three groups - Engine, Connections, System -
-     drawn from lib/health.ts, the box's tracks, the pairing while unpaired, and the log with a console line (the last
-     lines, the whole log on request). A power warning is said once, by the banner on every page (App.vue); its
-     "Details" brings this page with ?show=power, and router.ts focuses that tile (id tile-power). -->
+<!-- web-next/src/pages/Home.vue - the Sidecar at a glance, as Home's three sections (router.ts, `view`): the overview
+     at / (a health row, one pill per area, coral when it needs looking at, then the tiles in three groups - Engine,
+     Connections, System - drawn from lib/health.ts), the box's tracks (/tracks) and the log with a console line (/log).
+     The pairing shows on each while unpaired. A power warning is said once, by the banner on every page (App.vue);
+     its "Details" brings the overview with ?show=power, and router.ts focuses that tile (id tile-power). -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, triggerRef, watch } from "vue";
 import Card from "../ui/Card.vue";
@@ -19,6 +19,8 @@ import { REC_STATES, hms } from "../lib/rec";
 import { boxes as boxList, has } from "../lib/box";
 import { uptimeText } from "../lib/status";
 
+const props = withDefaults(defineProps<{ view?: "overview" | "tracks" | "log" }>(), { view: "overview" });
+
 const { client, state, hello, paired, status, pair, api, cmd } = useSidecar();
 const st = computed(() => status.value as Record<string, any> | null);
 
@@ -28,7 +30,9 @@ const lines = shallowRef(buf.lines);
 const stats = shallowRef(buf.stats);
 const follow = ref(true);
 const hideStats = ref(true);
-const wholeLog = ref(false);
+const wholeLog = ref(props.view === "log"); // the log's own section shows all of it
+// the sections share this component (router.ts): a switch keeps it, so the log's default follows the section
+watch(() => props.view, (v) => (wholeLog.value = v === "log"));
 const logEl = ref<HTMLElement | null>(null);
 let off: (() => void) | null = null;
 const toEnd = () => nextTick(() => logEl.value && (logEl.value.scrollTop = logEl.value.scrollHeight));
@@ -124,8 +128,6 @@ async function send() {
 </script>
 
 <template>
-  <h1 class="visually-hidden" tabindex="-1">Home</h1>
-
   <Card v-if="!paired && state === 'open'" label="Pair this browser" tone="warm">
     <p>Changes need the pairing code. It is on the {{ box }}'s screen and the Sidecar's screen.</p>
     <form class="row" @submit.prevent="doPair">
@@ -137,6 +139,7 @@ async function send() {
     <p v-if="pairMsg" role="status">{{ pairMsg }}</p>
   </Card>
 
+  <template v-if="view === 'overview'">
   <section class="health" aria-labelledby="health-h">
     <h2 id="health-h" class="visually-hidden">Health</h2>
     <ul v-if="pills.length" class="pills">
@@ -236,7 +239,10 @@ async function send() {
     </div>
   </Card>
 
-  <Card v-if="src" :label="`${box} tracks`">
+  </template>
+
+  <p v-if="view === 'tracks' && !src" class="card">No track report from the {{ box }} yet.</p>
+  <Card v-if="view === 'tracks' && src" :label="`${box} tracks`">
     <ul class="src">
       <li v-for="t in src" :key="t.name" :class="{ ours: t.ours }">
         <span class="label">{{ t.name }}</span>
@@ -246,7 +252,7 @@ async function send() {
     <p class="small">The machine each track reports. {{ box.toUpperCase() }}: the {{ box }}'s own sound, not a Sidecar voice.</p>
   </Card>
 
-  <Card label="Log and console">
+  <Card v-if="view === 'log'" label="Log and console">
     <div class="row">
       <Chip class="sm" :pressed="follow" @click="follow = !follow">Follow</Chip>
       <Chip class="sm" :pressed="hideStats" @click="hideStats = !hideStats">Hide the once-a-second lines</Chip>
