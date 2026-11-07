@@ -158,7 +158,7 @@ void Pick(int track) {
   core::ui::remote_selected_track(&g_pick_sel);
 }
 
-void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern) {
+void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern, bool scope) {
   int t = -1, m = -1;
   char name[13];
   uint8_t val[8];
@@ -192,7 +192,7 @@ void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern) {
   memcpy(v.val, val, 8);
   memcpy(v.label, label, sizeof v.label);
   // the scope and level: the track's stem from the input tap (its voice's channel)
-  if (t >= 0) {
+  if (t >= 0 && scope) {
     int vi = core::ui::remote_track_voice(t);
     core::ui::tap_enable(true);
     core::ui::tap_source(vi + 1);

@@ -1036,6 +1036,31 @@ Licence: GNU GPL version 2 or later: licenses/GPL-2.0.txt, and the upstream LICE
 
 
 ##############################################################################
+# NEW WEB APP (web-next; served from the SD card at /next, not built into the kernel)
+##############################################################################
+
+------------------------------------------------------------------------------
+Space Grotesk (fonts, weights 400 500 700, latin; @fontsource/space-grotesk 5.3.0)
+Copyright 2020 The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk)
+Licence: SIL Open Font License 1.1. Full text: web-next/public/licenses/OFL-SpaceGrotesk.txt, shipped with the app
+as licenses/OFL-SpaceGrotesk.txt. The font files are unmodified.
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+Doto (fonts, weights 600 900, latin; @fontsource/doto 5.3.0)
+Copyright 2024 The Doto Project Authors (https://github.com/oliverlalan/Doto)
+Licence: SIL Open Font License 1.1. Full text: web-next/public/licenses/OFL-Doto.txt, shipped with the app as
+licenses/OFL-Doto.txt. The font files are unmodified.
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+Vue 3.5.45 and Vue Router 4.6.4 (bundled into the app's JavaScript)
+Licence: MIT. Vue: Copyright (c) 2018-present, Yuxi (Evan) You; Vue Router: Copyright (c) 2019-present Eduardo San
+Martin Morote. Full texts: web-next/public/licenses/MIT-vue.txt and MIT-vue-router.txt, shipped with the app.
+------------------------------------------------------------------------------
+
+
+##############################################################################
 # RYTM MODS (patch files)
 ##############################################################################
 

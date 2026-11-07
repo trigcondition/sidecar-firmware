@@ -29,6 +29,20 @@
 #include "midibridge_pi.h"
 #include "sidecar_gadget.h"	// usbmidi=os: /cmd refuses link=tcp:<address> while it is on
 #include "wifi_conf.h"
+#include "web_cmd.h"		// the commands the web may send (/cmd and /ws)
+#include "web_ws.h"		// /ws (docs/web-ws.md)
+#include "ws_frame.h"		// its handshake
+#include "webnext_path.h"	// /next: the new app from the card
+#include "voiceview_json.h"	// the voices topic
+#include "voice_pi.h"
+#include "ws_topics.h"		// its levels and log payloads
+#include "sendfx_pi.h"		// the buses' meters
+#include "shared.h"		// g_Output, g_PeakFan: the levels
+#if SIDECAR_SEQED
+#include "seqed_pi.h"		// the sequencer view (the touch editor's)
+#include "seqview_json.h"
+#endif
+#include "version.h"		// the hello's version (tools/gen_version.sh)
 #include "hosted/web_page.h"	// build.sh: www/index.html as WebPage[] (a raw string)
 #include "hosted/web_page_gz.h"	// build.sh: the same, gzip -9n, as WebPageGz[] (what "/" sends)
 #include "user/lists.h"
@@ -94,6 +108,7 @@ unsigned CLogTee::ReadSince (u64 nSince, char *pOut, unsigned nMax, u64 *pStart,
 unsigned CWebServer::s_nWorkers = 0, CWebServer::s_nRefused = 0, CWebServer::s_nIdle = 0, CWebServer::s_nMaxLifeMs = 0;
 unsigned CWebServer::s_nRequests, CWebServer::s_nMaxUs, CWebServer::s_nCommands, CWebServer::s_nUnpaired;
 CWebServer *CWebServer::s_pWorker[MaxWorkers];
+unsigned CWebServer::s_nWs = 0, CWebServer::s_nWsTotal = 0, CWebServer::s_nWsRefused = 0;
 
 CWebServer::CWebServer (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, TWebStatus *pHealth,
 			void *pParam, CSocket *pSocket)
@@ -407,7 +422,38 @@ static boolean Open (const char *pPath)
 	static const char *const kOpen[] = {"/", "/index.html", "/bundle-sw.js", "/health", "/status", "/log", "/pair",
 					    "/pair/status", "/pair/resume", "/pair/show"};
 	for (unsigned i = 0; i < sizeof kOpen / sizeof kOpen[0]; i++) if (strcmp (pPath, kOpen[i]) == 0) return TRUE;
-	return FALSE;
+	return strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0;	// the new app's files (webnext_path.h): no data in them
+}
+
+// GET /next/<file>: the new web app from the card (webnext_path.h), the .gz sibling when there is one. false: no such
+// file (or not one of the app's names): 404; too big for the buffer: 500 and a log line
+static THTTPStatus NextFile (const char *pPath, u8 *pBuffer, unsigned *pLength, const char **ppContentType)
+{
+	char sd[160];
+	if (!webnext::path (pPath, sd, sizeof sd - 4)) return HTTPNotFound;
+	size_t n = strlen (sd);
+	strcpy (sd + n, ".gz");
+	bool bGz = true;
+	FIL f;
+	if (f_open (&f, sd, FA_READ) != FR_OK)
+	{
+		sd[n] = 0;
+		bGz = false;
+		if (f_open (&f, sd, FA_READ) != FR_OK) return HTTPNotFound;
+	}
+	FSIZE_t nSize = f_size (&f);
+	UINT got = 0;
+	bool bOK = nSize <= *pLength && f_read (&f, pBuffer, (UINT) nSize, &got) == FR_OK && got == nSize;
+	f_close (&f);
+	if (!bOK)
+	{
+		CLogger::Get ()->Write (From, LogWarning, "next: %s not served (%u bytes)", sd + 4, (unsigned) nSize);
+		return HTTPInternalServerError;
+	}
+	sd[n] = 0;					// (the type from the name without .gz)
+	*pLength = got;
+	*ppContentType = webnext::headers (sd, bGz, webnext::immutable (pPath));
+	return HTTPOK;
 }
 
 // The refusal's body: "<code> <message>" for the endpoints whose client reads text, JSON for the rest. Decided here,
@@ -476,6 +522,193 @@ static void Reply (const fsweb::Result &r, u8 *pBuffer, unsigned *pLength, const
 	*ppContentType = "text/plain; charset=utf-8";
 }
 
+// What GET /status answers (the /ws status topic too: the same function, so the two can never differ)
+void CWebServer::StatusJson (CString *pOut)
+{
+	CString &s = *pOut;
+	s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u,"
+		  "\"idle\":%u,\"open\":%u},",
+		  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused,
+		  s_nIdle, s_nWorkers);
+	(*m_pStatus) (&s, m_pParam);
+	paircode_pi::Status (&s);		// "pair":{...}: the gate, the counts - never the code itself
+	midibridge_pi::Status (&s);		// "midibridge":{...}: the state, the counts - never its token
+	s.Append ("}");
+}
+
+// ---- /ws, the WebSocket (web_ws.h, docs/web-ws.md). The device's side of ws_session.h: the pairing gate, the status,
+// the console. The token arrives in the first "auth" message, never in the URL (a browser cannot set a header on a
+// WebSocket); the status topic is open, as GET /status is; a command needs the token, checked again each time.
+bool CWebServer::WsToken (void *pParam, const char *pToken)
+{
+	return paircode_pi::Gate ().check (pToken);
+}
+
+// One topic's payload (ws_session.h's Host::build). Core 0 (this connection's worker task), like the display loop and the
+// stats line that share the peaks (peak_fan.h) and the sequencer view (seqed_pi.h)
+size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size_t nMax)
+{
+	CWebServer *pThis = (CWebServer *) pParam;
+	switch (Topic)
+	{
+	case wsproto::kStatus:
+	{
+		CString s;
+		pThis->StatusJson (&s);
+		size_t n = s.GetLength ();
+		if (n > nMax) return 0;
+		memcpy (pOut, (const char *) s, n);
+		return n;
+	}
+	case wsproto::kLevels:
+	{
+		float Pk[8][2];
+		g_Output.TakeVoicePeaks (Pk);			// into every reader's share, then this connection's own
+		g_PeakFan.feed_voices (Pk);
+		g_PeakFan.feed_master (g_Output.TakePeak ());
+		float X[peakfan::Fan::kExtra];
+		g_Output.TakeTrkPeaks (X);			// each voice on its own track (only the web reads these)
+		sendfx_pi::TakeBusPeaks (X + 8);		// B1..B3
+		g_PeakFan.feed_extra (X, 0, peakfan::Fan::kExtra);
+		peakfan::Reader r = pThis->m_nWsSlot == 0 ? peakfan::kWeb : peakfan::kWeb2;
+		g_PeakFan.take_voices (r, Pk);
+		g_PeakFan.take_extra (r, X);
+		return wstopics::levels (Pk, X, X + 8, g_PeakFan.take_master (r), pOut, nMax);
+	}
+#if SIDECAR_SEQED
+	case wsproto::kSeq:
+	case wsproto::kSeqPos:
+	{
+		static sidecar_seq_view_t *s_pView = 0;		// the newest view, shared by the connections (core 0)
+		static unsigned s_nSeen = 0;
+		if (s_pView == 0) { s_pView = new sidecar_seq_view_t; memset (s_pView, 0, sizeof *s_pView); }
+		if (s_pView == 0) return 0;
+		seqed_pi::View (s_pView, &s_nSeen);		// (a copy only when it changed)
+		if (Topic == wsproto::kSeq) return seqjson::view (*s_pView, pOut, nMax);
+		return seqjson::pos (seqed_pi::Playhead (), s_pView->valid ? s_pView->track : -1, s_pView->transport,
+				     s_pView->valid ? s_pView->pattern : -1, s_pView->bpm10, pOut, nMax);
+	}
+#endif
+	case wsproto::kVoices:
+	{
+		static sidecar_voice_view_t *s_pVoice = new sidecar_voice_view_t;	// (core 0; ~3 KB, not on the stack)
+		if (s_pVoice == 0) return 0;
+		voice_pi::Fill (s_pVoice, 0, -1, false);	// no scope: the display's tap is its own; no p-locks (the display's dump)
+		return voicejson::view (*s_pVoice, pOut, nMax);
+	}
+	case wsproto::kLog:
+	{
+		static const unsigned kChunk = 8192;		// the log bytes in one push
+		static char *s_pBuf = new char[kChunk];
+		if (s_pBuf == 0) return 0;
+		u64 nStart, nEnd;
+		u64 nSince = pThis->m_nWsLogAt;
+		if (!pThis->m_bWsLogStarted)			// a new subscriber: the last few KB for context
+		{
+			pThis->m_pLog->ReadSince (~0ull >> 1, s_pBuf, 0, &nStart, &nEnd);
+			nSince = nEnd > kChunk ? nEnd - kChunk : 0;
+		}
+		unsigned n = pThis->m_pLog->ReadSince (nSince, s_pBuf, kChunk, &nStart, &nEnd);
+		boolean bGap = pThis->m_bWsLogStarted && nStart > nSince;
+		size_t nOut = wstopics::log (nStart, nEnd, bGap, s_pBuf, n, pOut, nMax);
+		if (nOut != 0)
+		{
+			pThis->m_nWsLogAt = nEnd;
+			pThis->m_bWsLogStarted = TRUE;
+		}
+		return nOut;
+	}
+	default:
+		return 0;
+	}
+}
+
+// As POST /cmd: the same list (web_cmd.h), a /ws message counting as a body (never a URL). The upgrade passed the
+// strict same-origin check, so usbmode=overbridge is taken here, as on /cmd from the page.
+const char *CWebServer::WsCommand (void *pParam, const char *pCmd)
+{
+	CSidecarGadget *pSidecar = CSidecarGadget::Get ();
+	const char *pWhy = webcmd::refused (pCmd, true, pSidecar != 0 && pSidecar->OsUpdate ());
+	if (pWhy != 0)
+	{
+		CLogger::Get ()->Write (From, LogWarning, "ws: command refused: %s", pWhy);
+		return pWhy;
+	}
+	s_nCommands++;
+	CLogger::Get ()->Write (From, LogNotice, "command :%s (ws)", CWifi::IsSecret (pCmd) ? "wifi=join:..." : pCmd);
+	((CWebServer *) pParam)->m_pConsole->Command (pCmd);
+	return 0;
+}
+
+static boolean WsStillOn (void) { return paircode_pi::WebOn (); }
+
+// the topics this build serves (the sequencer's only with core/seq in the tree)
+static const unsigned WsTopics = 1u << wsproto::kLevels | 1u << wsproto::kLog | 1u << wsproto::kVoices
+#if SIDECAR_SEQED
+				 | 1u << wsproto::kSeq | 1u << wsproto::kSeqPos
+#endif
+				 ;
+
+// A refused upgrade: a plain HTTP answer, no body, the connection closed
+void CWebServer::WsRefuse (const char *pStatus, const char *pWhy)
+{
+	s_nWsRefused++;
+	CLogger::Get ()->Write (From, LogWarning, "ws: refused (%s): %s (Origin \"%s\")", pStatus, pWhy, GetRequestOrigin ());
+	CString s;
+	s.Format ("HTTP/1.1 %s\r\nContent-Length: 0\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n\r\n", pStatus);
+	m_pSocketForWs->Send ((const char *) s, s.GetLength (), MSG_DONTWAIT);
+}
+
+boolean CWebServer::UpgradeConnection (const char *pPath, CSocket *pSocket)
+{
+	if (strcmp (pPath, "/ws") != 0) return FALSE;		// another path: plain HTTP, as before
+	m_bServed = TRUE;
+	s_nRequests++;
+	m_pSocketForWs = pSocket;
+	char Accept[29];
+	if (!paircode_pi::WebOn ()) WsRefuse ("503 Service Unavailable", paircode_pi::kWebOff);
+	else if (!wsframe::is_websocket (GetRequestUpgrade ())) WsRefuse ("400 Bad Request", "Upgrade is not websocket");
+	else if (strcmp (GetRequestWsVersion (), "13") != 0) WsRefuse ("426 Upgrade Required", "Sec-WebSocket-Version is not 13");
+	else if (!wsframe::accept_key (GetRequestWsKey (), Accept)) WsRefuse ("400 Bad Request", "no valid Sec-WebSocket-Key");
+	// the strict same-origin check, as /midibridge/set: a browser always sends Origin on a WebSocket, and another
+	// site's page must not reach the console through it (WebSockets are not covered by the same-origin policy)
+	else if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+		WsRefuse ("403 Forbidden", "not from this page (the strict same-origin check)");
+	else if (s_nWs >= MaxWs) WsRefuse ("503 Service Unavailable", "busy: MaxWs connections open");
+	else
+	{
+		// counted as a WebSocket, no longer as an HTTP worker (MaxWorkers stays for the page's requests)
+		s_nWorkers--;
+		for (unsigned i = 0; i < MaxWorkers; i++) if (s_pWorker[i] == this) s_pWorker[i] = 0;
+		s_nWs++;
+		static boolean s_bSlot[MaxWs];			// which slot is in use (each its own share of the peaks)
+		m_nWsSlot = 0;
+		while (m_nWsSlot < MaxWs - 1 && s_bSlot[m_nWsSlot]) m_nWsSlot++;
+		s_bSlot[m_nWsSlot] = TRUE;
+		s_nWsTotal++;
+		CLogger::Get ()->Write (From, LogNotice, "ws: a client connected (%u open)", s_nWs);
+		static const ws_pi::TDevice Device = {0, WsToken, WsBuild, WsTopics, WsCommand, WsStillOn, SIDECAR_VERSION};
+		ws_pi::TDevice Dev = Device;
+		Dev.pParam = this;
+		ws_pi::TStats St;
+		m_pSocketForWs = 0;
+		ws_pi::Serve (pSocket, Accept, Dev, &St);		// deletes pSocket
+		m_nStart = CTimer::GetClockTicks ();		// "longest connection" (LogStats) stays the HTTP requests'
+		s_bSlot[m_nWsSlot] = FALSE;
+		s_nWs--;
+		s_nWorkers++;					// the destructor counts it out again
+		CLogger::Get ()->Write (From, LogNotice, "ws: closed (%u%s): %u pushes, %u coalesced, %u refused, %u malformed "
+					"(%u open, %u since the boot, %u refused upgrades)", St.nCode,
+					St.nCode == 1008 ? ", a policy close: bad requests, a ping flood or a client that stopped reading" : "",
+					St.nPushes, St.nCoalesced,
+					St.nRefused, St.nBad, s_nWs, s_nWsTotal, s_nWsRefused);
+		return TRUE;
+	}
+	m_pSocketForWs = 0;
+	delete pSocket;
+	return TRUE;
+}
+
 THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, const char *pFormData, u8 *pBuffer,
 				    unsigned *pLength, const char **ppContentType)
 {
@@ -525,6 +758,10 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		*ppContentType = bRaw ? "text/html; charset=utf-8\r\nCache-Control: no-store"
 				      : "text/html; charset=utf-8\r\nContent-Encoding: gzip\r\nVary: Accept-Encoding\r\nCache-Control: no-cache";
 	}
+	else if (strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0)
+	{
+		Status = NextFile (pPath, pBuffer, pLength, ppContentType);
+	}
 	else if (strcmp (pPath, "/health") == 0)
 	{
 		// Open, no code: is this unit alive and well? The build, the uptime, the temperature, the links, the
@@ -543,14 +780,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 	else if (strcmp (pPath, "/status") == 0)
 	{
 		CString s;
-		s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u,"
-			  "\"idle\":%u,\"open\":%u},",
-			  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused,
-			  s_nIdle, s_nWorkers);
-		(*m_pStatus) (&s, m_pParam);
-		paircode_pi::Status (&s);		// "pair":{...}: the gate, the counts - never the code itself
-		midibridge_pi::Status (&s);		// "midibridge":{...}: the state, the counts - never its token
-		s.Append ("}");
+		StatusJson (&s);
 		unsigned n = s.GetLength ();
 		if (n > *pLength) return HTTPInternalServerError;
 		memcpy (pBuffer, (const char *) s, n);
@@ -614,10 +844,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			pWhy = "not from this page (the same-origin check)";
 		else if (usb_mode::raises (Cmd) && !FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
 			pWhy = "usbmode=overbridge: not from this page (the strict same-origin check)";
-		else if ((!bForm && strncmp (Cmd, "wifi=", 5) == 0) || strncmp (Cmd, "midibridge=", 11) == 0
-			 || strncmp (Cmd, "usbmidi=", 8) == 0 || strncmp (Cmd, "osupdate=", 9) == 0
-			 || (strncmp (Cmd, "link=tcp:", 9) == 0 && pSidecar != 0 && pSidecar->OsUpdate ()))
-			pWhy = "not taken on /cmd (wifi= in the URL, midibridge=, usbmidi=, osupdate=, link=tcp: with usbmidi=os:)";
+		else pWhy = webcmd::refused (Cmd, bForm, pSidecar != 0 && pSidecar->OsUpdate ());	// (web_cmd.h: the list /ws shares)
 		if (pWhy != 0)
 		{
 			CLogger::Get ()->Write (From, LogWarning, "web: /cmd refused: %s (Host \"%s\", Origin \"%s\", Referer \"%s\")",
@@ -625,8 +852,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			memset (Cmd, 0, sizeof Cmd);
 			return HTTPBadRequest;
 		}
-		// wdtest hangs core 0 on purpose: the watchdog's reboot ends a RAM kernel (needs a reflash, or sdboot's engine.img)
-		if (Cmd[0] == 0 || strcmp (Cmd, "wdtest") == 0) return HTTPBadRequest;
+		// (wdtest hangs core 0 on purpose: the watchdog's reboot ends a RAM kernel; web_cmd.h refuses it, and an empty one)
 		s_nCommands++;
 		CLogger::Get ()->Write (From, LogNotice, "command :%s", CWifi::IsSecret (Cmd) ? "wifi=join:..." : Cmd);
 		m_pConsole->Command (Cmd);

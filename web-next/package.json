@@ -1,0 +1,31 @@
+{
+  "name": "sidecar-web-next",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The Sidecar's next web UI (Vue 3 + Vite + TypeScript) over the /ws WebSocket API (docs/web-ws.md)",
+  "scripts": {
+    "dev": "vite",
+    "mock": "node mock/server.mjs",
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "vue-tsc --noEmit",
+    "card": "node scripts/card.mjs"
+  },
+  "dependencies": {
+    "vue": "^3.5.45",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@fontsource/doto": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "^6.0.3",
+    "vite": "^6.4.5",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^3.3.14",
+    "ws": "^8.22.1"
+  }
+}
