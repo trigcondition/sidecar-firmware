@@ -47,6 +47,7 @@ function change(e: Event) {
 
 <style scoped>
 .fader { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.fader:not(.vertical) { max-width: 32rem; } /* a level, not a ruler: across a whole wide card it was hard to place */
 .fader input { width: 100%; min-height: var(--target); border: 0; background: transparent; }
 .value { font-size: 1.125rem; }
 .vertical { align-items: center; }

@@ -83,6 +83,14 @@ describe("sizes", () => {
     expect(rem(standard["label-size"])).toBeGreaterThanOrEqual(13);
     expect(rem(standard["target"])).toBeGreaterThanOrEqual(44);
   });
+  it("with a mouse (87.5 %): text still at least 13px", () => {
+    const m = /@media \(pointer: fine\) \{\s*:root \{([^}]*)\}\s*:root\[data-theme\] \{([^}]*)\}/.exec(css);
+    expect(m).not.toBeNull();
+    const v = (k: string) => parseFloat(new RegExp(`--${k}:\\s*([\\d.]+)rem`).exec(m![2])![1]) * 14;
+    expect(/font-size:\s*87\.5%/.test(m![1])).toBe(true);
+    expect(v("text-min")).toBeGreaterThanOrEqual(13);
+    expect(v("label-size")).toBeGreaterThanOrEqual(13);
+  });
   it("high contrast: no textures, no glow, 2px control borders", () => {
     expect(themes.contrast["card-texture"]).toBe("none");
     expect(themes.contrast["accent-glow"]).toBe("none");

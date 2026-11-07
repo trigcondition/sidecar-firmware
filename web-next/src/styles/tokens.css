@@ -89,6 +89,15 @@
 :root { font-size: 100%; }
 :root[data-text-size="125"] { font-size: 125%; }
 :root[data-text-size="150"] { font-size: 150%; }
+/* a mouse and keyboard (a laptop, a desktop): the whole app at 87.5 % (14 px a rem), as 100 % felt large there; the
+   text tokens are raised so no text goes under 13 px. A touch screen keeps 16 px and its 44 px targets. The
+   text-size setting scales from here. */
+@media (pointer: fine) {
+  :root { font-size: 87.5%; }
+  :root[data-theme] { --text-min: 0.9286rem; --label-size: 0.9286rem; }
+  :root[data-text-size="125"] { font-size: 109.375%; }
+  :root[data-text-size="150"] { font-size: 131.25%; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   :root { --accent-glow: none; }
