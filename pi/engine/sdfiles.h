@@ -16,6 +16,9 @@
 //                            An existing <name> is kept as <name>.prev (the last one); config.txt and cmdline.txt
 //                            keep their first version as <name>.bak (the original, never replaced). A failed
 //                            check leaves <name> as it was.
+//   PUT www-next/<path> <size> <crc32>   the new web app's files (served at /next, webnext_path.h): into
+//                            /.rytm/www-next/<path>, its folders made, the same checks; the old file is replaced
+//                            (no .prev). <path> as webnext::path allows (no "..", no hidden names, 120 at most).
 //   SCRATCH                  writes, reads back and deletes sdtest.tmp (64 KB): the write path's test
 //   DEL <name>               only engine.img*, sdboot*, tryboot.txt*, *.tmp and *.new (tryboot.txt is never
 //                            kept on a PUT)
@@ -53,7 +56,7 @@ private:
 	void Reply (const char *pFormat, ...);
 	void List (void);
 	void Get (const char *pName);
-	void Put (const char *pName, unsigned nSize, u32 nCRC);
+	void Put (const char *pName, unsigned nSize, u32 nCRC, const char *pCard = 0);	// pCard: a www-next file's card path
 	void Scratch (void);
 	CNetSubSystem *m_pNet;
 	CSerialDevice *m_pSerial;
