@@ -405,7 +405,9 @@ static const char kNotPaired[] = "not paired: enter the pairing code shown on th
 // THE OPEN SET, and nothing else. Everything not named here needs the pairing code, so a new endpoint is gated unless
 // someone deliberately adds it (the old list was the other way round, and a read that nobody thought about - /fs/get -
 // served the Wi-Fi key and, worse, the pairing code itself).
-//   "/", "/index.html"  the page, so someone can load sidecar.local and see the dialog at all
+//   "/", "/index.html"  the page, so someone can load sidecar.local and see the dialog at all (with the new app on
+//                       the card: a few bytes that send the browser on to /next/, see NewAppOnCard)
+//   "/classic"          the classic page itself, wherever "/" goes
 //   "/bundle-sw.js"     the download's service worker: the browser fetches it on its own, without the page's header,
 //                       and it is a built-in static script with nothing of the device in it
 //   "/health"           alive, the build, uptime, temperature, the links, the supply, underruns - no names, no
@@ -421,11 +423,24 @@ static const char kNotPaired[] = "not paired: enter the pairing code shown on th
 //   "/pair/show"        the dialog asks for the code on the Rytm's screen (rate-limited: paircode_pi::kShowGapS)
 static boolean Open (const char *pPath)
 {
-	static const char *const kOpen[] = {"/", "/index.html", "/bundle-sw.js", "/health", "/status", "/log", "/pair",
-					    "/pair/status", "/pair/resume", "/pair/show"};
+	static const char *const kOpen[] = {"/", "/index.html", "/classic", "/bundle-sw.js", "/health", "/status", "/log",
+					    "/pair", "/pair/status", "/pair/resume", "/pair/show"};
 	for (unsigned i = 0; i < sizeof kOpen / sizeof kOpen[0]; i++) if (strcmp (pPath, kOpen[i]) == 0) return TRUE;
 	return strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0;	// the new app's files (webnext_path.h): no data in them
 }
+
+// The new web app is on the card (sdboot.py web, or web-next's card script): "/" sends the browser to /next/, the
+// classic page stays at /classic. Asked at each load of "/": a card without the app (or an
+// app taken off again) gets the classic page at once, with no setting to forget.
+static boolean NewAppOnCard (void)
+{
+	FILINFO fi;
+	return f_stat ("SD:/.rytm/www-next/index.html", &fi) == FR_OK || f_stat ("SD:/.rytm/www-next/index.html.gz", &fi) == FR_OK;
+}
+
+static const char NewAppHop[] = "<!doctype html><meta charset=utf-8><title>Sidecar</title>"
+	"<meta http-equiv=refresh content=\"0;url=/next/\"><script>location.replace(\"/next/\")</script>"
+	"<p><a href=\"/next/\">The Sidecar's page</a> &middot; <a href=\"/classic\">the classic page</a></p>";
 
 // GET /next/<file>: the new web app from the card (webnext_path.h), the .gz sibling when there is one. false: no such
 // file (or not one of the app's names): 404; too big for the buffer: 500 and a log line
@@ -766,7 +781,15 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		s_nUnpaired++;
 		return HTTPOK;
 	}
-	if (strcmp (pPath, "/") == 0 || strcmp (pPath, "/index.html") == 0)
+	if ((strcmp (pPath, "/") == 0 || strcmp (pPath, "/index.html") == 0) && strstr (pParams, "raw") == 0 && NewAppOnCard ())
+	{
+		unsigned n = sizeof NewAppHop - 1;
+		if (n > *pLength) return HTTPInternalServerError;
+		memcpy (pBuffer, NewAppHop, n);
+		*pLength = n;
+		*ppContentType = "text/html; charset=utf-8\r\nCache-Control: no-store";
+	}
+	else if (strcmp (pPath, "/") == 0 || strcmp (pPath, "/index.html") == 0 || strcmp (pPath, "/classic") == 0)
 	{
 		// No code on the Rytm from here any more: a page load never carries the header, so every reload of a
 		// PAIRED owner's tab flashed the code over the Rytm (audit 2026-10-26). The page asks for it itself, with
