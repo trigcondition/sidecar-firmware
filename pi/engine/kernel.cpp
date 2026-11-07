@@ -68,6 +68,7 @@ static int s_nRytmPatIndex = -1;
 #include "midibridge_pi.h"	// the Rytm MIDI bridge (midibridge.h): off at every boot
 #include "sdfiles.h"
 #include "wifi.h"
+#include "usbnet_pi.h"		// the USB-C network (docs/usb-network.md)
 #include "rec_pi.h"
 #include "bundle_pi.h"		// project bundles (core/bundle, docs/BUNDLES.md)
 #include "lib_pi.h"		// the sample library (core/lib, docs/LIBRARY.md)
@@ -393,6 +394,7 @@ boolean CKernel::Initialize (void)
 	// what pi/circle/sdboot.py and make-sd-dual.sh tell a Pi 5 kernel by, gadget or not (older ones: the line below)
 	m_Logger.Write (From, LogNotice, "board: Raspberry Pi 5 build (kernel_2712.img)");
 #endif
+	const unsigned nGadgetT0 = CTimer::GetClockTicks ();	// net=auto's wait counts from here (UsbNetProbe)
 #ifdef SIDECAR_NO_GADGET
 	const char *pGadgetMode = "0";			// Pi 5 without PI5_GADGET=1 (docs/pi5.md); gadget= is ignored
 	m_pGadgetMode = pGadgetMode;
@@ -445,11 +447,45 @@ boolean CKernel::Initialize (void)
 	}
 #endif
 	// the network: one stack on one device (Circle), Ethernet (static: the direct cable has no DHCP server) or, with
-	// wifi=1 and a stored network, Wi-Fi (DHCP unless wifi.txt has ip=); mDNS: sidecar.local on either (web.h)
+	// wifi=1 and a stored network, Wi-Fi (DHCP unless wifi.txt has ip=); mDNS: sidecar.local on either (web.h).
+	// Or the USB-C network (usbnet_pi.h, docs/usb-network.md): net=auto (the default) takes it when a computer on
+	// USB-C starts its network driver in time, net=usb always, net=wifi|lan never; a Sidecar with no computer on USB-C
+	// comes up as before. On USB-C the Wi-Fi chip stays up for scans (Wi-Fi can be set up from the page) and joins nothing.
 	m_pWifi = new CWifi;				// reads /.rytm/wifi.txt (the card is mounted by bridge::begin)
 	CWifi::TMode WifiMode = m_pWifi->BootMode (&m_Options);
-	if (WifiMode != CWifi::ModeOff && !m_pWifi->StartChip ()) WifiMode = CWifi::ModeOff;
-	if (WifiMode == CWifi::ModeNet)
+	const usbnet::Options UsbOpt = usbnet::options (m_Options.GetAppOptionString ("net", 0),
+		m_Options.GetAppOptionString ("usbnet", 0), m_Options.GetAppOptionString ("usbip", 0),
+		m_Options.GetAppOptionString ("usbwait", 0), m_Options.GetAppOptionString ("usbquiet", 0),
+		m_Options.GetAppOptionString ("usbtrust", 0));
+	if (UsbOpt.bad_net) m_Logger.Write (From, LogWarning, "network: net= is auto, usb, wifi or lan: auto used");
+	if (UsbOpt.bad_ip) m_Logger.Write (From, LogWarning, "network: usbip= is not a usable address: 172.31.77.1 used");
+	usbnet::Inputs UsbIn;
+	UsbIn.net = UsbOpt.net;
+	UsbIn.function = m_pSidecar != 0 && m_pSidecar->NetInDevice ();
+	UsbIn.wifi_trial = WifiMode == CWifi::ModeNet && m_pWifi->TrialPending ();
+	const char *pLinkOpt = m_Options.GetAppOptionString ("link", "usb");
+	UsbIn.link_tcp = strncmp (pLinkOpt, "tcp", 3) == 0 && (pLinkOpt[3] == 0 || pLinkOpt[3] == ':');
+	const char *pUsbWhy = "";
+	const usbnet::Plan UsbPlan = usbnet::plan (UsbIn, &pUsbWhy);
+	if (WifiMode != CWifi::ModeOff && !m_pWifi->StartChip ()) WifiMode = CWifi::ModeOff;	// (net=auto's wait runs meanwhile)
+	boolean bUsbNet = UsbPlan == usbnet::kForced;
+	if (UsbPlan == usbnet::kProbe) bUsbNet = UsbNetProbe (UsbOpt, nGadgetT0, &pUsbWhy);
+	if (bUsbNet || UsbOpt.net == usbnet::kLan)
+	{
+		m_pWifi->OtherNet (bUsbNet ? "usb" : "ethernet");
+		WifiMode = m_pWifi->Mode ();
+	}
+	if (!bUsbNet && m_pSidecar != 0 && m_pSidecar->NetInDevice ()) m_pSidecar->NetDetach ();	// told "not connected"
+	u8 UsbClient[4];
+	usbnet::client_ip (UsbOpt.ip, UsbClient);
+	if (bUsbNet)
+	{
+		new CUsbNetDevice (m_pSidecar);		// before the stack: it picks the device by its type (Unknown)
+		memcpy (m_IP, UsbOpt.ip, sizeof m_IP);
+		memcpy (m_NetMask, usbnet::kMask, sizeof m_NetMask);
+		new (m_NetStore) CNetSubSystem (m_IP, m_NetMask, 0, 0, "sidecar", NetDeviceTypeUnknown);
+	}
+	else if (WifiMode == CWifi::ModeNet)
 	{
 		u8 GW[4], DNS[4];
 		boolean bStatic = m_pWifi->StaticIP (m_IP, m_NetMask, GW, DNS);
@@ -461,6 +497,14 @@ boolean CKernel::Initialize (void)
 					     NetOption (&m_Options, "netmask", NET_DEFAULT_NETMASK, m_NetMask), 0, 0, "sidecar");
 	m_bNetOK = m_Net.Initialize (FALSE);
 	if (!m_bNetOK) m_Logger.Write (From, LogError, "network: init failed (link=tcp refused, usb only)");
+	else if (bUsbNet)
+	{
+		m_Logger.Write (From, LogNotice, "network: USB-C %u.%u.%u.%u/24, the computer %u.%u.%u.%u by DHCP (%s; Wi-Fi and Ethernet "
+				"unused this boot, net=wifi or net=lan for them)%s", m_IP[0], m_IP[1], m_IP[2], m_IP[3], UsbClient[0],
+				UsbClient[1], UsbClient[2], UsbClient[3], pUsbWhy,
+				UsbOpt.trust ? "; the cable is trusted (no pairing code on it, usbtrust=0 asks for it)" : "");
+		new CUsbDhcpd (&m_Net, m_IP, UsbClient);
+	}
 	else if (WifiMode == CWifi::ModeNet)
 	{
 		m_Logger.Write (From, LogNotice, "network: Wi-Fi (%s; Ethernet unused, wifi=0 for Ethernet)", m_IP[0] ? "static" : "DHCP");
@@ -469,6 +513,8 @@ boolean CKernel::Initialize (void)
 			     m_IP[0], m_IP[1], m_IP[2], m_IP[3], m_NetMask[0], m_NetMask[1], m_NetMask[2], m_NetMask[3],
 			     WifiMode == CWifi::ModeScan ? "; Wi-Fi chip up for scans" : "");
 	m_pWifi->StartSupplicant (m_bNetOK);		// ModeNet: joins; any mode: a join's trial may judge from now on
+	usbnet_pi::Use (bUsbNet ? usbnet::kIfUsb : WifiMode == CWifi::ModeNet ? usbnet::kIfWifi : usbnet::kIfEthernet, UsbOpt,
+			pUsbWhy);
 	UseLink (m_Options.GetAppOptionString ("link", "usb"));
 	// the pairing code (paircode.h, docs/pi-engine.md "Pairing code"): before anything on the network is served, so
 	// no request can arrive ungated. cmdline paircode=0 turns the gate off (loudly), paircode=<8 digits> fixes the code.
@@ -485,8 +531,9 @@ boolean CKernel::Initialize (void)
 	// the SD card's boot files on TCP 7310 (sdfiles.h, pi/circle/sdboot.py: install to SD); sdport=0 turns it off
 	if (m_bNetOK && m_Options.GetAppOptionDecimal ("sdport", 1) != 0) new CSdFiles (&m_Net);
 	new CSdFiles (0, &m_Serial);		// and on the serial port after the console's ":sdf"
-	// the Rytm's USB MIDI over TCP 7330 for hardware testing (midibridge_pi.h): listening, but OFF until turned on
-	if (m_bNetOK) midibridge_pi::Start (&m_Net);
+	// the Rytm's USB MIDI over TCP 7330 for hardware testing (midibridge_pi.h): listening, but OFF until turned on.
+	// Not on the USB-C network: the computer has the Rytm's MIDI on that cable already (USB MIDI)
+	if (m_bNetOK && !bUsbNet) midibridge_pi::Start (&m_Net);
 	return TRUE;
 }
 
@@ -562,6 +609,7 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  ST.gap_us, ST.at_frames, ST.gaps_over_2ms, ST.sec_us[0], ST.sec_us[1], ST.sec_us[2], ST.sec_us[3], ST.sec_us[4],
 		  ST.sec_us[5], CEngineCores::StallStep (), ST.step_us, ST.step_sum, ST.here_us);	// -1: did not happen
 	pOut->Append (s);
+	usbnet_pi::Status (pOut, k->m_pSidecar != 0 && k->m_pSidecar->NetInDevice (), k->m_pSidecar != 0 && k->m_pSidecar->NetUp ());
 	{	// the USB-C mode (usb_mode.h): set (chosen), from (card, cmdline, default), runs (set, or class where the unit cannot
 		// show it), modes (what this unit can show; [] no Sidecar gadget), shown (what the computer sees now: sidecar, box,
 		// switching, none), boxUp (the box has been read and is up: shown, or about to be) and board (4, 5)
@@ -792,6 +840,40 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 // usb) and MIDIPacketHandler (g_MidiIn's producer) then never run while this task is inside the TCP link's Pull or
 // push, so flipping CObUsb::SetActive here hands the single-consumer/single-producer queues over cleanly. Routing
 // that IRQ to another core would need a handshake (the IRQ acknowledging the flag) before the TCP link touches them.
+// net=auto (usbnet_cfg.h's BootProbe, docs/usb-network.md): after the Wi-Fi chip's start, timed from the gadget's, so
+// the two overlap. No start-of-frame on USB-C within usbquiet ms: no computer (a power supply), the network of today.
+// A computer that has not started a USB network driver within usbwait s (Windows 10 without the NCM driver): today's
+// too. Its driver selecting the data interface: the USB-C network. The gadget is polled meanwhile (its enumeration).
+boolean CKernel::UsbNetProbe (const usbnet::Options &rOpt, unsigned nGadgetT0, const char **ppWhy)
+{
+	usbnet::BootProbe Probe (rOpt.quiet_ms, rOpt.wait_s);
+	const unsigned nFrame0 = m_pSidecar->BusFrame ();
+	usbnet::Probe r;
+	do
+	{
+		m_Timer.MsDelay (2);			// a frame is 1 ms: two reads this far apart differ while a computer drives the bus
+		m_pSidecar->Poll ();
+		r = Probe.step ((CTimer::GetClockTicks () - nGadgetT0) / 1000, m_pSidecar->BusFrame () != nFrame0,
+				m_pSidecar->NetUp ());
+	}
+	while (r == usbnet::kWaiting);
+	const unsigned nMs = (CTimer::GetClockTicks () - nGadgetT0) / 1000;
+	switch (r)
+	{
+	case usbnet::kUsbUp:
+		*ppWhy = "a computer on USB-C started its network driver";
+		break;
+	case usbnet::kNoDriver:
+		*ppWhy = "a computer on USB-C, but no USB network driver started (Windows 10: docs/usb-network.md)";
+		break;
+	default:
+		*ppWhy = "no computer on USB-C";
+		break;
+	}
+	m_Logger.Write (From, LogNotice, "network: net=auto: %s (%u ms after the gadget's start)", *ppWhy, nMs);
+	return r == usbnet::kUsbUp;
+}
+
 void CKernel::UseLink (const char *pSpec)
 {
 	if (pSpec != 0 && strncmp (pSpec, "tcp", 3) == 0 && (pSpec[3] == 0 || pSpec[3] == ':'))

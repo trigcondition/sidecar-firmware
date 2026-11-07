@@ -10,7 +10,7 @@ import { confirmAsk } from "../../lib/confirm";
 import { useSidecar } from "../../lib/useSidecar";
 import { boxName } from "../../lib/tiles";
 
-const { status, cmd, paired } = useSidecar();
+const { status, cmd, paired, trusted } = useSidecar();
 const um = computed(() => ((status.value ?? {}) as Record<string, any>).usbMode as Record<string, any> | undefined);
 const box = computed(() => boxName(status.value));
 const mode = useSetting<string>(status, { read: () => um.value?.set, toCmd: (v) => `usbmode=${v}`, send: cmd, timeoutMs: 6000 });
@@ -23,7 +23,7 @@ async function pick(v: string) {
   if (v === "overbridge") {
     const ok = await confirmAsk({
       title: "Overbridge mode",
-      body: `The computer then talks to the ${box.value} itself through the Sidecar, with nothing filtered: an OS update can reach the ${box.value} this way. The computer sees the USB-C device leave and come back.`,
+      body: `The computer then talks to the ${box.value} itself through the Sidecar, with nothing filtered: an OS update can reach the ${box.value} this way. The computer sees the USB-C device leave and come back.${trusted.value ? " This page reaches the Sidecar over that USB-C cable: its network goes with class compliant mode: set it back on the Rytm (SIDECAR MENU > USB-C) or from Wi-Fi or Ethernet." : ""}`,
       yes: "Switch to Overbridge",
     });
     if (!ok) return;

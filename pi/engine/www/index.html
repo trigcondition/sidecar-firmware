@@ -680,7 +680,7 @@ const CMD_NOT_PAGE = "refused: not from this page (the same-origin check): open 
 // the token that just worked and reopen the dialog, which is what happened on the device (2026-10-25: "it confirms
 // it is correct and saved, but the dialog stays on top"). The wrapper remembers the gen it sent with and only acts
 // on a refusal that still belongs to the current one.
-const PAIR = { lostAt: -1e9, tok: "", gen: 0, gate: "on", clients: 0, ready: false, mine: false, hdr: true, host: "", build: "", asked: false };
+const PAIR = { lostAt: -1e9, tok: "", gen: 0, gate: "on", trusted: false, clients: 0, ready: false, mine: false, hdr: true, host: "", build: "", asked: false };
 // Both ends are checked for shape. A junk entry here - `undefined` written as a string when a field was missing, or
 // anything left by an older build - used to be sent to the Sidecar on every load: it answered "the pairing code is
 // 8 digits", which reads as a complaint about a code the user typed correctly, and until 0.3.0 each one also burned
@@ -827,10 +827,11 @@ function pairHint() {
 function pairShow() {                   // the Access section
   pairHint();
   const g = PAIR.gate;
-  $("#ac-state").textContent = g === "off" ? "off on this card (cmdline.txt paircode=0): anyone on this network can change Sidecar"
+  $("#ac-state").textContent = PAIR.trusted ? `on — this page is on the USB-C cable, which is trusted (cmdline.txt usbtrust=0 asks for the code there too)`
+    : g === "off" ? "off on this card (cmdline.txt paircode=0): anyone on this network can change Sidecar"
     : g === "fixed" ? `a fixed code from cmdline.txt (a development card) — ${PAIR.clients} device(s) remembered`
     : `on — ${PAIR.clients} device(s) remembered`;
-  $("#ac-state").className = g === "on" ? "" : "err";
+  $("#ac-state").className = g === "on" || PAIR.trusted ? "" : "err";
   $("#ac-this").textContent = g === "off" ? "no code needed" : PAIR.tok ? (PAIR.mine ? "paired and remembered" : "paired for this visit only")
     : "not paired";
   for (const b of ["#ac-forget", "#ac-all"]) $(b).disabled = g === "off" || !PAIR.tok;
@@ -843,7 +844,9 @@ async function pairBoot() {
   // What the Sidecar says about itself is current either way, so it is recorded first. Only the decisions below
   // are guarded: an earlier version returned here and never set `ready`, which left the page unpaired with no
   // dialog and nothing polling - inert.
-  PAIR.gate = st.gate; PAIR.clients = st.clients; PAIR.ready = true;
+  // trusted: this page reaches the Sidecar over the USB-C cable (docs/usb-network.md): nothing to pair, as with the gate off
+  PAIR.trusted = st.trusted === true;
+  PAIR.gate = PAIR.trusted ? "off" : st.gate; PAIR.clients = st.clients; PAIR.ready = true;
   PAIR.hdr = st.hdr !== false; PAIR.host = st.host || "";
   if (!PAIR.build) {                    // once: which build is answering, so a page left open from before an
     PAIR.build = "?";                   // install is visible instead of looking like a bug in the page
@@ -853,7 +856,9 @@ async function pairBoot() {
     }).catch(() => {});
   }
   if (gen !== PAIR.gen) return;         // a pairing finished while this was in flight: it decides, not this answer
-  if (st.gate === "off" || st.paired) { $("#pair-wrap").hidden = true; pairShow(); return; }
+  // on the trusted cable the header still goes (any value: web.cpp wants it there, another site's page cannot send it)
+  if (PAIR.trusted && !PAIR.tok) { pairDone("usb"); return; }
+  if (PAIR.gate === "off" || st.paired) { $("#pair-wrap").hidden = true; pairShow(); return; }
   if (st.rng === false) {               // the engine refuses every pairing this boot (paircode.h): say why, try nothing
     pairAsk("This Sidecar's random number generator failed its self-test at boot, so it refuses to pair (a guessable code would be worse). Restart it; if this stays, report it.");
     pairShow();

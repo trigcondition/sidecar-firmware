@@ -53,6 +53,11 @@ public:
 	boolean StaticIP (u8 IP[4], u8 Mask[4], u8 GW[4], u8 DNS[4]) const;	// wifi.txt's ip= etc. (ModeNet), else DHCP
 	void StartSupplicant (boolean bNetOK);		// after CNetSubSystem::Initialize (always: the trial waits for it); ModeNet: joins
 	TMode Mode (void) const { return m_Mode; }
+	boolean TrialPending (void) const { return m_bTrial; }	// wifi.try says "trying": a join is judged this boot
+	// the network runs on another interface this boot (usbnet_pi.h: "usb", or "ethernet" for net=lan); before
+	// StartSupplicant. A stored network is not joined (the chip stays up for scans: Wi-Fi can be set up from the page),
+	// and a join's trial waits for a boot on Wi-Fi (wifi.try is left as it is)
+	void OtherNet (const char *pName);
 
 	boolean Command (const char *pCmd);		// "wifi" or "wifi=...": TRUE if it was one
 	static boolean IsSecret (const char *pCmd);	// a command that must not be logged as typed (wifi=join:)
@@ -86,6 +91,7 @@ private:
 	wificonf::Conf m_Conf;
 	boolean m_bHaveConf;
 	const char *m_pCmdline;				// cmdline.txt's wifi=, 0 without
+	const char *m_pNetName;				// OtherNet: Settings' "net", 0: Wi-Fi or Ethernet as the mode says
 	CBcm4343Device *m_pDev;
 	CWPASupplicant *m_pSupplicant;
 	volatile boolean m_bScanReq, m_bChipReq, m_bScanning;

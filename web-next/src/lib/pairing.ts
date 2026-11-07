@@ -16,6 +16,8 @@ export interface PairStatus {
   wait: number;
   digits: number;
   host: string;
+  /** the request came over the USB-C cable (docs/usb-network.md): nothing to pair */
+  trusted?: boolean;
 }
 
 export interface Storage {

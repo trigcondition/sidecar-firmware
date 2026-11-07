@@ -7,7 +7,7 @@ import { useSidecar } from "../../lib/useSidecar";
 import { confirmAsk } from "../../lib/confirm";
 
 const { api, paired, pairing, client, status } = useSidecar();
-const ps = ref<{ gate: string; clients: number; host: string } | null>(null);
+const ps = ref<{ gate: string; clients: number; host: string; trusted?: boolean } | null>(null);
 const msg = ref("");
 async function load() {
   try {
@@ -43,7 +43,8 @@ async function forgetAll() {
       <b>{{ gate === "off" ? "off (anyone on the network can change things)" : gate === "fixed" ? "fixed code" : "on" }}</b>
       <template v-if="ps"> · {{ ps.clients }} device{{ ps.clients === 1 ? "" : "s" }} remembered</template>
     </p>
-    <p>This browser: {{ paired ? (remembered ? "paired and remembered" : "paired for this visit") : "not paired" }}.</p>
+    <p v-if="ps?.trusted">This browser: on the USB-C cable, which is trusted: no pairing code needed (cmdline.txt usbtrust=0 asks for it).</p>
+    <p v-else>This browser: {{ paired ? (remembered ? "paired and remembered" : "paired for this visit") : "not paired" }}.</p>
     <div class="row">
       <button type="button" :disabled="!paired" @click="forgetMe">Forget this device</button>
       <button type="button" class="danger" :disabled="!paired" @click="forgetAll">Forget every device</button>
