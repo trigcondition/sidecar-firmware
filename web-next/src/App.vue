@@ -73,7 +73,10 @@ watch(paired, (now, before) => {
     </div>
   </header>
   <nav aria-label="Pages" class="tabs">
-    <router-link v-for="r in tabs" :key="String(r.name)" :to="r.path" class="tab">{{ r.meta?.title }}</router-link>
+    <!-- a page with sections stays the current tab on every section (/library/pool): aria-current by hand -->
+    <router-link v-for="r in tabs" :key="String(r.name)" v-slot="{ href, navigate, isActive }" :to="r.path" custom>
+      <a :href="href" class="tab" :aria-current="isActive ? 'page' : undefined" @click="navigate">{{ r.meta?.title }}</a>
+    </router-link>
   </nav>
   <div v-if="showPower" class="banner power" role="alert">
     <p><span aria-hidden="true">⚠ </span>{{ powerWarn }} (Wi-Fi and the web page suffer first). <router-link :to="{ path: '/', query: { show: 'power' } }">Details</router-link></p>
