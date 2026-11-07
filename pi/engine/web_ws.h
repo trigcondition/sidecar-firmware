@@ -35,6 +35,7 @@ struct TDevice
 	const char *(*Command) (void *pParam, const char *pCmd);
 	boolean (*StillOn) (void);		// the web UI switch (SIDECAR MENU > WEB UI): off ends the connection
 	const char *pVersion;
+	unsigned (*Changes) (void);		// the commands taken so far (wsproto::Host::changes); 0: none
 };
 
 struct TStats { unsigned nPushes, nCoalesced, nRefused, nBad; u16 nCode; };

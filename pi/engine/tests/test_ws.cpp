@@ -229,7 +229,9 @@ struct Fake
 	bool room = true;			// can_push
 	std::string other = "{\"x\":1}";	// every topic but status
 	unsigned topics = 0;
+	unsigned changes = 0;			// the device's command count (Host::changes)
 };
+static unsigned FChanges (void *p) { return ((Fake *) p)->changes; }
 static bool FRoom (void *p) { return ((Fake *) p)->room; }
 static bool FSend (void *p, const char *s, size_t n) { Fake *f = (Fake *) p; if (f->fail) return false; f->sent.push_back (std::string (s, n)); return true; }
 static bool FTok (void *p, const char *t) { return !((Fake *) p)->token.empty () && ((Fake *) p)->token == t; }
@@ -256,7 +258,7 @@ struct Rig
 	wsproto::Session *s;
 	Rig (size_t nBuf = 8192, unsigned topics = 0)
 	{
-		wsproto::Host h = {&f, FSend, FTok, FStatus, FCmd, "0.4.2", FRoom, topics};
+		wsproto::Host h = {&f, FSend, FTok, FStatus, FCmd, "0.4.2", FRoom, topics, FChanges};
 		s = new wsproto::Session (h, buf, nBuf);
 		s->open (0);
 	}
@@ -400,6 +402,48 @@ static void test_session ()
 		r.msg ("{\"type\":\"ping\",\"id\":1}");
 		CHECK (r.s->dead () && r.msg ("{\"type\":\"ping\",\"id\":1}") == 1011);
 	}
+}
+
+// A command taken anywhere (Host::changes moved): the status goes out kSoonMs later, and once more kSoonAgainMs
+// after that, not at the next interval
+static void test_soon ()
+{
+	Rig r;
+	r.f.changes = 7;				// commands before this connection: not news
+	CHECK (r.msg ("{\"type\":\"sub\",\"id\":1,\"payload\":{\"topics\":[\"status\"]}}") == 0);
+	r.s->tick (1000);
+	size_t n0 = r.f.sent.size ();
+	CHECK (has (r.last (), "\"uptime\":1"));
+	r.s->tick (1100);
+	CHECK (r.f.sent.size () == n0);			// 7 seen at the first tick: nothing soon
+	r.f.changes = 8; r.f.status = "{\"uptime\":2}";
+	r.s->tick (1200);					// noticed: due at 1240
+	CHECK (r.f.sent.size () == n0);
+	r.s->tick (1239);
+	CHECK (r.f.sent.size () == n0);
+	r.s->tick (1240);
+	CHECK (r.f.sent.size () == n0 + 1 && has (r.last (), "\"uptime\":2"));
+	r.f.status = "{\"uptime\":3}";			// the engine applied part of it a little later
+	r.s->tick (1400);
+	CHECK (r.f.sent.size () == n0 + 1);
+	r.s->tick (1490);					// the second try
+	CHECK (r.f.sent.size () == n0 + 2 && has (r.last (), "\"uptime\":3"));
+	r.s->tick (1700);					// no third; the interval again (1000 ms after 1490)
+	CHECK (r.f.sent.size () == n0 + 2);
+	r.f.status = "{\"uptime\":4}";
+	r.s->tick (2489);
+	CHECK (r.f.sent.size () == n0 + 2);
+	r.s->tick (2490);
+	CHECK (r.f.sent.size () == n0 + 3);
+	// a second try with nothing new sends nothing (acked first: the window holds 4)
+	CHECK (r.msg ("{\"type\":\"ack\",\"seq\":4}") == 0);
+	r.f.changes = 9;
+	r.s->tick (2500); r.s->tick (2540);
+	CHECK (r.f.sent.size () == n0 + 3 && r.s->stats ().unchanged >= 1);
+	// not subscribed: nothing at all
+	Rig q;
+	q.f.changes = 1; q.s->tick (0); q.f.changes = 2; q.s->tick (10); q.s->tick (100);
+	CHECK (q.f.sent.size () == 1);			// the hello only
 }
 
 static void test_cmd_policy ()
@@ -560,6 +604,7 @@ int main ()
 	test_frames ();
 	test_json ();
 	test_session ();
+	test_soon ();
 	test_cmd_policy ();
 	test_topics ();
 	test_voices_and_next ();

@@ -31,6 +31,9 @@ static const unsigned kBurst = 20;		// requests at once; then one per kRefillMs
 static const unsigned kRefillMs = 50;		// (20 requests a second, sustained)
 static const unsigned kMaxBad = 10;		// malformed messages before the connection is closed (1008)
 static const unsigned kMaxAuthFail = 5;		// wrong tokens before the connection is closed (1008)
+static const unsigned kSoonMs = 40;		// a command was taken (here, by /cmd or by another browser): the status goes
+static const unsigned kSoonAgainMs = 250;	// out this soon, and once more this much later (a change the engine applies a
+						// little after the command); each only if it changed, as any push
 
 // The topics (docs/web-ws.md "Topics"). A build serves the ones its Host's mask names (the hello lists them).
 enum Topic { kStatus, kLevels, kSeq, kSeqPos, kLog, kVoices, kTopics };
@@ -64,6 +67,9 @@ struct Host
 	// the push waits, as when the window is full. 0: always room
 	bool (*can_push) (void *param);
 	unsigned topics;			// the topics served: bit (1 << Topic); 0 = status only
+	// how many commands the device has taken so far (any connection, /cmd included): a change pushes the status
+	// soon (kSoonMs) instead of at the next interval, so a page shows its own click at once. 0: only the interval
+	unsigned (*changes) (void *param);
 };
 
 struct Stats
@@ -176,9 +182,16 @@ public:
 	void tick (uint32_t now)
 	{
 		if (m_bDead) return;
+		if (m_Host.changes)
+		{
+			unsigned c = m_Host.changes (m_Host.param);
+			if (!m_bChangesKnown) { m_bChangesKnown = true; m_nChanges = c; }
+			else if (c != m_nChanges) { m_nChanges = c; m_nSoon = 2; m_SoonAt = now + kSoonMs; }
+		}
 		for (unsigned t = 0; t < kTopics; t++)
 		{
-			if (!m_Sub[t] || (m_bSent[t] && now - m_At[t] < m_Ms[t])) continue;
+			bool bSoon = t == kStatus && m_nSoon != 0 && (int32_t) (now - m_SoonAt) >= 0;
+			if (!m_Sub[t] || (!bSoon && m_bSent[t] && now - m_At[t] < m_Ms[t])) continue;
 			if (m_Seq - m_Acked >= kWindow || (m_Host.can_push && !m_Host.can_push (m_Host.param)))	// the newest goes out once the client acks
 			{
 				if (!m_bWaiting) { m_bWaiting = true; m_Stats.coalesced++; }
@@ -186,6 +199,7 @@ public:
 			}
 			m_bWaiting = false;
 			push ((Topic) t, now);
+			if (bSoon && --m_nSoon != 0) m_SoonAt = now + kSoonAgainMs;
 		}
 	}
 
@@ -363,6 +377,9 @@ private:
 	unsigned m_Ms[kTopics];
 	uint32_t m_At[kTopics], m_Sent[kTopics] = {}, m_Hash[kTopics];
 	bool m_bSent[kTopics];
+	bool m_bChangesKnown = false;			// m_nChanges read once (the first tick): earlier commands are not news
+	unsigned m_nChanges = 0, m_nSoon = 0;		// the device's command count; soon pushes still to go
+	uint32_t m_SoonAt = 0;
 	char m_Ans[512], m_Unk[256], m_Lat[256];
 	Stats m_Stats;
 };

@@ -570,7 +570,7 @@ size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size
 		g_Output.TakeTrkPeaks (X);			// each voice on its own track (only the web reads these)
 		sendfx_pi::TakeBusPeaks (X + 8);		// B1..B3
 		g_PeakFan.feed_extra (X, 0, peakfan::Fan::kExtra);
-		peakfan::Reader r = pThis->m_nWsSlot == 0 ? peakfan::kWeb : peakfan::kWeb2;
+		peakfan::Reader r = (peakfan::Reader) (peakfan::kWeb + pThis->m_nWsSlot);
 		g_PeakFan.take_voices (r, Pk);
 		g_PeakFan.take_extra (r, X);
 		return wstopics::levels (Pk, X, X + 8, g_PeakFan.take_master (r), pOut, nMax);
@@ -681,13 +681,14 @@ boolean CWebServer::UpgradeConnection (const char *pPath, CSocket *pSocket)
 		s_nWorkers--;
 		for (unsigned i = 0; i < MaxWorkers; i++) if (s_pWorker[i] == this) s_pWorker[i] = 0;
 		s_nWs++;
+		static_assert (peakfan::kReaders - peakfan::kWeb == (int) MaxWs, "one peak reader per /ws connection (peak_fan.h)");
 		static boolean s_bSlot[MaxWs];			// which slot is in use (each its own share of the peaks)
 		m_nWsSlot = 0;
 		while (m_nWsSlot < MaxWs - 1 && s_bSlot[m_nWsSlot]) m_nWsSlot++;
 		s_bSlot[m_nWsSlot] = TRUE;
 		s_nWsTotal++;
 		CLogger::Get ()->Write (From, LogNotice, "ws: a client connected (%u open)", s_nWs);
-		static const ws_pi::TDevice Device = {0, WsToken, WsBuild, WsTopics, WsCommand, WsStillOn, SIDECAR_VERSION};
+		static const ws_pi::TDevice Device = {0, WsToken, WsBuild, WsTopics, WsCommand, WsStillOn, SIDECAR_VERSION, CWebServer::Commands};
 		ws_pi::TDevice Dev = Device;
 		Dev.pParam = this;
 		ws_pi::TStats St;

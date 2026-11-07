@@ -16,13 +16,13 @@ Code: `pi/engine/ws_frame.h` (handshake, frames), `pi/engine/ws_json.h` (reading
 - `GET /ws` with `Upgrade: websocket`, `Sec-WebSocket-Version: 13` and a valid `Sec-WebSocket-Key` (RFC 6455). The answer
   is `101 Switching Protocols`; no subprotocol and no extension (no compression) are negotiated.
 - Refusals are plain HTTP, no body, the connection closed (each logs one `ws: refused` line with the reason):
-  `503` the web UI is off (SIDECAR MENU > WEB UI) or `MaxWs` (2) connections are open; `400` a bad Upgrade or key;
+  `503` the web UI is off (SIDECAR MENU > WEB UI) or `MaxWs` (4) connections are open; `400` a bad Upgrade or key;
   `426` another version; `403` the strict same-origin check failed.
 - **Same origin, strict:** `Host` must be one of the Pi's names (`<hostname>.local`, its IP) and `Origin` (else
   `Referer`) `http://<that host>`, as for `POST /midibridge/set`. A browser always sends `Origin` on a WebSocket, and a
   WebSocket is not covered by the browser's same-origin policy, so without this any site the owner visits could open
   one to `sidecar.local`. A non-browser client (the Tauri app's Rust side, a test tool) sends the Pi's own origin.
-- Limits: at most 2 connections (`CWebServer::MaxWs`), counted apart from the 4 HTTP workers (`MaxWorkers`), so the
+- Limits: at most 4 connections (`CWebServer::MaxWs`), counted apart from the 4 HTTP workers (`MaxWorkers`), so the
   old page keeps its connections; each connection is one Circle task on core 0, the HTTP worker's own.
 - Frames: text only (binary closes with 1003), masked (RFC), a message up to 4096 bytes (fragments allowed, ping/pong/close
   between them; more closes with 1009), valid UTF-8 (1007). The server's frames are not fragmented.
@@ -103,6 +103,9 @@ Each topic's range is in the hello (`"rates":{"status":[250,1000],"levels":[33,4
 the hello's `topics` lists only what this build serves (`seq` / `seqpos` need core/seq in the tree; the rest are
 `later`). The window of 4 is shared by all topics. `log` is open, as `GET /log` is; a new subscriber gets the last
 8 KB first, and `gap` says bytes were lost (the 64 KB ring overwrote them).
+
+A command taken by the Sidecar (from any connection, or `POST /cmd`) pushes `status` early: 40 ms after it, and once
+more 250 ms after that (each only if it changed), so a page shows its own click without waiting for the interval.
 
 ### `seq` (the touch editor's view)
 

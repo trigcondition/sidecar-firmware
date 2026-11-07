@@ -62,7 +62,9 @@ public:
 			     THTTPStatus Status, unsigned nContentLength) override {}	// quiet: the page polls
 	// GET /ws with an Upgrade header: the WebSocket (web_ws.h, docs/web-ws.md; pi/circle/circle-http-ws.patch calls it)
 	boolean UpgradeConnection (const char *pPath, CSocket *pSocket) override;
-	static const unsigned MaxWs = 2;	// WebSocket connections at once (each holds its worker task; not in MaxWorkers)
+	static const unsigned MaxWs = 4;	// WebSocket connections at once (each holds its worker task; not in MaxWorkers). A page
+						// refused one falls back to polling /status (no levels): 2 was too few for a phone, a
+						// laptop and a second tab
 	static unsigned WsOpen (void)		{ return s_nWs; }
 
 	static unsigned Requests (void)		{ return s_nRequests; }

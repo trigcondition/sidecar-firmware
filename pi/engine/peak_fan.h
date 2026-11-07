@@ -7,7 +7,7 @@
 
 namespace peakfan {
 
-enum Reader { kDisplay, kStats, kWeb, kWeb2, kReaders };	// (two: web.h MaxWs)
+enum Reader { kDisplay, kStats, kWeb, kWeb2, kWeb3, kWeb4, kReaders };	// kWeb.. one per /ws connection (web.h MaxWs)
 static const int kVoices = 8;
 
 class Fan
