@@ -57,6 +57,7 @@ struct Ed {
   // the save in hand
   uint8_t spass = kName;
   bool use = false;
+  int scode = -1;                   // the source's row when the save began (kept if the editor closes meanwhile)
   char target[cardq::kPathMax] = "";
   // a close while a card job runs: the job finishes out of sight, then everything goes
   bool drain = false;
@@ -252,7 +253,7 @@ CORE_COLD bool step_apply() {
       n = (f < t ? f + 1 : t) - s, e.pos += n;
       set_progress(e.pos, e.frames);
       if (f < t) {
-        uint32_t pre = samp::kRate / 500;   // 2 ms before it (samp::trim's)
+        uint32_t pre = e.rate / 500;   // 2 ms before it (samp::trim's, at the file's own rate)
         e.ka = f > pre ? f - pre : 0;
         next_pass();
       } else if (t >= e.frames) {
@@ -266,7 +267,7 @@ CORE_COLD bool step_apply() {
       uint32_t l = samp::last_above(e.x + (size_t)s * ch, ch, t - s, e.floor);
       n = t - s, e.pos = s;
       if (l || !s) {
-        uint32_t last = s + l, post = samp::kRate / 100;   // 10 ms after it (samp::trim's)
+        uint32_t last = s + l, post = e.rate / 100;   // 10 ms after it (as the fade: the file's own rate)
         e.kb = last + post < e.frames ? last + post : e.frames;
         next_pass();
       }
@@ -318,7 +319,7 @@ CORE_COLD bool step_apply() {
 // when the editor was closed meanwhile: then only the pool)
 CORE_COLD void saved() {
   int code = -1;
-  int r = pools::add_file(pools::kSamples, pools::bank_of(e.code < 0 ? 0 : e.code), e.target, &code);
+  int r = pools::add_file(pools::kSamples, pools::bank_of(e.scode < 0 ? 0 : e.scode), e.target, &code);
   if (r == pools::kErrFull) r = pools::add_take(pools::kSamples, e.target, &code);
   if (e.drain) return;
   sniprintf(e.src, sizeof e.src, "%s", e.target);
@@ -617,6 +618,7 @@ CORE_COLD int save(bool use) {
     return -1;
   }
   e.use = use;
+  e.scode = e.code;
   e.spass = kName;
   e.job = kSave;
   e.st = kSaving;
@@ -696,8 +698,10 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     if (word("open")) {
       bool track = word("track"), code = !track && word("code");
       ok = (track || code) && num(&x) && !*a;
-      if (ok && track) open_track((int)x);
-      else if (ok) open_code((int)x);
+      // (out of range: -1, refused as such - never cast into a valid track or row)
+      int k = x < 0 || x >= pools::kCodes ? -1 : (int)x;
+      if (ok && track) open_track(k);
+      else if (ok) open_code(k);
     } else if (word("close")) {
       close();
     } else if (word("start")) {
@@ -719,9 +723,9 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       bool coarse = false;
       ok = which >= 0 && num(&x);
       if (ok && *a) ok = !strcmp(a, "c"), coarse = true;
-      if (ok) nudge(which, (int)x, coarse);
+      if (ok) nudge(which, x < -1000000 ? -1000000 : x > 1000000 ? 1000000 : (int)x, coarse);
     } else if (word("zoom")) {
-      if ((ok = num(&x) && !*a)) zoom((int)x);
+      if ((ok = num(&x) && !*a)) zoom(x < 0 ? 0 : x > 8 ? 8 : (int)x);
     } else if (word("window")) {
       if ((ok = num(&x) && num(&y) && !*a))
         window(x < 0 ? 0 : x > 0xFFFFFFFFll ? 0xFFFFFFFFu : (uint32_t)x, y < 0 ? 0 : y > 0xFFFFFFFFll ? 0xFFFFFFFFu : (uint32_t)y);

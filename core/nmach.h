@@ -130,14 +130,15 @@ inline void begin(bool card) {
 }
 inline bool step() {   // they take turns (a long load or a folder's listing does not hold the others)
   static int t = 0;
-  t = t == 3 ? 0 : t + 1;
+  t = t == 4 ? 0 : t + 1;
   if (pools::step()) return true;   // (its card work is posted to the card core: a step never waits on the card)
   pool_sync();                      // DSP SAMPLE's slots follow the SAMPLES pool (rui1045: all eight banks)
-  // (the sample editor's step first in each: a bounded piece, kEditPiece frames at most - core/samp/sedit.h)
-  return t == 0 ? (sedit::step() || wt::step() || gr::step() || chop::step() || srclib::step())
-       : t == 1 ? (sedit::step() || gr::step() || chop::step() || srclib::step() || wt::step())
-       : t == 2 ? (sedit::step() || chop::step() || srclib::step() || wt::step() || gr::step())
-                : (sedit::step() || srclib::step() || wt::step() || gr::step() || chop::step());
+  // (the sample editor, core/samp/sedit.h, takes its turn as the fifth: its edits and outlines are long jobs too)
+  return t == 0 ? (wt::step() || gr::step() || chop::step() || srclib::step() || sedit::step())
+       : t == 1 ? (gr::step() || chop::step() || srclib::step() || sedit::step() || wt::step())
+       : t == 2 ? (chop::step() || srclib::step() || sedit::step() || wt::step() || gr::step())
+       : t == 3 ? (srclib::step() || sedit::step() || wt::step() || gr::step() || chop::step())
+                : (sedit::step() || wt::step() || gr::step() || chop::step() || srclib::step());
 }
 
 }  // namespace nm

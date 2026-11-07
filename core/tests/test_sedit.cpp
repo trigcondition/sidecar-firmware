@@ -18,6 +18,7 @@
 #include "lib/library.h"
 #include "lib/pools.h"
 #include "lib/sha256.h"
+#include "lib/srclib.h"
 #include "machines.h"
 #include "msamp/cardq.h"
 #include "nmach.h"
@@ -116,10 +117,11 @@ static void run_outline() {   // the outline rebuilt after a zoom / window (gen 
   for (int i = 0; i < 2000 && vw().gen == g; ++i) pass();
   CHECK(vw().gen != g);
 }
+static char g_out[512];
 static const char* cmd(const std::string& c) {
-  static char out[512];
+  char* out = g_out;
   out[0] = 0;
-  CHECK(nm::command(c.c_str(), out, sizeof out));
+  CHECK(nm::command(c.c_str(), out, sizeof g_out));
   return out;
 }
 static bool starts(const char* s, const char* p) { return !strncmp(s, p, strlen(p)); }
@@ -405,6 +407,30 @@ static void t_save() {
     if (!strcmp(pools::at(pools::kSamples, pools::code(0, r)).path, "/Samples/k/kick-ed3.wav")) row = r;
   CHECK(row > 0);
   CHECK(sha("/Samples/k/kick.wav") == k0);
+  // closed while saving: the save finishes out of sight and the copy goes into the source's bank (B), not bank A
+  write_wavf("/Samples/k/snare.wav", 9600, 1, 16, [](int f, int) { return (f % 96 - 48) / 100.f; });
+  put_row("B001", "/Samples/k/snare.wav");
+  cmd("sedit=open:code:" + std::to_string(code("B001")));
+  run();
+  cmd("sedit=apply:gain-");
+  run();
+  CHECK(starts(cmd("sedit=save"), "sedit: st=saving"));
+  for (int i = 0; i < 100 && !exists("/Samples/k/snare-ed1.wav.tmp"); ++i) {   // until the copy is being written
+    sedit::step();
+    host_card_core(0);
+    while (cardq::service()) {}
+    host_card_core(3);
+  }
+  CHECK(exists("/Samples/k/snare-ed1.wav.tmp") && vw().st == sedit::kSaving);
+  cmd("sedit=close");
+  CHECK(vw().st == sedit::kClosed);
+  for (int i = 0; i < 2000; ++i) pass();
+  CHECK(exists("/Samples/k/snare-ed1.wav"));
+  row = -1;
+  for (int c = 0; c < pools::kCodes; ++c)
+    if (!strcmp(pools::at(pools::kSamples, c).path, "/Samples/k/snare-ed1.wav")) row = c;
+  CHECK(row >= 0 && pools::bank_of(row) == 1);
+  CHECK(vw().st == sedit::kClosed);
 }
 
 static void t_step_bound() {
@@ -420,6 +446,11 @@ static void t_step_bound() {
   CHECK(vw().st == sedit::kReady && vw().frames == pcache::kMaxFrames);
   CHECK(steps > (int)(pcache::kMaxFrames / sedit::kEditPiece));
   cmd("sedit=apply:gain+");
+  // the other machines keep their turns while the edit runs: a browser's listing is read meanwhile
+  uint32_t ls0 = srclib::stats().steps;
+  CHECK(srclib::command("browse=gr:cd:/Samples/k", g_out, sizeof g_out));
+  for (int i = 0; i < 10; ++i) nm::step();
+  CHECK(vw().st == sedit::kBusy && srclib::stats().steps > ls0);
   int busy = 0;
   uint32_t most = 0;
   for (int i = 0; i < 400000 && vw().st == sedit::kBusy; ++i) {
@@ -458,6 +489,8 @@ static void t_refused() {
   // an empty row, OFF
   CHECK(strstr(cmd("sedit=open:code:100"), "NO SAMPLE"));
   CHECK(strstr(cmd("sedit=open:code:128"), "NO SAMPLE"));
+  CHECK(strstr(cmd("sedit=open:code:4294967297"), "NO SAMPLE"));   // (2^32 + 1: not row 1)
+  CHECK(strstr(cmd("sedit=open:track:4294967297"), "NOT A DSP SAMPLE TRACK"));   // (not track 1)
   CHECK(strstr(cmd("sedit=open:code:99999"), "NO SAMPLE") && strstr(cmd("sedit=open:code:-3"), "NO SAMPLE"));
 }
 
