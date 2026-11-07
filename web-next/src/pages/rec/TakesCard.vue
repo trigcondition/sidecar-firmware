@@ -130,8 +130,9 @@ async function del(t: Take) {
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
 .play { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin: 0; }
 .takes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-.takes li { border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.375rem; }
-.head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: baseline; }
+.takes li { border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0.5rem 0.75rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+/* one line per take where it fits: the name and details, then the channel buttons, Download and Delete on the right */
+.head { flex: 1 1 16rem; min-width: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: baseline; }
 button[aria-pressed="true"] { border: 2px solid var(--accent); background: var(--accent-tint); font-weight: 700; }
 .danger { border-color: var(--warm); color: var(--warm); }
 </style>
