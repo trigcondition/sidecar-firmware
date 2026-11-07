@@ -77,7 +77,11 @@ const powerWarn = computed(() => {
 }
 .lamp { width: 0.625rem; height: 0.625rem; border-radius: 50%; border: 2px solid var(--control-border); }
 .lamp.on { background: var(--accent); border-color: var(--accent); box-shadow: var(--accent-glow); }
-.tabs { display: flex; flex-wrap: wrap; gap: 0.375rem 0.625rem; padding: 0 1rem 0.375rem; margin-top: -0.375rem; position: relative; }
+/* the tabs and the banners in the same column as main (--page: its width), so their edges line up with the cards */
+.tabs {
+  display: flex; flex-wrap: wrap; gap: 0.375rem 0.625rem; padding: 0 1rem 0.375rem; position: relative;
+  max-width: var(--page); margin: -0.375rem auto 0;
+}
 .tab {
   display: inline-flex; align-items: center; min-height: var(--target); padding: 0.625rem 1.125rem;
   border-radius: var(--radius-pill); color: var(--text); text-decoration: none; border: var(--control-border-width) solid transparent;
@@ -91,8 +95,8 @@ const powerWarn = computed(() => {
   .tab { flex: none; padding: 0.625rem 0.875rem; }
   .over { padding: 0.75rem; }
 }
-.banner { margin: 0.5rem 1rem 0; padding: 0.75rem 1rem; border: 2px solid var(--warm); border-radius: var(--radius-control); color: var(--warm); }
+.banner { width: calc(100% - 2rem); max-width: calc(var(--page) - 2rem); margin: 0.5rem auto 0; padding: 0.75rem 1rem; border: 2px solid var(--warm); border-radius: var(--radius-control); color: var(--warm); }
 .banner a { color: var(--warm); font-weight: 700; }
 .banner.build { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; color: var(--text); }
-main { max-width: 80rem; margin: 0 auto; padding: 1rem 1rem 2rem; }
+main { max-width: var(--page); margin: 0 auto; padding: 1rem 1rem 2rem; }
 </style>

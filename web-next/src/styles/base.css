@@ -5,6 +5,9 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* the page column: main, the tabs and the banners share it (App.vue) */
+:root { --page: 80rem; }
+
 body {
   margin: 0;
   background: var(--bg);
