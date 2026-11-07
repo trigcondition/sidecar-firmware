@@ -2,6 +2,7 @@
      screen reader; the drawing is decoration). Dots round the dial as on the touchscreen, the value as a number. -->
 <script setup lang="ts">
 import { computed, ref, useId, watch } from "vue";
+import { useHeld } from "../lib/held";
 
 const props = withDefaults(defineProps<{ label: string; modelValue: number; min?: number; max?: number; disabled?: boolean; readonly?: boolean; format?: (v: number) => string }>(), {
   min: 0,
@@ -13,9 +14,12 @@ const props = withDefaults(defineProps<{ label: string; modelValue: number; min?
 const emit = defineEmits<{ "update:modelValue": [number]; commit: [number] }>();
 const id = useId();
 // its own value while it is turned (the Sidecar's answer comes later); the prop's again when it is let go
+// after it is let go, it holds the sent value until the Sidecar reports it (lib/held.ts): an older status in between
+// does not pull it back
+const h = useHeld(() => props.modelValue);
 const v = ref(props.modelValue);
 let turning = false;
-watch(() => props.modelValue, (m) => { if (!turning) v.value = m; });
+watch(h.shown, (m) => { if (!turning) v.value = m; });
 const frac = computed(() => (v.value - props.min) / Math.max(1, props.max - props.min));
 const angle = computed(() => -135 + 270 * frac.value);
 const text = computed(() => (props.format ? props.format(v.value) : String(v.value)));
@@ -26,6 +30,7 @@ function input(e: Event) {
 }
 function change() {
   turning = false;
+  h.hold(v.value);
   emit("commit", v.value);
 }
 const ticks = Array.from({ length: 28 }, (_, i) => {

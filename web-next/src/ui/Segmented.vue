@@ -2,10 +2,18 @@
      filled and carries a check mark, so it is never told by colour alone. -->
 <script setup lang="ts" generic="T extends string | number | boolean">
 import { nextTick, ref } from "vue";
+import { useHeld } from "../lib/held";
 
 const props = defineProps<{ label: string; options: { value: T; text: string; disabled?: boolean }[]; modelValue: T; disabled?: boolean }>();
 const emit = defineEmits<{ "update:modelValue": [T] }>();
 const group = ref<HTMLElement | null>(null);
+// the choice shows at once; the Sidecar's answer confirms it (lib/held.ts)
+const h = useHeld(() => props.modelValue);
+const cur = h.shown;
+function choose(v: T) {
+  h.hold(v);
+  emit("update:modelValue", v);
+}
 
 function key(e: KeyboardEvent) {
   const d = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
@@ -13,9 +21,9 @@ function key(e: KeyboardEvent) {
   e.preventDefault();
   const live = props.options.filter((o) => !o.disabled);
   if (!live.length) return;
-  const i = live.findIndex((o) => o.value === props.modelValue);
+  const i = live.findIndex((o) => o.value === cur.value);
   const next = live[(i + d + live.length) % live.length];
-  emit("update:modelValue", next.value);
+  choose(next.value);
   nextTick(() => group.value?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus());
 }
 </script>
@@ -27,12 +35,12 @@ function key(e: KeyboardEvent) {
       :key="String(o.value)"
       type="button"
       role="radio"
-      :aria-checked="o.value === modelValue"
-      :tabindex="o.value === modelValue ? 0 : -1"
+      :aria-checked="o.value === cur"
+      :tabindex="o.value === cur ? 0 : -1"
       :disabled="disabled || o.disabled"
-      @click="emit('update:modelValue', o.value)"
+      @click="choose(o.value)"
     >
-      <span v-if="o.value === modelValue" aria-hidden="true">✓ </span>{{ o.text }}
+      <span v-if="o.value === cur" aria-hidden="true">✓ </span>{{ o.text }}
     </button>
   </div>
 </template>

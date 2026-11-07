@@ -2,6 +2,7 @@
      number always shown. vertical: a mixer fader. The value goes out on change (release), live on input. -->
 <script setup lang="ts">
 import { computed, useId } from "vue";
+import { useHeld } from "../lib/held";
 
 const props = withDefaults(
   defineProps<{ label: string; modelValue: number; min?: number; max?: number; step?: number; unit?: string; vertical?: boolean; hideLabel?: boolean; disabled?: boolean; format?: (v: number) => string }>(),
@@ -9,7 +10,20 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ "update:modelValue": [number]; commit: [number] }>();
 const id = useId();
-const text = computed(() => (props.format ? props.format(props.modelValue) : `${props.modelValue}${props.unit ? " " + props.unit : ""}`));
+// the value moved to shows at once, until the Sidecar reports it (lib/held.ts)
+const h = useHeld(() => props.modelValue);
+const cur = h.shown;
+const text = computed(() => (props.format ? props.format(cur.value) : `${cur.value}${props.unit ? " " + props.unit : ""}`));
+function input(e: Event) {
+  const v = Number((e.target as HTMLInputElement).value);
+  h.hold(v);
+  emit("update:modelValue", v);
+}
+function change(e: Event) {
+  const v = Number((e.target as HTMLInputElement).value);
+  h.hold(v);
+  emit("commit", v);
+}
 </script>
 
 <template>
@@ -21,11 +35,11 @@ const text = computed(() => (props.format ? props.format(props.modelValue) : `${
       :min="min"
       :max="max"
       :step="step"
-      :value="modelValue"
+      :value="cur"
       :disabled="disabled"
       :aria-valuetext="`${label} ${text}`"
-      @input="emit('update:modelValue', Number(($event.target as HTMLInputElement).value))"
-      @change="emit('commit', Number(($event.target as HTMLInputElement).value))"
+      @input="input"
+      @change="change"
     />
     <span class="num value" aria-hidden="true">{{ text }}</span>
   </div>
