@@ -36,7 +36,7 @@ const missing = computed(() => {
    scroll sideways inside themselves on a phone */
 .sub {
   display: flex; gap: 0.25rem 1.5rem; margin: 0.25rem 0 1.75rem; border-bottom: 1px solid var(--border);
-  overflow-x: auto; scrollbar-width: thin;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
 }
 .subtab {
   flex: none; display: inline-flex; align-items: center; min-height: var(--target); padding: 0 0.125rem;

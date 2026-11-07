@@ -23,19 +23,27 @@ const freqs = ["40", "200", "1.2k", "6k", "16k"];
 
 <template>
   <Card :label="`${s.id} · ${s.name}`">
-    <section class="part" aria-label="POST EQ">
+    <section class="part eq" aria-label="POST EQ">
       <span class="label">POST EQ</span>
+      <div class="eqbody">
+      <div class="curve">
       <svg viewBox="0 0 360 140" class="big" role="img" :aria-label="`EQ curve: ${eqText(s.peq)}`">
         <g class="grid"><line x1="0" y1="70" x2="360" y2="70" /><line x1="90" y1="0" x2="90" y2="140" /><line x1="180" y1="0" x2="180" y2="140" /><line x1="270" y1="0" x2="270" y2="140" /></g>
         <path class="fill" :d="eqPath(s.peq, 360, 140) + ' L360 140 L0 140 Z'" />
         <path class="line" :d="eqPath(s.peq, 360, 140)" />
       </svg>
       <div class="freqs small" aria-hidden="true"><span v-for="f in freqs" :key="f">{{ f }}</span></div>
+      </div>
+      <div class="eqctl">
       <div class="knobs">
         <Knob :disabled="disabled" v-for="(n, k) in EQ_NAMES" :key="n" :label="n" :model-value="s.peq[k]" @commit="(v: number) => emit('cmd', mixCmd.eq(s, k, v))" />
       </div>
       <button type="button" :disabled="disabled" @click="emit('cmd', mixCmd.eqOff(s))">EQ off</button>
+      </div>
+      </div>
     </section>
+
+    <div class="parts">
 
     <section v-for="slot in s.chain < 0 ? [0, 1, 2, 3] : [0, 1]" :key="slot" class="part" :aria-label="s.chain < 0 ? `Slot ${slot + 1}` : `Insert ${'AB'[slot]}`">
       <div class="row">
@@ -61,8 +69,8 @@ const freqs = ["40", "200", "1.2k", "6k", "16k"];
     <section v-if="s.out" class="part" aria-label="Output">
       <span class="label">Output</span>
       <Segmented
-        label="Route"
-        :options="[{ value: 'trk', text: 'Own track' }, { value: 'pre', text: 'PRE pair' }, { value: 'post', text: 'POST pair' }]"
+        label="Route: own track, PRE pair or POST pair"
+        :options="[{ value: 'trk', text: 'Own' }, { value: 'pre', text: 'PRE' }, { value: 'post', text: 'POST' }]"
         :model-value="s.out.route"
         :disabled="disabled"
         @update:model-value="(v: string) => emit('cmd', mixCmd.route(s, v as 'trk' | 'pre' | 'post'))"
@@ -79,19 +87,25 @@ const freqs = ["40", "200", "1.2k", "6k", "16k"];
         <Knob :disabled="disabled" v-for="b in 3" :key="b" :label="`B${b}`" :model-value="s.sends[b - 1] ?? 0" @commit="(v: number) => emit('cmd', mixCmd.send(s, b - 1, v))" />
       </div>
     </section>
+    </div>
   </Card>
 </template>
 
 <style scoped>
-.part { display: flex; flex-direction: column; gap: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
-.part > button { align-self: flex-start; }
-.part:first-of-type { border-top: 0; padding-top: 0; }
-.big { width: 100%; height: auto; max-height: 10rem; }
+/* the EQ across the top (curve left, its knobs right); the inserts, output and sends as columns under it, wrapping
+   to fewer columns as the page narrows */
+.part { display: flex; flex-direction: column; gap: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.75rem; min-width: 0; }
+.part.eq { border-top: 0; padding-top: 0; }
+.eqbody { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 2rem; }
+.curve { flex: 1 1 20rem; max-width: 36rem; }
+.eqctl { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+.parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17.5rem), 1fr)); gap: 1rem 1.5rem; margin-top: 1rem; }
+.big { display: block; width: 100%; height: auto; }
 .grid line { stroke: var(--border); stroke-width: 1; }
 .fill { fill: var(--accent-tint); }
 .line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
 .freqs { display: flex; justify-content: space-between; color: var(--label); }
-.knobs { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.knobs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 :root[data-theme="contrast"] .line { stroke: var(--text); }
 </style>
