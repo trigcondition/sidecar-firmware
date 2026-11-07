@@ -293,6 +293,7 @@
         <div class="seg" role="radiogroup" aria-labelledby="l-usbmode" data-key="usbmode"><button type="button" role="radio" aria-checked="false" data-cmd="usbmode=class" data-val="class">Class compliant</button><button type="button" role="radio" aria-checked="false" data-cmd="usbmode=overbridge" data-val="overbridge">Overbridge</button></div>
         <span id="usbnow" class="mut"></span>
         <span class="fb" data-fb="usbmode" role="status" aria-live="polite"></span></div>
+      <p class="note" id="usbnet-late" hidden>The computer on USB-C started its USB-C network after this Sidecar had already chosen Wi-Fi or Ethernet (a Mac locked at the first connection does that). Reboot to use the cable: the page is then at <code>http://172.31.77.1</code>. <button type="button" id="usbnet-reboot">Reboot onto USB-C</button> <span id="usbnet-msg" role="status"></span></p>
       <p class="note" id="usb-warn" hidden>Overbridge passes the Rytm through: its vendor requests and the Overbridge async channel reach it unfiltered, so an OS update from the computer (Transfer, Overbridge) can reach the Rytm. <code>usbmidi=os:</code> filters MIDI only (docs/usb-mirror.md).</p>
       <div class="row"><label for="mvoice">Machine</label>
         <select id="mvoice"></select>
@@ -680,7 +681,7 @@ const CMD_NOT_PAGE = "refused: not from this page (the same-origin check): open 
 // the token that just worked and reopen the dialog, which is what happened on the device (2026-10-25: "it confirms
 // it is correct and saved, but the dialog stays on top"). The wrapper remembers the gen it sent with and only acts
 // on a refusal that still belongs to the current one.
-const PAIR = { lostAt: -1e9, tok: "", gen: 0, gate: "on", clients: 0, ready: false, mine: false, hdr: true, host: "", build: "", asked: false };
+const PAIR = { lostAt: -1e9, tok: "", gen: 0, gate: "on", trusted: false, clients: 0, ready: false, mine: false, hdr: true, host: "", build: "", asked: false };
 // Both ends are checked for shape. A junk entry here - `undefined` written as a string when a field was missing, or
 // anything left by an older build - used to be sent to the Sidecar on every load: it answered "the pairing code is
 // 8 digits", which reads as a complaint about a code the user typed correctly, and until 0.3.0 each one also burned
@@ -827,10 +828,11 @@ function pairHint() {
 function pairShow() {                   // the Access section
   pairHint();
   const g = PAIR.gate;
-  $("#ac-state").textContent = g === "off" ? "off on this card (cmdline.txt paircode=0): anyone on this network can change Sidecar"
+  $("#ac-state").textContent = PAIR.trusted ? `on — this page is on the USB-C cable, which is trusted (cmdline.txt usbtrust=0 asks for the code there too)`
+    : g === "off" ? "off on this card (cmdline.txt paircode=0): anyone on this network can change Sidecar"
     : g === "fixed" ? `a fixed code from cmdline.txt (a development card) — ${PAIR.clients} device(s) remembered`
     : `on — ${PAIR.clients} device(s) remembered`;
-  $("#ac-state").className = g === "on" ? "" : "err";
+  $("#ac-state").className = g === "on" || PAIR.trusted ? "" : "err";
   $("#ac-this").textContent = g === "off" ? "no code needed" : PAIR.tok ? (PAIR.mine ? "paired and remembered" : "paired for this visit only")
     : "not paired";
   for (const b of ["#ac-forget", "#ac-all"]) $(b).disabled = g === "off" || !PAIR.tok;
@@ -843,7 +845,9 @@ async function pairBoot() {
   // What the Sidecar says about itself is current either way, so it is recorded first. Only the decisions below
   // are guarded: an earlier version returned here and never set `ready`, which left the page unpaired with no
   // dialog and nothing polling - inert.
-  PAIR.gate = st.gate; PAIR.clients = st.clients; PAIR.ready = true;
+  // trusted: this page reaches the Sidecar over the USB-C cable (docs/usb-network.md): nothing to pair, as with the gate off
+  PAIR.trusted = st.trusted === true;
+  PAIR.gate = PAIR.trusted ? "off" : st.gate; PAIR.clients = st.clients; PAIR.ready = true;
   PAIR.hdr = st.hdr !== false; PAIR.host = st.host || "";
   if (!PAIR.build) {                    // once: which build is answering, so a page left open from before an
     PAIR.build = "?";                   // install is visible instead of looking like a bug in the page
@@ -853,7 +857,9 @@ async function pairBoot() {
     }).catch(() => {});
   }
   if (gen !== PAIR.gen) return;         // a pairing finished while this was in flight: it decides, not this answer
-  if (st.gate === "off" || st.paired) { $("#pair-wrap").hidden = true; pairShow(); return; }
+  // on the trusted cable the header still goes (any value: web.cpp wants it there, another site's page cannot send it)
+  if (PAIR.trusted && !PAIR.tok) { pairDone("usb"); return; }
+  if (PAIR.gate === "off" || st.paired) { $("#pair-wrap").hidden = true; pairShow(); return; }
   if (st.rng === false) {               // the engine refuses every pairing this boot (paircode.h): say why, try nothing
     pairAsk("This Sidecar's random number generator failed its self-test at boot, so it refuses to pair (a guessable code would be worse). Restart it; if this stays, report it.");
     pairShow();
@@ -955,6 +961,11 @@ async function mbSet(f) {
   say($("#mb-msg"), r.ok === false ? r.error : "", r.ok === false);
   if (r.ok !== false) { mbRender(r); if (r.token) { mbTok = r.token; $("#mb-tok").textContent = mbTok; $("#mb-tokrow").hidden = false; } }
 }
+$("#usbnet-reboot").onclick = async () => {
+  if (!confirm("Reboot the Sidecar onto the USB-C network? Audio stops for the reboot; this page then moves to http://172.31.77.1.")) return;
+  const r = await wfPost("/usbnet/reboot", {});
+  say($("#usbnet-msg"), r.ok === false ? r.error : "Rebooting… open http://172.31.77.1 in a moment.", r.ok === false);
+};
 $("#mb-on").onclick = () => mbSet({ on: "1" });
 $("#mb-off").onclick = () => mbSet({ on: "0" });
 $("#mb-os").onchange = () => {
@@ -1211,6 +1222,7 @@ function paintSeg() {
     : (u.shown === "box" ? "now: the Rytm itself" : u.shown === "switching" ? "now: replugging" : "now: the Sidecar device"
       + (u.set === "overbridge" && u.runs === "overbridge" ? " (no box read yet)" : ""))
       + (u.set !== u.runs ? "; not in this build: class compliant runs" : "") + (u.from === "cmdline" ? " (cmdline.txt usb=)" : "");
+  $("#usbnet-late").hidden = !(st.usbNet && st.usbNet.late);   // docs/usb-network.md: the page's reboot onto USB-C
   $("#usb-warn").hidden = !u || (u.set !== "overbridge" && pend.want("usbmode") !== "overbridge");   // set, or being set
 }
 function settle() {       // /status after a change: confirm what matches

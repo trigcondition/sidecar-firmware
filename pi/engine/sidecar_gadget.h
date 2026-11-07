@@ -70,6 +70,17 @@ public:
 	boolean MirrorShown (void) const		{ return FALSE; }
 	boolean MirrorBoxThere (void) const		{ return FALSE; }
 	boolean MirrorSwitching (void) const		{ return FALSE; }
+	boolean NetInDevice (void) const		{ return FALSE; }
+	boolean NetUp (void) const			{ return FALSE; }
+	boolean NetLive (void)				{ return FALSE; }
+	void NetDetach (void)				{}
+	boolean NetLate (void) const			{ return FALSE; }
+	boolean NetSend (const void *, unsigned)	{ return FALSE; }
+	boolean NetReceive (void *, unsigned *)		{ return FALSE; }
+	boolean NetRoom (void) const			{ return FALSE; }
+	const u8 *NetPiMac (void) const			{ static const u8 m[6] = {2, 0, 0, 0, 0, 1}; return m; }
+	unsigned BusFrame (void) const			{ return 0; }
+	void UpdatePlugAndPlay (void)			{}
 };
 #else
 #include <circle/usb/gadget/dwusbgadget.h>
@@ -89,6 +100,9 @@ public:
 #include "mirror_desc.h"
 #include "mirror_ctl.h"
 #include "mirror_ep.h"
+#include "ncm_ntb.h"
+#include "usbnet_ring.h"
+#include "sidecar_desc.h"
 
 #if __has_include("hosted/sidecar_config.h")
 #include "hosted/sidecar_config.h"			// build.sh: SIDECAR_CH_IN=20 pi/engine/build.sh
@@ -147,6 +161,41 @@ private:
 	boolean m_bActive, m_bBusy;
 	boolean m_bHeld;				// OUT, usbmidi=os: not re-armed while the Rytm-bound queue is full
 	DMA_BUFFER (u8, m_Buffer, BufSize);
+};
+
+// The USB-C network (CDC-NCM, docs/usb-network.md, usbnet_cfg.h): its three endpoints. Activated with the configuration;
+// the data endpoints run only while the computer has the data interface at alt 1 (its network driver started), the
+// notify endpoint then says "connected" and the speed. EP 7 IN and EP 7 OUT share their number
+// (circle-gadget-mirror.patch's m_pOutEP), so the network needs no new Circle patch.
+class CNcmEP : public CDWUSBGadgetEndpoint
+{
+public:
+	enum TRole { RoleNotify, RoleIn, RoleOut };
+	CNcmEP (const TUSBEndpointDescriptor *pDesc, CSidecarGadget *pGadget, TRole Role);
+	void OnActivate (void) override;
+	void OnDeactivate (void) override;
+	void OnSuspend (void) override			{ m_Wake.suspend (*this); }	// mirror_ep.h: back at the resume
+	void OnResume (void) override;
+	void OnTransferComplete (boolean bIn, size_t nLength) override;
+	boolean Active (void) const			{ return m_bActive; }
+	void Kick (void);				// IN, notify: the next transfer if idle and something waits (IRQ level, or IRQs masked)
+	void ArmOut (void);				// OUT: the next block (IRQ level, or IRQs masked)
+	void Halt (void);				// the link down (alt 0): what is armed cancelled
+	boolean Held (void) const			{ return m_bHeld; }
+	boolean IsBusy (void) const			{ return m_bBusy; }
+	void Resume (void);				// OUT: a held endpoint armed again (IRQs masked)
+	unsigned Number (void) const			{ return m_nEP; }
+	void Cancel (void)				{ CancelTransfer (); }	// ep_stop.h
+
+private:
+	void Stop (void);				// what is armed stopped (ep_stop.h), IRQ level or IRQs masked
+
+	CSidecarGadget *m_pSidecar;
+	TRole m_Role;
+	mirror::EpWake m_Wake;
+	boolean m_bActive, m_bBusy, m_bHeld, m_bResuming;
+	unsigned m_nEP;
+	DMA_BUFFER (u8, m_Buffer, ncm::kNtbOutMax);	// one NTB (kNtbInMax == kNtbOutMax); 16 bytes for the notify endpoint
 };
 
 #ifdef CIRCLE_GADGET_MIRROR
@@ -247,6 +296,19 @@ public:
 	boolean MirrorShown (void) const;		// the computer sees the box now
 	boolean MirrorBoxThere (void) const;		// the box has been read and is up (it is shown, or will be)
 	boolean MirrorSwitching (void) const;		// off the bus between the two
+
+	// the USB-C network (docs/usb-network.md): cmdline usbnet= (default on) puts its function in the device, CLASS
+	// COMPLIANT only (an OVERBRIDGE boot leaves it out). The network task's side (usbnet_pi.cpp, core 0, task level):
+	boolean NetInDevice (void) const		{ return m_bNet; }
+	boolean NetUp (void) const			{ return m_bNetUp; }	// the computer's network driver has the link
+	boolean NetLive (void);				// NetUp, attached, and the bus not suspended: frames can go
+	void NetDetach (void);				// the stack is not on USB-C this boot: the link reported down, nothing read
+	boolean NetLate (void) const			{ return m_bNetLate; }	// a computer's driver took the link after NetDetach
+	boolean NetSend (const void *pFrame, unsigned nLength);	// one Ethernet frame to the computer (FALSE: no room)
+	boolean NetReceive (void *pBuffer, unsigned *pLength);	// one from the computer (FALSE: none)
+	boolean NetRoom (void) const			{ return m_NetTx.free () != 0; }
+	const u8 *NetPiMac (void) const			{ return m_NetPiMac; }
+	unsigned BusFrame (void) const;			// the frame number of the last start-of-frame (it moves: a computer drives the bus)
 #ifdef CIRCLE_GADGET_MIRROR
 	// the box's side (ob_usb.cpp): task level unless said
 	boolean MirrorSetDescriptors (const u8 *pDev, const u8 *pCfg, unsigned nCfg);	// FALSE: not one the gadget can carry
@@ -285,6 +347,13 @@ private:
 	void HostUp (boolean bUp);			// the MIDI IN endpoint (de)activated (gadget IRQ), or torn down (OnSuspend)
 	friend class CSidecarIsoEP;
 	friend class CSidecarMIDIEP;
+	friend class CNcmEP;
+
+	// the USB-C network (IRQ level, or IRQs masked)
+	void NetSetAlt (u8 uchAlt);			// SET_INTERFACE on the data interface: 1 the link up, 0 down
+	void NetFromHost (const u8 *pBlock, size_t nLength);	// an OUT block (CNcmEP RoleOut)
+	unsigned NetForHost (u8 *pBuffer);		// the next IN block (0: nothing waits)
+	unsigned NetNotification (u8 *pBuffer);		// the next notification (0: none)
 #ifdef CIRCLE_GADGET_MIRROR
 	friend class CMirrorEP;
 
@@ -348,6 +417,52 @@ private:
 	enum { EPOut = 1, EPFeedback = 2, EPIn = 3, EPMIDIOut = 4, EPMIDIIn = 5, NumEPs };
 	CSidecarIsoEP *m_pIso[4];
 	CSidecarMIDIEP *m_pMIDIOut, *m_pMIDIIn;
+	CNcmEP *m_pNetNotify, *m_pNetIn, *m_pNetOut;
+
+	// the descriptor (sidecar_desc.h): built once the mode is known (Start), with the network or without
+	sidecar_desc::Offsets m_Desc;
+	u8 m_Config[sidecar_desc::kCap];
+	unsigned m_nConfig;
+	void BuildDescriptor (void);
+
+	// the USB-C network
+	boolean m_bNetWanted, m_bNet;			// usbnet= on; and in the device (not an OVERBRIDGE boot)
+	volatile boolean m_bNetUp;			// alt 1: the link
+	volatile boolean m_bNetAttached;		// the stack runs on USB-C (until NetDetach)
+	volatile boolean m_bNetLate;			// alt 1 after NetDetach (a Mac unlocked later than usbwait): reboot to use it
+	boolean m_bNetLateLogged;
+	volatile boolean m_bNetRxFlush;			// the link changed: the reader drops what is queued (it owns the ring's read end)
+	u8 m_uchNetAlt;
+	unsigned m_nNotify;				// notifications owed: 2 speed + connection, 1 connection, 0 none
+	ncm::Control m_NcmCtl;
+	ncm::Ntb16Builder m_NtbBuild;			// the IN blocks (for the computer)
+	u16 m_nNtbSeq;
+	FrameRing<32, ncm::kMaxFrame> m_NetRx;		// from the computer: the OUT endpoint fills, the network task reads
+	FrameRing<16, ncm::kMaxFrame> m_NetTx;		// to the computer: the network task fills, the IN endpoint reads
+	u8 m_NetPiMac[6], m_NetHostMac[6];
+	char m_NetHostMacText[13];			// the descriptor's iMACAddress
+	struct TNetStats
+	{
+		unsigned nRxBlocks, nRxFrames, nRxBad, nRxRefused, nRxDrop, nRxHeld;
+		unsigned nTxBlocks, nTxFrames, nTxDown, nUps, nReq, nBadReq;
+	} m_NetStats, m_NetLast;
+	unsigned m_nNetLogSecs;
+	void NetLogStats (CLogger *pLogger);
+	// usbnet trace (diagnosis: the Pi 5 died ~16 s after the link came up, 2026-11-07): the network endpoints' events
+	// at IRQ level into a ring, logged by Poll (core 0's loop), with a register line every second for 60 s after the
+	// first SET_INTERFACE of the data interface. At most kNetTraceMax events a boot.
+public:
+	enum TNetTraceCode : u8 { TrSetIntf = 1, TrArmOut, TrOutDone, TrInArm, TrInDone, TrStop, TrActivate, TrDeactivate,
+				  TrHold, TrDetach, TrResume };
+	void NetTrace (u8 uchCode, u32 a = 0, u32 b = 0);	// IRQ level, or IRQs masked
+private:
+	struct TNetEvent { u32 nUs; u8 uchCode; u32 a, b; };
+	static const unsigned NetTraceSize = 256, kNetTraceMax = 3000;
+	TNetEvent m_NetTrace[NetTraceSize];
+	volatile unsigned m_nNetTraceHead = 0;
+	unsigned m_nNetTraceTail = 0, m_nNetTraceLost = 0, m_nNetTraced = 0, m_nNetRecv = 0;
+	u32 m_nNetTraceT0 = 0, m_nNetTraceLastSec = 0;
+	void NetTraceDump (void);		// a line every 10 s while the link is up, at once when something went wrong
 
 	u64 m_nCntFrq, m_nT0;
 	u8 m_uchOutAlt, m_uchInAlt;

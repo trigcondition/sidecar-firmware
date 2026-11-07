@@ -37,6 +37,7 @@
 #if RASPPI >= 5
 #include "pwrbtn.h"		// the power button (docs/pi5.md "Power button")
 #endif
+#include "usbnet_cfg.h"		// the USB-C network's keys and the boot's choice (docs/usb-network.md)
 
 class CWifi;				// wifi.h: Wi-Fi (off by default)
 class CSidecarDisplay;			// pi/ui/sidecar_display.h: the HDMI display (docs/pi-display.md)
@@ -85,6 +86,8 @@ private:
 	void StopAndReboot (const char *pWhy, boolean bTryboot = FALSE);
 	void BootStep (unsigned nStep);			// the boot screen's bar (1..CSidecarDisplay::SplashSteps)	// bTryboot: the firmware reads tryboot.txt once
 	void UseLink (const char *pSpec);			// usb | tcp | tcp:IP:PORT
+	// net=auto at boot (usbnet_pi.h): a computer on USB-C whose network driver starts in time gets the network
+	boolean UsbNetProbe (const usbnet::Options &rOpt, unsigned nGadgetT0, const char **ppWhy);
 	static void WebStatus (CString *pOut, void *pParam);
 	static void WebHealth (CString *pOut, void *pParam);	// GET /health: the open one (paircode.h's open set)	// the web page's /status (web.h)
 

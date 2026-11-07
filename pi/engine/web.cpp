@@ -25,6 +25,7 @@
 #include "presetweb.h"
 #include "paircode.h"
 #include "paircode_pi.h"
+#include "usbnet_pi.h"		// the USB-C cable is trusted (docs/usb-network.md)
 #include "blackbox_pi.h"
 #include "midibridge_pi.h"
 #include "sidecar_gadget.h"	// usbmidi=os: /cmd refuses link=tcp:<address> while it is on
@@ -542,7 +543,7 @@ void CWebServer::StatusJson (CString *pOut)
 // WebSocket); the status topic is open, as GET /status is; a command needs the token, checked again each time.
 bool CWebServer::WsToken (void *pParam, const char *pToken)
 {
-	return paircode_pi::Gate ().check (pToken);
+	return usbnet_pi::Trusted () || paircode_pi::Gate ().check (pToken);	// the USB-C cable: trusted (usbnet_pi.h)
 }
 
 // One topic's payload (ws_session.h's Host::build). Core 0 (this connection's worker task), like the display loop and the
@@ -755,7 +756,11 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 											: "application/json";
 		return HTTPOK;
 	}
-	if (!Open (pPath) && !paircode_pi::Gate ().check (pTok))
+	// the pairing gate; skipped on the USB-C network (usbnet_pi.h): the stack runs on the cable, so every request came
+	// over it - trust follows the interface, never an address. The X-Sidecar-Auth header must still be there (any value,
+	// the pages send "usb"): another site's page open on the computer cannot send it (a CORS preflight, never answered),
+	// so it cannot change the Sidecar through the trusted cable (an <img> GET, a form POST)
+	if (!Open (pPath) && !(usbnet_pi::Trusted () && GetRequestAuth ()[0]) && !paircode_pi::Gate ().check (pTok))
 	{
 		PairRefused (pPath, pBuffer, pLength, ppContentType);
 		s_nUnpaired++;
@@ -820,6 +825,17 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		memmove (pBuffer + nh, pBuffer + Head, n);
 		memcpy (pBuffer, (const char *) h, nh);
 		*pLength = nh + n;
+		*ppContentType = "text/plain; charset=utf-8";
+	}
+	else if (strcmp (pPath, "/prevboot") == 0)	// the last crashed boot's report and log tail (kernel.cpp CrumbToCard; paired only)
+	{
+		core::File f;
+		if (!f.open ("/.rytm/prevboot.txt", core::kRead)) return HTTPNotFound;
+		const unsigned nMax = *pLength < 65536 ? *pLength : 65536;
+		int n = f.read (pBuffer, nMax);
+		f.close ();
+		if (n < 0) return HTTPInternalServerError;
+		*pLength = (unsigned) n;
 		*ppContentType = "text/plain; charset=utf-8";
 	}
 	else if (strcmp (pPath, "/log") == 0)
@@ -895,13 +911,14 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			// "host": the mDNS name, so the page can say that http://<host>.local and http://<ip> are different
 			// sites to a browser and do not share a remembered device. Both are already public on the LAN.
 			// "wait": this address's own (paircode.h: per peer). "rng": false, the gate refuses everything
-			// (the random generator failed its self-test).
+			// (the random generator failed its self-test). "trusted": this connection came over the USB-C cable
+			// (usbnet_pi.h): nothing to pair, the page goes on as with the gate off.
 			s.Format ("{\"gate\":\"%s\",\"paired\":%s,\"clients\":%u,\"sessions\":%u,\"wait\":%u,\"digits\":%u,"
-				  "\"hdr\":%s,\"rng\":%s,\"host\":\"%s\"}",
+				  "\"hdr\":%s,\"rng\":%s,\"host\":\"%s\",\"trusted\":%s}",
 				  g.mode () == paircode::kOff ? "off" : g.mode () == paircode::kFixed ? "fixed" : "on",
 				  g.check_quiet (pTok) ? "true" : "false", g.clients (), g.sessions (), g.lock_left_s (m_nPeer),
 				  paircode::kDigits, GetRequestAuth ()[0] ? "true" : "false", g.rng_ok () ? "true" : "false",
-				  CWebStart::Hostname ());
+				  CWebStart::Hostname (), usbnet_pi::Trusted () ? "true" : "false");
 		}
 		else if (strcmp (op, "show") == 0)	// open, POST: the dialog puts the code on the Rytm's screen
 		{
@@ -1099,6 +1116,25 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 	{
 		int n = presetweb::json (pParams, (char *) pBuffer, *pLength);
 		if (n <= 0) { memcpy (pBuffer, "{}", 2); n = 2; }
+		*pLength = n;
+		*ppContentType = "application/json";
+	}
+	else if (strcmp (pPath, "/usbnet/reboot") == 0)	// docs/usb-network.md: the page's "Reboot onto USB-C"
+	{
+		// gated (above), from this page only (strict), and only while a computer's USB-C network started after the
+		// boot chose Wi-Fi or Ethernet: not a general reboot button
+		CString s;
+		if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+			s = "{\"ok\":false,\"error\":\"not from this page (the same-origin check)\"}";
+		else if (!usbnet_pi::RequestReboot ())
+			s = "{\"ok\":false,\"error\":\"no computer started a USB-C network late: nothing to reboot for\"}";
+		else
+		{
+			s = "{\"ok\":true}";
+			CLogger::Get ()->Write (From, LogNotice, "the page asked for a reboot onto the USB-C network");
+		}
+		unsigned n = s.GetLength () < *pLength ? s.GetLength () : *pLength;
+		memcpy (pBuffer, (const char *) s, n);
 		*pLength = n;
 		*ppContentType = "application/json";
 	}

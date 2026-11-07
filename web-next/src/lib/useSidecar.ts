@@ -29,6 +29,8 @@ export interface Sidecar {
   cmd: (c: string) => Promise<void>;
   /** the pairing gate (GET /pair/status): "on", "fixed", "off"; "" not known yet */
   gate: Ref<string>;
+  /** this page reaches the Sidecar over the USB-C cable (its network, docs/usb-network.md): trusted, no pairing */
+  trusted: Ref<boolean>;
 }
 
 const KEY: InjectionKey<Sidecar> = Symbol.for("sidecar"); // the same across hot updates: a new copy of this module finds App's connection
@@ -42,6 +44,7 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     getToken: async () => pairing.current ?? (await pairing.resume().catch(() => null)),
     refreshToken: () => pairing.resume().catch(() => null),
   });
+  const trusted = ref(false);
   const s: Sidecar = {
     client,
     state: ref<ClientState>(client.state),
@@ -52,7 +55,9 @@ export function provideSidecar(url = wsUrl()): Sidecar {
     seqpos: shallowRef<SeqPos | null>(null),
     lastError: ref(""),
     gate: ref(""),
-    api: new Api({ token: () => pairing.current, onPairLost: () => void client.authenticate().catch(() => false) }),
+    trusted,
+    // on the trusted USB-C cable the header still goes (any value): the Sidecar wants it there, another site cannot send it
+    api: new Api({ token: () => pairing.current ?? (trusted.value ? "usb" : null), onPairLost: () => void client.authenticate().catch(() => false) }),
     pairing,
     async cmd(c: string) {
       await client.command(c);
@@ -79,16 +84,18 @@ export function provideSidecar(url = wsUrl()): Sidecar {
   ];
   client.connect();
 
-  // While unpaired (the old page's 5 s tick): ask the gate. Off: the Sidecar takes any token. Otherwise try this
+  // While unpaired (the old page's 5 s tick): ask the gate. Off, or this page on the USB-C cable (trusted): the
+  // Sidecar takes any token. Otherwise try this
   // browser's saved pairing again (paired elsewhere meanwhile, a reboot). Once paired: the page's clock to the
   // Sidecar (POST /time, gated, as the old page after pairing), once per pairing.
   let timeSent = false;
   async function recheck() {
     if (s.state.value !== "open" || s.paired.value) return;
     try {
-      const ps = await s.api.json<{ gate?: string }>("/pair/status");
+      const ps = await s.api.json<{ gate?: string; trusted?: boolean }>("/pair/status");
       s.gate.value = ps.gate ?? "";
-      if (ps.gate === "off") await client.authenticateAs("");
+      s.trusted.value = ps.trusted === true;
+      if (ps.gate === "off" || ps.trusted === true) await client.authenticateAs("");
       else if (pairing.saved()) await client.authenticate();
     } catch {
       /* the next tick */

@@ -2,6 +2,7 @@
 #include "sdfiles.h"
 #include "bridge.h"
 #include "paircode_pi.h"
+#include "usbnet_pi.h"		// the USB-C cable is trusted (docs/usb-network.md)
 #include "lib/library.h"
 
 #include <circle/bcmpropertytags.h>
@@ -194,7 +195,8 @@ void CSdFiles::Run (void)
 		return;
 	}
 	CLogger::Get ()->Write (From, LogNotice, "the SD card's boot files on TCP port %u (pi/circle/sdboot.py)%s", Port,
-				paircode_pi::Gate ().gated () ? ": a connection must PAIR with the code on the screen first"
+				usbnet_pi::Trusted () ? ": on the USB-C cable (trusted, no pairing)"
+				: paircode_pi::Gate ().gated () ? ": a connection must PAIR with the code on the screen first"
 							      : ": NOT GATED (cmdline paircode=0) - anyone on this network can replace the firmware");
 	for (;;)
 	{
@@ -203,7 +205,9 @@ void CSdFiles::Run (void)
 		m_pConn = Listen.Accept (&IP, &nPort);
 		if (m_pConn == 0) { S->MsSleep (100); continue; }
 		m_nRxPos = m_nRxLen = 0;
-		m_bAuth = !paircode_pi::Gate ().gated ();	// the pairing code: nothing is served until PAIR / AUTH
+		// the pairing code: nothing is served until PAIR / AUTH. On the USB-C network every connection came over the
+		// cable (one stack, usbnet_pi.h): trusted, as with the gate off
+		m_bAuth = !paircode_pi::Gate ().gated () || usbnet_pi::Trusted ();
 		m_nPeer = (u32) IP;				// its rate-limit key (paircode.h: per peer)
 		// One connection at a time, so an idle one held the port - and every install - for good (review M2:
 		// `nc sidecar.local 7310` and walk away). 10 s of silence before PAIR / AUTH ends it, 60 s after.

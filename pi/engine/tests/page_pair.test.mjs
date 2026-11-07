@@ -648,7 +648,9 @@ test("the page asks for the code on the Rytm only when it is really unpaired", (
 test("WEB UI off on the Rytm: the web page and port 7310 refuse, the serial :sdf does not", () => {
   const web = readFileSync(join(HERE, "..", "web.cpp"), "utf8");
   const get = web.slice(web.indexOf("THTTPStatus CWebServer::GetContent"));
-  const off = get.indexOf("if (!paircode_pi::WebOn ())"), gate = get.indexOf("if (!Open (pPath) && !paircode_pi::Gate ().check");
+  // (the USB-C cable's trust, docs/usb-network.md, is part of the gate's line: WEB UI off refuses on the cable too)
+  const off = get.indexOf("if (!paircode_pi::WebOn ())"),
+    gate = get.indexOf("if (!Open (pPath) && !(usbnet_pi::Trusted () && GetRequestAuth ()[0]) && !paircode_pi::Gate ().check");
   assert.ok(off > 0 && gate > off, "the WEB UI check comes before anything else answers");
   assert.match(get.slice(off, gate), /return HTTPOK;/);
   assert.match(get.slice(off, gate), /kWebOff/);

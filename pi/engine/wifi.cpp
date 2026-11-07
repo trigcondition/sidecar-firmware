@@ -127,7 +127,7 @@ static void JsonAppend (CString *pOut, const char *p)
 }
 
 CWifi::CWifi (void)
-:	m_Mode (ModeOff), m_bHaveConf (FALSE), m_pCmdline (0), m_pDev (0), m_pSupplicant (0),
+:	m_Mode (ModeOff), m_bHaveConf (FALSE), m_pCmdline (0), m_pNetName (0), m_pDev (0), m_pSupplicant (0),
 	m_bScanReq (FALSE), m_bChipReq (FALSE), m_bScanning (FALSE), m_nScans (0), m_nScanMs (0), m_nScanAt (0),
 	m_nDownSince (0), m_nRestarts (0), m_nRestartsTotal (0), m_bUp (FALSE),
 	m_Join (JoinNone), m_bTrial (FALSE), m_bStarted (FALSE), m_bAssocSeen (FALSE), m_nTrialT0 (0), m_nWrongKey (0), m_nRebootAt (0),
@@ -198,6 +198,23 @@ CWifi::TMode CWifi::BootMode (CKernelOptions *pOptions)
 	}
 	m_Mode = m;
 	return m;
+}
+
+void CWifi::OtherNet (const char *pName)
+{
+	m_pNetName = pName;
+	if (m_Mode == ModeNet)
+	{
+		m_Mode = ModeScan;
+		CLogger::Get ()->Write (From, LogNotice, "the network is on %s this boot: the stored network is not joined (the chip for scans)",
+					pName);
+	}
+	if (m_bTrial)
+	{
+		m_bTrial = FALSE;
+		m_Join = JoinNone;
+		CLogger::Get ()->Write (From, LogNotice, "the join being tried waits for a boot on Wi-Fi");
+	}
 }
 
 boolean CWifi::StartChip (void)
@@ -484,7 +501,7 @@ void CWifi::Settings (CString *pOut)
 	CString s;
 	s.Format ("{\"mode\":\"%s\",\"chip\":%s,\"starting\":%s,\"on\":%s,\"net\":\"%s\",\"up\":%s,\"ip\":\"%s\",\"cmdline\":",
 		  Modes[m_Mode], m_pDev ? "true" : "false", m_bChipReq ? "true" : "false", m_bHaveConf && m_Conf.on ? "true" : "false",
-		  m_Mode == ModeNet ? "wifi" : "ethernet", bUp ? "true" : "false", (const char *) Ip);
+		  m_pNetName ? m_pNetName : m_Mode == ModeNet ? "wifi" : "ethernet", bUp ? "true" : "false", (const char *) Ip);
 	pOut->Append (s);
 	if (m_pCmdline) { pOut->Append ("\""); JsonAppend (pOut, m_pCmdline); pOut->Append ("\""); }
 	else pOut->Append ("null");
