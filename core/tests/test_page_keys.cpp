@@ -13,6 +13,7 @@
 #include "ui/remote.h"
 
 #include "../../pi/engine/voice_pi.cpp"   // (its namespace; the core's functions it calls link from CORE_SRC)
+#include "../../pi/engine/seditview_pi.cpp"   // voice_pi's VoicePage asks it whether an edit is open (core/samp/sedit)
 
 using namespace core;
 
@@ -89,6 +90,10 @@ int main() {
     CHECK(pg == want[c]);
   }
   CHECK(voice_pi::Request(&seen, false, &tseen) == -1);   // nothing new
+  // VOICE with no edit open: VOICE (8) as above; with one open SAMPLE EDIT (21: voice_pi.h VoiceTarget; opening an
+  // edit needs a card, so the open case is the decision alone, as pi/ui/host's test_voice_follow has it too)
+  CHECK(!seditview_pi::Open() && voice_pi::VoicePage() == 8);
+  CHECK(voice_pi::VoiceTarget(voice_pi::VoicePage(), true) == seditview_pi::kPage && seditview_pi::kPage == 21);
   from_rytm(0x49, 1, 15, 0);                               // past the table: not a request
   CHECK(voice_pi::Request(&seen, false, &tseen) == -1);
 
