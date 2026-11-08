@@ -2104,6 +2104,55 @@ int main() {
     poly::midi(0x9D, 1, 100), poly::midi(0x8D, 1, 0);       // SD's pad: not a seq track
     CHECK(poly::stats().seq_pads == sp0 + 2);
     printf("  fix1040b: a seq track's own pad plays its voice (either order), the Rytm's own trig and SD's pad do not\n");
+    // padbind: selecting a seq track (49 02) binds the auto channel to its voice at once (offset 24, the CHRO pads'
+    // measured 0x04 - MIDI note), so its first CHRO pad plays; before, the first hits were silent until two pads voted
+    {
+      char pl0[160];                                           // (an earlier part's keyboard on ch 1 plays bvi:
+      poly::command("poly=bind:1:off", pl0, sizeof pl0);       //  freed here, bound again at the end)
+      poly::selected_voice(-1);                                // another track (no voice): unbound
+      CHECK(poly::stats().bound[13] == -1);
+      poly::selected_voice(bvi);                               // BD, a seq track, selected
+      CHECK(poly::stats().bound[13] == bvi);
+      uint32_t l0 = poly::stats().live_notes;
+      poly::midi(0x9D, 40, 100);                               // the first CHRO pad: plays now
+      CHECK(poly::stats().live_notes == l0 + 1);
+      poly::midi(0x8D, 40, 0);
+      advance_ms(300);
+      poly::selected_voice(-1);                                // leaving it unbinds, as before
+      CHECK(poly::stats().bound[13] == -1);
+      // the seq track made (or its machine changed) after the selection: its first CHRO note-on binds it
+      poly::selected_voice(bvi);
+      poly::selected_voice(-1);
+      CHECK(poly::stats().bound[13] == -1);
+      poly::selected_voice(bvi);                               // bound again; drop the binding as a machine change does
+      char pl[160];
+      poly::command("poly=bind:14:off", pl, sizeof pl);
+      CHECK(poly::stats().bound[13] == -1);
+      uint32_t l1 = poly::stats().live_notes;
+      poly::midi(0x9D, 42, 100);                               // the first CHRO note-on: binds and plays
+      CHECK(poly::stats().bound[13] == bvi && poly::stats().live_notes == l1 + 1);
+      poly::midi(0x8D, 42, 0);
+      advance_ms(300);
+      // a host keyboard bound to the voice (poly=bind) keeps it: selecting the track does not take it
+      poly::selected_voice(-1);
+      poly::command(("poly=bind:2:" + std::to_string(bvi)).c_str(), pl, sizeof pl);
+      CHECK(poly::stats().bound[1] == bvi);
+      poly::selected_voice(bvi);
+      CHECK(poly::stats().bound[1] == bvi && poly::stats().bound[13] == -1);
+      poly::midi(0x9D, 42, 100), poly::midi(0x8D, 42, 0);      // nor a CHRO note-on
+      CHECK(poly::stats().bound[1] == bvi && poly::stats().bound[13] == -1);
+      poly::command("poly=bind:2:off", pl, sizeof pl);
+      // the auto channel itself a keyboard's: left alone
+      poly::command(("poly=bind:14:" + std::to_string(bvi)).c_str(), pl, sizeof pl);
+      poly::selected_voice(-1);
+      poly::selected_voice(bvi);
+      CHECK(poly::stats().bound[13] == bvi);
+      poly::command("poly=bind:14:off", pl, sizeof pl);
+      poly::selected_voice(-1);
+      advance_ms(300);
+      poly::command(("poly=bind:1:" + std::to_string(bvi)).c_str(), pl, sizeof pl);
+      printf("  padbind: selecting a seq track binds the CHRO pads to its voice, the first pad plays; a keyboard's binding stays\n");
+    }
     // 7g PAD OCT: a normal pad's 0x04 note enters the voice shifted (the CHRO pads' bound shift and the recording are
     // test_poly's: the channel binds from the Rytm's own trigs there)
     {

@@ -513,6 +513,20 @@ CORE_COLD void init() {
   reset();
 }
 
+// padbind (owner, 2026-11-08: a poly track's first CHRO pads were silent until two of them voted): the selected track's
+// voice, when a seq track plays it live (6-OP FM, the note machines, the arp), is bound to the auto channel at once at
+// kPadOff - on the selection (49 02), and on a CHRO note-on while the channel is unbound (the seq track made, or its
+// machine changed, after the selection). Left alone: an auto channel that is a keyboard's poly=bind channel, a voice a
+// poly=bind channel plays (bind() would take it), and a channel already bound to the voice (its learned offset kept).
+int sel_vi = -1;   // the Rytm's selected track's voice (-1 none or not known)
+CORE_COLD void pad_bind(int vi) {
+  int a = keys::auto_channel() - 1;
+  if (vi < 0 || a < 0 || a >= 16 || chans[a].direct || chans[a].vi == vi) return;
+  if (!seq::owns_voice(vi) || !plays_live(vi)) return;
+  int o = chan_of_voice(vi);
+  if (o >= 0 && chans[o].direct) return;
+  bind(a, vi, kPadOff);
+}
 CORE_COLD void selected_voice(int vi) {
   for (int c = 0; c < 16; ++c) {
     Chan& ch = chans[c];
@@ -525,9 +539,12 @@ CORE_COLD void selected_voice(int vi) {
     ch.vi = -1, st.bound[c] = -1;
   }
   memset(votes, 0, sizeof votes);
+  sel_vi = vi;
+  pad_bind(vi);
 }
 CORE_COLD void reset() {
   trk_held = false;
+  sel_vi = -1;
   memset(trk_sw, 0, sizeof trk_sw);
   if (slots)
     for (int i = 0; i < kTotal; ++i) slots[i].owner = -1, slots[i].held = false;
@@ -872,6 +889,7 @@ CORE_COLD void midi(uint8_t status, uint8_t d1, uint8_t d2) {
     return;
   }
   if (c.vi >= 0 && !c.direct && !plays_live(c.vi)) c.vi = -1, st.bound[ch] = -1;   // the voice left FM / MULTISAMPLE
+  if (kind == 0x90 && d2 && c.vi < 0 && !c.direct && ch == keys::auto_channel() - 1) pad_bind(sel_vi);   // padbind
   if (kind == 0x90 && d2) {
     // the Rytm's mono pads (poly.h kStealMs): the gesture, the note this one displaces
     if (silent(c) || ms - c.last_ms > kGestureMs) c.g0 = ms, c.since = 0;
