@@ -18,6 +18,11 @@ static_assert(sizeof(((sidecar_sedit_view_t*)0)->name) == sizeof g_v.name, "the 
 static_assert(sizeof(((sidecar_sedit_view_t*)0)->msg) == sizeof g_v.msg, "the message");
 }  // namespace
 
+bool Open() {
+  core::sedit::view(&g_v);
+  return g_v.st != core::sedit::kClosed;
+}
+
 void Fill(sidecar_sedit_view_t* o) {
   core::sedit::view(&g_v);
   memset(o, 0, offsetof(sidecar_sedit_view_t, gen));

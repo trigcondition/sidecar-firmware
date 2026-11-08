@@ -25,6 +25,12 @@ static int s_nDrag = -1;		// the marker under the finger: 0 start, 1 end
 static int s_bPanning, s_nShift;	// a pan in progress; the outline's shift in pixels (until the engine's window follows)
 static lv_point_t s_P0;
 static unsigned s_nGen = ~0u;
+// After a release the page shows what it sent until the engine's view has it, or for HOLD views at most: a move the
+// engine refused (or never got) then gives way to the engine's marker / window again, whatever the view's gen says
+#define HOLD 5
+static int s_nHold, s_nHoldM = -1, s_bHoldPan;	// views left to wait; the marker held (0 start, 1 end) or the pan
+static unsigned s_nHoldF;			// the held marker's frame
+static unsigned s_nEngA, s_nEngB;		// the region as the engine's last view had it (a lost press goes back to it)
 static void (*s_Cmd) (const char *cmd);
 static char s_Last[64];
 
@@ -206,12 +212,22 @@ static void wave_cb (lv_event_t *e)
 	else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST)
 	{
 		if (s_nDrag >= 0 && code == LV_EVENT_RELEASED)
-			cmd2 (s_nDrag ? "sedit=end:%u" : "sedit=start:%u", s_nDrag ? s_V.b : s_V.a, 0);
+		{
+			s_nHoldF = s_nDrag ? s_V.b : s_V.a;
+			cmd2 (s_nDrag ? "sedit=end:%u" : "sedit=start:%u", s_nHoldF, 0);
+			s_nHold = HOLD, s_nHoldM = s_nDrag, s_bHoldPan = 0;
+		}
+		else if (s_nDrag >= 0)	// the press lost: nothing sent, the engine's region again
+			s_V.a = s_nEngA, s_V.b = s_nEngB;
 		else if (s_bPanning)
 		{
 			long long wa = (long long) s_V.wa - (long long) s_nShift * span () / (w > 3 ? w - 3 : 1);
 			if (wa < 0) wa = 0;
-			if (code == LV_EVENT_RELEASED && (unsigned) wa != s_V.wa) window ((unsigned) wa, span ());
+			if (code == LV_EVENT_RELEASED && (unsigned) wa != s_V.wa)
+			{
+				window ((unsigned) wa, span ());
+				s_nHold = HOLD, s_nHoldM = -1, s_bHoldPan = 1;
+			}
 			else s_nShift = 0;	// (nothing sent: nothing to wait for)
 		}
 		s_nDrag = -1, s_bPanning = 0;
@@ -342,6 +358,7 @@ void sidecar_sedit_create (void *parent, int y0)
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, pw, ph);
 	s_Page = pg;
 	s_nGen = ~0u, s_bHave = 0, s_nDlg = DLG_NONE, s_nDrag = -1, s_bPanning = 0, s_nShift = 0;
+	s_nHold = 0, s_nHoldM = -1, s_bHoldPan = 0;
 	if (O)
 	{
 		s_TitleBar = th_titlebar (pg, 0, 0, pw, LU (13));
@@ -416,17 +433,29 @@ void sidecar_sedit_show (int on)
 		dlg_show (DLG_NONE);	// (a question is not left for the next visit)
 	}
 }
+int sidecar_sedit_open (void) { return open_ (); }
 int sidecar_sedit_shown (void) { return s_Page && !lv_obj_has_flag (s_Page, LV_OBJ_FLAG_HIDDEN); }
 void sidecar_sedit_set (const sidecar_sedit_view_t *v)
 {
 	if (!s_Page) return;
-	if (s_bHave && v->gen == s_nGen && s_nDrag < 0) return;
-	int drag = s_nDrag;
-	unsigned ka = s_V.a, kb = s_V.b;	// (the marker being dragged stays where the finger is)
+	if (s_bHave && v->gen == s_nGen && s_nDrag < 0 && !s_nHold) return;
+	int keep = s_nDrag;	// the marker that stays as the page has it: under the finger, or sent and not taken yet
+	unsigned ka = s_V.a, kb = s_V.b;
+	s_nEngA = v->a, s_nEngB = v->b;
+	if (s_nHold > 0)
+	{
+		int took = s_bHoldPan ? v->wa != s_V.wa || v->wb != s_V.wb : s_nHoldM == 0 ? v->a == s_nHoldF : v->b == s_nHoldF;
+		if (took || --s_nHold <= 0)
+		{
+			if (s_bHoldPan) s_nShift = 0;
+			s_nHold = 0, s_nHoldM = -1, s_bHoldPan = 0;
+		}
+		else if (keep < 0 && !s_bHoldPan) keep = s_nHoldM;
+	}
 	if (s_bHave && (v->wa != s_V.wa || v->wb != s_V.wb) && !s_bPanning) s_nShift = 0;	// the engine's window followed the pan
 	s_V = *v;
-	if (drag == 0) s_V.a = ka < s_V.b ? ka : s_V.b - 1;
-	if (drag == 1) s_V.b = kb > s_V.a ? kb : s_V.a + 1;
+	if (keep == 0) s_V.a = ka < s_V.b ? ka : s_V.b - 1;
+	if (keep == 1) s_V.b = kb > s_V.a ? kb : s_V.a + 1;
 	s_nGen = v->gen, s_bHave = 1;
 	if (!open_ ()) dlg_show (DLG_NONE);
 	inval_all ();

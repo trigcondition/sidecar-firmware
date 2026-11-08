@@ -37,6 +37,10 @@ int main() {
   // every other page is left alone by a track change (a deliberate navigation is not undone)
   const int others[] = {PG_HOME, PG_SOUND, PG_SEQ, PG_RYTM, PG_INS, PG_SONG, PG_REC, PG_SCOPE, 13, 14, 15, 16};
   for (int p : others) CHECK(after_change(p, chop) == -1 && after_change(p, 0x08) == -1);
+  // an edit open (core/samp/sedit): VOICE leads back to SAMPLE EDIT (21), whatever the track's machine
+  CHECK(voice_pi::VoiceTarget(PG_VOICE, true) == 21 && voice_pi::VoiceTarget(PG_CHOP, true) == 21);
+  CHECK(voice_pi::VoiceTarget(PG_VOICE, false) == PG_VOICE && voice_pi::VoiceTarget(PG_CHOP, false) == PG_CHOP);
+  CHECK(!voice_pi::FollowsTrack(21));                     // and SAMPLE EDIT never follows a track change
   if (g_fail) return 1;
   printf("test_voice_follow: ok\n");
   return 0;

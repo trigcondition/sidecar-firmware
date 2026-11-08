@@ -1,5 +1,6 @@
 // pi/engine/voice_pi.cpp - see voice_pi.h. Hosted (the core's flags); core 0.
 #include "voice_pi.h"
+#include "seditview_pi.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -124,7 +125,7 @@ void fill_daisy(sidecar_voice_view_t& v) {
 int VoicePage() {
   int t = core::ui::remote_selected_track(nullptr);
   int vb = t >= 0 ? core::ui::remote_track_machine(t) : -1;
-  return PageForMachine(vb);
+  return VoiceTarget(PageForMachine(vb), seditview_pi::Open());
 }
 
 void Seen(uint32_t* seen, uint32_t* track_seen) {

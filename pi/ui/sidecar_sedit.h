@@ -6,7 +6,7 @@
 //                 region), UNDO, PLAY (the region once on the track), SAVE (asks SAVE + USE, only for an edit opened from
 //                 a track, or SAVE), CLOSE (asks before it drops an edit not saved)
 // LVGL only (pi/ui/host renders it); both themes (OLED, SIDECAR), all sizes. The caller hands it a view (sidecar_sedit_set,
-// ~10 a second while shown); it redraws only what changed. Every action is a console command through the command
+// ~10 a second, shown or not: the VOICE key needs to know an edit is open); it redraws only what changed. Every action is a console command through the command
 // function (sedit=...: core/samp/sedit.cpp command()).
 #ifndef SIDECAR_SEDIT_H
 #define SIDECAR_SEDIT_H
@@ -38,6 +38,7 @@ typedef struct
 void sidecar_sedit_create (void *parent, int y0);	// hidden until shown
 void sidecar_sedit_show (int on);
 int sidecar_sedit_shown (void);
+int sidecar_sedit_open (void);			// the last view had an edit open (the VOICE key then comes back here)
 int sidecar_sedit_dragging (void);		// a marker is under the finger (its move is sent at the release): the page is not to be left now
 void sidecar_sedit_set (const sidecar_sedit_view_t *v);	// copied
 void sidecar_sedit_set_command (void (*fn) (const char *cmd));

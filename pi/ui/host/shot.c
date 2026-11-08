@@ -1711,9 +1711,35 @@ static void theme_run (int style, const char *pre)
 		s_Down = 0; run (3);
 		EXPECT (!sidecar_sedit_dragging ());
 		EXPECT (!strncmp (s_Last, "sedit=start:", 12) && atoi (s_Last + 12) > 2400);	// (sent at the release)
+		{	// the engine refused it (its views keep the old start, the same gen): held a moment, then the engine's again
+			int xs, xe;
+			EXPECT (sidecar_sedit_hit (0, 0, &xs, &y1) && xs > x + 80);
+			sidecar_sedit_set (&s_Se); run (1);
+			EXPECT (sidecar_sedit_hit (0, 0, &x1, &y1) && x1 == xs);
+			for (int i = 0; i < 6; i++) sidecar_sedit_set (&s_Se);
+			run (1);
+			EXPECT (sidecar_sedit_hit (0, 0, &xe, &y1) && xe == x);
+		}
 		EXPECT (sidecar_sedit_hit (0, 1, &x, &y));				// the end marker, to the left
 		drag (x, y, x - 60, y, 4, 0);
 		EXPECT (!strncmp (s_Last, "sedit=end:", 10) && atoi (s_Last + 10) < 48000);
+		s_Se.b = (unsigned) atoi (s_Last + 10); s_Se.gen++;			// taken: the engine's view has it
+		sidecar_sedit_set (&s_Se); run (1);
+		EXPECT (sidecar_sedit_hit (0, 1, &x1, &y1) && x1 < x - 40);
+		sedit_fake (0); sidecar_sedit_set (&s_Se); run (1);			// (the region back to the fake's)
+		{	// a press lost (LVGL's wait-for-release: the press taken away mid-drag): nothing sent, the engine's marker again
+			int xe;
+			EXPECT (sidecar_sedit_hit (0, 1, &x, &y));
+			snprintf (s_Last, sizeof s_Last, "-");
+			s_Px = sx (x); s_Py = sy (y); s_Down = 1; run (3);
+			for (int i = 1; i <= 4; i++) { s_Px = sx (x - 15 * i); run (1); }
+			EXPECT (sidecar_sedit_dragging ());
+			lv_indev_wait_release (lv_indev_get_next (NULL)); run (3);
+			s_Down = 0; run (3);
+			EXPECT (!sidecar_sedit_dragging ());
+			EXPECT_CMD ("-");
+			EXPECT (sidecar_sedit_hit (0, 1, &xe, &y1) && xe == x);
+		}
 		EXPECT (sidecar_sedit_hit (1, SSE_FN_CROP, &x, &y)); tap (x, y);
 		EXPECT_CMD ("sedit=apply:CROP");
 		EXPECT (sidecar_sedit_hit (1, SSE_FN_GAIN_DN, &x, &y)); tap (x, y);
@@ -1760,6 +1786,19 @@ static void theme_run (int style, const char *pre)
 		snprintf (s_Last, sizeof s_Last, "-");
 		EXPECT (sidecar_sedit_hit (1, SSE_FN_CROP, &x, &y)); tap (x, y);	// busy: the functions wait
 		EXPECT_CMD ("-");
+		// an edit open: the VOICE key leads back to it from another page; closed: VOICE as ever
+		sidecar_ui_show (8); run (2);
+		EXPECT (!sidecar_sedit_shown ());
+		if (o) tap (NAV_X, NAV_Y (3)); else tap (CNAV_X (3), CNAV_Y (3));
+		EXPECT (sidecar_sedit_shown () && sidecar_ui_page () == 21 && sidecar_ui_nav_lit () == 3);
+		s_Se.valid = 0, s_Se.st = SSE_ST_CLOSED, s_Se.gen++; sidecar_sedit_set (&s_Se); run (2); shot ("sedit-closed");
+		sidecar_ui_show (0); run (2);
+		if (o) tap (NAV_X, NAV_Y (3)); else tap (CNAV_X (3), CNAV_Y (3));
+		EXPECT (!sidecar_sedit_shown () && sidecar_ui_page () == 8);
+		sidecar_ui_show (99);							// out of range: HOME (not the last page)
+		EXPECT (sidecar_ui_page () == 0 && !sidecar_sedit_shown ());
+		sidecar_ui_show (-1);
+		EXPECT (sidecar_ui_page () == 0);
 	}
 	// ---- touch2: SIDECAR STATUS (UP + T10); the home page's engine numbers open it
 	sidecar_ui_show (13);

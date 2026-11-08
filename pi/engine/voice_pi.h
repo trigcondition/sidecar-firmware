@@ -23,8 +23,11 @@ void Pick(int track);
 // Rytm's own screen, core/ui/remote.cpp). Also while on VOICE / the machine view (`voice_mode`): a track change on
 // the Rytm, or a machine change of the selected track, moves between the two as the track's machine needs.
 int Request(uint32_t* seen, bool voice_mode, uint32_t* track_seen);
-// The page VOICE means for the selected track now: 7 the machine view, 8 VOICE, 17 CHOP
+// The page VOICE means for the selected track now: 7 the machine view, 8 VOICE, 17 CHOP; 21 SAMPLE EDIT while an edit
+// is open (VoiceTarget)
 int VoicePage();
+// VOICE's page `page` for the track, or SAMPLE EDIT (21) while an edit is open: VOICE leads back to the edit
+inline int VoiceTarget(int page, bool edit_open) { return edit_open ? 21 : page; }
 // The page for a track's machine byte (remote_track_machine: -1 unknown, 0x7F analog): 7 GRANULAR / WAVETABLE, 17 CHOP,
 // else 8.
 inline int PageForMachine(int vb) {

@@ -521,6 +521,7 @@ static void nav_cb (lv_obj_t *o, int i, void *ud)
 	static const int kPage[NAV_N] = {PG_HOME, PG_SEQ, PG_RYTM, PG_VOICE, PG_INS, PG_SONG, PG_REC, -1};
 	int n = (int) (intptr_t) ud;
 	if (n == NAV_VOICE) command ("voicepick=-1");		// VOICE: the Rytm's selected track again
+	if (n == NAV_VOICE && sidecar_sedit_open ()) { show_page (PG_SEDIT); return; }	// an edit open: VOICE goes back to it
 	show_page (n == NAV_SET ? s_nLast : kPage[n]);
 }
 static void track_cb (lv_obj_t *o, int i, void *ud)		// a voice on the home page: VOICE for its first track (UX review
@@ -1864,7 +1865,7 @@ int sidecar_ui_touch_cal_step (void) { return s_nCalStep; }
 
 void sidecar_ui_show (int page)
 {
-	show_page (page < 0 ? 0 : page >= PG_N ? PG_N - 1 : page);
+	show_page (page < 0 || page >= PG_N ? PG_HOME : page);
 }
 
 void sidecar_ui_touch (int pressed, int raw_x, int raw_y, int x, int y)

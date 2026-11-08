@@ -2606,15 +2606,15 @@ void CKernel::Run (void)
 			{					// SAMPLE EDIT: shown while an edit is open (the Rytm's page, the console, the web),
 				static sidecar_sedit_view_t s_SeditView;	// back to the page the display was on when it closes; ~10
 				static unsigned s_nSeditAt;		// frames a second, redrawn only on a change
-				static int s_nSeditBack = -1;		// the page to go back to (-1: no edit open)
+				static int s_nSeditBack = -1;		// the page to go back to (-1: not shown for an open edit yet)
 				unsigned nNow = m_Timer.GetClockTicks ();
 				if (nNow - s_nSeditAt >= 100000)
 				{
 					s_nSeditAt = nNow;
 					seditview_pi::Fill (&s_SeditView);
 					int nCur = sidecar_ui_page ();
-					if (s_SeditView.valid && s_nSeditBack < 0)
-					{
+					if (s_SeditView.valid && s_nSeditBack < 0 && !(nCur == 17 && sidecar_chop_dragging ()))
+					{					// (a CHOP marker under the finger: after its release)
 						s_nSeditBack = nCur == seditview_pi::kPage ? 0 : nCur;
 						sidecar_ui_show (seditview_pi::kPage);
 					}
@@ -2623,7 +2623,7 @@ void CKernel::Run (void)
 						if (nCur == seditview_pi::kPage) sidecar_ui_show (s_nSeditBack);	// (left by hand: stays there)
 						s_nSeditBack = -1;
 					}
-					if (sidecar_sedit_shown ()) sidecar_sedit_set (&s_SeditView);
+					sidecar_sedit_set (&s_SeditView);	// (shown or not: the VOICE key comes back to an open edit)
 				}
 			}
 			m_pDisplay->Update (bPlugAndPlay);	// a redraw at most every 10 ms, dirty areas only
