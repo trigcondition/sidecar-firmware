@@ -707,6 +707,8 @@ CORE_COLD void on_key(int code, bool down) {
         if (s.held_page != x) release_held();
         s.held_page = x, s.held_keys[code >> 5] |= 1u << (code & 31);
       }
+      // a page the key closed (SAMPLE EDIT's DISCARD EDIT? YES): out of the list, so back where it was opened from
+      if (extra_of(s.voice) == x && x->shown && !x->shown() && !go_back()) go(0);
       return;
     }
   if (code == kKeyUp) return;   // fix1049: UP is the Sidecar's modifier (page_keys.h), no page arrow: LEFT / RIGHT step
@@ -952,7 +954,8 @@ CORE_COLD void frame(uint32_t ms) {
     s.modal_shown = on;
   }
   bool sq = x && !strcmp(x->title, "SEQ");
-  bool fn = sq || (x && !strcmp(x->title, "MORPH"));   // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides')
+  // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides'); SAMPLE EDIT's FUNC + YES (save) too
+  bool fn = sq || (x && (!strcmp(x->title, "MORPH") || !strcmp(x->title, "SAMPLE EDIT")));
   if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, page_trigs(x), fn, sq && seq_data(),
                             !sq || seq_yes(), !sq || seq_updown());   // before the frame: the keys and knobs the page shows are its own from now on
   update_leds(x);
@@ -1510,6 +1513,10 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       if (!s.open && s.src_track >= 0 && b[0] == 0 && b[1] >= 0x70 && b[1] <= 0x77) {   // rui1036: the SRC view's pushes
 #if CORE_POLY && CORE_MSAMP
         if (chop_src_push(s.src_track, b[1], b[2] != 0)) {   // CHOP: a push of B..H opens the slice editor
+          s.input = true;
+          return;
+        }
+        if (sedit_src_push(s.src_track, b[1], b[2] != 0)) {   // DSP SAMPLE: a push of B opens SAMPLE EDIT
           s.input = true;
           return;
         }
