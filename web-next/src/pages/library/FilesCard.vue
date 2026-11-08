@@ -9,6 +9,7 @@ import { confirmAsk } from "../../lib/confirm";
 import { createFs, hb, saveBlob, type FsEntry } from "../../lib/fs";
 import { useLogWait } from "../../lib/logwait";
 import { notify } from "../../lib/notify";
+import { INBOX, isPoolAudio, takeCmd } from "../../lib/inbox";
 import { BANKS, answerText, poolAnswer } from "../../lib/pool";
 import { natCmp } from "../../lib/rec";
 import { uploadFile, type Source } from "../../lib/upload";
@@ -115,7 +116,7 @@ async function fill(x: FsEntry) {
 interface Up { name: string; text: string; frac: number; done: boolean; bad: boolean; cancel: boolean }
 const ups = ref<Up[]>([]);
 let running = false;
-const queue: { f: Source; to: string; u: Up }[] = [];
+const queue: { f: Source; to: string; u: Up; take?: boolean }[] = [];
 function enqueue(files: FileList | File[], rel = false) {
   for (const f of Array.from(files)) {
     if (/^(\.DS_Store|Thumbs\.db)$|^\._/.test(f.name)) continue; // junk the old page leaves out too
@@ -126,11 +127,37 @@ function enqueue(files: FileList | File[], rel = false) {
   }
   run();
 }
+// the drop zone: files go to /Samples/Inbox (made when missing) and each WAV is taken into the SAMPLES pool
+const over = ref(false);
+function enqueueInbox(files: FileList | File[]) {
+  for (const f of Array.from(files)) {
+    if (/^(\.DS_Store|Thumbs\.db)$|^\._/.test(f.name)) continue;
+    const to = join(INBOX, f.name);
+    const u: Up = { name: f.name, text: "waiting", frac: 0, done: false, bad: false, cancel: false };
+    ups.value.push(u);
+    queue.push({ f, to, u, take: isPoolAudio(f.name) });
+  }
+  run();
+}
+function onDrop(e: DragEvent) {
+  over.value = false;
+  if (e.dataTransfer?.files?.length) enqueueInbox(e.dataTransfer.files);
+}
+async function takeIntoPool(to: string, name: string): Promise<string> {
+  if (to.length > 159) return "not added: the path is too long for the POOL (159 characters)";
+  const w = waitFor((l) => poolAnswer(l, "smp"));
+  try {
+    await cmd(takeCmd(to));
+  } catch (e) {
+    return (e as Error).message;
+  }
+  return answerText("add", "SAMPLES", await w, name)[0];
+}
 async function run() {
   if (running) return;
   running = true;
   while (queue.length) {
-    const { f, to, u } = queue.shift()!;
+    const { f, to, u, take } = queue.shift()!;
     const i = ups.value.findIndex((x) => x === u || x.name === u.name);
     const set = (t: Partial<Up>) => Object.assign(ups.value[i] ?? u, t);
     if (u.cancel) { set({ text: "cancelled", done: true, bad: true }); continue; }
@@ -139,6 +166,7 @@ async function run() {
       if (dir !== path.value) await fs.post("mkdir", { path: dir, p: "1" });
       const r = await uploadFile(api, f, to, (p) => set({ text: p.text, frac: p.frac }), () => u.cancel);
       set({ text: r, frac: 1, done: true });
+      if (take) set({ text: `${r}; ${await takeIntoPool(to, f.name)}` });
     } catch (e) {
       set({ text: (e as Error).message, done: true, bad: true });
     }
@@ -201,6 +229,11 @@ async function run() {
         <label class="btn">Upload files<input type="file" multiple class="visually-hidden" @change="enqueue(($event.target as HTMLInputElement).files!); ($event.target as HTMLInputElement).value = ''" /></label>
         <label class="btn">Upload a folder<input type="file" webkitdirectory class="visually-hidden" @change="enqueue(($event.target as HTMLInputElement).files!, true); ($event.target as HTMLInputElement).value = ''" /></label>
       </div>
+      <div class="drop" :class="{ over }" role="group" aria-label="Samples for the SAMPLES pool" @dragover.prevent="over = true" @dragleave="over = false" @drop.prevent="onDrop">
+        <span>Drop samples here → SAMPLES pool</span>
+        <label class="btn">Choose files<input type="file" multiple accept=".wav,audio/wav,audio/x-wav" class="visually-hidden" @change="enqueueInbox(($event.target as HTMLInputElement).files!); ($event.target as HTMLInputElement).value = ''" /></label>
+        <span class="small">They go to {{ INBOX }}; each WAV is added to the pool.</span>
+      </div>
       <ul v-if="ups.length" class="ups" aria-label="Uploads">
         <li v-for="(u, i) in ups" :key="i">
           <span class="name">{{ u.name }}</span>
@@ -229,6 +262,8 @@ async function run() {
 .acts { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 .btn { display: inline-flex; align-items: center; min-height: var(--target); padding: 0.5rem 0.875rem; border: var(--control-border-width) solid var(--control-border); border-radius: var(--radius-control); cursor: pointer; }
 .btn:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+.drop { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.75rem; border: 2px dashed var(--control-border); border-radius: var(--radius-control); }
+.drop.over { border-color: var(--accent); background: var(--surface-2, transparent); }
 .danger { border-color: var(--warm); color: var(--warm); }
 progress { width: 8rem; accent-color: var(--accent); }
 </style>

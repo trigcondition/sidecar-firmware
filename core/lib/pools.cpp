@@ -1325,7 +1325,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   tag[tl] = 0;
   int l = list_of_tag(tag);
   if (l < 0 || !c1) {
-    sniprintf(out, cap, "pool: pool=smp|wt|inst:set:A010:PATH|replace:A010:PATH[:yes|:force]|add:B:PATH|clear:A010|"
+    sniprintf(out, cap, "pool: pool=smp|wt|inst:set:A010:PATH|replace:A010:PATH[:yes|:force]|add:B:PATH|take:PATH|clear:A010|"
                         "unload:A010[,..]|fill:B:FOLDER|input:H001:IN|builtin:H011:PAD|assign:A010:I|accept:A010|shown:B|"
                         "unused|list[:B]|undo");
     return true;
@@ -1359,6 +1359,12 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     int o = -1;
     int rr = add_file(l, b, q + 2, &o);
     res(o, rr, q + 2);
+    return true;
+  }
+  if (!strncmp(r, "take:", 5)) {   // the shown bank, or the next with room (the web's drop zone)
+    int o = -1;
+    int rr = add_take(l, r + 5, &o);
+    res(o, rr, r + 5);
     return true;
   }
   if (!strncmp(r, "clear:", 6) || !strncmp(r, "unload:", 7)) {
