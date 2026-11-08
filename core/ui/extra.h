@@ -184,10 +184,6 @@ uint32_t chop_key(const Cell& c, const Source& s);
 void chop_draw(Canvas& cv, const Rect& r, const Cell& c, const Source& s, int slot);
 bool chop_src_push(int track, int code, bool down);
 void chop_page_open(int track);
-#if CORE_UI_TOOLS
-void chop_page_set(int view, int sel, int zoom);   // tests and the renderer: the editor's view (0 EDIT 1 SLICE 1 2 SLICE 2)
-int chop_page_sel();
-void chop_page_reset();
 // SAMPLE EDIT (page_sedit.cpp, core/samp/sedit.h): the sample editor on the Rytm's screen (off the ring; shown while an
 // edit is open). sedit_src_push: a push of encoder B on a DSP SAMPLE track's SRC view (31 0x71) opens the track's sample
 // (true: taken); sedit_page_open the same from elsewhere: track t's sample, else (t -1) SAMPLES pool code `code` (the
@@ -195,6 +191,10 @@ void chop_page_reset();
 extern const ExtraPage kSeditPage;
 bool sedit_src_push(int track, int code, bool down);
 void sedit_page_open(int track, int code);
+#if CORE_UI_TOOLS
+void chop_page_set(int view, int sel, int zoom);   // tests and the renderer: the editor's view (0 EDIT 1 SLICE 1 2 SLICE 2)
+int chop_page_sel();
+void chop_page_reset();
 void sedit_page_reset();   // tests
 #endif
 void poly_page_closed();
