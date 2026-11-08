@@ -31,6 +31,7 @@ int edit_name(const char* src_path, char* out, int cap);
 struct Namer {
   int begin(const char* src_path, char* out, int cap);
   int step();
+  uint32_t waits = 0;   // the steps that only waited for the card core (the caller's step did no work)
 
  private:
   cardq::Req r_ = {};
@@ -49,6 +50,7 @@ struct Loader {
   int begin(const char* path);   // 0, kErrName, or kErrBusy (its last request still runs)
   int step();                    // 1 more, 0 done, < 0 a kErr* code
   uint32_t loaded() const { return frame_; }   // the frames decoded so far
+  uint32_t waits = 0;                          // the steps that only waited for the card core (no work done)
   float* x = nullptr;
   uint32_t frames = 0, rate = 0;
   uint8_t ch = 0, bits = 0;
@@ -73,7 +75,7 @@ struct Saver {
   int begin(const char* target, const float* x, int ch, int bits, uint32_t rate, uint32_t frames);
   int step();   // 1 more, 0 done, < 0 a kErr* code
   uint32_t written() const { return pos_; }   // the frames encoded so far
-  uint32_t yields = 0;
+  uint32_t waits = 0;   // the steps that only waited (a card request running, or a piece held back for a stream)
 
  private:
   int fail(int err);

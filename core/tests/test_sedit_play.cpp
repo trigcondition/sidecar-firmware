@@ -25,6 +25,7 @@
 #include "msamp/cardq.h"
 #include "nmach.h"
 #include "pool/pcache.h"
+#include "pool/pool.h"
 #include "samp/dsp.h"
 #include "samp/sedit.h"
 #include "samp/sedit_dsp.h"
@@ -243,6 +244,7 @@ static void t_swap_busy_note() {
   cmd("sedit=apply:rev");
   for (int i = 0; i < 100; ++i) pass();
   CHECK(vw().st == sedit::kBusy && engines[0].pcm() == p0 && checksum(p0, kN + 1) == h0);
+  CHECK(!sedit::step());   // (the wait is no work: the engine's AMP and stream top-ups run meanwhile)
   CHECK(!strncmp(cmd("sedit=apply:gain-"), "sedit: st=busy", 14));   // (refused while it waits: BUSY)
   CHECK(!strcmp(vw().msg, "BUSY"));
   trig();   // the next trig moves the voice to the normalised buffer: the wait ends
@@ -400,6 +402,23 @@ static void t_preview() {
   CHECK(pcache::stats().priv == g_priv0);
 }
 
+// A project switch closes the edit: the new project's sample in the same slot never plays the old edit
+static void t_project_closes() {
+  warm(1);
+  cmd("sedit=open:track:0");
+  run();
+  cmd("sedit=apply:gain+");
+  run();
+  CHECK(vw().st == sedit::kReady);
+  trig();
+  CHECK(engines[0].pcm() != g_orig);   // the edit plays
+  until_end();
+  project_switch_named("OTHER", "OTHER", false);
+  CHECK(vw().st == sedit::kClosed);
+  for (int i = 0; i < 10; ++i) pass();
+  CHECK(pcache::stats().priv == g_priv0);
+}
+
 int main() {
   char tmpl[] = "/tmp/sedit-play-XXXXXX";
   CHECK(mkdtemp(tmpl));
@@ -437,6 +456,7 @@ int main() {
   t_plock_other_smp();
   t_render_no_alloc();
   t_preview();
+  t_project_closes();
   CHECK(system(("rm -rf '" + g_card + "'").c_str()) == 0);
   printf("test_sedit_play: PASS\n");
   return 0;

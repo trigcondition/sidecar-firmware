@@ -6,6 +6,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "../lib/library.h"
 #include "../lib/pools.h"
 #include "../lib/srclib.h"
 #include "../machines.h"
@@ -27,8 +28,11 @@ namespace {
 enum Job : uint8_t { kNoJob, kLoad, kApply, kSave };
 // An apply's passes, in order (each in pieces of kEditPiece frames; the ones a function does not need are skipped)
 enum Pass : uint8_t { kPeak, kFloor, kFirst, kLast, kCopy, kOp, kFade, kSwap };
-// A save's
-enum SavePass : uint8_t { kName, kWrite };
+// A save's: the name, the write, then the pool once the library's published index has the file
+enum SavePass : uint8_t { kName, kWrite, kPool };
+// The pool's wait for the library to publish the saved file (lib::touched works on the card core's index; the snapshot
+// pools read follows at its next publish, 250 ms or more apart on a big index)
+constexpr uint32_t kPublishWaitMs = 5000;
 
 struct Ed {
   State st = kClosed;
@@ -60,6 +64,8 @@ struct Ed {
   bool use = false;
   int scode = -1;                   // the source's row when the save began (kept if the editor closes meanwhile)
   char target[cardq::kPathMax] = "";
+  uint32_t lgen = 0, pool_ms = 0;   // kPool: the library's gen() and the time when the file was whole
+  bool pool_off = false;            // the project changed during the save: the copy stays out of the new one's pool
   // a close while a card job runs: the job finishes out of sight, then everything goes
   bool drain = false;
   // live play (a track's open): the edit as int16 in two play buffers that take turns, the one not in the voice's
@@ -206,12 +212,12 @@ CORE_COLD bool refuse_busy() {
 // ---- the load
 
 CORE_COLD bool step_load() {
-  uint32_t before = g_load.loaded();
+  uint32_t before = g_load.loaded(), w0 = g_load.waits;
   int r = g_load.step();
   e.step_frames = g_load.loaded() - before;
   if (r > 0) {
     if (g_load.frames) set_progress(g_load.loaded(), g_load.frames);
-    return true;
+    return g_load.waits == w0;   // (a card request still running: no work done)
   }
   if (e.drain) {   // closed meanwhile
     if (r == 0) pcache::release(g_load.blk);
@@ -400,8 +406,9 @@ CORE_COLD bool step_apply() {
 // The copy saved: into the SAMPLES pool (the source's bank, else the next with room), and the source from now on (not
 // when the editor was closed meanwhile: then only the pool)
 CORE_COLD void saved() {
-  int code = -1;
-  int r = pools::add_file(pools::kSamples, pools::bank_of(e.scode < 0 ? 0 : e.scode), e.target, &code);
+  if (e.pool_off) return;   // (closed by a project switch: e.drain too)
+  int code = -1;   // (no source row: a take, the shown bank or the next with room)
+  int r = e.scode >= 0 ? pools::add_file(pools::kSamples, pools::bank_of(e.scode), e.target, &code) : pools::kErrFull;
   if (r == pools::kErrFull) r = pools::add_take(pools::kSamples, e.target, &code);
   if (e.drain) return;
   sniprintf(e.src, sizeof e.src, "%s", e.target);
@@ -414,15 +421,38 @@ CORE_COLD void saved() {
     if (e.use && e.track >= 0) use_saved(e.track, code);
   } else {
     e.code = -1;
-    say(pools::result_text(r));
+    say(r == pools::kErrPath ? "SAVED, NOT IN POOL" : pools::result_text(r));   // (the file is there either way)
   }
 }
 
+// The save's end: the copy pooled, the job over (a close meanwhile: everything goes now)
+CORE_COLD bool save_done() {
+  e.job = kNoJob;
+  saved();
+  if (e.drain) {
+    e.drain = false;
+    release_all();
+    return true;
+  }
+  e.st = kReady;
+  touch();
+  return true;
+}
+// kPool: the file is whole and the card core's library index has it, the published one perhaps not yet (pools read
+// that): pooled once it knows the file, or its gen() moved (a publish after lib::touched has it), or kPublishWaitMs
+CORE_COLD bool step_pool() {
+  e.step_frames = 0;
+  if (lib::gen() == e.lgen && now_ms() - e.pool_ms < kPublishWaitMs) return false;   // (waiting: no work done)
+  return save_done();
+}
+
 CORE_COLD bool step_save() {
+  if (e.spass == kPool) return step_pool();
   if (e.spass == kName) {
     e.step_frames = 0;
+    uint32_t w0 = g_name.waits;
     int r = g_name.step();
-    if (r > 0) return true;
+    if (r > 0) return g_name.waits == w0;   // (the listing still running: no work done)
     if (e.drain) {   // closed meanwhile: nothing written
       e.job = kNoJob, e.drain = false;
       release_all();
@@ -442,22 +472,27 @@ CORE_COLD bool step_save() {
     e.spass = kWrite;
     return true;
   }
-  uint32_t before = g_save.written(), y0 = g_save.yields;
+  uint32_t before = g_save.written(), w0 = g_save.waits;
   int r = g_save.step();
   e.step_frames = g_save.written() - before;
   if (r > 0) {
     set_progress(g_save.written(), e.frames);
-    return g_save.yields == y0;   // (held back for a stream: no work done)
+    return g_save.waits == w0;   // (a card request running, or held back for a stream: no work done)
+  }
+  if (r == 0) {   // written: into the pool once the library's published index has it
+    lib::Ref ref;
+    if (lib::ref_for_path(e.target, &ref)) return save_done();
+    e.spass = kPool, e.lgen = lib::gen(), e.pool_ms = now_ms();
+    return true;
   }
   e.job = kNoJob;
-  if (r == 0) saved();
   if (e.drain) {
     e.drain = false;
     release_all();
     return true;
   }
   e.st = kReady;
-  if (r < 0) say(err_text(r));
+  say(err_text(r));
   touch();
   return true;
 }
@@ -625,6 +660,11 @@ CORE_COLD void close() {
   touch();
 }
 
+CORE_COLD void project_changed() {
+  if (e.job == kSave) e.pool_off = true;
+  close();
+}
+
 CORE_COLD void set_start(int64_t f) {
   if (!e.x || e.drain) return;
   e.a = f < 0 ? 0 : f > e.frames ? e.frames : (uint32_t)f;
@@ -730,7 +770,7 @@ CORE_COLD int save(bool use) {
   }
   e.use = use;
   e.scode = e.code;
-  e.spass = kName;
+  e.spass = kName, e.pool_off = false;
   e.job = kSave;
   e.st = kSaving;
   e.progress = 0;
@@ -780,7 +820,7 @@ CORE_COLD bool step() {
   if (e.rf && e.x) {
     if (!refill_waits()) return step_refill();
     if (e.ol) return step_outline();
-    return true;   // (waiting for the voice: nothing done)
+    return false;   // (waiting for the voice: no work done, the engine's other work runs)
   }
   if (e.ol && e.x) return step_outline();
   return false;

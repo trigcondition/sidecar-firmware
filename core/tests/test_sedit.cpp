@@ -178,6 +178,13 @@ static int peak16() {   // the outline's largest |sample|
 static void t_open_code() {
   uint32_t g0 = vw().gen;
   CHECK(starts(cmd("sedit=open:code:1"), "sedit: st=loading"));
+  // the open posted to the card core: a step that only waits for it says so (no work), and nm::step lets the engine's
+  // other work run (core/engine.cpp idle_stream: AMP and the streams' top-up after it)
+  CHECK(!sedit::step() && cardq::pending() >= 1);
+  CHECK(!sedit::step());
+  bool idle = false;   // (the other machines' own turns done, nm::step says no work while the open still waits)
+  for (int i = 0; i < 50 && !idle; ++i) idle = !nm::step();
+  CHECK(idle && vw().st == sedit::kLoading);
   run();
   const SV& v = vw();
   CHECK(v.st == sedit::kReady && v.frames == kN && v.a == 0 && v.b == kN && !v.has_track && v.track == -1);
@@ -371,10 +378,11 @@ static void t_save() {
   cmd("sedit=apply:gain-");   // (an unchanged copy would be kick.wav's own content: the pool's row A001)
   run();
   CHECK(starts(cmd("sedit=save"), "sedit: st=saving"));
-  // the name's listing is posted, not waited for: the step comes back with it still on the card core's queue
-  sedit::step();
+  // the name's listing is posted, not waited for: the step comes back with it still on the card core's queue (and says
+  // it did no work)
+  CHECK(!sedit::step());
   CHECK(vw().st == sedit::kSaving && cardq::pending() >= 1);
-  sedit::step();
+  CHECK(!sedit::step());
   CHECK(vw().st == sedit::kSaving && cardq::pending() >= 1);
   run();
   CHECK(vw().st == sedit::kReady);
@@ -431,6 +439,41 @@ static void t_save() {
     if (!strcmp(pools::at(pools::kSamples, c).path, "/Samples/k/snare-ed1.wav")) row = c;
   CHECK(row >= 0 && pools::bank_of(row) == 1);
   CHECK(vw().st == sedit::kClosed);
+}
+
+// The library publishes its index later than the card core's lib::touched (on the Pi from lib_pi::poll, 250 ms or more
+// apart on a big index): a save whose steps run before that publish waits for it (saying no work), then pools the copy
+static void t_save_before_publish() {
+  cmd("sedit=open:code:1");
+  run();
+  cmd("sedit=apply:gain+");
+  run();
+  CHECK(starts(cmd("sedit=save"), "sedit: st=saving"));
+  std::string want;
+  for (int k = 1; k < 20 && want.empty(); ++k) {   // the name it will take: the first kick-ed<k>.wav not there
+    std::string p = "/Samples/k/kick-ed" + std::to_string(k) + ".wav";
+    if (!exists(p.c_str())) want = p;
+  }
+  // the control core's steps and the card core's turns, the library's step never: the file written and reported
+  for (int i = 0; i < 2000; ++i) {
+    sedit::step();
+    host_card_core(0);
+    while (cardq::service()) {}
+    host_card_core(3);
+    g_us += 1000;
+    host_fake_time(true, g_us);
+  }
+  CHECK(exists(want.c_str()));
+  CHECK(vw().st == sedit::kSaving && !sedit::step());   // waiting for the publish, not pooled as unknown
+  CHECK(strcmp(vw().msg, pools::result_text(pools::kErrPath)));
+  run();
+  CHECK(vw().st == sedit::kReady && !strcmp(vw().msg, "SAVED"));
+  int row = -1;
+  for (int c = 0; c < pools::kCodes; ++c)
+    if (!strcmp(pools::at(pools::kSamples, c).path, want.c_str())) row = c;
+  CHECK(row >= 0);
+  cmd("sedit=close");
+  run();
 }
 
 static void t_step_bound() {
@@ -547,6 +590,7 @@ int main() {
   t_clamp_after_length_change();
   t_busy_and_stale();
   t_save();
+  t_save_before_publish();
   t_step_bound();
   t_refused();
   t_close_frees();

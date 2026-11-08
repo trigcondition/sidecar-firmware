@@ -37,6 +37,9 @@ int open_track(int track);
 // A SAMPLES pool row (code = bank * 128 + row), the region the whole sample, no track. 0 loading, -1 refused.
 int open_code(int code);
 void close();            // the buffers released, kClosed (a card job in flight is finished first, out of sight)
+// The Rytm's project changed (pool.cpp's switch): closed, so the new project's sample in the same slot never plays the
+// edit; a save in flight still writes its file, which stays out of the new project's pool
+void project_changed();
 
 // The region [a, b), always 0 <= a < b <= frames. set_start past b puts a at b - 1; set_end before a puts b at a + 1.
 void set_start(int64_t f);

@@ -149,7 +149,7 @@ CORE_COLD int Namer::step() {
   if (!on_) return -2;
   char path[cardq::kPathMax];   // (async copies its path argument into the request: kept from begin)
   sniprintf(path, sizeof path, "%s", r_.path);
-  if (!cardq::async(&r_, cardq::kFnReq, nullptr, path, 0, nullptr, 0)) return 1;
+  if (!cardq::async(&r_, cardq::kFnReq, nullptr, path, 0, nullptr, 0)) return ++waits, 1;
   on_ = false;
   return name_from(src_, dl_, r_.got, out_, cap_);
 }
@@ -176,14 +176,14 @@ CORE_COLD int Loader::fail(int err) {   // the file closed next, the block freed
 CORE_COLD int Loader::step() {
   switch (st_) {
     case kOpen:
-      if (!cardq::async(&r_, cardq::kOpenReq, &f_, path_, 0, nullptr, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kOpenReq, &f_, path_, 0, nullptr, 0)) return ++waits, 1;
       if (r_.got != 1) return st_ = kDone, err_ = kErrOpen;
       size_ = f_.fileSize() > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)f_.fileSize();   // (known at the open: no card access)
       st_ = kHead;
       return 1;
     case kHead: {   // the first piece: the header (the data read again from data_off, piece by piece)
       ask_ = size_ < cardq::kPiece ? size_ : cardq::kPiece;
-      if (!cardq::async(&r_, cardq::kReadReq, &f_, nullptr, 0, g_stage, ask_)) return 1;
+      if (!cardq::async(&r_, cardq::kReadReq, &f_, nullptr, 0, g_stage, ask_)) return ++waits, 1;
       if (r_.got <= 0) return fail(kErrOpen);
       wavread::Info in;
       if (!wavread::parse(g_stage, (uint32_t)r_.got, &in, size_) || in.be || in.format != 1 ||
@@ -202,7 +202,8 @@ CORE_COLD int Loader::step() {
     }
     case kData: {   // a piece after the carried bytes of a split frame: its whole frames decoded, the rest carried
       ask_ = data_len_ - pos_ < cardq::kPiece ? data_len_ - pos_ : cardq::kPiece;
-      if (!cardq::async(&r_, cardq::kReadReq, &f_, nullptr, (uint64_t)data_off_ + pos_, g_stage + carry_, ask_)) return 1;
+      if (!cardq::async(&r_, cardq::kReadReq, &f_, nullptr, (uint64_t)data_off_ + pos_, g_stage + carry_, ask_))
+        return ++waits, 1;
       if (r_.got != (int32_t)ask_) return fail(kErrOpen);
       wavread::Info in = {};
       in.format = 1, in.ch = ch, in.bits = bits;
@@ -217,7 +218,7 @@ CORE_COLD int Loader::step() {
       return 1;
     }
     case kClose:
-      if (!cardq::async(&r_, cardq::kCloseReq, &f_, nullptr, 0, nullptr, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kCloseReq, &f_, nullptr, 0, nullptr, 0)) return ++waits, 1;
       st_ = kDone;
       if (err_ && blk >= 0) pcache::release(blk), blk = -1, x = nullptr;
       return err_;
@@ -236,7 +237,7 @@ CORE_COLD int Saver::begin(const char* target, const float* x, int ch, int bits,
   sniprintf(target_, sizeof target_, "%s", target);
   sniprintf(tmp_, sizeof tmp_, "%s.tmp", target);
   x_ = x, ch_ = ch, bits_ = bits, rate_ = rate, frames_ = frames;
-  pos_ = bytes_ = len_ = 0, err_ = 0, yields = 0;
+  pos_ = bytes_ = len_ = 0, err_ = 0;
   waiting_ = filled_ = false;
   r_.state = cardq::kFree;
   st_ = kExists;
@@ -252,12 +253,12 @@ CORE_COLD int Saver::fail(int err) {   // the .tmp closed and removed next, then
 CORE_COLD int Saver::step() {
   switch (st_) {
     case kExists:
-      if (!cardq::async(&r_, cardq::kExistsReq, nullptr, target_, 0, nullptr, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kExistsReq, nullptr, target_, 0, nullptr, 0)) return ++waits, 1;
       if (r_.got != 0) return st_ = kOver, kErrExists;
       st_ = kRmTmp;
       return 1;
     case kRmTmp:   // a .tmp left by a save cut short
-      if (!cardq::async(&r_, cardq::kRemoveReq, nullptr, tmp_, 0, nullptr, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kRemoveReq, nullptr, tmp_, 0, nullptr, 0)) return ++waits, 1;
       if (r_.got != 1) return st_ = kOver, kErrWrite;
       sh_.init();
       crc_ = 0;
@@ -268,7 +269,7 @@ CORE_COLD int Saver::step() {
         if (cardq::busy()) {   // a stream needs the card: wait (at most kUploadWaitMs a piece)
           uint32_t now = now_ms();
           if (!waiting_) waiting_ = true, wait0_ = now;
-          if (now - wait0_ < cardq::kUploadWaitMs) return ++yields, 1;
+          if (now - wait0_ < cardq::kUploadWaitMs) return ++waits, 1;
         }
         waiting_ = false;
         uint8_t* o = g_out;
@@ -289,7 +290,7 @@ CORE_COLD int Saver::step() {
         filled_ = true;
         r_.fn = write_fn;
       }
-      if (!cardq::async(&r_, cardq::kFnReq, &f_, tmp_, bytes_, g_out, len_)) return 1;
+      if (!cardq::async(&r_, cardq::kFnReq, &f_, tmp_, bytes_, g_out, len_)) return ++waits, 1;
       filled_ = false;
       if (r_.got != (int32_t)len_) return fail(kErrWrite);
       bytes_ += len_;
@@ -298,28 +299,28 @@ CORE_COLD int Saver::step() {
     }
     case kShut:
       r_.fn = close_fn;
-      if (!cardq::async(&r_, cardq::kFnReq, &f_, nullptr, 0, nullptr, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kFnReq, &f_, nullptr, 0, nullptr, 0)) return ++waits, 1;
       if (r_.got != 1) return err_ = kErrWrite, st_ = kUndoRm, 1;
       st_ = kRename;
       return 1;
     case kRename:   // (refused when the target appeared meanwhile: never over a file that is there)
-      if (!cardq::async(&r_, cardq::kRenameReq, nullptr, tmp_, 0, (uint8_t*)target_, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kRenameReq, nullptr, tmp_, 0, (uint8_t*)target_, 0)) return ++waits, 1;
       if (r_.got != 1) return err_ = kErrWrite, st_ = kUndoRm, 1;
       sh_.final(sha_);
       st_ = kReport;
       return 1;
     case kReport:
       r_.fn = report_fn;
-      if (!cardq::async(&r_, cardq::kFnReq, nullptr, target_, crc_, sha_, 32)) return 1;
+      if (!cardq::async(&r_, cardq::kFnReq, nullptr, target_, crc_, sha_, 32)) return ++waits, 1;
       st_ = kOver;
       return 0;
     case kUndoShut:
       r_.fn = close_fn;
-      if (!cardq::async(&r_, cardq::kFnReq, &f_, nullptr, 0, nullptr, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kFnReq, &f_, nullptr, 0, nullptr, 0)) return ++waits, 1;
       st_ = kUndoRm;
       return 1;
     case kUndoRm:
-      if (!cardq::async(&r_, cardq::kRemoveReq, nullptr, tmp_, 0, nullptr, 0)) return 1;
+      if (!cardq::async(&r_, cardq::kRemoveReq, nullptr, tmp_, 0, nullptr, 0)) return ++waits, 1;
       st_ = kOver;
       return err_;
     default:
