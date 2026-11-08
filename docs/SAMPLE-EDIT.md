@@ -116,7 +116,9 @@ if that takes more than 5 s, the footer says `SAVED, NOT IN POOL` and the file i
 On the web page, the **Files** tab has a drop zone: **Drop samples here**, or **Choose files**. The files go to
 `/Samples/Inbox` (made when missing) and each WAV is added to the SAMPLES pool with `pool=smp:take:PATH`: the bank the
 view shows, or the next one with room. Then open it in SAMPLE EDIT from the POOL page. Other files are uploaded, not added.
-Uploading a file with the same name again replaces the file in `/Samples/Inbox`, under the pool row it already has.
+Uploading a file with the same name again overwrites the file in `/Samples/Inbox`. With the same content, the pool
+answers `IN POOL` with the row it already has. With changed content, which row it ends up in is not fixed: upload
+changed files under a new name.
 
 ## Console
 
