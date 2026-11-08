@@ -74,7 +74,8 @@ void sidecar_ui_set_command (sidecar_ui_command_t fn, void *param);
 // 12 SCOPE (sidecar_scope.h; UP + T9, or a tap on VOICE's scope), 13 SIDECAR STATUS (sidecar_status.h; UP + T10, or a tap
 // on the home page's ENGINE / Status panel), 14 PROJECT (sidecar_project.h: project bundles; a tap on
 // the home page's PROJECT panel), 15 POOL (sidecar_wgview.h's POOL page: the three pool lists; Settings > Pool, or the
-// machine view's ALL POOLS), 16 SERVICE (settings), 17 CHOP (sidecar_chop.h: a CHOP voice's page; VOICE on a CHOP track), 18 PRESET (sidecar_preset.h: the POOL page's JUNO / 6-OP FM tabs)
+// machine view's ALL POOLS), 16 SERVICE (settings), 17 CHOP (sidecar_chop.h: a CHOP voice's page; VOICE on a CHOP track), 18 PRESET (sidecar_preset.h: the POOL page's JUNO / 6-OP FM tabs),
+// 21 SAMPLE EDIT (sidecar_sedit.h: shown while the sample editor has an edit open)
 void sidecar_ui_show (int page);
 // UX review N3: the Rytm's UP held alone: the UP + T map over the screen (0: gone); cheap when unchanged
 void sidecar_ui_combo_map (int on);
