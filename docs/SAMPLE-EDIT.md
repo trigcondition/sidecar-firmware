@@ -17,7 +17,10 @@ The Rytm's screen and the touchscreen show the same edit and stay in step. You c
 - **From the MENU:** the **SAMPLE EDIT** row opens the selected track's sample. If an edit is open already, it goes back
   to that edit.
 - **On the touchscreen:** the SAMPLE EDIT page appears by itself when an edit opens. While an edit is open, the VOICE nav
-  key leads back to it.
+  key (and UP + T4 on the Rytm) leads back to it. Selecting another track on the Rytm while VOICE shows keeps VOICE
+  following the track; it does not pull the display back to the edit.
+
+A project change on the Rytm closes the editor without saving, so the new project's sample never plays the old edit.
 
 Opening another sample while the edit has unsaved changes is refused with `SAVE OR DROP THE EDIT`. A track that is not
 a DSP SAMPLE track is refused with `NOT A DSP SAMPLE TRACK`.
@@ -25,8 +28,8 @@ a DSP SAMPLE track is refused with `NOT A DSP SAMPLE TRACK`.
 ## The Rytm page
 
 The header shows the file name. The waveform fills the middle: the region is solid, the rest is dithered, with a marker
-at the start and one at the end. Under it are the region in seconds and the zoom (`*` marks unsaved changes). The
-footer shows the function, a progress figure while a job runs, or a short message.
+at the start and one at the end. Under it are the region in seconds and the zoom, `X1` to `X256` (`*` marks unsaved
+changes). The footer shows the function, a progress figure while a job runs, or a short message.
 
 | control | does |
 |---|---|
@@ -95,7 +98,8 @@ After a save, the editor edits the new copy: it is the source now, and there is 
 **The name:** `<stem>-ed<N>.wav` in the original's folder, where N is one past the highest `<stem>-ed<k>.wav` already
 there, starting at 1. A trailing `-ed<k>` on the original is dropped first, so `kick.wav` saves as `kick-ed1.wav`, and
 `kick-ed1.wav` saves as `kick-ed2.wav`. The new file goes into the SAMPLES pool, in the original's bank, else the shown
-bank or the next one with room.
+bank or the next one with room. The pool entry waits for the library to list the new file (a moment on a big card);
+if that takes more than 5 s, the footer says `SAVED, NOT IN POOL` and the file is on the card, ready to add by hand.
 
 ## Formats and limits
 
@@ -112,6 +116,7 @@ bank or the next one with room.
 On the web page, the **Files** tab has a drop zone: **Drop samples here**, or **Choose files**. The files go to
 `/Samples/Inbox` (made when missing) and each WAV is added to the SAMPLES pool with `pool=smp:take:PATH`: the bank the
 view shows, or the next one with room. Then open it in SAMPLE EDIT from the POOL page. Other files are uploaded, not added.
+Uploading a file with the same name again replaces the file in `/Samples/Inbox`, under the pool row it already has.
 
 ## Console
 
@@ -121,7 +126,7 @@ gain-), `undo`, `save`, `save:use`, `preview`. The touchscreen sends these same 
 
 ## Notes
 
-- When a key closes a Sidecar page on the Rytm, the remote now goes back to the page it came from. SONG and PROJECT used
-  to land on SIDECAR. This holds for all Sidecar pages, not only this one.
+- When `DISCARD EDIT?` YES closes SAMPLE EDIT on the Rytm, the remote goes back to the page the editor was opened from.
+  Other Sidecar pages keep their own behaviour.
 - The Rytm firmware is unchanged: the page uses the existing remote UI.
 - No stretch, slicing or recording here; see docs/CHOP.md for slicing.

@@ -707,8 +707,11 @@ CORE_COLD void on_key(int code, bool down) {
         if (s.held_page != x) release_held();
         s.held_page = x, s.held_keys[code >> 5] |= 1u << (code & 31);
       }
-      // a page the key closed (SAMPLE EDIT's DISCARD EDIT? YES): out of the list, so back where it was opened from
-      if (extra_of(s.voice) == x && x->shown && !x->shown() && !go_back()) go(0);
+#if CORE_POLY && CORE_MSAMP
+      // SAMPLE EDIT's DISCARD EDIT? YES closed the edit: the page is out of the list, so back where it was opened from
+      // (SAMPLE EDIT alone: other pages a key hides keep their own way, PROJECT's answer note among them)
+      if (x == &kSeditPage && extra_of(s.voice) == x && !x->shown() && !go_back()) go(0);
+#endif
       return;
     }
   if (code == kKeyUp) return;   // fix1049: UP is the Sidecar's modifier (page_keys.h), no page arrow: LEFT / RIGHT step

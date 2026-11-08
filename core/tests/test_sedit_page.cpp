@@ -28,8 +28,14 @@
 #include "ui/remote.h"
 #include "voices.h"
 
+#include "../../pi/engine/voice_pi.cpp"       // the touchscreen's VOICE routing (as test_page_keys.cpp has it)
+#include "../../pi/engine/seditview_pi.cpp"   // (voice_pi asks it whether an edit is open)
+
 using namespace core;
 using SV = sedit::View;
+
+// (pi/ui/rytm_pattern.c, used by voice_pi::Fill only: not called here)
+extern "C" int rytm_locks_on(const rytm_pattern_t*, int, int) { return 0; }
 
 static std::string g_card;
 static uint64_t g_us = 1000000;
@@ -157,6 +163,10 @@ static void png(const char* name) {   // PNGs to $RUI_OUT, default build/rui_sed
   CHECK(ftell(fp) > 0);
   fclose(fp);
   for (const ui::TextItem& t : g_c.txt) CHECK(strlen(t.s) <= 32);
+}
+static void cmd_close() {
+  char out[256];
+  CHECK(nm::command("sedit=close", out, sizeof out));
 }
 static bool title_is(const char* t) { return ui::remote_page_title() && !strcmp(ui::remote_page_title(), t); }
 
@@ -345,6 +355,62 @@ static void t_refused() {   // a pool row with no sample: the POOL page says so;
   CHECK(!title_is("SAMPLE EDIT") && vw().st == sedit::kClosed);
 }
 
+// The touchscreen with an edit open: VOICE's key (UP + T4) leads to SAMPLE EDIT; a track change while on VOICE keeps
+// VOICE following the track (the page the machine needs), never pulled to SAMPLE EDIT
+static void select_track(int t) {
+  std::vector<uint8_t> m = {0x49, 1, 2, (uint8_t)t, (uint8_t)(kDspSample | 0)};
+  for (int i = 0; i < 12; ++i) m.push_back('A');
+  from_rytm(m);
+}
+static void t_voice_follow() {
+  ui::sedit_page_open(0, -1);
+  run();
+  CHECK(vw().st == sedit::kReady && seditview_pi::Open());
+  uint32_t seen = 0, tseen = 0;
+  voice_pi::Seen(&seen, &tseen);
+  select_track(1);
+  CHECK(ui::remote_selected_track(nullptr) == 1);
+  CHECK(voice_pi::Request(&seen, true, &tseen) == voice_pi::PageForMachine(ui::remote_track_machine(1)));
+  CHECK(voice_pi::PageForMachine(ui::remote_track_machine(1)) != seditview_pi::kPage);
+  select_track(0);
+  CHECK(voice_pi::Request(&seen, true, &tseen) != seditview_pi::kPage);
+  from_rytm({0x49, 1, 1, 4, 0});   // UP + T4: VOICE, an edit open: SAMPLE EDIT
+  CHECK(voice_pi::Request(&seen, false, &tseen) == seditview_pi::kPage);
+  cmd_close();
+}
+
+// The edit closed elsewhere (the touchscreen, the console) while the page asked DISCARD EDIT?: the question goes with
+// it, so the next edit's YES is not taken as its answer
+static void t_closed_elsewhere() {
+  ui::sedit_page_open(0, -1);
+  run();
+  turn(0, +7);   // GAIN -3, twice
+  tap(0x44);
+  run();
+  tap(0x44);
+  run();
+  tap(0x45);   // undo: the first apply's edit left
+  run();
+  tap(0x45);   // asked
+  CHECK(shows("DISCARD EDIT?"));
+  cmd_close();   // the console's close
+  CHECK(vw().st == sedit::kClosed);
+  tick();
+  char out[256];
+  CHECK(nm::command("sedit=open:track:0", out, sizeof out));   // an edit opened elsewhere
+  run();
+  ui::remote_show_page("SAMPLE EDIT");
+  tick();
+  CHECK(title_is("SAMPLE EDIT") && !shows("DISCARD EDIT?"));
+  tap(0x44);   // YES: the function, not a discard
+  run();
+  CHECK(vw().st == sedit::kReady && vw().undo);
+  tap(0x45);   // undo, then NO leaves
+  run();
+  tap(0x45);
+  CHECK(vw().st == sedit::kClosed);
+}
+
 int main() {
   char tmpl[] = "/tmp/sedit-page-XXXXXX";
   CHECK(mkdtemp(tmpl));
@@ -378,6 +444,8 @@ int main() {
   t_close_clean();
   t_guard_and_menu();
   t_refused();
+  t_voice_follow();
+  t_closed_elsewhere();
   CHECK(system(("rm -rf '" + g_card + "'").c_str()) == 0);
   printf("test_sedit_page: PASS\n");
   return 0;

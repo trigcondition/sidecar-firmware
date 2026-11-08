@@ -41,6 +41,7 @@ struct Pg {
   char note[32];      // the footer's message (kNoteMs)
   uint32_t note_ms;
   char seen[32];      // the editor's msg last seen: a new one becomes the note
+  bool was_open;      // an edit open at the last refresh (its close elsewhere drops the page's question)
 };
 Pg pg = {};
 sedit::View g_v;   // (4 KB: the outline; not on the stack)
@@ -50,9 +51,17 @@ CORE_COLD void note(const char* m) {
   sniprintf(pg.note, sizeof pg.note, "%s", m);
   pg.note_ms = now_ms() | 1;
 }
+// An edit closed elsewhere (the touchscreen, the console) takes the page's question, FUNC and refusal with it: none of
+// them is the next edit's
+CORE_COLD void seen_open() {
+  bool open = g_v.st != sedit::kClosed;
+  if (pg.was_open && !open) pg.ask = kAskNone, pg.pick = 0, pg.func = false, pg.refused = false, pg.why[0] = 0;
+  pg.was_open = open;
+}
 // The editor's state read again; a message it has not shown yet becomes the footer's note
 CORE_COLD const sedit::View& refresh() {
   sedit::view(&g_v);
+  seen_open();
   if (strcmp(g_v.msg, pg.seen)) {
     sniprintf(pg.seen, sizeof pg.seen, "%s", g_v.msg);
     if (g_v.msg[0]) note(g_v.msg);
@@ -141,7 +150,7 @@ CORE_COLD void sedit_draw(Canvas& c, int page, int npages, uint32_t ms) {
     secs_text(v.b, v.rate, s1, sizeof s1);
     sniprintf(b, sizeof b, CORE_STR("%s-%sS"), s0, s1);
     c.put_text(kSlotFree, kRSmall, 2, kInfoY, b, kAlignLeft);
-    sniprintf(b, sizeof b, CORE_STR("%sZ%d"), v.dirty ? "* " : "", v.zoom);
+    sniprintf(b, sizeof b, CORE_STR("%sX%d"), v.dirty ? "* " : "", 1 << v.zoom);   // (the window's zoom: X1 X2 .. X256)
     c.put_text(kSlotFree + 1, kRSmall, 126, kInfoY, b, kAlignRight);
   }
   const char* fn = sedit::kFnNames[v.fn < sedit::kFns ? v.fn : 0];
@@ -241,9 +250,9 @@ CORE_COLD bool sedit_key_up(int code) {
   return true;
 }
 CORE_COLD bool sedit_shown() {
-  if (pg.refused) return true;
   sedit::view(&g_v);
-  return g_v.st != sedit::kClosed;
+  seen_open();
+  return pg.refused || g_v.st != sedit::kClosed;
 }
 
 }  // namespace
@@ -254,7 +263,7 @@ UI_ROM const ExtraPage kSeditPage = {"SAMPLE EDIT", sedit_shown, sedit_draw, sed
 CORE_COLD void sedit_page_open(int track, int code) {
   const sedit::View& v = refresh();
   bool open = v.st != sedit::kClosed;
-  pg.ask = kAskNone, pg.pick = 0, pg.note_ms = 0, pg.refused = false;
+  pg.ask = kAskNone, pg.pick = 0, pg.func = false, pg.note_ms = 0, pg.refused = false;
   sniprintf(pg.seen, sizeof pg.seen, "%s", v.msg);   // (an old message is not news)
   if (open && ((track < 0 && code < 0) || (track >= 0 && v.has_track && v.track == track))) {   // back to the edit
     remote_show_page("SAMPLE EDIT");
