@@ -20,6 +20,7 @@
 #include "arp/arp.h"
 #include "pool/pool.h"
 #include "seq/seq.h"
+#include "seq/rytm_dump.h"
 #include "song/song.h"
 #include "version.h"
 #include "voice_name.h"
@@ -87,6 +88,14 @@ constexpr int kMaskBytes = 3 + 37;
 // remote_tick at least kInputMs after the last frame). The Rytm renders at 20 Hz: a frame waits for its next render
 // either way, so this is the host's part of the round trip, not more frames on the screen. 1020: 50 ms, no input path.
 constexpr uint32_t kTickMs = 25, kInputMs = 8, kAliveMs = 250;
+// 0.4.3 (rytm-lag): every commit (39) makes the Rytm run its whole stock draw and panel diff (rytm-mods 0026 ev_tick
+// sets ctrl + 0x20), bounded by its 156 250 baud panel link. While the Rytm's transport plays, a page that redraws by
+// itself (the SRC view's values, SCOPE, a playhead) commits at most every kPlayCommitMs (5 a second, as the SEQ page's
+// playhead already does; docs/SONG.md "Traffic to the Rytm"). What waits is not lost: the next commit diffs against
+// what the Rytm has, so it carries the latest frame. On an open remote page a key or a turn of the user's own (31 / 32)
+// goes at once, as when stopped; the SRC view gets the plain cap (the user's own knobs there come as 2A, which this
+// file cannot tell from other value changes). Another page and a whole frame go at once. Stopped: unchanged.
+constexpr uint32_t kPlayCommitMs = 200;
 constexpr uint8_t kEchoNone = 0x7F;
 // 1023: the connect splash (rytm-mods 0026 1023): the Rytm's hello (35) carries its uptime in 50 ms ticks; when it has
 // been up kSplashMinUp or more (the link came up after the Rytm's boot, not with it: a cable plugged in, the Sidecar
@@ -353,6 +362,9 @@ struct State {
   bool rytm_seen[kVoices] = {};
   bool self = false;         // remote's own 0x03 in voice_report: no hold logic
   bool input = false;        // a key or a turn since the last frame: draw at once
+  bool user = false;         // 0.4.3: a key or a turn of the user's (31 / 32) since the last commit: not held while playing
+  uint32_t commit_ms = 0;    // 0.4.3: the last page / SRC view commit (kPlayCommitMs) and what it showed (page_key)
+  int commit_page = -1000;
   int touched = -1;          // the encoder turned last (0..7): its cell's tiles go first, the bottom bar names it
   // the local echo (3F) as the Rytm has it: per encoder the slot (kEchoNone: none), the value, flags and prefix
   uint8_t echo_slot[8], echo_val[8], echo_flags[8];
@@ -777,6 +789,24 @@ CORE_COLD int send_part(const uint32_t tiles[4], uint64_t texts, bool clear_firs
   return n;
 }
 
+// 0.4.3 (rytm-lag): the Rytm's transport plays (seq's TRANSPORT, rytm_dump::set_playing)
+CORE_COLD bool rytm_plays() {
+#if CORE_POLY
+  return rytm_dump::is_playing();
+#else
+  return false;
+#endif
+}
+// 0.4.3: a page's changed frame waits (kPlayCommitMs) - only while playing; never a whole frame, another page than the
+// last commit's (a page switch: UP's map, a page shown) or a 31 / 32 of the user's on an open page (the SRC view's 2A
+// values are capped too)
+CORE_COLD int page_key() { return s.open ? s.voice : 1000 + s.src_track; }
+CORE_COLD bool commit_held(uint32_t ms) {
+  return !s.legacy && s.sent_valid && !s.user && page_key() == s.commit_page && rytm_plays() &&
+         ms - s.commit_ms < kPlayCommitMs;
+}
+CORE_COLD void committed(uint32_t ms) { s.commit_ms = ms, s.user = false, s.commit_page = page_key(); }
+
 // The tiles a rectangle touches (glass rows y..y+h-1: page 7 - row / 8).
 CORE_COLD void rect_tiles(const Rect& r, uint32_t m[4]) {
   for (int x = r.x / 8; x <= (r.x + r.w - 1) / 8 && x < kTileCols; ++x)
@@ -850,12 +880,12 @@ CORE_COLD void frame(uint32_t ms) {
   if (!s.sent_valid)
     for (int i = 0; i < kTextSlots; ++i)
       if (wire->txt[i].s[0]) texts |= 1ull << i, ++ntext;
-  if (tiles || ntext) {
+  if ((tiles || ntext) && !commit_held(ms)) {
     // the touched knob's cell and the bottom bar first, in a commit of their own, when there is more
     uint32_t first[4] = {}, rest[4];
     uint64_t tfirst = 0;
     int ci = -1;
-    if (!s.legacy && s.sent_valid && p && s.touched >= 0 && p->enc[s.touched] != kNone &&
+    if (!s.legacy && s.sent_valid && p && s.touched >= 0 && p->enc[s.touched] != kNone && (s.user || !rytm_plays()) &&
         cell_of(*p, p->enc[s.touched], &ci)) {
       const Cell& c = p->cells[ci];
       rect_tiles(cell(c.col, c.row, c.cols, c.rows), first);
@@ -874,6 +904,7 @@ CORE_COLD void frame(uint32_t ms) {
     } else {
       send_part(mask, texts, !s.sent_valid);
     }
+    committed(ms);
     sent = *wire;
     s.sent_valid = true;
     s.last_tx = ms;
@@ -952,9 +983,10 @@ CORE_COLD void src_tick(uint32_t ms) {
     else
       for (int i = 0; i < kTextSlots; ++i)
         if (work.txt[i].s[0]) texts |= 1ull << i;
-    if (tiles || texts) {
+    if ((tiles || texts) && !commit_held(ms)) {
       bool whole = !s.sent_valid;
       send_part(mask, texts, whole);
+      committed(ms);
       sent = work;
       s.sent_valid = true;
       s.last_tx = ms;
@@ -1360,6 +1392,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     case kKey:
       if (n < 3) break;
       s.stats.keys++;
+      s.user = true;
       if (b[2]) popup_key_closed();
       // the pairing code's modal over an open page: a key takes it off (the user has read it) and does nothing else;
       // its release is eaten too, so the page does not see half a press. (With the page closed no key reaches us: the
@@ -1406,6 +1439,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     case kEnc:
       if (n < 3) break;
       s.stats.encs++;
+      s.user = true;
       popup_key_closed();   // (a turn ends the Rytm's splash as a key does)
       if (!s.open && src_bank_enc(b[0], (int)b[1] - 64, b[2] != 0)) {   // rui1038: knob A in the bank list
         s.input = true;

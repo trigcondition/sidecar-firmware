@@ -227,6 +227,72 @@ int main() {
   png("wt_2_pos100.png");
   CHECK(frame_hash() != hw);
   CHECK(has_text("BASIC"));   // the table's name top left
+  {   // 0.4.3 (rytm-lag): POS moved by modulation (the Rytm's own P2 still): the picture changes at most every
+      // kLiveMs (each change a commit, a whole stock redraw on the Rytm), the Rytm stopped; a table change at once
+    struct Fixed : Source {   // what the Rytm reports: P1..P16 as they were (only the voice's POS moves)
+      std::vector<float> v;
+      int param(int k) const override { return (int)v[k]; }
+      int voice() const override { return 1; }
+    } src;
+    src.v = w;
+    const Page* pg = wavegrain_page_for_machine(kWaveMachine);
+    CHECK(pg);
+    PageView pv;
+    Canvas cv;
+    pv.draw(cv, *pg, src, "", 0, 1);
+    int redraws = 0, ticks = 0;
+    std::vector<float> m = w;
+    for (int t = 0; t < 2000; t += 25, ++ticks) {   // 2 s at the remote's 25 ms tick, POS swept 1 step every 5 ms
+      for (int k = 0; k < 5; ++k) {
+        m[1] = (float)(20 + (t / 5 + k) % 100);
+        wg::params(kWaveMachine, 1, m);
+        play(1, 0.005, false);
+      }
+      redraws += pv.draw(cv, *pg, src, "", 0, 1) > 0;
+    }
+    printf("wt picture: POS modulated 2 s: %d redraws in %d ticks\n", redraws, ticks);
+    CHECK(redraws >= 2000 / 100 - 2 && redraws <= 2000 / 100 + 1);
+    // just after a redraw: the next tick nothing (POS still moving), then a table change shows at the next tick
+    for (int i = 0; i < 10 && pv.draw(cv, *pg, src, "", 0, 1) == 0; ++i) m[1] = (float)(20 + i * 7), wg::params(kWaveMachine, 1, m), play(1, 0.025, false);
+    m[1] = 90, wg::params(kWaveMachine, 1, m), play(1, 0.025, false);
+    CHECK(pv.draw(cv, *pg, src, "", 0, 1) == 0);
+    int e0 = wt::voice_entry(1);
+    m[0] = 2;   // TBL: another built-in table
+    wg::params(kWaveMachine, 1, m), play(1, 0.025, false);
+    printf("wt picture: TBL %d entry %d -> %d (of %d)\n", (int)m[0], e0, wt::voice_entry(1), wt::entries());
+    CHECK(wt::voice_entry(1) != e0);
+    CHECK(pv.draw(cv, *pg, src, "", 0, 1) > 0);
+    // review: a change held in the window, the cell redrawn meanwhile by an input (WARP) with the POS of that moment,
+    // the POS back to the window's value: one redraw still follows when the window ends, the picture the current one
+    auto same_as_fresh = [&]() {
+      PageView fresh;
+      Canvas c2;
+      fresh.draw(c2, *pg, src, "", 0, 1);
+      uint8_t a[kBytes], b[kBytes];
+      preview(cv, a), preview(c2, b);
+      return !memcmp(a, b, kBytes);
+    };
+    m[1] = 40, wg::params(kWaveMachine, 1, m), play(1, 0.3, false);
+    pv.draw(cv, *pg, src, "", 0, 1);
+    play(1, 0.15, false);
+    pv.draw(cv, *pg, src, "", 0, 1);
+    CHECK(pv.draw(cv, *pg, src, "", 0, 1) == 0);   // settled
+    m[1] = 100, wg::params(kWaveMachine, 1, m), play(1, 0.01, false);
+    CHECK(pv.draw(cv, *pg, src, "", 0, 1) > 0);    // a change after a quiet spell: at once; the window starts
+    m[1] = 20, wg::params(kWaveMachine, 1, m), play(1, 0.01, false);
+    CHECK(pv.draw(cv, *pg, src, "", 0, 1) == 0);   // held
+    src.v[2] += 10;                                // WARP (an input of the cell): redrawn with POS 20 now
+    CHECK(pv.draw(cv, *pg, src, "", 0, 1) > 0);
+    m[1] = 100, wg::params(kWaveMachine, 1, m), play(1, 0.03, false);   // back to the window's POS
+    CHECK(pv.draw(cv, *pg, src, "", 0, 1) == 0 && !same_as_fresh());   // the screen still shows POS 20
+    int after = 0;
+    for (int k = 0; k < 6 && !after; ++k) play(1, 0.025, false), after = pv.draw(cv, *pg, src, "", 0, 1) > 0 ? k + 1 : 0;
+    printf("wt picture: a held change undone after an input redraw: redrawn %d ticks later\n", after);
+    CHECK(after >= 1 && after <= 3);               // within kLiveMs + one tick of the window's start
+    CHECK(same_as_fresh());
+    src.v[2] -= 10;
+    wg::params(kWaveMachine, 1, w), play(1, 0.3, false);
+  }
   w[0] = 4;
   wg::params(kWaveMachine, 1, w);
   png("wt_list_1.png");

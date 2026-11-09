@@ -41,6 +41,9 @@ constexpr int kMaxNotes = kVoiMax;   // a chord's notes at most (VOI 6)
 constexpr int kPerVoice = 6, kTotal = 24;
 constexpr uint8_t kChordCmd = 0x28, kChordWrite = 0x01, kChordReply = 0x02;
 constexpr uint32_t kWindowMs = 60, kBindMs = 30, kHoldMs = 8, kActiveMs = 1500;
+// padbind: the CHRO pads' note offset (the 0x04's note - the pad's MIDI note on the auto channel), measured over the
+// whole UP / DOWN range (docs/POLYPHONY.md "CHRO's pad range"): a selected seq track's voice is bound at it at once
+constexpr int kPadOff = 24;
 // The Rytm's pads in CHRO are MONO per track [measured 2026-10-20, rui1031]: a second pad sends the first one's note-off
 // right after its own note-on (on A, on B, off A, on C, off B, ... and only the last pad's real off). On a channel not
 // bound by poly=bind (a keyboard's offs are real), a note-off for the channel's previous note within kStealMs after

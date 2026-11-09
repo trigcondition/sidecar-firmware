@@ -10,6 +10,7 @@
 
 #include "check.h"
 #include "engine.h"
+#include "seq/rytm_dump.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
 
@@ -194,6 +195,27 @@ int main() {
   tick(4000, true);
   printf("scope 21 ms: %d tiles in 4 s\n", tiles - t0);
   CHECK(tiles - t0 <= 4 * 900 + 90);
+  // 0.4.3 (rytm-lag): the Rytm playing: SCOPE's frames at most 5 a second (each one the Rytm's whole redraw), the
+  // scope still updated (the next commit carries the latest picture); a turn of the user's own at once
+  core::rytm_dump::set_playing(true);
+  c0 = commits, u0 = scope_updates();
+  tick(4000, true);
+  fr = commits - c0, ups = scope_updates() - u0;
+  printf("scope, the Rytm playing: %d frames, %d updates in 4 s\n", fr, ups);
+  CHECK(fr <= 4 * 5 + 1 && fr >= 4 * 4 && ups >= 4 * 12);
+  c0 = commits;
+  for (int i = 0; i < 300 && commits == c0; ++i) tick(1, true);   // just after a commit: the next one held 200 ms
+  CHECK(commits == c0 + 1);
+  c0 = commits;
+  tick(10, true);
+  CHECK(commits == c0);              // held
+  texts.clear();
+  from_rytm(0x32, 1, 64 + 1, 0);    // TIME +1 (21 ms -> 43 ms): the user's turn
+  tick(10, true);
+  bool t43 = false;
+  for (auto& x : texts) t43 |= x.find("43MS") != std::string::npos;
+  CHECK(commits == c0 + 1 && t43);
+  core::rytm_dump::set_playing(false);
   key(0x45);   // NO: SIDECAR, the tap off
   tick(30, false);
   CHECK(remote_stats().page == 0 && !tap_on());

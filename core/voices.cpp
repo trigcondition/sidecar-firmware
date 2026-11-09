@@ -796,7 +796,10 @@ __attribute__((noinline)) CORE_COLD void voice_report(int cmd, const uint8_t* d,
 #endif
   // E0: any machine on a Sidecar-sequenced track (core/seq/seq.h): its own trig makes no note, its pad does (fix1040b's
   // rule, the note machines' and 6-OP FM's below)
-  if (note >= 0 && !note_machine && seq::owns_voice(vi) && !poly::seq_pad(vi, note, vel)) note = -1;
+  if (note >= 0 && !note_machine && seq::owns_voice(vi)) {
+    if (!poly::seq_pad(vi, note, vel)) note = -1;
+    else if ((note += 12 * seq::pad_oct(vi)) < 0 || note > 127) note = -1;   // 7g PAD OCT, as poly.cpp pad_play (the 0x04 first)
+  }
   // The arpeggiator (core/arp/arp.h), its mode on: the trig is held, not played; a bound pad's and a seq track's own trig as below.
   // A sound tagged for another plugin than the slot's goes on as a plain trig: its guard is um's, and the arp's notes have no tag
   if (note >= 0 && arp::on(vi) && !(x.user >= 0 && tag && !um::tag_ok(x.user, tag))) {
