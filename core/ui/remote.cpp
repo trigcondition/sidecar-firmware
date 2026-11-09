@@ -96,6 +96,10 @@ constexpr uint32_t kTickMs = 25, kInputMs = 8, kAliveMs = 250;
 // goes at once, as when stopped; the SRC view gets the plain cap (the user's own knobs there come as 2A, which this
 // file cannot tell from other value changes). Another page and a whole frame go at once. Stopped: unchanged.
 constexpr uint32_t kPlayCommitMs = 200;
+// 0.4.4: on the SRC view a knob's own value (a 2A of one value: a turn, or a CC into the Rytm) or a held step's (its
+// locks as they are turned) commits at most every kSrcUserMs while playing: twice the plain cap, half the Rytm's
+// render rate, so a turn follows the knob and a constant CC stream still does not redraw the Rytm at 20 Hz.
+constexpr uint32_t kSrcUserMs = 100;
 constexpr uint8_t kEchoNone = 0x7F;
 // 1023: the connect splash (rytm-mods 0026 1023): the Rytm's hello (35) carries its uptime in 50 ms ticks; when it has
 // been up kSplashMinUp or more (the link came up after the Rytm's boot, not with it: a cable plugged in, the Sidecar
@@ -363,6 +367,7 @@ struct State {
   bool self = false;         // remote's own 0x03 in voice_report: no hold logic
   bool input = false;        // a key or a turn since the last frame: draw at once
   bool user = false;         // 0.4.3: a key or a turn of the user's (31 / 32) since the last commit: not held while playing
+  bool src_user = false;     // 0.4.4: a knob's value on the SRC view (a 2A of one value, or a held step's) since the last commit
   uint32_t commit_ms = 0;    // 0.4.3: the last page / SRC view commit (kPlayCommitMs) and what it showed (page_key)
   int commit_page = -1000;
   int touched = -1;          // the encoder turned last (0..7): its cell's tiles go first, the bottom bar names it
@@ -395,6 +400,10 @@ struct State {
   // changed last (2A n 1: the bottom bar names it)
   int8_t src_track = -1, src_told = -1, src_last = -1;
   uint8_t srcv[12][16] = {};
+  // 1027e: a track's sound values while a held step's (2A <t | 0x40>) are drawn: put back at its unflagged 2A or at
+  // any 29 (the view gone or moved: the Rytm's release there sends nothing), so only the drawing ever saw the locks
+  uint8_t keep_v[12][16] = {}, keep_l[12][16] = {};
+  uint16_t keep_known[12] = {}, keep_mask = 0;
   uint8_t srcl[12][16] = {};      // rui1038: the 2A's fraction bytes (P1 of GRANULAR / WAVETABLE / MULTISAMPLE: bank << 4)
   int16_t src14[12] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // P1's last 14 bits by 2A or our 48 (song)
   int16_t wr_pat[12] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // P1 our 48 wrote, its answer owed (presetpick)
@@ -800,12 +809,21 @@ CORE_COLD bool rytm_plays() {
 // 0.4.3: a page's changed frame waits (kPlayCommitMs) - only while playing; never a whole frame, another page than the
 // last commit's (a page switch: UP's map, a page shown) or a 31 / 32 of the user's on an open page (the SRC view's 2A
 // values are capped too)
+// 1027e: the sound's values back for every track a held step's are drawn on (-1), or for track t
+CORE_COLD void src_unhold(int t) {
+  for (int k = 0; k < 12; ++k)
+    if ((t < 0 || k == t) && (s.keep_mask >> k & 1)) {
+      memcpy(s.srcv[k], s.keep_v[k], 16), memcpy(s.srcl[k], s.keep_l[k], 16);
+      s.src_known[k] = s.keep_known[k], s.keep_mask &= (uint16_t)~(1u << k);
+      if (k == s.src_track) s.input = true;
+    }
+}
 CORE_COLD int page_key() { return s.open ? s.voice : 1000 + s.src_track; }
 CORE_COLD bool commit_held(uint32_t ms) {
   return !s.legacy && s.sent_valid && !s.user && page_key() == s.commit_page && rytm_plays() &&
-         ms - s.commit_ms < kPlayCommitMs;
+         ms - s.commit_ms < (s.src_user ? kSrcUserMs : kPlayCommitMs);
 }
-CORE_COLD void committed(uint32_t ms) { s.commit_ms = ms, s.user = false, s.commit_page = page_key(); }
+CORE_COLD void committed(uint32_t ms) { s.commit_ms = ms, s.user = false, s.src_user = false, s.commit_page = page_key(); }
 
 // The tiles a rectangle touches (glass rows y..y+h-1: page 7 - row / 8).
 CORE_COLD void rect_tiles(const Rect& r, uint32_t m[4]) {
@@ -1500,6 +1518,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     case kSrcView:   // 1027: <track> <on>
       if (n < 2 || b[0] >= 12 || b[1] > 1) break;
       s.stats.src_views++;
+      src_unhold(-1);
       if (src_log) core::log("rui src: 29 %lu ms, track %d, %s", (unsigned long)now_ms(), b[0], b[1] ? "on" : "off");
       if (b[1]) {
         s.src_track = (int8_t)b[0];
@@ -1527,19 +1546,28 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       return;
     }
     case kSrcVals: {   // 1027: <track> <first> <n> {<int> <frac>} x n
-      if (n < 5 || b[0] >= 12 || b[1] > 15 || b[2] < 1 || b[1] + b[2] > 16 || n != 3 + 2 * b[2]) break;
-      int t = b[0];
+      // 1027e (rytm-mods 0026): <track | 0x40> while a step is held in GRID REC: that step's values (its locks, else the
+      // sound's), drawn only - not the sound's for the song, the bank list or a MIDI machine; the sound's follow at release
+      const bool held = b[0] & 0x40;
+      if (n < 5 || (b[0] & 0x3F) >= 12 || b[1] > 15 || b[2] < 1 || b[1] + b[2] > 16 || n != 3 + 2 * b[2]) break;
+      int t = b[0] & 0x3F;
+      if (held && !(s.keep_mask >> t & 1)) {   // the sound's values kept until the step is let go
+        memcpy(s.keep_v[t], s.srcv[t], 16), memcpy(s.keep_l[t], s.srcl[t], 16);
+        s.keep_known[t] = s.src_known[t], s.keep_mask |= (uint16_t)(1u << t);
+      } else if (!held) {
+        s.keep_mask &= (uint16_t)~(1u << t);   // the sound's own values come with it
+      }
       for (int i = 0; i < b[2]; ++i) {
         s.srcv[t][b[1] + i] = b[3 + 2 * i] & 0x7F;
         s.srcl[t][b[1] + i] = b[4 + 2 * i] & 0x7F;
         s.src_known[t] |= (uint16_t)(1u << (b[1] + i));
       }
-      {   // rui1038: the banked knob's 14 bits (song): P1, or DSP SAMPLE's SMP P11 (rui1045)
+      if (!held) {   // rui1038: the banked knob's 14 bits (song): P1, or DSP SAMPLE's SMP P11 (rui1045)
         int kb = remote_track_src_param(t);
         if (b[1] <= kb && kb < b[1] + b[2]) s.src14[t] = (int16_t)((b[3 + 2 * (kb - b[1])] & 0x7F) << 7 | (b[4 + 2 * (kb - b[1])] & 0x7F));
       }
 #if CORE_MSAMP
-      if (have_tracks && track_vb[t] != kNotOurs && (track_vb[t] & kMidiMachine) && s.src_known[t] == 0xFFFF) {
+      if (!held && have_tracks && track_vb[t] != kNotOurs && (track_vb[t] & kMidiMachine) && s.src_known[t] == 0xFFFF) {
         float w[16];   // MIDI: a knob sends with the voice idle too (its 0x03s only come while it plays)
         for (int k = 0; k < 16; ++k) w[k] = s.srcv[t][k] + s.srcl[t][k] / 128.0f;
         midim::report(kTrackVoice[t], -1, 0, w);
@@ -1547,7 +1575,10 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
 #endif
       if (b[2] == 1) s.src_last = (int8_t)b[1];
       else if (t == s.src_track) src_list_quiet();   // a kit's values at once (a load): no list for its SRC
-      if (t == s.src_track) s.input = true;   // drawn at once (the input path), a burst coalesced to its latest values
+      if (t == s.src_track) {   // drawn at once (the input path), a burst coalesced to its latest values
+        s.input = true;
+        if ((held || b[2] == 1) && !s.open) s.src_user = true;   // 0.4.4: a knob's (kSrcUserMs while playing)
+      }
       s.stats.src_vals++;
       if (src_log) core::log("rui src: 2A %lu ms, track %d, first %d, n %d, P%d = %d.%d", (unsigned long)now_ms(), t, b[1], b[2],
                        b[1] + 1, b[3], b[4]);
@@ -2027,6 +2058,9 @@ CORE_COLD bool remote_track_write(int t, int k, int value, int lo, int flags) {
   return true;
 }
 CORE_COLD int remote_track_src14(int t) { return t >= 0 && t < 12 ? s.src14[t] : -1; }
+CORE_COLD int remote_track_src_value(int t, int k) {
+  return t >= 0 && t < 12 && k >= 0 && k < 16 && (s.src_known[t] >> k & 1) ? s.srcv[t][k] : -1;
+}
 static bool g_rytm_040 = false;
 CORE_COLD void remote_rytm_040(bool on) { g_rytm_040 = on; }
 CORE_COLD bool remote_rytm_040() { return g_rytm_040; }
