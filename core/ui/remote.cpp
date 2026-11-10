@@ -340,8 +340,8 @@ constexpr uint8_t kPageInsOut = 3;   // rui1047: 3 the INSERT page on its OUT vi
 int kit_said = -1;                   // the kit the last 3B named
 constexpr uint8_t kPageArp = 4;      // 7ae: UP + FLTR, the ARP page (page_arp.cpp); an older host reads it as the SIDECAR page
 constexpr uint8_t kPagePoly = 0x20;  // rui1048: 0x20 + t (32..43) POLY CONFIG of track t (the Rytm's track menu, FUNC + CHRO; page_poly.cpp); an older host reads it as the SIDECAR page
-constexpr int kExtra0 = -10;
-constexpr int kNoPage = 1000;   // (no page id: voices 0.., -1 SIDECAR, -2 SYSTEM, extra pages kExtra0 - k)   // s.voice of extra page k (extra.h: SCOPE, REC): kExtra0 - k
+constexpr int kExtra0 = -10;   // s.voice of extra page k (extra.h: SCOPE, REC): kExtra0 - k
+constexpr int kNoPage = 1000;   // no page id (voices 0.., -1 SIDECAR, -2 SYSTEM, extra pages kExtra0 - k)
 constexpr int kMaxIds = 2 + kVoices + 16;
 
 struct State {
@@ -368,7 +368,7 @@ struct State {
   // request), so NO leaves at once, whatever it was opened over. A page picked in the MENU or reached by LEFT / RIGHT
   // is not one (NO goes to SIDECAR, as before); the page closing forgets it.
   bool shortcut = false;
-  // sedit050 (the 0.4.4 merge): the Sidecar page SAMPLE EDIT was opened over (POOL's EDIT, a voice page) and that page's
+  // sedit050 (the 0.4.4 merge): the Sidecar page SAMPLE EDIT was opened over (POOL's EDIT) and that page's
   // shortcut flag, so closing the edit goes back there; kNoPage: opened from the Rytm's own screen (the SRC view) or
   // the MENU, so closing it follows nav044 (a shortcut's page closes, else SIDECAR)
   int sedit_back = kNoPage;
@@ -1542,7 +1542,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         if (s.open) s.stats.closes++;
         if (s.open) lfo_left(s.voice, -1);   // ux1027 (review 5): the LFO page opens on its main view again
         s.open = false;
-        s.shortcut = false, s.via = -1;
+        s.shortcut = false, s.via = -1, s.sedit_back = kNoPage;
         keys_map_drop(), s.map_over = false;   // (UP's map goes with the page)
         release_held();                        // 0.5.0: and every key a page holds
 #if CORE_POLY
@@ -1965,11 +1965,13 @@ CORE_COLD void remote_show_page(const char* title) {
   if (s.open) {
     for (int k = 0; k < extra_pages(); ++k)
       if (!strcmp(extra_page(k).title, title) && s.voice != kExtra0 - k) {
+#if CORE_POLY && CORE_MSAMP
         if (!strcmp(title, "SAMPLE EDIT")) {   // sedit050: closing the edit comes back here (not over the MENU)
           const ExtraPage* now = extra_of(s.voice);
           bool menu = now && !strcmp(now->title, "MENU");
           s.sedit_back = menu ? kNoPage : s.voice, s.sedit_back_sc = s.shortcut;
         }
+#endif
         if (!strcmp(title, "MENU")) s.shortcut = false;   // nav044 review: the MENU (YES on SIDECAR): NO to SIDECAR
         else shortcut_over(s.voice);   // rui1051, nav044: NO leaves (the MENU's pick: SIDECAR, as before)
         lfo_left(s.voice, kExtra0 - k), s.via = -1;
