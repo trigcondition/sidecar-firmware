@@ -92,6 +92,26 @@ void apply(V& x);
 void ram_release(int vi);
 void prepare_stream(int vi);
 void trigger_stream(int vi, int note);
+#if CORE_MSAMP
+// The sample editor's play buffer (core/samp/sedit.h) in place of the sample RAM's copy: voice vi, triggering pool
+// slot `slot` (pool_slot), plays pcm (frames + a guard frame, ch interleaved, at rate) from its next trig on; fa < 0:
+// the track's STA..END, else the frames [fa, fb). Null clears it. A note already sounding keeps its own buffer.
+struct DspOverride {
+  const int16_t* pcm;
+  uint32_t frames;
+  float rate;
+  uint8_t ch;
+  int slot;
+  int32_t fa, fb;
+};
+void dsps_override(int vi, const DspOverride* o);
+// A voice playing from RAM reads [lo, hi) now (its engine's pcm in it); the control core's, between blocks
+bool dsps_reads(const int16_t* lo, const int16_t* hi);
+// The voices not playing that still hold a pcm in [lo, hi) let it go (their next trig sets their sample again)
+void dsps_detach_idle(const int16_t* lo, const int16_t* hi);
+// Voice vi plays its override's frames [a, b) once (ONE, no loop), as a trig at note 60; nothing without an override
+void dsps_preview(int vi, uint32_t a, uint32_t b);
+#endif
 bool prepare_pending();
 void fm_select(int vi, int pat);
 void fm_note_on(int vi, int note, int vel);   // 6-OP FM's mono note (voice_report; core/poly.cpp)

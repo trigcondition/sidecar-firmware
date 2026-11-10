@@ -18,6 +18,7 @@ static volatile unsigned s_nTempC;	// the SoC temperature as the stats line last
 #include "wgview_pi.h"		// the display's WAVETABLE / GRANULAR view
 #include "preset_pi.h"		// the display's JUNO / 6-OP FM preset pages
 #include "chopview_pi.h"		// the display's CHOP page
+#include "seditview_pi.h"		// the display's SAMPLE EDIT page (core/samp/sedit.h)
 #include "song_pi.h"		// the display's SONG page (core/song)
 #include "morph_pi.h"		// 0.5.0: the display's MORPH page (core/mod/scene.h)
 #include "voice_pi.h"		// the display's VOICE page, the Rytm's UP + T1..T5 (rui1036b)
@@ -2407,15 +2408,18 @@ void CKernel::Run (void)
 				}
 				int nCur = sidecar_ui_page ();
 				static int s_nHeldPg = -1;
-				int nPg = voice_pi::Request (&s_nReqSeen, voice_pi::FollowsTrack (nCur), &s_nTrkSeen);	// (CHOP too: it follows the track as VOICE does)
+				// (CHOP too: it follows the track as VOICE does; SAMPLE EDIT never: it is not in FollowsTrack)
+				int nPg = voice_pi::Request (&s_nReqSeen, voice_pi::FollowsTrack (nCur), &s_nTrkSeen);
+				// a marker of CHOP or SAMPLE EDIT under the finger: the page asked for waits for the release
+				int bDrag = (nCur == 17 && sidecar_chop_dragging ()) || (nCur == seditview_pi::kPage && sidecar_sedit_dragging ());
 				if (nPg >= 0)
 				{
-					if (nCur == 17 && sidecar_chop_dragging ()) { s_nHeldPg = nPg; nPg = -1; }	// a marker under the finger: its release is sent first
+					if (bDrag) { s_nHeldPg = nPg; nPg = -1; }	// a marker under the finger: its release is sent first
 					else s_nHeldPg = -1;
 				}
-				else if (s_nHeldPg >= 0 && !sidecar_chop_dragging ())
+				else if (s_nHeldPg >= 0 && !bDrag)
 				{
-					if (nCur == 17) nPg = s_nHeldPg;
+					if (nCur == 17 || nCur == seditview_pi::kPage) nPg = s_nHeldPg;
 					s_nHeldPg = -1;
 				}
 				if (nPg >= 0 && nPg != nCur) sidecar_ui_show (nPg);
@@ -2597,6 +2601,29 @@ void CKernel::Run (void)
 					s_nChopAt = nNow;
 					chopview_pi::Fill (&s_ChopView, sidecar_chop_wanted ());
 					sidecar_chop_set (&s_ChopView);
+				}
+			}
+			{					// SAMPLE EDIT: shown while an edit is open (the Rytm's page, the console, the web),
+				static sidecar_sedit_view_t s_SeditView;	// back to the page the display was on when it closes; ~10
+				static unsigned s_nSeditAt;		// frames a second, redrawn only on a change
+				static int s_nSeditBack = -1;		// the page to go back to (-1: not shown for an open edit yet)
+				unsigned nNow = m_Timer.GetClockTicks ();
+				if (nNow - s_nSeditAt >= 100000)
+				{
+					s_nSeditAt = nNow;
+					seditview_pi::Fill (&s_SeditView);
+					int nCur = sidecar_ui_page ();
+					if (s_SeditView.valid && s_nSeditBack < 0 && !(nCur == 17 && sidecar_chop_dragging ()))
+					{					// (a CHOP marker under the finger: after its release)
+						s_nSeditBack = nCur == seditview_pi::kPage ? 0 : nCur;
+						sidecar_ui_show (seditview_pi::kPage);
+					}
+					else if (!s_SeditView.valid && s_nSeditBack >= 0)
+					{
+						if (nCur == seditview_pi::kPage) sidecar_ui_show (s_nSeditBack);	// (left by hand: stays there)
+						s_nSeditBack = -1;
+					}
+					sidecar_sedit_set (&s_SeditView);	// (shown or not: the VOICE key comes back to an open edit)
 				}
 			}
 			m_pDisplay->Update (bPlugAndPlay);	// a redraw at most every 10 ms, dirty areas only

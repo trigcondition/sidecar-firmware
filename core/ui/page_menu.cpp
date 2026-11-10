@@ -39,7 +39,11 @@ struct Entry {
 // tests hold the list to that rule (test_ui)
 UI_ROM const Entry kEntries[] = {
     {"POLY CONFIG", "POLY"}, {"ARP", "ARP"},         {"SAMPLE", "SAMPLE"},   {"AUTO SAMPLE", "AUTO"}, {"SONG", "SONG"},     {"REC", "REC"},
-    {"SCOPE", "SCOPE"},      {"LFO", "LFO"},         {"MORPH", "MORPH"},     {"PROJECT", "PROJECT"},  {"STATUS", "SIDECAR"}, {"SYSTEM", "SYSTEM"},
+    {"SCOPE", "SCOPE"},      {"LFO", "LFO"},         {"MORPH", "MORPH"},
+#if CORE_POLY && CORE_MSAMP
+    {"SAMPLE EDIT", "SAMPLE EDIT"},   // the selected track's sample (page_sedit.cpp), or the edit open
+#endif
+    {"PROJECT", "PROJECT"},  {"STATUS", "SIDECAR"}, {"SYSTEM", "SYSTEM"},
     {"USER SLOTS", "USER SLOTS"}, {"USB-C", "USB-C"},   {"WEB UI", "WEB UI"}, {"KEYS (ALL COMBOS)", nullptr},
 };
 constexpr int kAll = sizeof kEntries / sizeof kEntries[0];
@@ -123,6 +127,7 @@ CORE_COLD bool available(const Entry& e) {   // its page is in the list now (or 
   if (!e.page || !strcmp(e.page, "SIDECAR") || !strcmp(e.page, "SYSTEM")) return true;
   if (!strcmp(e.page, "WEB UI")) return remote_webui() != nullptr;
   if (!strcmp(e.page, "USB-C")) return remote_usb() != nullptr;
+  if (!strcmp(e.page, "SAMPLE EDIT")) return extra_for_box(e.page);   // (it opens the editor: shown from then on)
   for (int k = 0; k < extra_pages(); ++k) {
     const ExtraPage& x = extra_page(k);
     if (!strcmp(x.title, e.page)) return extra_for_box(x.title) && (!x.shown || x.shown());
@@ -242,6 +247,12 @@ CORE_COLD bool menu_key(int code) {
     M.menu_on = false;
 #if CORE_POLY
     if (e.page && !strcmp(e.page, "POLY")) poly_page_open(-1, false);   // rui1048: the selected track's
+#endif
+#if CORE_POLY && CORE_MSAMP
+    if (e.page && !strcmp(e.page, "SAMPLE EDIT")) {
+      sedit_page_open(-1, -1);
+      return true;
+    }
 #endif
     if (!e.page) M.keys_on = true, M.map = false, M.ktop = 0, remote_show_page("KEYS");
     else if (!strcmp(e.page, "WEB UI")) M.web_on = true, M.wcur = 0, M.wconfirm = false, remote_show_page("WEB UI");

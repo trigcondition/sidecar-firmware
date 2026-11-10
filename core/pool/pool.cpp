@@ -23,6 +23,7 @@
 #include "../lib/srclib.h"
 #include "../store/store.h"
 #include "../msamp/cardq.h"
+#include "../samp/sedit.h"
 #include "../presets/preset_index.h"
 #endif
 
@@ -398,6 +399,9 @@ CORE_COLD static void switch_to(const char* n) {
   g_next_name[0] = 0;
   if (strcmp(project, project_name)) log(CORE_STR("project: %s (%s)"), project, project_name);
   else log(CORE_STR("project: %s"), project);
+#if CORE_MSAMP
+  sedit::project_changed();   // the sample editor closed first: its edit is the old project's sample (samp/sedit.h)
+#endif
   pool_load();
 #if CORE_MSAMP
   if (cardq::worker()) {

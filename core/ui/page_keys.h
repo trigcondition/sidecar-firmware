@@ -89,6 +89,7 @@ static const sc_combo_t sc_rytm_mk2_combos[] = {
 	{"clear", "T+UP+PLAY", "CLEAR STEPS", 0, "T+FUNC+PLAY", 0, "T+PLAY CLEAR"},
 	{"poly", "FUNC+CHRO", "MENU: POLY CONFIG", 0, 0, "POLY"},
 	{"chop", "PUSH ON SRC", "CHOP EDITOR (B..H)", 0, 0, "CHOP"},	/* CHOP: a push of encoder B..H on its SRC view */
+	{0, "SRC: PUSH B", "SAMPLE EDIT (DSP SMPL)", 0, 0, "SAMPLE EDIT"},	/* DSP SAMPLE: a push of encoder B on its SRC view */
 	{0, "FUNC+PAGE", "SCALE (SEQ)", 0, 0, 0},
 	{0, "AMP AMP", "SENDS (AMP 2/2)", 0, 0, 0},
 	{0, "FX: SRC/SMPL", "SEND FX 1 / 2", 0, 0, 0},
@@ -112,6 +113,8 @@ static const sc_combo_t sc_rytm_mk2_combos[] = {
 	{0, "CHOP: PUSH A-D", "ADD DEL MERGE UNDO", 0, 0, 0},
 	{0, "CHOP: PUSH E-H", "GRID TRANS LAZY RSMP", 0, 0, 0},
 	{0, "CHOP: T1..T16", "SLICE (LAZY: TAP)", 0, 0, 0},
+	{0, "SEDIT: FUNC+YES", "SAVE (+USE)", 0, 0, 0},	/* SAMPLE EDIT's own keys (core/ui/page_sedit.cpp) */
+	{0, "SEDIT: NO", "UNDO, AGAIN: BACK", 0, 0, 0},
 };
 /* rui1051 (the user's report on rui1050): pages that work on what the selected track holds - its poly sequence (SEQ,
    UP+TRIG), its insert (INSERT, UP+FX / UP+AMP), the pool its machine plays from (POOL, UP+T13 or SRC LIST's), its slices

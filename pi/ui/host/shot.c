@@ -21,6 +21,7 @@
 #include "../sidecar_preset.h"
 #include "../sidecar_scope.h"
 #include "../sidecar_chop.h"
+#include "../sidecar_sedit.h"
 #include "../sidecar_status.h"
 #include "../sidecar_project.h"
 #include <math.h>
@@ -1024,6 +1025,31 @@ static void chop_fake (int mode)
 	if (mode == 2) v->rs_state = SCH_RS_OFFER, v->rs_slice = 3, snprintf (v->rs_row, sizeof v->rs_row, "A012");
 }
 
+// SAMPLE EDIT's view as seditview_pi.cpp fills it: 0 a kick opened from track BD (the region 0.05..1.0 s, an edit to
+// undo, not saved), 1 a stereo pad from the pool (no track: no SAVE + USE; nothing changed), 2 a NORMALISE at 42 %
+static sidecar_sedit_view_t s_Se;
+static void sedit_fake (int mode)
+{
+	sidecar_sedit_view_t *v = &s_Se;
+	unsigned gen = v->gen;
+	memset (v, 0, sizeof *v);
+	v->gen = gen + 1;
+	v->valid = 1, v->st = mode == 2 ? SSE_ST_BUSY : SSE_ST_READY, v->rate = 48000, v->bits = 24, v->fn = mode == 2 ? 1 : 0;
+	v->frames = mode == 1 ? 192000 : 57600, v->ch = mode == 1 ? 2 : 1;
+	snprintf (v->name, sizeof v->name, "%s", mode == 1 ? "PAD WARM C3.wav" : "KICK 808 LONG.wav");
+	v->a = mode == 1 ? 0 : 2400, v->b = mode == 1 ? v->frames : 48000;
+	v->wa = 0, v->wb = v->frames;
+	v->undo = mode != 1, v->dirty = mode != 1, v->has_track = mode != 1, v->track = mode != 1 ? 0 : -1;
+	v->progress = mode == 2 ? 42 : 100, v->playhead = -1, v->ncols = SSE_COLS;
+	for (int i = 0; i < SSE_COLS; i++)
+	{
+		double t = (double) i / SSE_COLS, a;
+		if (mode == 1) a = 0.55 * sin (3.14159 * t) * (0.8 + 0.2 * sin (i * 0.37));	// a pad's swell
+		else a = 0.95 * exp (-t * 4.0) * (0.7 + 0.3 * fabs (sin (i * 0.21)));		// a kick's decay
+		v->hi[i] = (short) (a * 32000), v->lo[i] = (short) (-a * 31000);
+	}
+}
+
 static void theme_run (int style, const char *pre)
 {
 	snprintf (s_Pre, sizeof s_Pre, "%s", pre);
@@ -1666,6 +1692,113 @@ static void theme_run (int style, const char *pre)
 		sidecar_chop_debug (2, 1, 1, 4);
 		chop_fake (0); sidecar_chop_set (&s_Ch); run (2); shot ("chop-bank-b");
 		chop_fake (-1); sidecar_chop_set (&s_Ch); run (2); shot ("chop-none");
+	}
+	// ---- SAMPLE EDIT (page 21): the edit's waveform with its region; a marker's drag sends the start at the release, a
+	// function key applies, SAVE asks SAVE + USE / SAVE (SAVE + USE only from a track), CLOSE asks before it drops an edit
+	sidecar_ui_show (21);
+	EXPECT (sidecar_sedit_shown () && sidecar_ui_page () == 21 && !sidecar_chop_shown ());
+	sedit_fake (0); sidecar_sedit_set (&s_Se); run (2); shot ("sedit");
+	{
+		int x, y, x1, y1;
+		EXPECT (sidecar_sedit_hit (0, 0, &x, &y));				// the start marker
+		EXPECT (!sidecar_sedit_dragging ());
+		s_Px = sx (x); s_Py = sy (y); s_Down = 1; run (3);
+		for (int i = 1; i <= 5; i++) { s_Px = sx (x + 20 * i); run (1); }
+		EXPECT (sidecar_sedit_dragging ());
+		sedit_fake (0); sidecar_sedit_set (&s_Se); run (2);			// a new view while held: the marker stays under the finger
+		EXPECT (sidecar_sedit_hit (0, 0, &x1, &y1) && x1 > x + 80);
+		shot ("sedit-drag");
+		s_Down = 0; run (3);
+		EXPECT (!sidecar_sedit_dragging ());
+		EXPECT (!strncmp (s_Last, "sedit=start:", 12) && atoi (s_Last + 12) > 2400);	// (sent at the release)
+		{	// the engine refused it (its views keep the old start, the same gen): held a moment, then the engine's again
+			int xs, xe;
+			EXPECT (sidecar_sedit_hit (0, 0, &xs, &y1) && xs > x + 80);
+			sidecar_sedit_set (&s_Se); run (1);
+			EXPECT (sidecar_sedit_hit (0, 0, &x1, &y1) && x1 == xs);
+			for (int i = 0; i < 6; i++) sidecar_sedit_set (&s_Se);
+			run (1);
+			EXPECT (sidecar_sedit_hit (0, 0, &xe, &y1) && xe == x);
+		}
+		EXPECT (sidecar_sedit_hit (0, 1, &x, &y));				// the end marker, to the left
+		drag (x, y, x - 60, y, 4, 0);
+		EXPECT (!strncmp (s_Last, "sedit=end:", 10) && atoi (s_Last + 10) < 48000);
+		s_Se.b = (unsigned) atoi (s_Last + 10); s_Se.gen++;			// taken: the engine's view has it
+		sidecar_sedit_set (&s_Se); run (1);
+		EXPECT (sidecar_sedit_hit (0, 1, &x1, &y1) && x1 < x - 40);
+		sedit_fake (0); sidecar_sedit_set (&s_Se); run (1);			// (the region back to the fake's)
+		{	// a press lost (LVGL's wait-for-release: the press taken away mid-drag): nothing sent, the engine's marker again
+			int xe;
+			EXPECT (sidecar_sedit_hit (0, 1, &x, &y));
+			snprintf (s_Last, sizeof s_Last, "-");
+			s_Px = sx (x); s_Py = sy (y); s_Down = 1; run (3);
+			for (int i = 1; i <= 4; i++) { s_Px = sx (x - 15 * i); run (1); }
+			EXPECT (sidecar_sedit_dragging ());
+			lv_indev_wait_release (lv_indev_get_next (NULL)); run (3);
+			s_Down = 0; run (3);
+			EXPECT (!sidecar_sedit_dragging ());
+			EXPECT_CMD ("-");
+			EXPECT (sidecar_sedit_hit (0, 1, &xe, &y1) && xe == x);
+		}
+		EXPECT (sidecar_sedit_hit (1, SSE_FN_CROP, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=apply:CROP");
+		EXPECT (sidecar_sedit_hit (1, SSE_FN_GAIN_DN, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=apply:GAIN-");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_UNDO, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=undo");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_PLAY, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=preview");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_ZOOM_IN, &x, &y)); tap (x, y);	// half the window, around its middle
+		EXPECT_CMD ("sedit=window:14400:43200");
+		sedit_fake (0); s_Se.wa = 14400, s_Se.wb = 43200; sidecar_sedit_set (&s_Se); run (2);	// (the engine's window followed)
+		EXPECT (sidecar_sedit_hit (2, SSE_K_ZOOM_OUT, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=window:0:57600");
+		EXPECT (sidecar_sedit_hit (4, 50, &x, &y));				// a drag away from the markers pans
+		drag (x, y, x - 100, y, 4, 0);
+		EXPECT (!strncmp (s_Last, "sedit=window:", 13) && atoi (s_Last + 13) > 14400);
+		shot ("sedit-zoom");
+		sedit_fake (0); sidecar_sedit_set (&s_Se); run (2);
+		EXPECT (!sidecar_sedit_hit (3, SSE_D_USE, &x, &y));			// no question yet
+		EXPECT (sidecar_sedit_hit (2, SSE_K_SAVE, &x, &y)); tap (x, y); run (1);
+		shot ("sedit-save");
+		EXPECT (sidecar_sedit_hit (3, SSE_D_USE, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=save:use");
+		EXPECT (!sidecar_sedit_hit (3, SSE_D_USE, &x, &y));			// (answered: gone)
+		EXPECT (sidecar_sedit_hit (2, SSE_K_SAVE, &x, &y)); tap (x, y);
+		EXPECT (sidecar_sedit_hit (3, SSE_D_OK, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=save");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_CLOSE, &x, &y)); tap (x, y);	// dirty: asked first
+		EXPECT (strcmp (s_Last, "sedit=close"));
+		shot ("sedit-discard");
+		EXPECT (sidecar_sedit_hit (3, SSE_D_CANCEL, &x, &y)); tap (x, y);
+		EXPECT (strcmp (s_Last, "sedit=close") && !sidecar_sedit_hit (3, SSE_D_CANCEL, &x, &y));
+		EXPECT (sidecar_sedit_hit (2, SSE_K_CLOSE, &x, &y)); tap (x, y);
+		EXPECT (sidecar_sedit_hit (3, SSE_D_OK, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=close");
+		sedit_fake (1); sidecar_sedit_set (&s_Se); run (2); shot ("sedit-pool");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_SAVE, &x, &y)); tap (x, y); run (1);
+		EXPECT (!sidecar_sedit_hit (3, SSE_D_USE, &x, &y));			// from the pool: no SAVE + USE
+		shot ("sedit-pool-save");
+		EXPECT (sidecar_sedit_hit (3, SSE_D_CANCEL, &x, &y)); tap (x, y);
+		EXPECT (sidecar_sedit_hit (2, SSE_K_CLOSE, &x, &y)); tap (x, y);	// nothing to drop: closed at once
+		EXPECT_CMD ("sedit=close");
+		sedit_fake (2); sidecar_sedit_set (&s_Se); run (2); shot ("sedit-busy");
+		snprintf (s_Last, sizeof s_Last, "-");
+		EXPECT (sidecar_sedit_hit (1, SSE_FN_CROP, &x, &y)); tap (x, y);	// busy: the functions wait
+		EXPECT_CMD ("-");
+		// an edit open: the VOICE key leads back to it from another page; closed: VOICE as ever
+		sidecar_ui_show (8); run (2);
+		EXPECT (!sidecar_sedit_shown ());
+		if (o) tap (NAV_X, NAV_Y (3)); else tap (CNAV_X (3), CNAV_Y (3));
+		EXPECT (sidecar_sedit_shown () && sidecar_ui_page () == 21 && sidecar_ui_nav_lit () == 3);
+		s_Se.valid = 0, s_Se.st = SSE_ST_CLOSED, s_Se.gen++; sidecar_sedit_set (&s_Se); run (2); shot ("sedit-closed");
+		sidecar_ui_show (0); run (2);
+		if (o) tap (NAV_X, NAV_Y (3)); else tap (CNAV_X (3), CNAV_Y (3));
+		EXPECT (!sidecar_sedit_shown () && sidecar_ui_page () == 8);
+		sidecar_ui_show (99);							// out of range: HOME (not the last page)
+		EXPECT (sidecar_ui_page () == 0 && !sidecar_sedit_shown ());
+		sidecar_ui_show (-1);
+		EXPECT (sidecar_ui_page () == 0);
 	}
 	// ---- touch2: SIDECAR STATUS (UP + T10); the home page's engine numbers open it
 	sidecar_ui_show (13);

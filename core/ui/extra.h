@@ -189,10 +189,18 @@ uint32_t chop_key(const Cell& c, const Source& s);
 void chop_draw(Canvas& cv, const Rect& r, const Cell& c, const Source& s, int slot);
 bool chop_src_push(int track, int code, bool down);
 void chop_page_open(int track);
+// SAMPLE EDIT (page_sedit.cpp, core/samp/sedit.h): the sample editor on the Rytm's screen (off the ring; shown while an
+// edit is open). sedit_src_push: a push of encoder B on a DSP SAMPLE track's SRC view (31 0x71) opens the track's sample
+// (true: taken); sedit_page_open the same from elsewhere: track t's sample, else (t -1) SAMPLES pool code `code` (the
+// POOL page's EDIT), else (both -1, the MENU) the Rytm's selected track's, or the edit open already
+extern const ExtraPage kSeditPage;
+bool sedit_src_push(int track, int code, bool down);
+void sedit_page_open(int track, int code);
 #if CORE_UI_TOOLS
 void chop_page_set(int view, int sel, int zoom);   // tests and the renderer: the editor's view (0 EDIT 1 SLICE 1 2 SLICE 2)
 int chop_page_sel();
 void chop_page_reset();
+void sedit_page_reset();   // tests
 #endif
 void poly_page_closed();
 int poly_page_track();   // the track it shows (tests)
@@ -208,7 +216,7 @@ void source_meter_update(uint32_t ms);   // the tap's peaks into the source mete
 void source_meter_draw(Canvas& c, int y, int ch0, int n, int thr_db, int slot);   // n bars of tap channels ch0.., thr_db < 0: its tick
 int source_meter_level(int ch);          // tap channel ch's level now, 0..127 (a footer's box)
 extern const ExtraPage kPoolPage;      // POOL, after AUTO: the project's three POOL lists (page_pool.cpp, core/lib/pools.h)
-void pool_page_set(int list, int bank, int row, int act);   // tests: the view (act: SELECT UNUSED ALL NONE UNLOAD REPLACE UNDO)
+void pool_page_set(int list, int bank, int row, int act);   // tests: the view (act: SELECT UNUSED ALL NONE UNLOAD REPLACE UNDO EDIT)
 bool pool_page_browsing();
 int pool_page_selected();
 void pool_page_reset();

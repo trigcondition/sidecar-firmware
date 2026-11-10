@@ -8,6 +8,8 @@ and the Mac tests (`CORE_MSAMP`); the Sidecar Mini (Teensy) has no CHOP. The des
 chop and chop screen and the Dirtywave M8's slice list are the models for behaviour only (their manuals and use), none
 of their code.
 
+See also `docs/SAMPLE-EDIT.md`: crop, trim, normalise and fade the sample before chopping it.
+
 Tags as in the other docs: **[measured]** run on the Mac (or in rytm-emu) and recorded; **[code]** read in the source;
 **[inferred]** follows from those, not run on the real Rytm; **[open]** to be measured on the real Rytm.
 

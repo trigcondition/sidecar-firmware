@@ -31,13 +31,14 @@
 #include "sidecar_project.h"		// page 14: PROJECT (project bundles: a tap on the home page's PROJECT panel)
 #include "sidecar_preset.h"		// page 18: PRESET, the POOL page's JUNO / 6-OP FM lists (the preset index; the pool tabs 4 and 5)
 #include "sidecar_chop.h"		// page 17: CHOP, the slice machine's page (a CHOP voice's VOICE page; core/chop)
+#include "sidecar_sedit.h"		// page 21: SAMPLE EDIT, the sample editor's touch view (core/samp/sedit.h; shown while an edit is open)
 					// page 15: POOL, the three pool lists (sidecar_wgview.c's POOL page: Settings > Pool, ALL POOLS)
 #include <string.h>
 #include <stdlib.h>
 
 enum { SEG_TAB, SEG_NOTES, SEG_OUT, SEG_MAC, SEG_VOICE, SEG_MACH, SEG_DRONE, SEG_SAVER, SEG_STYLE, SEG_LOOK, SEG_CLOCK, SEG_USB, SEG_N };
 enum { PG_HOME, PG_SOUND, PG_FX, PG_ABOUT, PG_SEQ, PG_RYTM, PG_DISPLAY, PG_MACH, PG_VOICE, PG_INS, PG_SONG, PG_REC, PG_SCOPE, PG_STATUS, PG_PROJECT, PG_POOL,
-       PG_SERVICE, PG_CHOP, PG_PRESET, PG_MFX, PG_MORPH, PG_N };	// SERVICE (UX review T18): FIFO and the test drone, out of the musician's Sound page; the tab is called System: the CPU clock too
+       PG_SERVICE, PG_CHOP, PG_PRESET, PG_MFX, PG_MORPH, PG_SEDIT, PG_N };	// SERVICE (UX review T18): FIFO and the test drone, out of the musician's Sound page; the tab is called System: the CPU clock too
 
 // the settings tabs; Pool: the POOL page (the three lists, sidecar_wgview.h), a page of its own
 #define N_TABS 6
@@ -139,7 +140,7 @@ static void map_cols (int mixed, char *c1, char *c2, int cap)	// c1: the title a
 static lv_obj_t *s_Home, *s_Pages, *s_Pg[PG_N], *s_Nav[NAV_N], *s_SetTitle;
 static lv_obj_t *s_PageName;			// SIDECAR's header from 1024x600: the page's name in the dot font
 static const char *const kPageName[PG_N] = {"HOME", "SOUND", "SEND FX", "ABOUT", "SEQ", "PAT", "DISPLAY", "MACHINE", "VOICE",
-	"INSERT FX", "SONG", "REC", "SCOPE", "STATUS", "PROJECT", "POOL", "SYSTEM", "CHOP", "PRESET", "MASTER FX", "MORPH"};
+	"INSERT FX", "SONG", "REC", "SCOPE", "STATUS", "PROJECT", "POOL", "SYSTEM", "CHOP", "PRESET", "MASTER FX", "MORPH", "EDIT"};
 static lv_obj_t *s_UsbInfo;			// Settings > Sound: what USB-C is now, OVERBRIDGE's warning
 static lv_obj_t *s_Seg[SEG_N], *s_FifoVal, *s_DroneInfo, *s_FxName[2], *s_Bar[2][SIDECAR_UI_SENDS], *s_Kill;
 static lv_obj_t *s_About[8], *s_Bright, *s_BrightVal, *s_Dim, *s_Power;
@@ -391,6 +392,7 @@ static void show_page (int page)
 	sidecar_status_show (page == PG_STATUS);
 	sidecar_project_show (page == PG_PROJECT);
 	sidecar_chop_show (page == PG_CHOP);
+	sidecar_sedit_show (page == PG_SEDIT);
 	for (int i = 0; i < PG_N; i++)
 	{
 		if (!s_Pg[i]) continue;
@@ -404,7 +406,7 @@ static void show_page (int page)
 	// the page's own key (UX review N1 / N2): a page reached from another lights that one (PROJECT, STATUS: HOME; the
 	// machine view, SCOPE: VOICE; POOL: SET); never SET for a page that is not a setting
 	int nav = page == PG_HOME || page == PG_PROJECT || page == PG_STATUS ? NAV_HOME : page == PG_SEQ ? NAV_SEQ
-		: page == PG_RYTM ? NAV_PAT : page == PG_VOICE || page == PG_MACH || page == PG_SCOPE || page == PG_CHOP ? NAV_VOICE
+		: page == PG_RYTM ? NAV_PAT : page == PG_VOICE || page == PG_MACH || page == PG_SCOPE || page == PG_CHOP || page == PG_SEDIT ? NAV_VOICE
 		: page == PG_INS || page == PG_MFX || page == PG_MORPH ? NAV_FX : page == PG_SONG ? NAV_SONG : page == PG_REC ? NAV_REC : set || page == PG_POOL || page == PG_PRESET ? NAV_SET : -1;
 	s_nNavLit = nav;
 	for (int i = 0; i < NAV_N; i++) if (s_Nav[i]) th_key_check (s_Nav[i], i == nav);
@@ -519,6 +521,7 @@ static void nav_cb (lv_obj_t *o, int i, void *ud)
 	static const int kPage[NAV_N] = {PG_HOME, PG_SEQ, PG_RYTM, PG_VOICE, PG_INS, PG_SONG, PG_REC, -1};
 	int n = (int) (intptr_t) ud;
 	if (n == NAV_VOICE) command ("voicepick=-1");		// VOICE: the Rytm's selected track again
+	if (n == NAV_VOICE && sidecar_sedit_open ()) { show_page (PG_SEDIT); return; }	// an edit open: VOICE goes back to it
 	show_page (n == NAV_SET ? s_nLast : kPage[n]);
 }
 static void track_cb (lv_obj_t *o, int i, void *ud)		// a voice on the home page: VOICE for its first track (UX review
@@ -844,6 +847,8 @@ static void oled_build (lv_obj_t *scr)
 	sidecar_project_create (scr, 0, project_cmd);
 	sidecar_chop_create (scr, 0);
 	sidecar_chop_set_command (command);
+	sidecar_sedit_create (scr, 0);
+	sidecar_sedit_set_command (command);
 	sidecar_voice_set_tap (voice_tap);
 	oled_nav (scr);
 }
@@ -1135,6 +1140,8 @@ static void sc_build (lv_obj_t *scr)
 	sidecar_project_create (scr, LU (52), project_cmd);
 	sidecar_chop_create (scr, LU (52));
 	sidecar_chop_set_command (command);
+	sidecar_sedit_create (scr, LU (52));
+	sidecar_sedit_set_command (command);
 	sidecar_voice_set_tap (voice_tap);
 
 	seg (scr, SEG_TAB, LU (12), LU (60), W - LU (24), LU (48), kTabMap, TH_KEY);
@@ -1858,7 +1865,7 @@ int sidecar_ui_touch_cal_step (void) { return s_nCalStep; }
 
 void sidecar_ui_show (int page)
 {
-	show_page (page < 0 ? 0 : page >= PG_N ? PG_N - 1 : page);
+	show_page (page < 0 || page >= PG_N ? PG_HOME : page);
 }
 
 void sidecar_ui_touch (int pressed, int raw_x, int raw_y, int x, int y)
