@@ -27,6 +27,10 @@ put in place; the replaced file is kept as <name>.prev, and config.txt/cmdline.t
                                        a one-shot tryboot reboot (a power cycle boots kernel_2712.img as before)
   sdboot.py pi5-commit                 sdboot-try.img -> kernel_2712.img (the old one kept as kernel_2712.img.prev)
   sdboot.py pi5-previous               kernel_2712.img.prev back as kernel_2712.img (the two swap)
+  sdboot.py web [DIR]                  the new web app (default web-next/dist, `npm run build` there) -> the card's
+                                       /.rytm/www-next, served at http://<sidecar>/next/: every file, with a .gz
+                                       of each text file beside it (the Pi sends the .gz when there is one); old
+                                       hashed assets stay (harmless, small). Needs firmware with PUT www-next/.
   sdboot.py usbreset                   a USB reset of the FT232R serial adapter (0403:6001; needs Homebrew's libusb):
                                        after a flasher killed mid-upload the Mac's writes to it can hang (measured
                                        2026-10-16: the Pi then hears nothing, not even the reboot magic)
@@ -262,6 +266,39 @@ class Pi:
             raise SystemExit(1)
 
 
+WEB_GZ = (".html", ".js", ".css", ".svg", ".json", ".txt")
+
+
+def web_files(root):
+    """(card path under www-next/, bytes) for every file of a web-next build; text files also as .gz"""
+    import gzip
+    if not os.path.isfile(os.path.join(root, "index.html")):
+        raise SystemExit(f"{root}: no index.html (build it: cd web-next && npm run build)")
+    out = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = sorted(x for x in dirs if not x.startswith("."))
+        for f in sorted(files):
+            if f.startswith(".") or f.endswith(".gz"):
+                continue
+            rel = os.path.relpath(os.path.join(d, f), root).replace(os.sep, "/")
+            b = open(os.path.join(d, f), "rb").read()
+            out.append((rel, b))
+            if f.endswith(WEB_GZ):
+                out.append((rel + ".gz", gzip.compress(b, 9, mtime=0)))
+    # the page last: a load during the upload still finds the old page with its own assets
+    out.sort(key=lambda x: (x[0].split(".gz")[0] == "index.html", x[0]))
+    return out
+
+
+def web(pi, root):
+    files = web_files(root)
+    total = sum(len(b) for _, b in files)
+    print(f"web: {len(files)} files, {total // 1024} KB from {root}")
+    for rel, b in files:
+        pi.put("www-next/" + rel, b)
+    print("web: done - the page is at http://<sidecar>/next/")
+
+
 def wrap(img):
     img += b"\0" * (-len(img) % 4)
     s1 = s2 = 0
@@ -426,6 +463,8 @@ def run(c, a, pi):
             raise SystemExit("sdboot-try.img is not a Pi 5 kernel (a Pi 4 sdboot from 'bootloader'?): not committed")
         pi.put("kernel_2712.img", img)
         print("DEL sdboot-try.img:", pi.cmd("DEL sdboot-try.img"))
+    elif c == "web":
+        web(pi, a[1] if len(a) > 1 else os.path.join(REPO, "web-next/dist"))
     elif c == "pi5-previous":
         need(pi, ["kernel_2712.img.prev"])
         pi.put("kernel_2712.img", pi.get("kernel_2712.img.prev"))

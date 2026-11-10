@@ -239,10 +239,20 @@ are `index.html`). No kernel growth, and an app update needs no kernel.
 - `/next/assets/*` (Vite's hashed names) are cached for good (`immutable`); everything else is `no-cache`, so a new
   build shows on the next load.
 - Names: `A-Z a-z 0-9 - _ . /` only, no part starting with a dot, 120 characters at most; anything else is 404. A file
-  larger than the answer buffer (192 KB) is a 500 and a log line. `/fs` cannot reach `/.rytm`, so nothing can be put
-  there over the network.
+  larger than the answer buffer (192 KB) is a 500 and a log line. `/fs` cannot reach `/.rytm`; the only way in over
+  the network is the SD file port (7310, paired like a kernel install): `PUT www-next/<path>` (below).
 - `/next` is in the open set (`web.cpp` `Open`): it is static and holds nothing of the device. `/ws` is reached from
   `/next/` on the same origin. The app uses hash routes (`/next/#/seq`), so the Pi needs no fallback to `index.html`.
+
+Over the network (the USB-C cable, Ethernet or Wi-Fi; the same port and pairing as a kernel install):
+
+```
+cd web-next && npm run build && cd .. && SIDECAR_HOST=<the Sidecar> uv run --with pyserial python pi/circle/sdboot.py web
+```
+
+Every file of `web-next/dist` goes to `.rytm/www-next/<path>` (`PUT www-next/<path>`, sdfiles.h: the folders made,
+each file read back and checked, the old one replaced), with a `.gz` beside each text file, the page itself last.
+About 155 files, 9.5 s over the USB-C cable. Old hashed assets stay on the card (small; a card copy below clears them).
 
 Putting it on the card (the card in a reader, or the Pi's own card while it is off):
 
