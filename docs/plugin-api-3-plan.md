@@ -100,6 +100,13 @@ The knobs: the send slot's P2..P5 are the effect's P1..P4, handed in `b->p` with
 the built-in effects (the host's). The render is guarded on core 2 too (the Pi's guard takes core 2's calls outside a
 voice): a fault mutes the effect. `fx::state` says READY for a loaded effect whose tag matches the kit's.
 
+The Rytm's labels: when a UFX slot loads, the host link sends the Rytm a 0x24 SENDFX LABELS for its TYPE (64..67)
+built from the package's manifest (core/user/um.cpp `fx_labels_build`; the knobs' short names, a list knob's names as
+zones, `#` for a number inside a zone, adjacent equal names merged: docs/plugins.md 12b). The Rytm mod (0029) already
+took 0x24 for any TYPE id, so no flash is needed; before, a user effect's P2..P5 read P2..P5.
+
+The effects: plugins/ufx_phaser (PHASER) and plugins/ufx_bbd (BBD), docs/plugins.md 12b.
+
 The example: plugins/ufx_pingpong, PINGPONG, a tempo-synced stereo ping-pong delay (MIT, written for this repo):
 TIME in the Rytm's tempo from the transport (1/16 .. 1 BAR), FDBK, TONE, WIDTH; its delay lines in the arena (1 s a
 side at least, 4 s wanted). core/tests/test_api3.cpp runs it through `SendFx::Process` on the host: no output until
