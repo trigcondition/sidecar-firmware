@@ -30,6 +30,7 @@ static uint32_t g_mask_trigs = 0;
 static bool g_mask_func = false;
 static uint8_t g_led[16];
 static bool g_leds_on = false;
+static int g_closes = 0;   // 3A 0 0: the host asks the page closed (nav044: NO on a shortcut's page)
 static void out(const uint8_t* d, int len) {
   if (len < 7 || d[0] != 0xF0 || d[1] != 0x7D || d[2] != 0x52 || d[3] != 0x54) return;
   if (d[4] == 0x37 && len >= 10) {
@@ -39,6 +40,8 @@ static void out(const uint8_t* d, int len) {
     for (int c = 0; c < 16; ++c)
       if (c / 7 < nk && (k[c / 7] >> (c % 7) & 1)) g_mask_trigs |= 1u << c;
     g_mask_func = 0x80 / 7 < nk && (k[0x80 / 7] >> (0x80 % 7) & 1);
+  } else if (d[4] == 0x3A && len >= 9 && d[7] == 0) {
+    ++g_closes;
   } else if (d[4] == 0x34) {
     g_leds_on = len >= 24 && d[6] == 1;
     if (g_leds_on) memcpy(g_led, d + 7, 16);
@@ -172,8 +175,9 @@ static void no_removes_row() {
   tap(0x45), tap(0x45), tap(0x45);   // NO on an empty list: nothing, the page stays
   CHECK(scene::state().s[0].n == 0 && !strcmp(ui::remote_page_title(), "MORPH") && shows("NO LOCKS IN THIS SCENE"));
   up(0x00);
-  tap(0x45);                   // NO with no scene key held: back (the page closes or goes back)
-  CHECK(!ui::remote_page_title() || strcmp(ui::remote_page_title(), "MORPH"));
+  int closes = g_closes;
+  tap(0x45);                   // NO with no scene key held: back (nav044: a shortcut's page asks itself closed)
+  CHECK(g_closes == closes + 1 || !ui::remote_page_title() || strcmp(ui::remote_page_title(), "MORPH"));
   printf("  no_removes_row: NO while held removes B's row; without a hold NO is back\n");
 }
 
