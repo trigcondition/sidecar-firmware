@@ -349,12 +349,12 @@ struct State {
   bool clock_set = false;
   bool map_over = false;     // rui1050: UP's map shown over the open page (49 1 5 1), map_back the page under it
   int map_back = -1;
-  // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out): where
-  // the pages shown by a shortcut came from, newest last - kBackStock the stock screen (NO closes the page), else the
-  // page (s.voice) it was opened over; the MENU counts as SIDECAR (a page opened from the MENU goes back to SIDECAR, as
-  // before). LEFT / RIGHT and the page closing forget it (NO from a page reached by the ring goes to SIDECAR, as before).
-  int back[2] = {};
-  int nback = 0;
+  // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out), nav044
+  // (0.4.4, the user: "several NOs to leave after visiting more than one tab" - rui1051 walked back through the pages
+  // the shortcuts came from): the page shown was put up by a shortcut (UP / TRK + key, UP + T, the host's own page
+  // request), so NO leaves at once, whatever it was opened over. A page picked in the MENU or reached by LEFT / RIGHT
+  // is not one (NO goes to SIDECAR, as before); the page closing forgets it.
+  bool shortcut = false;
   // ux1027: the 30's page byte (kPageLfo, kPageIns, kPageInsOut) that put up the page shown (via_voice): the same UP +
   // key again on it leaves (as NO), as UP + TRIG leaves the SEQ page (rytm-mods 0026 rui1037)
   int via = -1, via_voice = 0;
@@ -533,13 +533,9 @@ CORE_COLD void lfo_left(int from, int to) {
   if (from != to && x && !strcmp(x->title, "LFO")) lfo_page_reset();
 }
 
-constexpr int kBackStock = -100;
-CORE_COLD void back_push(int from) {   // a page shown by a shortcut over `from` (kBackStock: from the stock screen)
+CORE_COLD void shortcut_over(int from) {   // a page shown by a shortcut over `from` (the MENU's pick: none)
   const ExtraPage* x = extra_of(from);
-  if (x && !strcmp(x->title, "MENU")) from = -1;
-  if (s.nback && s.back[s.nback - 1] == from) return;
-  if (s.nback == 2) s.back[0] = s.back[1], s.nback = 1;
-  s.back[s.nback++] = from;
+  s.shortcut = !(x && !strcmp(x->title, "MENU"));
 }
 
 // The pages in order (the title bar's dots): SIDECAR, SYSTEM, the voices with a page, the extra pages shown.
@@ -568,23 +564,17 @@ CORE_COLD void go(int dir) {   // dir: -1 previous, +1 next, 0 SIDECAR
   int at = page_at(ids, n);
   at = dir == 0 ? 0 : (at + dir + n) % n;
   int nv = ids[at];
-  s.nback = 0;   // rui1051: the ring (or SIDECAR) forgets where a shortcut came from
+  s.shortcut = false;   // rui1051: the ring (or SIDECAR) forgets that a shortcut put the page up
   if (nv != s.voice) lfo_left(s.voice, nv), s.voice = nv, s.page_changed = true, s.touched = -1, s.via = -1;
 }
 
-// rui1051: NO back to where the shown page was opened from (true: done)
+// nav044: NO on a page a shortcut put up leaves in one press - the page asked closed (3A 0 0) - not back through the
+// pages under it (true: done)
 CORE_COLD bool go_back() {
-  while (s.nback) {
-    int b = s.back[--s.nback];
-    if (b == s.voice) continue;
-    if (b == kBackStock) { s.nback = 0, s.via = -1; remote_request(false); return true; }   // the stock screen: the page closes (3A 0 0)
-    const ExtraPage* x = extra_of(b);
-    if (x && x->shown && !x->shown()) continue;   // (gone from the list meanwhile)
-    if (b >= 0 && (src_capable || !page_for_voice(machine_of_voice(b), b))) continue;
-    lfo_left(s.voice, b), s.voice = b, s.page_changed = true, s.touched = -1, s.via = -1;
-    return true;
-  }
-  return false;
+  if (!s.shortcut) return false;
+  s.shortcut = false, s.via = -1;
+  remote_request(false);
+  return true;
 }
 
 CORE_COLD void set_param(int vi, int k, int nv) {
@@ -639,7 +629,7 @@ CORE_COLD void on_key(int code, bool down) {
     return;   // ux1027: no siblings
   if (code == kKeyLeft) go(-1);
   else if (code == kKeyRight || code == kKeyDown || code == kKeyPage) go(+1);
-  else if (code == kKeyNo && go_back()) {}                           // rui1051: back where a shortcut came from
+  else if (code == kKeyNo && go_back()) {}                           // nav044: a shortcut's page: out at once
   else if (code == kKeyNo && s.voice == -1) remote_request(false);   // NO on SIDECAR leaves, as TRK + YES (3A 0 0)
   else if (code == 0x44 && s.voice == -1) menu_open();               // YES on SIDECAR: the MENU (UX review R3)
   else if (code == kKeyNo) go(0);
@@ -1345,7 +1335,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         if (was_open && b[0] == s.via && was == s.via_voice && extra_of(was) && (b[0] == kPageLfo || b[0] == kPageIns)) {
           s.via = -1;
           s.input = true, s.mask_valid = false;
-          if (!go_back()) go(0);   // back where it came from (the stock screen: the page asked closed), else SIDECAR
+          if (!go_back()) go(0);   // out, as NO (nav044: the page asked closed), else SIDECAR
           return;
         }
         if (!s.open) s.stats.opens++;
@@ -1378,11 +1368,11 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
             if (!strcmp(extra_page(k).title, want_title)) s.voice = kExtra0 - k;
           want_title = nullptr;
         }
-        if (!was_open || s.voice == -1) s.nback = 0;   // (SIDECAR: NO leaves, as before)
+        if (!was_open || s.voice == -1) s.shortcut = false;   // (SIDECAR: NO leaves, as before)
         if (was_open) lfo_left(was, s.voice);
         s.via = b[0], s.via_voice = s.voice;
         if (s.voice != -1 && !(was_open && was == s.voice))
-          back_push(was_open ? was : kBackStock);   // rui1051: a shortcut's page: NO goes back there
+          s.shortcut = true;   // rui1051, nav044: a shortcut's page: NO leaves
         s.page_changed = true;
         s.sent_valid = false;   // the Rytm's shadow: unknown, the whole frame goes
         s.last_draw = s.last_tx = 0;
@@ -1397,7 +1387,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         if (s.open) s.stats.closes++;
         if (s.open) lfo_left(s.voice, -1);   // ux1027 (review 5): the LFO page opens on its main view again
         s.open = false;
-        s.nback = 0, s.via = -1;
+        s.shortcut = false, s.via = -1;
         keys_map_drop(), s.map_over = false;   // (UP's map goes with the page)
 #if CORE_POLY
         seq::page_closed();   // seq-ux: a prompt, TRK + TRIG's view end with the page
@@ -1595,9 +1585,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       if (b[0] == 5 && n >= 2) {   // rui1050: UP held alone over an open page (1): the map over it; let go (0): that page again
         if (b[1] && s.open && !s.map_over) {   // (a repeated 1: the page under it kept)
           s.map_back = s.voice, s.map_over = true;
-          int nb = s.nback, bk[2] = {s.back[0], s.back[1]};
+          bool sc = s.shortcut;
           keys_map_over(true);
-          s.nback = nb, s.back[0] = bk[0], s.back[1] = bk[1];   // rui1051: the map is no page of its own (NO's way stays)
+          s.shortcut = sc;   // rui1051: the map is no page of its own (NO's way stays)
         } else if (!b[1] && s.map_over) {
           s.map_over = false;
           if (keys_map_over(false) && s.open && s.voice != s.map_back) s.voice = s.map_back, s.page_changed = true, s.input = true, s.via = -1;
@@ -1790,18 +1780,18 @@ CORE_COLD int remote_caps() { return s.caps; }
 
 CORE_COLD void remote_show_page(const char* title) {
   if (!strcmp(title, "SYSTEM")) {   // (MENU's SYSTEM: the second status page)
-    if (s.open && s.voice != -2) back_push(s.voice), lfo_left(s.voice, -2), s.voice = -2, s.page_changed = true, s.input = true, s.via = -1;
+    if (s.open && s.voice != -2) s.shortcut = false, lfo_left(s.voice, -2), s.voice = -2, s.page_changed = true, s.input = true, s.via = -1;
     return;
   }
   if (!strcmp(title, kStatusTitle)) {   // the status page (SIDECAR, the first): the page opens on it
-    if (s.open && s.voice != -1) back_push(s.voice), lfo_left(s.voice, -1), s.voice = -1, s.page_changed = true, s.input = true, s.via = -1;
+    if (s.open && s.voice != -1) s.shortcut = false, lfo_left(s.voice, -1), s.voice = -1, s.page_changed = true, s.input = true, s.via = -1;
     else if (!s.open && !device::foreign()) want_title = nullptr, remote_request(true);
     return;
   }
   if (s.open) {
     for (int k = 0; k < extra_pages(); ++k)
       if (!strcmp(extra_page(k).title, title) && s.voice != kExtra0 - k) {
-        back_push(s.voice);   // rui1051: NO goes back to the page it was opened over
+        shortcut_over(s.voice);   // rui1051, nav044: NO leaves (the MENU's pick: SIDECAR, as before)
         lfo_left(s.voice, kExtra0 - k), s.via = -1;
         s.voice = kExtra0 - k, s.page_changed = true, s.input = true;
       }

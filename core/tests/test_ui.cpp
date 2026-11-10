@@ -1160,7 +1160,9 @@ int main() {
       no();
       CHECK(sent_cmd(0x3A) == 1);
       from_rytm(0x30, 0, 0, 1);
-      // SYSTEM, then UP + T9 over it: NO back to SYSTEM, NO again SIDECAR (the ring's page: as before)
+      // nav044 (0.4.4, the user: "several NOs to leave after visiting more than one tab"): a page a shortcut put up
+      // leaves in one press, whatever it was opened over - no walk back through the pages under it
+      // SYSTEM, then UP + T9 over it: NO asks the page closed at once (rui1051: back to SYSTEM, then SIDECAR)
       from_rytm(0x30, 0, 1, 0);
       remote_tick(t += 30);
       from_rytm(0x31, 0, 0x41, 1), from_rytm(0x31, 0, 0x41, 0);
@@ -1169,11 +1171,14 @@ int main() {
       from_rytm(0x49, 1, 9, 0);
       remote_tick(t += 30);
       CHECK(is("SCOPE"));
+      other.clear();
       no();
-      CHECK(remote_stats().page == 2);
-      no();
-      CHECK(remote_stats().page == 0 && !remote_page_title());
-      // SCOPE, then UP + LFO over it (30 1 1 while open), UP + T11 over that: NO SONG -> LFO -> SCOPE -> SIDECAR
+      CHECK(sent_cmd(0x3A) == 1 && is("SCOPE"));   // (closed when the Rytm's 30 off comes)
+      from_rytm(0x30, 0, 0, 1);
+      // SIDECAR, UP + T9 (SCOPE), UP + LFO over it (30 1 1 while open), UP + T12 over that: one NO, closed (rui1051:
+      // PROJECT -> LFO -> SCOPE -> SIDECAR -> out)
+      from_rytm(0x30, 0, 1, 0);
+      remote_tick(t += 30);
       from_rytm(0x49, 1, 9, 0);
       remote_tick(t += 30);
       from_rytm(0x30, 1, 1, 0);
@@ -1181,15 +1186,19 @@ int main() {
       CHECK(is("LFO"));
       from_rytm(0x49, 1, 12, 0);   // PROJECT (shown without the bundle feed? else NOT HERE NOW: the LFO stays)
       remote_tick(t += 30);
-      bool proj = is("PROJECT");
+      other.clear();
       no();
-      if (proj) {
-        CHECK(is("LFO"));
-        no();
-      }
-      CHECK(is("SCOPE"));
+      CHECK(sent_cmd(0x3A) == 1);
+      from_rytm(0x30, 0, 0, 1);
+      // the ring's pages are not shortcuts': SYSTEM by RIGHT, NO goes to SIDECAR (as before), NO there leaves
+      from_rytm(0x30, 0, 1, 0);
+      remote_tick(t += 30);
+      from_rytm(0x31, 0, 0x41, 1), from_rytm(0x31, 0, 0x41, 0);
+      remote_tick(t += 30);
+      CHECK(remote_stats().page == 2);
+      other.clear();
       no();
-      CHECK(remote_stats().page == 0 && !remote_page_title());
+      CHECK(remote_stats().page == 0 && !remote_page_title() && sent_cmd(0x3A) == 0);
       // the MENU's SCOPE row: NO goes to SIDECAR (the MENU counts as SIDECAR, as before)
       from_rytm(0x31, 0, 0x44, 1), from_rytm(0x31, 0, 0x44, 0);   // YES: the MENU
       remote_tick(t += 30);
@@ -1204,7 +1213,7 @@ int main() {
       no();
       CHECK(remote_stats().page == 0 && !remote_page_title() && sent_cmd(0x3A) == 0);
       from_rytm(0x30, 0, 0, 1);
-      printf("ui: rui1051 the ring skips SEQ / INSERT / POOL / CHOP; NO back where a shortcut's page came from\n");
+      printf("ui: rui1051 the ring skips SEQ / INSERT / POOL / CHOP; nav044 NO leaves a shortcut's page in one press\n");
     }
     // F4 / F1: the page closed, a Rytm that understands 36 (its hello's caps, up 0.5 s: no splash): the session's first
     // underrun pops up once (a frame, 36 n, then 36 0); a second one does not
