@@ -1084,6 +1084,7 @@ uint32_t render_voices(int16_t (*ring)[kVoices], int ring_len, int w, int v0, in
                        int16_t (*ring_r)[kVoices], uint8_t* stm) {
   plaits::Voice::Frame f[kBlock];
   bool stv[kVoices] = {};   // the voice renders a stereo pair this block (OUT PRE / POST)
+  bool ustv[kVoices] = {};  // ... and its user machine wrote R itself (Plugin API 3, out_channels 2)
 #if CORE_POLY
   if (ring_r)
     for (int i = v0; i < v1; ++i) stv[i] = out::stereo(i);
@@ -1113,8 +1114,15 @@ uint32_t render_voices(int16_t (*ring)[kVoices], int ring_len, int w, int v0, in
     }
     if (x.user >= 0) {
       float o[kBlock];
-      if (hooks.user_render) hooks.user_render(i, o);
-      else for (int s = 0; s < kBlock; ++s) o[s] = 0.0f;
+      if (stv[i] && hooks.user_render2) {   // PRE / POST: a stereo plugin's R (API 3), else L = R below
+        float r[kBlock];
+        ustv[i] = hooks.user_render2(i, o, r);
+        if (ustv[i]) simd::clip_rows(ring_r, row, i, r, kBlock);
+      } else if (hooks.user_render) {
+        hooks.user_render(i, o);
+      } else {
+        for (int s = 0; s < kBlock; ++s) o[s] = 0.0f;
+      }
       simd::clip_rows(ring, row, i, o, kBlock);
       continue;
     }
@@ -1249,7 +1257,7 @@ uint32_t render_voices(int16_t (*ring)[kVoices], int ring_len, int w, int v0, in
   }
   // a mono machine on PRE / POST: L = R before its stereo chain (the user slots, FM, JUNO, ... wrote L only)
   for (int i = v0; i < v1; ++i)
-    if (stv[i] && !(v[i].live && (v[i].ms || v[i].gr || v[i].wt || v[i].li || v[i].cp || v[i].dsps)))
+    if (stv[i] && !ustv[i] && !(v[i].live && (v[i].ms || v[i].gr || v[i].wt || v[i].li || v[i].cp || v[i].dsps)))
       for (int s = 0; s < kBlock; ++s) ring_r[row[s]][i] = ring[row[s]][i];
 #if CORE_POLY
   for (int i = v0; i < v1; ++i) {   // E0: the sequencer's instances (core/inst.h) after the voice's own sound, before its chain

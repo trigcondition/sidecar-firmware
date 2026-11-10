@@ -1,7 +1,9 @@
 // pi/engine/um_pi.cpp - see um_pi.h. Circle's flags.
 #include "um_pi.h"
 
+#include <circle/koptions.h>
 #include <circle/logger.h>
+#include <circle/memory.h>
 #include <circle/new.h>
 #include <circle/sched/scheduler.h>
 #include <circle/spinlock.h>
@@ -10,6 +12,7 @@
 #include <fatfs/ff.h>
 
 #include "fmt/fmt.h"
+#include "guard.h"
 #include "user/um.h"
 
 static const char From[] = "um";
@@ -115,7 +118,22 @@ void CUserMachinesWriter::Run (void)
 	}
 }
 
-static um::Exec s_Exec = {Alloc, Reset, 0, Sync, Barrier, ArenaSize, QueueWrite, 0};
+// ---- Plugin API 3 (docs/plugin-api-3-plan.md): the slot arenas' pool and the guarded control calls
+// plugram=MB: one block of the heap at boot, before the pool RAM takes what is left (Circle does not reuse a freed block
+// over 512 KB, so it is never freed). Default by the board's RAM: 64 MB on 2 GB, 128 on 4 GB, 256 on 8 GB or more, none
+// under 2 GB; at most 1024.
+static u8 *s_pPlugPool = 0;
+static u32 s_nPlugPool = 0;
+static u8 *PlugPool (u32 *pBytes) { *pBytes = s_nPlugPool; return s_pPlugPool; }
+static int GuardCall (void (*pFunc) (void *), void *pParam, uint64_t *pPC)
+{
+	u64 nPC = 0;
+	int r = g_Guard.ControlCall (pFunc, pParam, &nPC);
+	*pPC = nPC;
+	return r;
+}
+
+static um::Exec s_Exec = {Alloc, Reset, 0, Sync, Barrier, ArenaSize, QueueWrite, 0, PlugPool, GuardCall, RASPPI};
 
 // The heap for the hosted um (the package buffer, the data arena, the voices' state): Circle's, at boot only.
 extern "C" void *um_heap (u32 nBytes) { return new u8[nBytes]; }
@@ -132,6 +150,21 @@ boolean CUserMachines::Initialize (void)
 		return FALSE;
 	}
 	CLogger::Get ()->Write (From, LogNotice, "code arena %u KB at %lx (executable)", ArenaSize >> 10, (unsigned long) (uintptr) s_pArena);
+	u64 nMemMB = CMemorySystem::Get ()->GetMemSize () >> 20;
+	unsigned nDef = nMemMB >= 6000 ? 256 : nMemMB >= 3000 ? 128 : nMemMB >= 1500 ? 64 : 0;
+	unsigned nMB = CKernelOptions::Get ()->GetAppOptionDecimal ("plugram", nDef);
+	if (nMB > 1024) nMB = 1024;
+	if (nMB)
+	{
+		u8 *pRawPool = (u8 *) CMemorySystem::HeapAllocate (((size_t) nMB << 20) + 4096, HEAP_ANY);
+		if (pRawPool)
+		{
+			s_pPlugPool = (u8 *) (((uintptr) pRawPool + 4095) & ~(uintptr) 4095);
+			s_nPlugPool = nMB << 20;
+		}
+	}
+	CLogger::Get ()->Write (From, s_pPlugPool || !nMB ? LogNotice : LogWarning, "API 3 arena pool %u MB%s", s_pPlugPool ? nMB : 0,
+				nMB && !s_pPlugPool ? " (not had: no room)" : "");
 	um::begin (&s_Exec, "/Plugins");
 	new CUserMachinesWriter;
 	return TRUE;

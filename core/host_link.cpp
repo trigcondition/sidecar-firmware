@@ -90,8 +90,19 @@ CORE_COLD void sendfx_project() {
   sendfx_step();
 }
 
+static uint32_t s_list_ms = 0;
 CORE_COLD bool sendfx_step() {
+  // a user effect slot changed (fx::list_changed): the list, the labels and the states again, at most every 100 ms
+  if (fx::list_dirty && !fx_owed && now_ms() - s_list_ms >= 100) {
+    fx::list_dirty = false;
+    s_list_ms = now_ms();
+    sendfx_names_out();
+    sendfx_labels_out();
+    sendfx_state_out(true);
+    return true;
+  }
   if (!fx_owed || !fx::slots_step()) return false;
+  fx::list_dirty = false;   // (the list below has it)
   fx_owed = false;
   sendfx_names_out();
   sendfx_labels_out();

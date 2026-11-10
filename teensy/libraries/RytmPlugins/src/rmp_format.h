@@ -34,6 +34,11 @@ typedef struct __attribute__((packed)) {
    several states of it on one voice - a poly track's notes, a unison stack (core/inst.h). Without it: one state a
    voice. Bits 4..6: max_voices - 1 (with RMP_HF_INSTANCES). Bits 8..9: how note_on's note is meant (RMP_PITCH_*). */
 #define RMP_HF_INSTANCES 0x1u
+/* Plugin API 3 (2026-11, sdk/rmp/rmp_api3.h; RMPA only): the entry table has an rmp3_plugin (dual or API 3 only), and
+   it is an effect (RMP3_KIND_EFFECT: UFX1..UFX4, never in the Rytm's machine list). Set by tools/rmp_pack.py from the
+   table; the loader checks the table itself. An older host ignores both (it refuses an API 3 only package anyway). */
+#define RMP_HF_API3 0x1000u
+#define RMP_HF_EFFECT 0x2000u
 #define RMP_HF_VOICES_SHIFT 4
 #define RMP_HF_PITCH_SHIFT 8
 enum { RMP_PITCH_NOTE = 0, RMP_PITCH_NONE = 2 };   /* NOTE: the pitch (60 = C4); NONE: a fixed-pitch drum (60 always) */

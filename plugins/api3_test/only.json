@@ -1,0 +1,11 @@
+{
+  "id": "rytm.api3_only",
+  "version": "1.0.0",
+  "name": "API3 ONLY",
+  "short": "A3T",
+  "licence": "MIT",
+  "knobs": [
+    {"p": 1, "long": "Mode", "short": "MOD", "default": 0},
+    {"p": 2, "long": "Level", "short": "LEV", "default": 100}
+  ]
+}

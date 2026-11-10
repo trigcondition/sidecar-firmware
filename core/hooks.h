@@ -17,6 +17,9 @@ struct Hooks {
   void (*user_leave)(int vi);                 // voice vi plays a built-in machine now
   void (*user_note_off)(int vi);              // 0x11 for a voice on a user slot
   void (*user_render)(int vi, float* out);    // kBlock samples, -1..1
+  // Plugin API 3: a voice on OUT PRE / POST (a stereo pair): L into l, and R into r when its plugin renders stereo
+  // (true); false: l only (a mono plugin: R = L, as before). Null: user_render for every voice.
+  bool (*user_render2)(int vi, float* l, float* r);
   void (*slot_ask)(const uint8_t* d, int len);      // 0x19 (null: core/slots.cpp)
   void (*slot_assign)(const uint8_t* d, int len);   // 0x1E (null: core/slots.cpp)
   void (*project_seen)();                     // any 0x10 arrived (null: core/slots.cpp's rate-limited 1D)

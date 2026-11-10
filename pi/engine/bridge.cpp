@@ -184,7 +184,10 @@ void tick() {
   timed_tick("samp", [] { core::samp::tick(); });                    // a written take's instruments listed (core/samp/sampler.h)
   timed_tick("asamp", [] { core::samp::asamp_tick(); });             // the auto-sampler: a Rytm take's notes on time, its rescan
 }
-void seq_block() { core::seq::pre_block(); }
+void seq_block() {
+  core::seq::pre_block();
+  um::pre_block();   // API 3: the block's transport snapshot for the user machines (core/user/um.h)
+}
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2) {
   core::poly::midi(st, d1, d2);           // (and through its note sink the sequencer's recording and step entry)
 }
