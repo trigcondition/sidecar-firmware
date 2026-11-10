@@ -28,6 +28,9 @@ const float kRecordFadeStep = 1.0f / 240.0f;   // the recording's fade-in after 
 const int kContinuousBitShift[4] = {4, 16, 7, 16};
 const int kGrainBitShift[4] = {4, 6, 7, 16};
 
+// The plugin is built with -fno-builtin (for mem*): fabsf would be a call, not one instruction.
+inline float fabs_(float x) { return __builtin_fabsf(x); }
+
 // Fill n bytes (a multiple of 64, 8-byte aligned) with the byte b, with word stores: the plugin libc's memset goes a
 // byte at a time.
 void fill_words(uint8_t* p, size_t n, uint8_t b) {
@@ -39,8 +42,11 @@ void fill_words(uint8_t* p, size_t n, uint8_t b) {
 }
 // The freeze tail Beads' delay lines keep at the end of the last bank (256 float frames): zero floats.
 const size_t kFreezeTailBytes = 256 * sizeof(FloatFrame);
-// The longest line (any quality: 768 000 bytes) with its 4-item interpolation tail stays clear of the freeze tail.
-static_assert(kDelayBufferSizeBits / 8 + 8 + kFreezeTailBytes <= kBufferBytes, "the delay lines fit the buffer");
+// The longest line (any quality: 768 000 bytes) with its 4-item interpolation tail (at most 16 bytes: 16-bit
+// stereo) and the bytes the 12-bit lines lose at each bank's end (3-byte items in a 256 KB bank: 1 byte a bank)
+// stays clear of the freeze tail (the lines end near 768 KB, the freeze tail starts at 766 KB + 1.75 KB).
+static_assert(kDelayBufferSizeBits / 8 + 16 + kNumBufferBanks + kFreezeTailBytes <= kBufferBytes,
+              "the delay lines fit the buffer");
 }  // namespace
 
 void Engine::Init(uint8_t* buffer, uint16_t* reverb) {
@@ -74,6 +80,9 @@ void Engine::Init(uint8_t* buffer, uint16_t* reverb) {
   env_ = 0.0f;
   gate_ = false;
   seed_phase_ = 0;
+  has_carry_ = false;
+  carry_ = 0.0f;
+  recoveries_ = 0;
   filled_ = 0.0f;
   fill_target_ = 1.0f;
   record_gain_ = 0.0f;
@@ -230,7 +239,7 @@ void Engine::RenderCloud(const Controls& c, const FloatFrame* in, FloatFrame* ou
   output_limiter_.Process(out, size);
 }
 
-void Engine::RenderSynth(const Controls& c, FloatFrame* out, const bool* freeze, size_t size) {
+void Engine::RenderSynth(const Controls& c, int bank, FloatFrame* out, const bool* freeze, size_t size) {
   Parameters p;
   p.time.base = c.time, p.time.attenuverter = c.time_random, p.time.cv = 0.0f, p.time.has_cv = false;
   p.size.base = c.size, p.size.attenuverter = 0.0f, p.size.cv = 0.0f, p.size.has_cv = false;
@@ -255,7 +264,7 @@ void Engine::RenderSynth(const Controls& c, FloatFrame* out, const bool* freeze,
   for (size_t i = 0; i < size; ++i) {
     FloatFrame w;
     w = 0.0f;
-    wavetable_granular_player_.Render(c.bank, kGrainBitShift[q], triggers[i], freeze[i], p, &w);
+    wavetable_granular_player_.Render(bank, kGrainBitShift[q], triggers[i], freeze[i], p, &w);
     out[i] = dry_modulation.Next() * out[i] + w * (wet_modulation.Next() * wet_gate_ * env_level);
   }
   pre_reverb_limiter_.Process(out, size);
@@ -268,8 +277,62 @@ void Engine::RenderSynth(const Controls& c, FloatFrame* out, const bool* freeze,
   output_limiter_.Process(out, size);
 }
 
+// Any n the host asks for, over even blocks: CLEAN and DIRTY TAPE run Beads' 2:1 converters, which need an even
+// count (an odd one leaves their buffers unwritten). An odd n renders one frame ahead and keeps it for the next call
+// (one frame of latency, only while the host asks for odd counts; a voice's block is 12).
 void Engine::Render(const Controls& c, float* l, float* r, size_t n) {
+  if (n == 0) return;
   if (n > 16) n = 16;
+  FloatFrame out[17];
+  size_t have = 0;
+  if (has_carry_) {
+    out[0] = carry_;
+    have = 1;
+    has_carry_ = false;
+  }
+  const size_t m = n - have;
+  if (m > 0) {
+    const size_t k = (m + 1) & ~size_t(1);   // even, at most 16
+    RenderBlock(c, out + have, k);
+    if (k > m) {
+      carry_ = out[have + m];
+      has_carry_ = true;
+    }
+  }
+  bool bad = false;
+  for (size_t i = 0; i < n; ++i) {
+    float a = out[i].l, b = out[i].r;
+    if (!(fabs_(a) <= 1e30f) || !(fabs_(b) <= 1e30f)) {   // NaN or inf: never out, and the state is reset below
+      bad = true;
+      a = b = 0.0f;
+    }
+    a = std::min(std::max(a, -1.0f), 1.0f);
+    b = std::min(std::max(b, -1.0f), 1.0f);
+    l[i] = fabs_(a) < 1e-20f ? 0.0f : a;
+    r[i] = fabs_(b) < 1e-20f ? 0.0f : b;
+  }
+  if (bad) Recover();
+}
+
+// A non-finite sample came out: the filters, limiters, reverb and the playing processor start afresh (a NaN would
+// otherwise stay in their state and silence the voice until it is attached again). The buffer stays: it holds
+// integers. The reverb's clear (64 KB) is one-off and short.
+void Engine::Recover() {
+  ++recoveries_;
+  has_carry_ = false;
+  reverb_.Init(reverb_buffer_, kSampleRate);
+  pre_reverb_limiter_.Init(1.0f / (kSampleRate * 4.0f), 0.9f);
+  output_limiter_.Init(1.0f / (kSampleRate * 6.0f), 0.9f);
+  wow_and_flutter_.Init(kSampleRate);
+  wow_and_flutter_.set_lp(0.6f);
+  oscillator_.Init(kSampleRate);
+  wavetable_granular_player_.Init(kSampleRate);
+  if (media_ >= 0 && !clearing()) Configure(media_);
+  dry_ = wet_ = 0.0f;
+  if (!(fabs_(env_) <= 1.0f)) env_ = 0.0f;
+}
+
+void Engine::RenderBlock(const Controls& c, FloatFrame* out, size_t n) {
   const int quality = std::min(std::max(c.quality, 0), 3);
   const int engine = c.engine == ENGINE_SYNTH ? ENGINE_SYNTH : ENGINE_CLOUD;
 
@@ -316,22 +379,13 @@ void Engine::Render(const Controls& c, float* l, float* r, size_t n) {
     src[i] *= env_ * level_ * (engine_ == ENGINE_CLOUD ? kSourceGain : 1.0f);
   }
 
-  FloatFrame out[16];
   if (engine_ == ENGINE_SYNTH) {
     for (size_t i = 0; i < n; ++i) out[i] = src[i];
-    RenderSynth(c, out, freeze, n);
+    RenderSynth(c, bank, out, freeze, n);
   } else {
     RenderCloud(c, src, out, freeze, n);
   }
   if (seed_phase_ > 0) --seed_phase_;
-
-  for (size_t i = 0; i < n; ++i) {
-    float a = out[i].l, b = out[i].r;
-    a = (a == a) ? std::min(std::max(a, -1.0f), 1.0f) : 0.0f;   // NaN never leaves (the host clips too)
-    b = (b == b) ? std::min(std::max(b, -1.0f), 1.0f) : 0.0f;
-    l[i] = fabsf(a) < 1e-20f ? 0.0f : a;
-    r[i] = fabsf(b) < 1e-20f ? 0.0f : b;
-  }
 }
 
 }  // namespace cloud

@@ -581,15 +581,44 @@ int main(int argc, char** argv) {
     for (float x : m) ok &= std::isfinite(x) && std::fabs(x) <= 1.0f;
     printf("routes    mono route (TRK): rms %.3f\n", r);
     CHECK(ok && r > 0.03, "mono route: rms %.4f", r);
-    float l[16], rr[16];
-    int bad = 0;
-    for (int rep = 0; rep < 200; ++rep)
-      for (int n = 1; n <= 16; ++n) {
-        v.block(l, rr, n);
-        for (int i = 0; i < n; ++i) bad += !std::isfinite(l[i]) || !std::isfinite(rr[i]);
+    // n 1..16 in every quality, against the same voice at n 12: the output's sanitiser hides a NaN inside (it
+    // writes 0 and resets the state), so compare the level and count exact zeros instead (the tape qualities'
+    // 2:1 converters need even counts: an odd n used to leave them reading the stack)
+    for (int q = 0; q < 4; ++q) {
+      float prm[16];
+      memcpy(prm, kDef, sizeof prm);
+      prm[QUAL] = qual_value(q), prm[MIX] = 127, prm[DENS] = 110, prm[TIME] = 10;
+      // n: 12 (the reference), 1, 11 and 16 throughout, then every count in turn (1, 8, 15, 6, 13, ...)
+      const int kModes[5] = {12, 1, 11, 16, 0};
+      double ref = 0;
+      for (int mi = 0; mi < 5; ++mi) {
+        Voice w(1, (uint8_t)(0x30 + q));
+        w.params(prm);
+        w.note_on(48.0f);
+        std::vector<float> L, R;
+        float l[16], rr[16];
+        int k = 0, bad = 0;
+        while (L.size() < sec(4.0)) {
+          const int n = kModes[mi] ? kModes[mi] : 1 + (k++ * 7) % 16;
+          w.block(l, rr, n);
+          for (int i = 0; i < n; ++i) {
+            bad += !std::isfinite(l[i]) || !std::isfinite(rr[i]);
+            L.push_back(l[i]), R.push_back(rr[i]);
+          }
+        }
+        const double a = rms(L, sec(1), sec(4)), b = rms(R, sec(1), sec(4)), lev = std::sqrt(0.5 * (a * a + b * b));
+        size_t z = 0;
+        for (size_t i = sec(1); i < sec(4); ++i) z += L[i] == 0.0f && R[i] == 0.0f;
+        const double zeros = double(z) / double(sec(3));
+        if (mi == 0) ref = lev;
+        printf("routes    QUAL %d, n %-5s: rms %.3f, exact zeros %.1f %%\n", q,
+               kModes[mi] ? std::to_string(kModes[mi]).c_str() : "1..16", lev, zeros * 100);
+        CHECK(bad == 0, "QUAL %d n %d: %d bad samples", q, kModes[mi], bad);
+        CHECK(lev > 0.6 * ref && lev < 1.6 * ref, "QUAL %d n %d: rms %.3f against %.3f at n 12", q, kModes[mi], lev, ref);
+        CHECK(zeros < 0.05, "QUAL %d n %d: %.0f %% exact zeros", q, kModes[mi], zeros * 100);
+        CHECK(w.guards_ok(), "QUAL %d n %d: wrote outside", q, kModes[mi]);
       }
-    CHECK(bad == 0, "n 1..16: %d bad samples", bad);
-    CHECK(v.guards_ok(), "n 1..16: wrote outside");
+    }
     for (int mode : {0, 2}) {
       Voice z(mode);
       Stereo s;
@@ -599,7 +628,7 @@ int main(int argc, char** argv) {
       CHECK(peak(s, 0, s.size()) == 0.0f, "arena mode %d: not silent", mode);
       CHECK(z.guards_ok(), "arena mode %d: wrote outside", mode);
     }
-    printf("routes    n 1..16 finite; no arena and half an arena: silent, nothing written outside\n");
+    printf("routes    no arena and half an arena: silent, nothing written outside\n");
   }
 
   // ---- calls: the control calls' time (API 3: three over 500 us in a row, or one over 2 ms, mute the slot)
@@ -671,6 +700,44 @@ int main(int argc, char** argv) {
     worst_mean = std::max(worst_mean, best_mean), worst_call = std::max(worst_call, max_call);
     printf("cpu       %-28s %6.0f ns mean a call (%.2f %% of a Mac core), slowest call %6.0f ns\n", l.what, best_mean,
            best_mean / 250000.0 * 100.0, max_call);
+  }
+  // the blocks a clear spans (a voice's first 16 blocks, and a QUAL change's fade, clear and fade-in): the slowest
+  // of each run, the median over 21 runs (one run's slowest is mostly the Mac's own scheduling)
+  {
+    std::vector<double> attach_max, qual_max;
+    for (int rep = 0; rep < 21; ++rep) {
+      Voice v(1, (uint8_t)rep);
+      float prm[16];
+      memcpy(prm, kDef, sizeof prm);
+      prm[DENS] = 127, prm[SIZE] = 100, prm[QUAL] = qual_value(2);
+      v.params(prm);
+      v.note_on(48.0f);
+      float a[kBlock], b[kBlock];
+      double mx = 0;
+      for (int i = 0; i < 16; ++i) {
+        double t0 = now_ns();
+        v.block(a, b);
+        mx = std::max(mx, now_ns() - t0);
+      }
+      attach_max.push_back(mx);
+      for (int i = 0; i < 2000; ++i) v.block(a, b);
+      prm[QUAL] = qual_value(rep % 2 ? 0 : 1);
+      v.params(prm);
+      mx = 0;
+      for (int i = 0; i < 60; ++i) {
+        double t0 = now_ns();
+        v.block(a, b);
+        mx = std::max(mx, now_ns() - t0);
+      }
+      qual_max.push_back(mx);
+    }
+    std::sort(attach_max.begin(), attach_max.end());
+    std::sort(qual_max.begin(), qual_max.end());
+    const double am = attach_max[10], qm = qual_max[10];
+    printf("cpu       the clear: slowest block after an attach %.0f ns, around a QUAL change %.0f ns (medians of 21)\n",
+           am, qm);
+    CHECK(am < 125e3 / 12 && qm < 125e3 / 12, "a clear block over %.1f us on the Mac (the voice budget / 12)",
+          125.0 / 12);
   }
   printf("cpu       package worst mean %.0f ns = %.2f %% of a core; Pi 4 est. x4.4..x12 -> %.1f..%.1f us a block "
          "(%.0f..%.0f %% of the 125 us voice budget); Pi 5 est. Pi 4 / 2.5\n", worst_mean, worst_mean / 2500.0,

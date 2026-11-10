@@ -146,6 +146,7 @@ void c_note_off(void* st) {
 void c_render(void* st, const rmp3_block* b) {
   State* s = (State*)st;
   const int32_t n = b->n < 0 ? 0 : (b->n > 16 ? 16 : b->n);
+  if (n == 0) return;
   float* l = b->out[0];
   float* r = b->out[1];
   if (!s->engine) {

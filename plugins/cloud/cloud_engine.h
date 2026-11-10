@@ -83,11 +83,12 @@ class Engine {
   // A trig: the oscillator's note (semitones, 60 = C4), its level 0..1, and a seed (one grain / a tap).
   void NoteOn(float note, float velocity);
   void NoteOff();
-  // n frames (1..16) into l and r (written, not added).
+  // n frames (0..16, any count) into l and r (written, not added).
   void Render(const Controls& c, float* l, float* r, size_t n);
 
   inline bool clearing() const { return clear_pos_ < clear_end_; }
   inline int active_quality() const { return media_; }
+  inline uint32_t recoveries() const { return recoveries_; }   // non-finite outputs reset so far (the tests)
 
  private:
   void StartClear(int media);
@@ -95,7 +96,9 @@ class Engine {
   void Configure(int media);
   void RenderCloud(const Controls& c, const beads::FloatFrame* in, beads::FloatFrame* out, const bool* freeze,
                    size_t n);
-  void RenderSynth(const Controls& c, beads::FloatFrame* out, const bool* freeze, size_t n);
+  void RenderSynth(const Controls& c, int bank, beads::FloatFrame* out, const bool* freeze, size_t n);
+  void RenderBlock(const Controls& c, beads::FloatFrame* out, size_t n);   // n even, 2..16
+  void Recover();
 
   beads::GranularProcessor<beads::RESOLUTION_16_BIT, kDelayBufferSizeBits / (16 * 2), 1> digital_;
   beads::GranularProcessor<beads::RESOLUTION_12_BIT, kDelayBufferSizeBits / (12 * 2), 1> vintage_;
@@ -130,6 +133,9 @@ class Engine {
   float env_;              // the oscillator's envelope
   bool gate_;
   int seed_phase_;         // after a trig: 2 the SEED button released this block, 1 pressed, 0 latched
+  bool has_carry_;         // a frame rendered ahead for an odd n
+  beads::FloatFrame carry_;
+  uint32_t recoveries_;
 };
 
 }  // namespace cloud
