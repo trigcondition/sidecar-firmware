@@ -62,6 +62,7 @@ static bool exists(const char* path) { return access(host_path(path).c_str(), F_
 static int g_mask_encs = -1;
 static bool g_mask_func = false;
 static std::vector<std::vector<uint8_t>> g_sent;
+static int g_closes = 0;   // 3A 0 0: the host asks the page closed (nav044)
 static void out(const uint8_t* d, int len) {
   if (len < 7 || d[0] != 0xF0 || d[1] != 0x7D || d[2] != 0x52 || d[3] != 0x54) return;
   if (d[4] == 0x37 && len >= 10) {
@@ -71,6 +72,8 @@ static void out(const uint8_t* d, int len) {
     g_mask_func = 0x80 / 7 < nk && (k[0x80 / 7] >> (0x80 % 7) & 1);
   } else if (d[4] == 0x48) {
     g_sent.emplace_back(d, d + len);
+  } else if (d[4] == 0x3A && len >= 9 && d[7] == 0) {
+    ++g_closes;
   }
 }
 static bool sent48(int t, int k) {
@@ -310,6 +313,23 @@ static void t_close_clean() {   // NO with nothing changed leaves at once
   CHECK(vw().st == sedit::kClosed && title_is("POOL"));
 }
 
+// sedit050 (the 0.4.4 merge): POOL put up by its shortcut, EDIT, NO: back on POOL (not closed), and POOL keeps
+// nav044's rule: one more NO closes the page
+static void t_back_keeps_shortcut() {
+  ui::remote_show_page("POOL");
+  tick();
+  CHECK(title_is("POOL"));
+  ui::pool_page_set(0, 0, 1, 7);
+  tap(0x44);
+  run();
+  CHECK(title_is("SAMPLE EDIT") && !vw().dirty);
+  int closes = g_closes;
+  tap(0x45);
+  CHECK(vw().st == sedit::kClosed && title_is("POOL") && g_closes == closes);
+  tap(0x45);
+  CHECK(g_closes == closes + 1);
+}
+
 static void t_guard_and_menu() {   // an edit with changes is not dropped by another open; the MENU's open goes back to it
   ui::sedit_page_open(0, -1);
   run();
@@ -446,6 +466,7 @@ int main() {
   t_refused();
   t_voice_follow();
   t_closed_elsewhere();
+  t_back_keeps_shortcut();
   CHECK(system(("rm -rf '" + g_card + "'").c_str()) == 0);
   printf("test_sedit_page: PASS\n");
   return 0;
