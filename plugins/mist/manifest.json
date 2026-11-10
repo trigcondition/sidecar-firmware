@@ -1,12 +1,12 @@
 {
-  "id": "cloud.texture",
+  "id": "mist.texture",
   "version": "0.1.0",
   "compatible_from": "0.1.0",
-  "name": "CLOUD",
-  "short": "CLD",
+  "name": "MIST",
+  "short": "MST",
   "licence": "MIT (DSP after Beads: Emilie Gillet)",
   "page2": "params",
-  "page2_title": "CLOUD MORE",
+  "page2_title": "MIST MORE",
   "pitch": "note",
   "knobs": [
     {"p": 1, "long": "Time", "short": "TIME", "look": "dial", "text": "number", "default": 24},

@@ -1,6 +1,6 @@
-# CLOUD: a granular texture machine (clouds, smears, frozen pads, wavetable grains)
+# MIST: a granular texture machine (clouds, smears, frozen pads, wavetable grains)
 
-A Pi Sidecar user machine (RMPA package `cloud.a64.rmp`, id `cloud.texture`), shipped on its own, not in the release
+A Pi Sidecar user machine (RMPA package `mist.a64.rmp`, id `mist.texture`), shipped on its own, not in the release
 build. The DSP is Beads', the texture synthesizer by Emilie Gillet (MIT: `LICENSE.beads`; the source and commits in
 `NOTICE`, the vendored files in `third_party/eurorack/VENDORED.md`).
 
@@ -11,7 +11,7 @@ stops the recording, and the grains go on playing what the buffer holds after th
 (ENG) is what Beads plays when nothing is patched in: wavetable grains at the note, with no buffer.
 
 **Why an oscillator.** Plugin API 3 gives a machine no audio input yet (`docs/plugin-api-3-plan.md`, part 9). With
-one, CLOUD could granulate the track's own Rytm audio, as Beads does with its input; the engine already takes any
+one, MIST could granulate the track's own Rytm audio, as Beads does with its input; the engine already takes any
 mono source.
 
 **Pitch:** the trig's note plays the oscillator (C3 = note 48 is the wavetables' root), so the cloud follows the
@@ -22,7 +22,7 @@ Beads' SEED button: with DENS at the centre each trig makes one grain; elsewhere
 cloud keeps sounding while the buffer holds sound: after a note off it fades as the recording does, unless FRZ is on.
 
 **Memory:** the buffer (768 KB), the reverb (64 KB) and the engine (31 KB) live in the voice's arena part, 883 KB a
-voice; the 64 KB voice state holds only the knobs. A voice that switches to CLOUD clears the buffer in pieces over the
+voice; the 64 KB voice state holds only the knobs. A voice that switches to MIST clears the buffer in pieces over the
 first 3 ms (twelve render calls), so the attach stays short (about 13 us measured on the Mac). A QUAL change fades
 the wet signal out, clears the buffer for the new format and fades back in: a gap of a few ms.
 
@@ -39,7 +39,7 @@ the wet signal out, clears the buffer for the new format and fades back in: a ga
 | SRC | P7 | SPRD | 64 | random grain shapes and a wider stereo spread |
 | SRC | P8 | MIX | 96 | dry oscillator to cloud |
 | MORE | P9 | RVB | 64 | Beads' reverb, more and longer to the right |
-| MORE | P10 | FRZ | OFF | ON stops the recording: the grains play what the buffer holds (silence if it holds nothing yet: a voice just switched to CLOUD, or right after a QUAL change) |
+| MORE | P10 | FRZ | OFF | ON stops the recording: the grains play what the buffer holds (silence if it holds nothing yet: a voice just switched to MIST, or right after a QUAL change) |
 | MORE | P11 | QUAL | DIGITAL | the buffer's format, as Beads' quality setting: LOFI (8-bit mu-law at 24 kHz with wow and flutter, the longest buffer), TAPE (12-bit at 24 kHz), VINTAGE (12-bit at 48 kHz), DIGITAL (16-bit at 48 kHz, 8 s). LOFI, TAPE and VINTAGE use a darker reverb |
 | MORE | P12 | BANK | SINE | the oscillator's wavetable bank: SINE, TRISTK, ORGAN, TRISAW, BURST, FORMANT, DIGI, WAVES, FM 1..4 |
 | MORE | P13 | WAVE | 40 | the wave in the bank |
@@ -52,12 +52,12 @@ TRND and PRND have a small dead zone around the centre, as Beads' attenuverters 
 ## Build and test
 
 ```
-make a64            # cloud.a64.rmp (aarch64-none-elf-gcc from PATH, else the rytm-circle docker image)
+make a64            # mist.a64.rmp (aarch64-none-elf-gcc from PATH, else the rytm-circle docker image)
 make package        # out/: the package, LICENSE.txt, NOTICE.txt, SHA256SUMS, BUILD-INFO-plugins.txt
-make check PY=python3   # the package run on an arm64 Mac as the Pi runs it (tests/cloud_check.cpp)
+make check PY=python3   # the package run on an arm64 Mac as the Pi runs it (tests/mist_check.cpp)
 ```
 
-`make check` renders WAVs into `../build-wav/cloud-*.wav` (a held note, freeze, maximum feedback in every format,
+`make check` renders WAVs into `../build-wav/mist-*.wav` (a held note, freeze, maximum feedback in every format,
 a note change, the SYNTH engine, QUAL changes mid-note, random knobs) and checks: no NaN, no denormals, nothing
 written outside the voice's state or arena, the pitch following the note, freeze holding, feedback staying bounded,
 no burst or click at a QUAL or ENG change, the control calls' time and the CPU per block.

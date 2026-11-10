@@ -1,9 +1,9 @@
-plugins/cloud - notices for the CLOUD package (cloud.texture, cloud.a64.rmp)
+plugins/mist - notices for the MIST package (mist.texture, mist.a64.rmp)
 
-CLOUD's DSP is Beads', the texture synthesizer by Emilie Gillet: its granular processor (the four quality settings,
+MIST's DSP is Beads', the texture synthesizer by Emilie Gillet: its granular processor (the four quality settings,
 the delay mode, feedback, freeze), its reverb, limiters and wow and flutter, and the wavetable grains it plays when
-nothing is patched in. CLOUD feeds it from a built-in oscillator at the trig's note (Plugin API 3 gives a machine no
-audio input yet); cloud_engine.h lists how it differs from Beads.
+nothing is patched in. MIST feeds it from a built-in oscillator at the trig's note (Plugin API 3 gives a machine no
+audio input yet); mist_engine.h lists how it differs from Beads.
   Taken from:  https://github.com/pichenettes/eurorack  commit f4cfa76 (2026-10-12; Beads' code in d8f4739)
                and its stmlib submodule, commit e3bd7c9
                by Emilie Gillet
@@ -11,8 +11,8 @@ audio input yet); cloud_engine.h lists how it differs from Beads.
 Beads' DSP files and the stmlib files it needs are vendored under third_party/eurorack, unchanged but for one
 guarded change in beads/dsp/delay_line.h (third_party/eurorack/VENDORED.md lists the files and the change).
 
-Mutable Instruments is a registered trademark of its owner. It is named here only to credit the source; CLOUD is not
+Mutable Instruments is a registered trademark of its owner. It is named here only to credit the source; MIST is not
 a Mutable Instruments product and is not endorsed by them.
 
-The adaptation and the glue (cloud.cc, cloud_engine.h, cloud_engine.cc, manifest.json, the Makefile, tests/): MIT,
+The adaptation and the glue (mist.cc, mist_engine.h, mist_engine.cc, manifest.json, the Makefile, tests/): MIT,
 Copyright 2026 trigcondition and contributors (LICENSE). The package links sdk/rmp/shim (MIT).

@@ -1,4 +1,4 @@
-// plugins/cloud/cloud_engine.h - CLOUD's sound engine: an oscillator recorded into an always-running buffer and
+// plugins/mist/mist_engine.h - MIST's sound engine: an oscillator recorded into an always-running buffer and
 // granulated (the CLOUD engine), or wavetable grains (the SYNTH engine), then the reverb and the limiter.
 //
 // Adapted from Beads (Emilie Gillet, MIT): beads/dsp/processor.{h,cc} (the cloud: the four quality settings, the
@@ -6,7 +6,7 @@
 // when nothing is patched in), with Beads' own DSP classes vendored unchanged under third_party/eurorack (one change
 // in delay_line.h, see VENDORED.md). What differs from Beads:
 //   - The source is a built-in oscillator (Beads' WavetableVoice) at the trig's note, not an audio input: Plugin
-//     API 3 gives a machine no audio input yet. The CLOUD engine always records it (Beads' mono buffer).
+//     API 3 gives a machine no audio input yet. The MIST engine always records it (Beads' mono buffer).
 //   - Everything runs at 48 kHz. DIGITAL is Beads' own 48 kHz path; CLEAN TAPE and DIRTY TAPE use Beads' own 2:1
 //     converters to 24 kHz inside (DIRTY TAPE as Beads builds it without ENABLE_HARDWARE_24K); VINTAGE runs its
 //     12-bit buffer at 48 kHz instead of Beads' 32 kHz codec. The mono buffer holds 8 s (DIGITAL), 10.7 s (VINTAGE),
@@ -38,7 +38,7 @@
 #endif
 #include "beads/dsp/wavetable_voice.h"
 
-namespace cloud {
+namespace mist {
 
 // Beads' buffer: 768 KB (three 256 KB banks), and the reverb's 32768 12-bit words.
 const size_t kBankBytes = 262144;
@@ -56,7 +56,7 @@ const float kSampleRate = 48000.0f;
 enum Quality { DIRTY_TAPE = 0, CLEAN_TAPE = 1, VINTAGE = 2, DIGITAL = 3 };   // Beads' Processor::Media order
 enum EngineKind { ENGINE_CLOUD = 0, ENGINE_SYNTH = 1 };
 
-// The controls, as the knobs give them (cloud.cc maps P1..P16 to these with Beads' pot laws).
+// The controls, as the knobs give them (mist.cc maps P1..P16 to these with Beads' pot laws).
 struct Controls {
   float time;          // 0..1 position in the buffer (CLOUD), the grains' wave (SYNTH)
   float size;          // 0..1 grain size; under 1/3 reversed; at the top the delay mode (CLOUD)
@@ -138,4 +138,4 @@ class Engine {
   uint32_t recoveries_;
 };
 
-}  // namespace cloud
+}  // namespace mist

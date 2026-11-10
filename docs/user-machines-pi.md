@@ -289,11 +289,11 @@ To build and install:
   on PATH) and copies them to `CARD_DIR/Plugins/<name>.rmp`.
 - Or upload the `plugins/sc_*/sc_*.a64.rmp` files on the web page.
 
-## CLOUD (plugins/cloud): granular textures
+## MIST (plugins/mist): granular textures
 
-`cloud.a64.rmp`, id `cloud.texture`, MIT. Shipped on its own, not in the starter set or the release zip. A Plugin
+`mist.a64.rmp`, id `mist.texture`, MIT. Shipped on its own, not in the starter set or the release zip. A Plugin
 API 3 machine: it needs the voice arena (883 KB a voice), so an API 2 host refuses it at the scan. The DSP is Beads',
-Emilie Gillet's texture synthesizer (MIT; `plugins/cloud/NOTICE`), vendored under `plugins/cloud/third_party`.
+Emilie Gillet's texture synthesizer (MIT; `plugins/mist/NOTICE`), vendored under `plugins/mist/third_party`.
 
 **What it does.** A built-in wavetable oscillator plays the trig's note into a buffer that records all the time.
 Grains read the buffer back (position, size, density, pitch, envelope, stereo spread), with feedback into the buffer,
@@ -305,7 +305,7 @@ ENG SYNTH plays Beads' wavetable grains at the note instead, without a buffer.
 Beads' steps (0, 1, 3, 4, 7, 12, 24 semitones each way). A trig also makes a grain when DENS is at the centre.
 
 **Why an oscillator and not the track's audio:** API 3 gives a machine no audio input yet (`plugin-api-3-plan.md`,
-part 9: `aux[]`). With it, CLOUD could granulate the Rytm's own sound as Beads granulates its input.
+part 9: `aux[]`). With it, MIST could granulate the Rytm's own sound as Beads granulates its input.
 
 | Page | P | Knob | Default | |
 |---|---|---|---|---|
@@ -328,7 +328,7 @@ part 9: `aux[]`). With it, CLOUD could granulate the Rytm's own sound as Beads g
 
 CPU: about 1.9 % of an arm64 Mac core a voice at its heaviest (dense long grains, VINTAGE); estimated 17-46 % of
 the 125 us voice budget on a Pi 4, and less than half that on a Pi 5 (to be measured on the Pi). Declared 700 per
-mille. More in `plugins/cloud/README.md`; `make -C plugins/cloud check` runs its tests.
+mille. More in `plugins/mist/README.md`; `make -C plugins/mist check` runs its tests.
 
 ## Tests
 

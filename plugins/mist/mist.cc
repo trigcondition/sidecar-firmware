@@ -1,6 +1,6 @@
-// plugins/cloud/cloud.cc - CLOUD, a texture machine for the Pi: an oscillator at the trig's note, recorded into an
-// always-running buffer and played back as a granular cloud with feedback, freeze, stereo spread and reverb (the CLOUD
-// engine), or Beads' own wavetable grains (the SYNTH engine). The DSP is Beads' (Emilie Gillet, MIT; cloud_engine.h).
+// plugins/mist/mist.cc - MIST, a texture machine for the Pi: an oscillator at the trig's note, recorded into an
+// always-running buffer and played back as a granular cloud with feedback, freeze, stereo spread and reverb (the MIST
+// engine), or Beads' own wavetable grains (the SYNTH engine). The DSP is Beads' (Emilie Gillet, MIT; mist_engine.h).
 //
 // Plugin API 3 only (rmp_api3.h): the buffer (768 KB), the reverb (64 KB) and the engine live in the voice's arena
 // part, which the 64 KB state cannot hold; the output is stereo on PRE / POST (the mono mix on TRK). A voice state
@@ -20,25 +20,25 @@
 #include <string.h>
 
 #include "rmp/rmp_api3.h"
-#include "cloud_engine.h"
+#include "mist_engine.h"
 
 #ifndef RMP_NATIVE
 extern "C" int abs(int x) { return x < 0 ? -x : x; }   // Beads' grains call it; the plugin libc has none
 #endif
 
-#ifndef CLOUD_PERMILLE
-#define CLOUD_PERMILLE 700
+#ifndef MIST_PERMILLE
+#define MIST_PERMILLE 700
 #endif
 
 namespace {
 
 // The arena part of a voice: the engine, then the buffer, then the reverb's memory.
-const uint32_t kEngineBytes = (uint32_t)((sizeof(cloud::Engine) + 63u) & ~(size_t)63u);
-const uint32_t kArenaBytes = kEngineBytes + (uint32_t)cloud::kBufferBytes + (uint32_t)cloud::kReverbBytes;
+const uint32_t kEngineBytes = (uint32_t)((sizeof(mist::Engine) + 63u) & ~(size_t)63u);
+const uint32_t kArenaBytes = kEngineBytes + (uint32_t)mist::kBufferBytes + (uint32_t)mist::kReverbBytes;
 
 struct State {
-  cloud::Engine* engine;     // in the arena part; NULL without one (silent)
-  cloud::Controls c;
+  mist::Engine* engine;     // in the arena part; NULL without one (silent)
+  mist::Controls c;
   float p[16];
   int32_t voice;
 };
@@ -77,7 +77,7 @@ inline int enum_of(float v, int n) {   // a knob's 0..127 in n equal zones
 
 void map_controls(State* s) {
   const float* p = s->p;
-  cloud::Controls& c = s->c;
+  mist::Controls& c = s->c;
   c.time = clamp01(p[0] / 127.0f);
   c.size = clamp01(p[1] / 127.0f);
   c.density = clamp01(p[2] / 127.0f);
@@ -89,14 +89,14 @@ void map_controls(State* s) {
   c.reverb = clamp01(p[8] / 127.0f * 1.005f);
   c.freeze = p[9] >= 64.0f;
   c.quality = enum_of(p[10], 4);
-  c.bank = enum_of(p[11], cloud::kNumBanks);
+  c.bank = enum_of(p[11], mist::kNumBanks);
   c.wave = clamp01(p[12] / 127.0f);
   c.time_random = attenuverter(clamp01(p[13] / 127.0f));
   c.pitch_random = attenuverter(clamp01(p[14] / 127.0f));
   c.engine = enum_of(p[15], 2);
 }
 
-// Flush-to-zero while CLOUD renders (AArch64 FPCR.FZ, put back after): Beads' one-pole filters, limiters and reverb
+// Flush-to-zero while MIST renders (AArch64 FPCR.FZ, put back after): Beads' one-pole filters, limiters and reverb
 // decay towards zero and would otherwise spend blocks in denormals once a sound has died away.
 struct FlushToZero {
 #if defined(__aarch64__)
@@ -126,8 +126,8 @@ void c_attach(void* st, const rmp3_voice* v) {
   s->engine = nullptr;
   if (!v->arena || v->arena_bytes < kArenaBytes) return;   // no room: silent
   uint8_t* a = (uint8_t*)v->arena;
-  cloud::Engine* e = new (a) cloud::Engine;
-  e->Init(a + kEngineBytes, (uint16_t*)(void*)(a + kEngineBytes + cloud::kBufferBytes));
+  mist::Engine* e = new (a) mist::Engine;
+  e->Init(a + kEngineBytes, (uint16_t*)(void*)(a + kEngineBytes + mist::kBufferBytes));
   s->engine = e;
 }
 void c_params(void* st, const float* p) {
@@ -186,7 +186,7 @@ RMP_ENTRY const rmp_plugin rmp_entry = {
     RMP_PLUGIN_MAGIC,
     RMP_API3,                                   // API 3 only: the arena is not optional
     (uint32_t)sizeof(State),
-    CLOUD_PERMILLE,
+    MIST_PERMILLE,
     c_init, c_voice_init, c_note_on, c_note_off, c_params,
     nullptr,                                    // no API 2 render
     {nullptr, nullptr, nullptr, nullptr, RMP_FN(&kPlugin3), nullptr, nullptr, nullptr},

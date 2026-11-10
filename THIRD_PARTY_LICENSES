@@ -1024,9 +1024,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------------
-CLOUD (plugins/cloud): Beads by Emilie Gillet, and stmlib (pichenettes/eurorack f4cfa76, stmlib e3bd7c9)
-Licence: MIT. Beads' DSP and the stmlib files it needs, vendored with one guarded change (plugins/cloud/NOTICE,
-plugins/cloud/third_party/eurorack/VENDORED.md); stmlib's notice is the one under "Mutable Instruments Plaits, Rings
+MIST (plugins/mist): Beads by Emilie Gillet, and stmlib (pichenettes/eurorack f4cfa76, stmlib e3bd7c9)
+Licence: MIT. Beads' DSP and the stmlib files it needs, vendored with one guarded change (plugins/mist/NOTICE,
+plugins/mist/third_party/eurorack/VENDORED.md); stmlib's notice is the one under "Mutable Instruments Plaits, Rings
 and stmlib" above. Shipped on its own, not in the sidecar-pi-plugins zip.
 ------------------------------------------------------------------------------
 Copyright 2016-2021 Emilie Gillet.

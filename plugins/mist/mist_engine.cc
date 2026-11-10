@@ -1,16 +1,16 @@
-// plugins/cloud/cloud_engine.cc - CLOUD's sound engine (cloud_engine.h says what it is and how it differs from
+// plugins/mist/mist_engine.cc - MIST's sound engine (mist_engine.h says what it is and how it differs from
 // Beads). Processor::Process and Synth::Render of Beads (Emilie Gillet, MIT) are the model for RenderCloud and
 // RenderSynth: the same order, constants and gain laws.
 // MIT. Beads: Copyright 2016-2021 Emilie Gillet (LICENSE.beads). The adaptation: Copyright 2026 trigcondition and
 // contributors (LICENSE).
-#include "cloud_engine.h"
+#include "mist_engine.h"
 
 #include <algorithm>
 
 #include "beads/dsp/mu_law.h"
 #include "stmlib/dsp/parameter_interpolator.h"
 
-namespace cloud {
+namespace mist {
 
 using namespace beads;
 using namespace stmlib;
@@ -388,4 +388,4 @@ void Engine::RenderBlock(const Controls& c, FloatFrame* out, size_t n) {
   if (seed_phase_ > 0) --seed_phase_;
 }
 
-}  // namespace cloud
+}  // namespace mist

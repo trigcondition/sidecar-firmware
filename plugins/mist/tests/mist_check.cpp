@@ -1,7 +1,7 @@
-// plugins/cloud/tests/cloud_check.cpp - the host checks of CLOUD: the RMPA package (make package: out/cloud.a64.rmp)
+// plugins/mist/tests/mist_check.cpp - the host checks of MIST: the RMPA package (make package: out/mist.a64.rmp)
 // loaded and run on this arm64 Mac as the Pi runs it (rmp_loader: verify, the two parts placed, relocated; MAP_JIT),
 // through Plugin API 3 as the engine calls it (an rmp3_host, voice_init, voice_attach with an arena part, rmp3_block
-// renders, stereo and mono routes). Each scenario writes a WAV to plugins/build-wav/cloud-<name>.wav:
+// renders, stereo and mono routes). Each scenario writes a WAV to plugins/build-wav/mist-<name>.wav:
 //   load      the table: API 3 only, needs the arena, wants stereo, 8 states, the arena part per voice, state size
 //   held      a held note at the defaults: sounds, stereo, finite, within +-1, no denormals; the arena was full of
 //             junk at attach and none of it is heard (wet only: silence until the clear, then a fade in)
@@ -248,7 +248,7 @@ static double note_hz(double note) { return 440.0 * std::pow(2.0, (note - 69.0) 
 static double cents(double hz, double ref) { return hz > 0 ? 1200.0 * std::log2(hz / ref) : 9999.0; }
 
 static void write_wav(const char* name, const Stereo& s) {
-  std::string path = std::string(g_wavdir) + "/cloud-" + name + ".wav";
+  std::string path = std::string(g_wavdir) + "/mist-" + name + ".wav";
   FILE* f = fopen(path.c_str(), "wb");
   if (!f) { printf("  (no %s)\n", path.c_str()); return; }
   uint32_t frames = (uint32_t)s.size(), data = frames * 4, riff = 36 + data, fmt = 16, rate = kFs, bps = kFs * 4;
@@ -274,8 +274,8 @@ static void check_clean(const char* what, const Stereo& s, const Voice& v) {
 static size_t sec(double s) { return (size_t)(s * kFs) / kBlock * kBlock; }
 
 int main(int argc, char** argv) {
-  const char* pkg = argc > 1 ? argv[1] : "../out/cloud.a64.rmp";
-  const char* native = argc > 2 ? argv[2] : "../libcloud.dylib";
+  const char* pkg = argc > 1 ? argv[1] : "../out/mist.a64.rmp";
+  const char* native = argc > 2 ? argv[2] : "../libmist.dylib";
   if (const char* w = getenv("WAVDIR")) g_wavdir = w;
   g_host.reserved[RMP_H_V3] = &g_h3;
   g_host2.reserved[RMP_H_V3] = &g_h3;
@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
   // ---- load
   printf("load      %s: id %s, image %u B, bss %u B, state %u B, arena %u B a voice, cpu %u permille, flags 0x%x\n", pkg,
          info.id, info.image_size, info.bss_size, g_p->state_bytes, g_p3 ? g_p3->voice_want : 0, g_p->cpu_permille, info.flags);
-  CHECK(strcmp(info.id, "cloud.texture") == 0, "id %s", info.id);
+  CHECK(strcmp(info.id, "mist.texture") == 0, "id %s", info.id);
   CHECK(g_p->api == 3u && g_p->render == nullptr, "API 3 only: api %u", g_p->api);
   CHECK(g_p3 && g_p3->magic == RMP3_MAGIC && g_p3->kind == RMP3_KIND_MACHINE, "rmp3_plugin");
   if (!g_p3) return 1;
@@ -802,6 +802,6 @@ int main(int argc, char** argv) {
   }
   CHECK(worst_mean < 25000, "the worst mean %.0f ns a block on the Mac (x12 = %.0f us, over the Pi 4's 125 us voice budget "
         "with no room)", worst_mean, worst_mean * 12 / 1e3);
-  printf(g_fail ? "cloud_check: %d FAILED\n" : "cloud_check: all passed\n", g_fail);
+  printf(g_fail ? "mist_check: %d FAILED\n" : "mist_check: all passed\n", g_fail);
   return g_fail ? 1 : 0;
 }
