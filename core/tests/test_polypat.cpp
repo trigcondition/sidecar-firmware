@@ -609,6 +609,13 @@ int main() {
     CHECK(caught(0x42) == 1 && caught(0x43) == 1);
     remote_show_page("POOL"), tick();
     CHECK(caught(0x42) == 1 && caught(0x43) == 1);
+    // review: LFO (UP + LFO) and POLY pass them too (no updown); SYSTEM, a ring page, keeps them
+    page(1), tick();
+    CHECK(remote_page_title() && !strcmp(remote_page_title(), "LFO") && caught(0x42) == 0 && caught(0x43) == 0);
+    remote_show_page("POLY"), tick();
+    CHECK(remote_page_title() && !strcmp(remote_page_title(), "POLY") && caught(0x42) == 0 && caught(0x43) == 0);
+    remote_show_page("SYSTEM"), tick();
+    CHECK(caught(0x42) == 1 && caught(0x43) == 1);
     page(0);
     seq::set_undo_hooks(nullptr);
     CHECK(mask() == 1u << CH);

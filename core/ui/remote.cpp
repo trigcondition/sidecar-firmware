@@ -1791,7 +1791,8 @@ CORE_COLD void remote_show_page(const char* title) {
   if (s.open) {
     for (int k = 0; k < extra_pages(); ++k)
       if (!strcmp(extra_page(k).title, title) && s.voice != kExtra0 - k) {
-        shortcut_over(s.voice);   // rui1051, nav044: NO leaves (the MENU's pick: SIDECAR, as before)
+        if (!strcmp(title, "MENU")) s.shortcut = false;   // nav044 review: the MENU (YES on SIDECAR): NO to SIDECAR
+        else shortcut_over(s.voice);   // rui1051, nav044: NO leaves (the MENU's pick: SIDECAR, as before)
         lfo_left(s.voice, kExtra0 - k), s.via = -1;
         s.voice = kExtra0 - k, s.page_changed = true, s.input = true;
       }

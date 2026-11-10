@@ -1199,6 +1199,13 @@ int main() {
       other.clear();
       no();
       CHECK(remote_stats().page == 0 && !remote_page_title() && sent_cmd(0x3A) == 0);
+      // review (nav044): the MENU itself (YES on SIDECAR) is no shortcut's page: NO back to SIDECAR, not closed
+      from_rytm(0x31, 0, 0x44, 1), from_rytm(0x31, 0, 0x44, 0);   // YES: the MENU
+      remote_tick(t += 30);
+      CHECK(is("MENU"));
+      other.clear();
+      no();
+      CHECK(remote_stats().page == 0 && !remote_page_title() && sent_cmd(0x3A) == 0);
       // the MENU's SCOPE row: NO goes to SIDECAR (the MENU counts as SIDECAR, as before)
       from_rytm(0x31, 0, 0x44, 1), from_rytm(0x31, 0, 0x44, 0);   // YES: the MENU
       remote_tick(t += 30);
