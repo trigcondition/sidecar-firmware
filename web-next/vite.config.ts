@@ -28,7 +28,7 @@ export default defineConfig({
       "/ws": { target, ws: true, changeOrigin: true, headers: { Origin: target } },
       // every HTTP endpoint of the Sidecar (pi/engine/web.cpp), with its origin (several need the same-origin check)
       ...Object.fromEntries(
-        ["/status", "/health", "/log", "/pair", "/time", "/wifi", "/midibridge", "/um", "/lists", "/pool", "/presets", "/bundle", "/usb", "/fs", "/blackbox", "/cmd"].map((p) => [
+        ["/status", "/health", "/log", "/pair", "/time", "/wifi", "/midibridge", "/um", "/lists", "/pool", "/presets", "/bundle", "/usb", "/fs", "/blackbox", "/cmd", "/update"].map((p) => [
           p,
           { target, changeOrigin: true, headers: { Origin: target, Referer: `${target}/` } },
         ]),

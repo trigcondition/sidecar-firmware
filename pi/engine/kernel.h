@@ -168,6 +168,7 @@ private:
 	unsigned		m_nResFileW, m_nResFileH;	// display.txt's res= alone (kept when the file is written)
 	void LoadDisplayRes (boolean bCard);
 	void LoadDisplaySettings (boolean bCard);
+	boolean			m_bUpdTrial = FALSE;	// updtrial=1: the web update's trial boot (update_pi.h): the watchdog from the start
 #ifdef SIDECAR_PI5_TESTMODE
 	unsigned		m_nTestSecs = 0;	// testsecs= (docs/pi5.md "Engine test mode"): 0 off
 	boolean			m_bTestCard = FALSE;	// testcard=1 with testsecs=: the card in use, Sidecar's folders only (card_guard.h)

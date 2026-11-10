@@ -26,6 +26,7 @@
 #include "paircode.h"
 #include "paircode_pi.h"
 #include "usbnet_pi.h"		// the USB-C cable is trusted (docs/usb-network.md)
+#include "update_pi.h"		// the firmware update from this page (update.h, docs/web-update.md)
 #include "blackbox_pi.h"
 #include "midibridge_pi.h"
 #include "sidecar_gadget.h"	// usbmidi=os: /cmd refuses link=tcp:<address> while it is on
@@ -379,6 +380,7 @@ static void BRenamed (const char *a, const char *b) { core::lib::moved (a, b); }
 static bool BBusy (const char *p) { return rec_pi::TakeBusy (p); }	// the take being recorded: no delete, no rename
 static const fsweb::Backend s_Card = {BStat, BList, BRead, BWrite, BRemove, BRename, BMkdir, BSpace, BYield, BChanged,
 				      BStored, BRemoved, BRenamed, BBusy};
+const fsweb::Backend *g_pWebCard = &s_Card;	// the web update's card too (update_pi.cpp: the boot check, the commit)
 
 // The Wi-Fi settings' changes come from this page only (wifi_conf.h's same_origin; pi/circle/circle-http-origin.patch
 // keeps the headers): the Host one of the Pi's names (sidecar.local, its IP), the Origin (else the Referer) that host.
@@ -421,10 +423,12 @@ static const char kNotPaired[] = "not paired: enter the pairing code shown on th
 //                       ring in about 25 s (docs/pi-engine.md "Pairing code" > "What is open")
 //   "/pair", "/pair/status", "/pair/resume"   pairing itself has to work before you are paired
 //   "/pair/show"        the dialog asks for the code on the Rytm's screen (rate-limited: paircode_pi::kShowGapS)
+//   "/update/state"     the web update's state (update.h): the versions and where a trial stands, as /status shows
+//                       the version - no secret; the page asks it while the Sidecar restarts, before it is paired again
 static boolean Open (const char *pPath)
 {
 	static const char *const kOpen[] = {"/", "/index.html", "/classic", "/bundle-sw.js", "/health", "/status", "/log",
-					    "/pair", "/pair/status", "/pair/resume", "/pair/show"};
+					    "/pair", "/pair/status", "/pair/resume", "/pair/show", "/update/state"};
 	for (unsigned i = 0; i < sizeof kOpen / sizeof kOpen[0]; i++) if (strcmp (pPath, kOpen[i]) == 0) return TRUE;
 	return strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0;	// the new app's files (webnext_path.h): no data in them
 }
@@ -477,7 +481,7 @@ static THTTPStatus NextFile (const char *pPath, u8 *pBuffer, unsigned *pLength, 
 // in one place, so the Content-Type and the body can never disagree.
 static boolean WantsText (const char *pPath)
 {
-	return strncmp (pPath, "/fs/", 4) == 0 || strcmp (pPath, "/cmd") == 0;
+	return strncmp (pPath, "/fs/", 4) == 0 || strcmp (pPath, "/cmd") == 0 || strcmp (pPath, "/update/put") == 0;
 }
 
 // The session token a request carries: the X-Sidecar-Auth header (what the page sends: a header cannot be set by
@@ -537,6 +541,26 @@ static void Reply (const fsweb::Result &r, u8 *pBuffer, unsigned *pLength, const
 	memcpy (pBuffer, (const char *) s, n);
 	*pLength = n;
 	*ppContentType = "text/plain; charset=utf-8";
+}
+
+// The web update's answer: {"ok","code","msg","reboot":"none"|"plain"|"tryboot"} (HTTP 200, as every refusal here)
+static void UpdateReply (const fsweb::Result &r, upd::Reboot Rb, u8 *pBuffer, unsigned *pLength, const char **ppContentType)
+{
+	char Msg[2 * sizeof r.msg];
+	unsigned q = 0;
+	for (const char *c = r.msg; *c && q < sizeof Msg - 3; c++)
+	{
+		if (*c == '"' || *c == '\\') Msg[q++] = '\\';
+		Msg[q++] = *c >= 0x20 && *c <= 0x7e ? *c : ' ';
+	}
+	Msg[q] = 0;
+	CString s;
+	s.Format ("{\"ok\":%s,\"code\":%d,\"msg\":\"%s\",\"reboot\":\"%s\"}", r.status == 200 ? "true" : "false", r.status, Msg,
+		  Rb == upd::kTry ? "tryboot" : Rb == upd::kPlain ? "plain" : "none");
+	unsigned n = s.GetLength () < *pLength ? s.GetLength () : *pLength;
+	memcpy (pBuffer, (const char *) s, n);
+	*pLength = n;
+	*ppContentType = "application/json";
 }
 
 // What GET /status answers (the /ws status topic too: the same function, so the two can never differ)
@@ -1169,6 +1193,56 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		if (r.status == 404 && strcmp (pPath, "/bundle/zip") == 0) return HTTPNotFound;	// (the download's end)
 		*pLength = r.len;	// other refusals: HTTP 200 with {"ok":false,...} (Circle's error pages carry no message)
 		*ppContentType = r.type;
+	}
+	else if (strncmp (pPath, "/update/", 8) == 0)		// the firmware update (update.h, docs/web-update.md)
+	{
+		// paired (the gate above; /update/state is open) and every POST from this page only (strict, as the Wi-Fi
+		// settings): this is the one way from the network to the boot files when cmdline.txt has sdport=0
+		const char *op = pPath + 8;
+		upd::Env Env = update_pi::Env ();
+		char Num[24];
+		if (strcmp (op, "state") == 0)
+		{
+			int n = upd::state_json (Env, (char *) pBuffer, *pLength);
+			if (n <= 0) return HTTPInternalServerError;
+			*pLength = n;
+			*ppContentType = "application/json";
+		}
+		else if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+		{
+			fsweb::Result rf = {403, "refused: not from this page (the same-origin check)"};
+			if (strcmp (op, "put") == 0) Reply (rf, pBuffer, pLength, ppContentType);
+			else UpdateReply (rf, upd::kNone, pBuffer, pLength, ppContentType);
+		}
+		else if (strcmp (op, "put") == 0)		// off=, total=, crc= ; the chunk as the multipart's one part (as /fs/put)
+		{
+			const char *pHead;
+			const u8 *pData = 0;
+			unsigned nData = 0;
+			if (!GetMultipartFormPart (&pHead, &pData, &nData)) { pData = (const u8 *) ""; nData = 0; }
+			u64 nOff = FormValue (pParams, "off", Num, sizeof Num) ? ParseU64 (Num) : 0;
+			u64 nTotal = FormValue (pParams, "total", Num, sizeof Num) ? ParseU64 (Num) : 0;
+			u32 nCrc = FormValue (pParams, "crc", Num, sizeof Num) ? (u32) ParseU64 (Num) : 0;
+			fsweb::Result r = {400, "bad request"};
+			upd::put (Env, nOff, nTotal, nCrc, pData, nData, &r);
+			if (!(r.status == 200 && strncmp (r.msg, "ok", 2) == 0)) FileClose ();
+			Reply (r, pBuffer, pLength, ppContentType);
+		}
+		else if (strcmp (op, "install") == 0 || strcmp (op, "previous") == 0 || strcmp (op, "discard") == 0)
+		{
+			boolean bForce = (FormValue (pFormData, "force", Num, sizeof Num) || FormValue (pParams, "force", Num, sizeof Num)) && Num[0] == '1';
+			fsweb::Result r = {400, "bad request"};
+			upd::Reboot Rb = upd::kNone;
+			if (op[0] == 'i') Rb = upd::install (Env, bForce, &r);
+			else if (op[0] == 'p') Rb = upd::previous (Env, bForce, &r);
+			else upd::discard (Env, &r);
+			FileClose ();
+			if (op[0] != 'd') CLogger::Get ()->Write (From, Rb != upd::kNone ? LogNotice : LogWarning, "update: %s%s: %d %s", op,
+								 bForce ? " (forced)" : "", r.status, r.msg);
+			if (Rb != upd::kNone) update_pi::RequestReboot (Rb);
+			UpdateReply (r, Rb, pBuffer, pLength, ppContentType);
+		}
+		else return HTTPNotFound;
 	}
 	else if (strncmp (pPath, "/fs/", 4) == 0)		// the file browser (fsweb.h)
 	{
