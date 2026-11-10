@@ -24,18 +24,23 @@ static const Controls kDigitaktControls = {
     {kCtlFreq, kCtlReso, kCtlType, kCtlFltEnv, kCtlFltA, kCtlFltD, kCtlFltS, kCtlFltR, kCtlAmpA, kCtlAmpH, kCtlAmpD, kCtlVol, kCtlPan},
     {kFltOff, kFltLp, kFltHp, kFltBell, kFltBell, kFltBell, kFltBell, kFltBell}};
 
+// The remote UI on its screen (128 x 64, the Rytm's Bitmap layout [read in OS 1.53 and 1.54]): SCOPE and the meters on IN 2 + the voice, its tracks 1..8.
+static const Screen kDigitaktScreen = {{"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"}, "UP + YES: PAGES"};
+
 const Profile kDigitakt = {
     kIdDigitakt, "Digitakt mk1", 0x1935, 0x0b2c,
     8, 8, 16,
     {0x7D, 0x52, 0x54},
     0x04, 0x03, 0x11,
-    0,
+    kUserSlots | kRemoteUi,   // U1..U5 on its SRC list, their labels from 19 / 1A, filled by the web's User machines tab or the USER SLOTS page, in
+                              // /.digitakt/slots. Remote UI: the pages on its screen, text drawn here (mod 0.3: before it the mod had no receive path)
     0, 0, {}, {},
-    {},   // nothing goes back but the hello's answer: the Digitakt's receive path stays out of it
+    // what goes back: the slots' 1A labels and 1D generations, the pages alone (36 37 38 39 3A 3C), and the hello's answer
+    {1u << 0x1A | 1u << 0x1D, 1u << (0x36 - 32) | 1u << (0x37 - 32) | 1u << (0x38 - 32) | 1u << (0x39 - 32) | 1u << (0x3A - 32) | 1u << (0x3C - 32)},
     nullptr,
     "/.digitakt",
-    {1u << 0x03 | 1u << 0x04 | 1u << 0x11},
-    kBracketMix, &kDigitaktAudio, &kDigitaktControls, false, false, 0, false, nullptr, "Digitakt"};
+    {1u << 0x03 | 1u << 0x04 | 1u << 0x11 | 1u << 0x19, 1u << (0x30 - 32) | 1u << (0x31 - 32) | 1u << (0x32 - 32)},   // 19 a slot's labels; 30 31 32 its screen
+    kBracketMix, &kDigitaktAudio, &kDigitaktControls, false, false, 0, false, &kDigitaktScreen, "Digitakt"};
 
 }  // namespace device
 }  // namespace core

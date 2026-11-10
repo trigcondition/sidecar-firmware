@@ -131,6 +131,7 @@ int main() {
   send(hello(kBoxId));
   CHECK(g_out.size() == 1 && g_out[0][6] == kBoxId >> 7 && g_out[0][7] == (kBoxId & 0x7f) && g_out[0][8] == device::kOk);
   CHECK(device::foreign() && device::active().id == kBoxId && hooks.to_rytm != ::out);
+  CHECK(device::box_screen() == nullptr && !strcmp(voice_name(0), "BD"));   // no Screen: the Rytm's words
   send(box_trig(0, 48, 127, 10, 20, 30));
   CHECK(v[0].live);
   g_out.clear();
@@ -270,7 +271,7 @@ int main() {
     CHECK(g_restarts == 1);
     reboot();
     CHECK(!strcmp(folder(), "/.digitakt") && hello(kIdDigitakt) == device::kOk);
-    CHECK(device::foreign() && device::box_screen() == nullptr && !strcmp(voice_name(0), "BD"));   // no Screen: the Rytm's words (L7: one read of the box)
+    CHECK(device::foreign() && device::box_screen() == device::kDigitakt.screen && !strcmp(voice_name(0), "T1"));   // its words (L7: one read of the box)
     reboot();   // the next day: no Digitakt, a stock Rytm: its id alone goes home, once
     CHECK(!strcmp(folder(), "/.digitakt"));
     device::rytm_on_usb(true);
@@ -729,6 +730,55 @@ int main() {
     device::reset();
     CHECK(device::box_screen() == nullptr && !strcmp(voice_name(0), "BD"));
     CHECK(extra_for_box("SEQ"));
+  }
+
+  {  // the Digitakt's screen and slots (mod 0.3): the pages as the A4's, eight tracks T1..T8; a slot's 19 answered with its 1A, a 1D let
+     // through; the Rytm's other messages still filtered
+    device::reset();
+    device::g_link.state = "/.digitakt";
+    send(hello(device::kIdDigitakt));
+    CHECK(device::foreign() && device::active().id == device::kIdDigitakt);
+    CHECK((device::kDigitakt.features & (device::kRemoteUi | device::kUserSlots)) == (device::kRemoteUi | device::kUserSlots));
+    CHECK(!(device::kDigitakt.features & (device::kProject | device::kKits | device::kSendFx | device::kPools | device::kRytmKeys)));
+    CHECK(!strcmp(device::kDigitakt.screen->keys, "UP + YES: PAGES"));
+    CHECK(device::box_screen() == device::kDigitakt.screen && !strcmp(voice_name(0), "T1") && !strcmp(voice_name(7), "T8"));
+    g_out.clear();
+    send(sidecar({0x19, 1, 2, 0, 0, 1}));            // ASK META, slot 2, generation 0
+    CHECK(count(0x1A) >= 1);
+    for (auto& m : g_out) CHECK(m[4] == 0x1A);
+    g_out.clear();
+    std::vector<uint8_t> slots = sidecar({0x1D, 1, 1, 1, 1, 1, 1});
+    to_rytm(slots.data(), (int)slots.size());
+    CHECK(count(0x1D) == 1);
+    uint32_t d0 = device::dropped();
+    g_out.clear();
+    for (const std::vector<uint8_t>& m : {sidecar({0x3D, 1, 0}), sidecar({0x14, 0}), sidecar({0x1B, 1, 0, 0x21, 1, 1, 0})}) to_rytm(m.data(), (int)m.size());
+    CHECK(g_out.empty() && device::dropped() == d0 + 3);   // the Rytm's text (drawn into the pixels for a box), a pool list, the installed list
+    ui::remote_reset();
+    send(sidecar({0x36, 1, 0, 100, 1}));
+    CHECK(ui::remote_caps() == 1 && device::active().id == device::kIdDigitakt);
+    g_out.clear();
+    send(sidecar({0x30, 1, 0, 1, 0}));
+    CHECK(ui::remote_open());
+    uint32_t ms = 1000;
+    ui::remote_tick(ms);
+    CHECK(count(0x37) == 1 && count(0x38) >= 8 && count(0x39) == 1);
+    for (auto& m : g_out) CHECK(m[4] == 0x37 || m[4] == 0x38 || m[4] == 0x39 || m[4] == 0x3C);
+    uint32_t dropped0 = device::dropped();
+    for (int k = 0; k < 24; ++k) {
+      send(sidecar({0x31, 1, 0, 0x41, 1}));
+      send(sidecar({0x31, 1, 0, 0x41, 0}));
+      ui::remote_tick(ms += 50);
+      const char* t = ui::remote_page_title();
+      for (const char* no : {"SEQ", "SONG", "POOL", "SAMPLE", "AUTO", "INSERT", "MASTER", "PROJECT", "KEYS", "ARP", "POLY"}) CHECK(!t || strcmp(t, no));
+      CHECK(!t || extra_for_box(t));
+    }
+    CHECK(device::dropped() == dropped0);
+    send(sidecar({0x30, 1, 0, 0, 3}));
+    CHECK(!ui::remote_open());
+    ui::remote_reset();
+    device::reset();
+    CHECK(device::box_screen() == nullptr && !strcmp(voice_name(0), "BD"));
   }
 
   printf("test_device: ok\n");
