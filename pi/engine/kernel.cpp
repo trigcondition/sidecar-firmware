@@ -430,12 +430,15 @@ boolean CKernel::Initialize (void)
 	else m_Logger.Write (From, LogNotice, "gadget: off");
 #endif
 	if (m_pSidecar == 0) ApplyUsbMode ();		// no Sidecar gadget: the setting read (/status, the pages), none runs
+#ifndef SIDECAR_NO_GADGET
+	// uac2test=1 / midifake=1 on every board (docs/pi-engine.md); before, only the Pi 5's test mode read them
+	if (m_pSidecar != 0 && m_Options.GetAppOptionDecimal ("uac2test", 0) != 0) m_pSidecar->Command ("uac2test=on");
+	if (m_pSidecar != 0 && m_Options.GetAppOptionDecimal ("midifake", 0) != 0) m_pSidecar->Command ("midifake=on");
+#endif
 #ifdef SIDECAR_PI5_TESTMODE
 	if (m_nTestSecs != 0)
 	{
 		m_Watchdog.Start (15);
-		if (m_pSidecar != 0 && m_Options.GetAppOptionDecimal ("uac2test", 0) != 0) m_pSidecar->Command ("uac2test=on");
-		if (m_pSidecar != 0 && m_Options.GetAppOptionDecimal ("midifake", 0) != 0) m_pSidecar->Command ("midifake=on");
 		blackbox_pi::TestLog (m_bTestCard);		// the boot's log, should the rest not get far
 	}
 #endif
