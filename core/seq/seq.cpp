@@ -4181,10 +4181,11 @@ CORE_COLD bool data_wanted() {
 // held (FUNC + YES: the undo) or a trig is held (trig + YES: the step preview); else the Rytm's (rytm-mods 0026 catches
 // per key: the host names YES in its mask at FUNC's or the trig's press, which it sees - FUNC is caught on both sides)
 CORE_COLD bool yes_wanted() { return ui.prompt || ui.func || ui.held; }
-// updown1029 (the user, 2026-10-29): UP / DOWN are the SEQ page's only while a question shows (the menu's rows; under
-// the others nothing, as the trig keys) or FUNC is held (FUNC + DOWN: the menu); else the Rytm's - in CHRO the pads'
-// octave. A trig held: none of the page's (stock never saw the poly trig, its arrow is the octave too)
-CORE_COLD bool updown_wanted() { return ui.prompt || ui.func; }
+// updown1029 (the user, 2026-10-29): UP / DOWN are the SEQ page's only while the track menu shows (its rows) or FUNC is
+// held (FUNC + DOWN: the menu); else the Rytm's - in CHRO the pads' octave. A trig held: none of the page's (stock never
+// saw the poly trig, its arrow is the octave too). updown044 (0.4.4, the user: CHRO's octave dead under UP + TRIG): the
+// other questions (make, why not, RESTORE, TURN OFF) use only YES / NO, so UP / DOWN stay the Rytm's under them too
+CORE_COLD bool updown_wanted() { return ui.prompt == kPromptMenu || ui.func; }
 
 View view() {
   if (!cur) reset();   // (before engine_begin: the tests that skip it)

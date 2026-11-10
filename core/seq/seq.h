@@ -570,7 +570,7 @@ bool note_selected(int idx, int pitch);   // the note (step idx, pitch) of the s
 bool note_edit_range(int e, int* lo, int* hi);
 bool data_wanted();   // the SEQ page catches DATA and its push now (the track shown is a poly track)
 bool yes_wanted();    // ux1027: the SEQ page catches YES now (a prompt, FUNC or a trig held); else YES is the Rytm's
-bool updown_wanted(); // updown1029: the SEQ page catches UP / DOWN now (a prompt or FUNC held); else they are the Rytm's (CHRO's octave)
+bool updown_wanted(); // updown1029: the SEQ page catches UP / DOWN now (the track menu or FUNC held); else they are the Rytm's (CHRO's octave)
 // NOTE EDIT's undo (review round 1): the platform's history (the Pi: pi/ui/seq_touch's, the touchscreen's UNDO too, so
 // one history holds both), save before a gesture changes track rytm of pattern (one level a gesture: a knob's detents
 // within kNeUndoMs are one); undo (the Rytm's FUNC + YES in NOTE EDIT) puts the newest level of that track into t,

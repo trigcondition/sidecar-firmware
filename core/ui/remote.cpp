@@ -722,8 +722,9 @@ CORE_COLD bool seq_updown() { return true; }
 // 0026 forwards any encoder 0..15 the mask names as 32 <e> (design.md 1022, "LEVEL = 8" [measured]), no mod change
 // ux1027: yes false - the SEQ page leaves YES to the Rytm (seq::yes_wanted: its YES combos, the quick saves); rytm-mods
 // 0026 catches per key (key_owner), so YES is named only while the page wants it (a question, FUNC or a trig held)
-// updown1029 (the user, 2026-10-29): updown false - the SEQ page leaves UP / DOWN to the Rytm (seq::updown_wanted: CHRO's
-// octave on the pads), named only under a question or with FUNC held (FUNC + DOWN: the poly track's menu)
+// updown1029 (the user, 2026-10-29), updown044 (0.4.4: every page alone, ExtraPage::updown): updown false - the page
+// leaves UP / DOWN to the Rytm (seq::updown_wanted: CHRO's octave on the pads), named only on the track menu or with
+// FUNC held (FUNC + DOWN: the poly track's menu)
 CORE_COLD void send_mask(const Page* p, uint8_t encs = 0, uint16_t trigs = 0, bool func = false, bool data = false,
                          bool yes = true, bool updown = true) {
   uint8_t b[kMaskBytes] = {};
@@ -882,8 +883,9 @@ CORE_COLD void frame(uint32_t ms) {
     s.modal_shown = on;
   }
   bool sq = x && !strcmp(x->title, "SEQ");
+  bool updown = sq ? seq_updown() : !standalone(x) || x->updown;   // updown044: a page alone only when it uses them
   if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, x && x->trigs_now ? x->trigs_now() : 0, sq, sq && seq_data(),
-                            !sq || seq_yes(), !sq || seq_updown());   // before the frame: the keys and knobs the page shows are its own from now on
+                            !sq || seq_yes(), updown);   // before the frame: the keys and knobs the page shows are its own from now on
   update_leds(x);
   if (!s.sent_valid) s.echo_valid = false;
   send_echoes(p, s.voice);
