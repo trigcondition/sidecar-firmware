@@ -48,6 +48,7 @@ struct InsPage {
   uint32_t gen = 0;      // the Rytm's selection count seen
   bool manual = false;   // FUNC + G picked the track: kept until the Rytm selects another
   int touched = -1;
+  bool out_top = false;  // nav044: the OUT view as UP + AMP opened it (its top: NO leaves), until YES / RIGHT move on
 };
 CORE_RAM2 InsPage ip;
 
@@ -313,8 +314,12 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
 }
 
 CORE_COLD bool ins_key(int code) {
+  if (code == 0x45 && ip.out_top) {   // nav044: NO on UP + AMP's OUT view leaves (not the TRACK view first); the
+    ip.out = ip.out_top = false, ip.touched = -1;   // page opens on its TRACK view next, as after the old NO
+    return false;
+  }
   if (code == 0x41 && !ip.eq) {   // ins1112 RIGHT: the EQ view (RIGHT again is the page list's, as always)
-    ip.eq = true, ip.out = false, ip.touched = -1;
+    ip.eq = true, ip.out = false, ip.out_top = false, ip.touched = -1;
     return true;
   }
   if (code == 0x40 && ip.eq) {   // LEFT: back out of the EQ view (LEFT from the others is the page list's)
@@ -326,6 +331,7 @@ CORE_COLD bool ins_key(int code) {
     return true;
   }
   if (code == 0x44) {   // YES: TRACK -> BUS -> OUT -> TRACK
+    ip.out_top = false;
     if (ip.out) ip.out = false;
     else if (ip.bus) ip.bus = false, ip.out = true;
     else ip.bus = true;
@@ -353,7 +359,7 @@ CORE_COLD bool ins_shown() {
 
 // rui1047, UP + AMP (30 page 3): the OUT view of the Rytm's selected track, not a track picked by FUNC + G before
 CORE_COLD void ins_open_out() {
-  ip.bus = false, ip.out = true, ip.eq = false, ip.track = -1, ip.manual = false, ip.touched = -1;
+  ip.bus = false, ip.out = true, ip.eq = false, ip.track = -1, ip.manual = false, ip.touched = -1, ip.out_top = true;
 }
 
 UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_key, 0xFF, false, nullptr, nullptr, nullptr};
@@ -361,7 +367,7 @@ UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_k
 #if CORE_UI_TOOLS
 void ins_page_set(bool bus, int slot, int busel, int track, bool out, bool eq) {   // tests and the renderer
   ip.bus = bus, ip.out = out, ip.eq = eq, ip.slot = slot, ip.busel = busel, ip.track = track, ip.manual = track >= 0,
-  ip.touched = -1;
+  ip.touched = -1, ip.out_top = false;
 }
 #endif
 #endif

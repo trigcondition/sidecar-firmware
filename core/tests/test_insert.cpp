@@ -951,7 +951,17 @@ int main() {
       ui::extra_page(k).enc(0, 2, false);   // A: in the OUT view the voice's route; on the TRACK / BUS views a slot's param
       if (from < 2) CHECK(out::control.route[0] == out::kPost);   // (track 0, the Rytm's selection, not the picked 4)
       else CHECK(out::control.route[0] == 0);                      // page 2: the TRACK view
-      CHECK(ui::extra_page(k).key(0x45) == (from < 2));            // NO leaves the OUT view, then not the page's
+      // nav044 (0.4.4, the user: UP + AMP's first NO went to the TRACK view): the OUT view UP + AMP opened is that
+      // shortcut's top, so NO is not the page's (it leaves); then UP + FX opens INSERT on its TRACK view again
+      CHECK(!ui::extra_page(k).key(0x45));
+      if (from < 2) {
+        ui::remote_reset();
+        const uint8_t m2[] = {0xF0, 0x7D, 0x52, 0x54, 0x30, 1, 2, 1, 0, 0xF7};
+        ui::remote_sysex(m2, (int)sizeof m2);
+        out::reset();
+        ui::extra_page(k).enc(0, 2, false);
+        CHECK(out::control.route[0] == 0);           // the TRACK view: A a slot's param, not the route
+      }
     }
     out::reset();
     ins::reset();
@@ -1064,14 +1074,21 @@ int main() {
       CHECK(out::control.route[0] == out::kPost);
       out::reset();
     }
-    key(0x45), key(0x45);   // NO: back to TRACK, then where UP + AMP came from (the stock screen)
+    key(0x45);   // nav044: NO on UP + AMP's OUT view leaves at once (it went to the TRACK view first)
     CHECK(closes == 1);
     rytm(0x30, 0, 0, 3);
-    // review 3: the page byte is forgotten at any other page change - UP + FX, UP + LFO over it, NO back to INSERT:
-    // UP + FX there goes to INSERT (it is there), no leave; again: leaves
+    // nav044: UP + FX, UP + LFO over it: NO leaves in one press (no walk back to INSERT)
+    closes = 0;
     rytm(0x30, 2, 1, 0), rytm(0x30, 1, 1, 0);
     CHECK(on("LFO"));
     key(0x45);
+    CHECK(closes == 1);
+    rytm(0x30, 0, 0, 3);
+    // review 3: the page byte is forgotten at any other page change - UP + FX, UP + LFO over it, INSERT again by
+    // another way (the host's page request, as UP + T6 or the MENU): UP + FX there goes to INSERT, no leave; again: leaves
+    rytm(0x30, 2, 1, 0), rytm(0x30, 1, 1, 0);
+    CHECK(on("LFO"));
+    ui::remote_show_page("INSERT");
     CHECK(on("INSERT"));
     closes = 0;
     rytm(0x30, 2, 1, 0);

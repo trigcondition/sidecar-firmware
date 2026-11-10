@@ -434,14 +434,15 @@ CORE_COLD bool usb_shown() { return M.usb_on && remote_usb() != nullptr; }
 
 }  // namespace
 
+// updown044: all four use UP / DOWN (their rows, KEYS its scroll)
 UI_ROM const ExtraPage kUsbPage = {"USB-C", usb_shown, usb_draw, usb_enc, usb_key, 0x01, false, nullptr, nullptr,
-                                   nullptr, true};
+                                   nullptr, true, true};
 UI_ROM const ExtraPage kWebUiPage = {"WEB UI", web_shown, web_draw, web_enc, web_key, 0x01, false, nullptr, nullptr,
-                                     nullptr, true};
+                                     nullptr, true, true};
 UI_ROM const ExtraPage kMenuPage = {"MENU", menu_shown, menu_draw, menu_enc, menu_key, 0x01, false, nullptr, nullptr,
-                                    nullptr, true};
+                                    nullptr, true, true};
 UI_ROM const ExtraPage kKeysPage = {"KEYS", keys_shown, keys_draw, keys_enc, keys_key, 0x01, false, nullptr, nullptr,
-                                    keys_leds, true};
+                                    keys_leds, true, true};
 
 CORE_COLD int menu_rows() { return kAll; }
 CORE_COLD const char* menu_row_page(int i) { return i >= 0 && i < kAll ? kEntries[i].page : nullptr; }

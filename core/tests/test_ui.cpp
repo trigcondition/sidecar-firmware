@@ -599,8 +599,36 @@ int main() {
   c1 = commits;
   for (int i = 0; i < 12; ++i) remote_tick(t += 30);
   CHECK(commits == c1 && alive >= 1);
+  // 1027e: a step held in GRID REC (2A <track | 0x40>): its values drawn, as a knob's; not the sound's for the bank (src14)
+  {
+    int s14 = remote_track_src14(0);
+    c1 = commits;
+    const uint8_t lk[1] = {50};
+    src_vals(0x40, 1, 1, lk);
+    remote_tick(t += 10);
+    CHECK(commits > c1 && shown_prefix("BD CUT:") && !strcmp(shown_prefix("BD CUT:"), "BD CUT:50"));
+    const uint8_t lkp1[1] = {9};
+    src_vals(0x40, 0, 1, lkp1);   // a held step's P1 (PAT / a bank row): drawn, not the sound's 14 bits
+    remote_tick(t += 10);
+    CHECK(remote_track_src14(0) == s14);
+    CHECK(remote_track_src_value(0, 1) == 50 && remote_track_src_value(0, 0) == 9);
+    src_vals(0, 0, 8, juno_vals);   // let go: the sound's values again
+    src_vals(0, 1, 1, cut);
+    remote_tick(t += 10);
+    CHECK(shown_prefix("BD CUT:") && !strcmp(shown_prefix("BD CUT:"), "BD CUT:77"));
+    CHECK(remote_track_src_value(0, 1) == 77 && remote_track_src_value(0, 0) == juno_vals[0]);
+    // let go elsewhere (the view gone: the Rytm sends nothing for it): the sound's values are back at the 29
+    src_vals(0x40, 1, 1, lk);
+    CHECK(remote_track_src_value(0, 1) == 50);
+    src_view(0, 0);
+    CHECK(remote_track_src_value(0, 1) == 77 && remote_track_src_value(0, 0) == juno_vals[0]);
+    src_view(0, 1);
+    for (int i = 0; i < 4; ++i) remote_tick(t += 30);
+    for (int k = 0; k < 16; ++k) CHECK(core::v[0].p[k] == p0[k]);
+  }
   // 0.4.3 (rytm-lag): the Rytm playing, its values moving at its 20 Hz UI tick (a 2A every 50 ms): the view commits at
-  // most 5 times a second, the last value still arrives; stopped, every change at once as before
+  // most 5 times a second, the last value still arrives; stopped, every change at once as before. 0.4.4: a knob's own
+  // value (a 2A of one value) commits at most every kSrcUserMs (10 a second) instead
   {
     auto stream = [&](int ms, uint8_t from) {   // 2A every 50 ms (CUT from, from + 1, ...), remote_tick every 5 ms
       uint8_t v = from;
@@ -627,7 +655,7 @@ int main() {
     CHECK(fp && !strcmp(fp, want) && texts_equal());   // the final value on the Rytm
     CHECK(commits - c1 == played + 1);
     printf("SRC view, playing: %d commits in 4 s for 80 changes, the last value shown\n", played);
-    CHECK(played <= 4 * 5 + 1 && played >= 4 * 4);
+    CHECK(played <= 4 * 10 + 1 && played >= 4 * 9);
     core::rytm_dump::set_playing(false);
     c1 = commits;
     last = stream(2000, 20);   // stopped: every change committed (20 a second)
@@ -652,6 +680,18 @@ int main() {
       if (i % 50 == 0) {
         const uint8_t c[1] = {v++};
         src_vals(0, 1, 1, c);
+      }
+      remote_tick(t += 5);
+      core::seq::tick(t);
+    }
+    CHECK(commits - c1 <= 2 * 10 + 1 && commits - c1 >= 2 * 9);
+    // a kit's values (a 2A of all 16) while playing keep the plain cap (5 a second)
+    c1 = commits;
+    for (int i = 0; i < 2000; i += 5) {
+      if (i % 50 == 0) {
+        uint8_t all[16];
+        for (int k = 0; k < 16; ++k) all[k] = (uint8_t)((i / 50 + k) & 0x7F);
+        src_vals(0, 0, 16, all);
       }
       remote_tick(t += 5);
       core::seq::tick(t);
@@ -754,7 +794,9 @@ int main() {
   core::engine_sysex(bad_m, 9);
   uint8_t bad_n[12] = {0xF0, 0x7D, 0x52, 0x54, 0x2A, 1, 0, 15, 2, 1, 0, 0xF7};   // P16 + 1 past the end
   core::engine_sysex(bad_n, 12);
-  CHECK(remote_stats().bad == (uint32_t)bad0 + 2);
+  const uint8_t bad_h[12] = {0xF0, 0x7D, 0x52, 0x54, 0x2A, 1, 0x4C, 0, 1, 1, 0, 0xF7};   // 1027e: held, track 12
+  core::engine_sysex(bad_h, 12);
+  CHECK(remote_stats().bad == (uint32_t)bad0 + 3);
 
   // ---- rui1038: the bank list (4A). BD on GRANULAR (voice 0), its SRC view, P1 = F005 by the 2A (lo 0x50); the Rytm
   // opens the list (knob A turned): the tabs and rows over the view, RIGHT -> bank G, knob A +3 -> row 8 (the 47 of bank
@@ -1118,7 +1160,9 @@ int main() {
       no();
       CHECK(sent_cmd(0x3A) == 1);
       from_rytm(0x30, 0, 0, 1);
-      // SYSTEM, then UP + T9 over it: NO back to SYSTEM, NO again SIDECAR (the ring's page: as before)
+      // nav044 (0.4.4, the user: "several NOs to leave after visiting more than one tab"): a page a shortcut put up
+      // leaves in one press, whatever it was opened over - no walk back through the pages under it
+      // SYSTEM, then UP + T9 over it: NO asks the page closed at once (rui1051: back to SYSTEM, then SIDECAR)
       from_rytm(0x30, 0, 1, 0);
       remote_tick(t += 30);
       from_rytm(0x31, 0, 0x41, 1), from_rytm(0x31, 0, 0x41, 0);
@@ -1127,11 +1171,14 @@ int main() {
       from_rytm(0x49, 1, 9, 0);
       remote_tick(t += 30);
       CHECK(is("SCOPE"));
+      other.clear();
       no();
-      CHECK(remote_stats().page == 2);
-      no();
-      CHECK(remote_stats().page == 0 && !remote_page_title());
-      // SCOPE, then UP + LFO over it (30 1 1 while open), UP + T11 over that: NO SONG -> LFO -> SCOPE -> SIDECAR
+      CHECK(sent_cmd(0x3A) == 1 && is("SCOPE"));   // (closed when the Rytm's 30 off comes)
+      from_rytm(0x30, 0, 0, 1);
+      // SIDECAR, UP + T9 (SCOPE), UP + LFO over it (30 1 1 while open), UP + T12 over that: one NO, closed (rui1051:
+      // PROJECT -> LFO -> SCOPE -> SIDECAR -> out)
+      from_rytm(0x30, 0, 1, 0);
+      remote_tick(t += 30);
       from_rytm(0x49, 1, 9, 0);
       remote_tick(t += 30);
       from_rytm(0x30, 1, 1, 0);
@@ -1139,15 +1186,26 @@ int main() {
       CHECK(is("LFO"));
       from_rytm(0x49, 1, 12, 0);   // PROJECT (shown without the bundle feed? else NOT HERE NOW: the LFO stays)
       remote_tick(t += 30);
-      bool proj = is("PROJECT");
+      other.clear();
       no();
-      if (proj) {
-        CHECK(is("LFO"));
-        no();
-      }
-      CHECK(is("SCOPE"));
+      CHECK(sent_cmd(0x3A) == 1);
+      from_rytm(0x30, 0, 0, 1);
+      // the ring's pages are not shortcuts': SYSTEM by RIGHT, NO goes to SIDECAR (as before), NO there leaves
+      from_rytm(0x30, 0, 1, 0);
+      remote_tick(t += 30);
+      from_rytm(0x31, 0, 0x41, 1), from_rytm(0x31, 0, 0x41, 0);
+      remote_tick(t += 30);
+      CHECK(remote_stats().page == 2);
+      other.clear();
       no();
-      CHECK(remote_stats().page == 0 && !remote_page_title());
+      CHECK(remote_stats().page == 0 && !remote_page_title() && sent_cmd(0x3A) == 0);
+      // review (nav044): the MENU itself (YES on SIDECAR) is no shortcut's page: NO back to SIDECAR, not closed
+      from_rytm(0x31, 0, 0x44, 1), from_rytm(0x31, 0, 0x44, 0);   // YES: the MENU
+      remote_tick(t += 30);
+      CHECK(is("MENU"));
+      other.clear();
+      no();
+      CHECK(remote_stats().page == 0 && !remote_page_title() && sent_cmd(0x3A) == 0);
       // the MENU's SCOPE row: NO goes to SIDECAR (the MENU counts as SIDECAR, as before)
       from_rytm(0x31, 0, 0x44, 1), from_rytm(0x31, 0, 0x44, 0);   // YES: the MENU
       remote_tick(t += 30);
@@ -1162,7 +1220,7 @@ int main() {
       no();
       CHECK(remote_stats().page == 0 && !remote_page_title() && sent_cmd(0x3A) == 0);
       from_rytm(0x30, 0, 0, 1);
-      printf("ui: rui1051 the ring skips SEQ / INSERT / POOL / CHOP; NO back where a shortcut's page came from\n");
+      printf("ui: rui1051 the ring skips SEQ / INSERT / POOL / CHOP; nav044 NO leaves a shortcut's page in one press\n");
     }
     // F4 / F1: the page closed, a Rytm that understands 36 (its hello's caps, up 0.5 s: no splash): the session's first
     // underrun pops up once (a frame, 36 n, then 36 0); a second one does not
