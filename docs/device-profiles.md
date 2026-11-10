@@ -113,9 +113,9 @@ For modulation faster or deeper than this, use the Sidecar's own LFOs (`core/lfo
 | USB vendor and product id | the profile; the Pi's Overbridge driver claims a box by them (`device::by_usb`) |
 | Channels each way, block sizes, a stereo mix or per-voice returns, return and stem channels | the profile's `audio`, an `out::Device` row |
 | Which of the box's pages reach which of the Sidecar's stages | the profile's `controls` |
-| Remote UI pages | off for a box unless `kRemoteUi`: the Rytm and the A4 ("Remote UI on a box"). A page that needs a feature the box lacks is hidden (`extra_for_box`) |
+| Remote UI pages | off for a box unless `kRemoteUi`: the Rytm, the A4 and the Digitakt ("Remote UI on a box"). A page that needs a feature the box lacks is hidden (`extra_for_box`) |
 | Kits, patterns, project names, send FX reports | Rytm only: a box's messages cannot reach them. The `Feature` bits only declare them so far |
-| User slots | a box that reports the U1..U5 flags plays them (the A4); the web's User machines tab fills them, in the box's own folder, and so does the USER SLOTS page on a box with `kRemoteUi` (docs/user-machines-pi.md). The labels and presets of 19..1E stay the Rytm's |
+| User slots | a box that reports the U1..U5 flags plays them (the A4, the Digitakt); the web's User machines tab fills them, in the box's own folder, and so does the USER SLOTS page on a box with `kRemoteUi` (docs/user-machines-pi.md). A box whose profile lets 19 in and 1A, 1D out gets a slot's labels too (the Digitakt: 19 what 0 only, the names and defaults of 1A, 1D's generations); enum names, presets and assigning (1B, 1C) stay the Rytm's, and the Digitakt's profile does not let 1E in |
 | `kVoices`, `kBlock`, P1..P16 inside the engine | stay the engine's: a profile fits a box into them |
 | The word "Rytm" in UI strings, and the engine's message builders | unchanged |
 | Device -> host channels of the driver's consumers | 12 (the recorder, the sampler, the stems, the Sidecar's USB-C): a box with another count is refused until they follow |
@@ -132,7 +132,8 @@ the tables; a box that fits one needs no new code.
 | What shapes a voice | the box's own filter, amp, sends and master FX | nothing of the box: the Sidecar's stages |
 | `controls` | none | the box's pages, mapped onto those stages |
 | The OUT route (TRK / PRE / POST) | per voice | none: every voice POST |
-| Remote UI, kits, send FX reports | yes | no (`features`) |
+| Remote UI | yes | by `features`: the Digitakt has it |
+| Kits, send FX reports | yes | no (`features`) |
 
 ### Controls
 
@@ -260,7 +261,7 @@ A box with a 128 x 64 screen of the Rytm's layout (byte = page + 8 x column) can
 - `in_allow`: 30 31 32: opened or closed, a key in the Rytm's codes, a turn.
 - 0x36 is the box's hello to the pages: `<uptime hi> <uptime lo> <caps>`, uptime in 50 ms ticks, caps bit 0 understood 36. The engine reads it as a 35. Not 35: that asks for `/.rytm`, and an older engine would restart on it. Send it only after the 4F answer said accepted (status 1).
 
-The rules are the Rytm's (`mods/0026-remote-ui` in sidecar-mods): the box draws the last committed frame while the page is open, and 1 s with no message from the host gives its own screen back. An open is the user's alone. So the engine asks a box for no open: `remote_show_page` with the page closed stays quiet there. SCOPE, its sources and the meters take `screen->names` too, each voice on IN 2 + the voice; a name `-` is a channel the box does not fill, skipped. The status page shows `voices` voices by `screen->names`, and voice pages join the ring once a voice has reported. On the A4 the pages shown are SIDECAR, SYSTEM, the voices, REC, SCOPE, USER SLOTS (`kUserSlots`, where the platform has the user machines: LEFT on SIDECAR), the MENU, LFO and WEB UI; POOL, SAMPLE, AUTO, CHOP, SEQ, SONG, POLY, INSERT, MASTER, ARP, PROJECT and KEYS need features it lacks. SCOPE's source list still names the Rytm's tracks.
+The rules are the Rytm's (`mods/0026-remote-ui` in sidecar-mods): the box draws the last committed frame while the page is open, and 1 s with no message from the host gives its own screen back. An open is the user's alone. So the engine asks a box for no open: `remote_show_page` with the page closed stays quiet there. SCOPE, its sources and the meters take `screen->names` too, each voice on IN 2 + the voice; a name `-` is a channel the box does not fill, skipped. The status page shows `voices` voices by `screen->names`, and voice pages join the ring once a voice has reported. On the A4 the pages shown are SIDECAR, SYSTEM, the voices, REC, SCOPE, USER SLOTS (`kUserSlots`, where the platform has the user machines: LEFT on SIDECAR), the MENU, LFO and WEB UI; POOL, SAMPLE, AUTO, CHOP, SEQ, SONG, POLY, INSERT, MASTER, ARP, PROJECT and KEYS need features it lacks. SCOPE's source list still names the Rytm's tracks. The Digitakt shows the same set, its voices named T1..T8 (`kDigitaktScreen`), with the bottom bar's words "UP + YES: PAGES"; its mod sends the keys in the Rytm's codes and leaves on its stock page keys, as the A4's does.
 
 ## What the page is told
 
