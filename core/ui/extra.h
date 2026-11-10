@@ -29,6 +29,11 @@ struct ExtraPage {
   // kLed*), or false: stock (null: never)
   bool (*leds_now)(uint8_t c[16]);
   bool off_ring;   // UX review R3: not on the LEFT / RIGHT ring (in the page list only while it is the page shown)
+  // updown044 (0.4.4, the owner: the Sidecar takes UP / DOWN only on a page that uses them): a page that stands alone
+  // (off the ring, or only its keys open it: remote.cpp standalone) catches UP / DOWN only when this is set (its rows,
+  // its banks); else they are the Rytm's (CHRO's octave on the pads). A ring page always takes them (DOWN: its next
+  // page); the SEQ page decides per moment (seq::updown_wanted)
+  bool updown;
 };
 // UX review R3 / N3 (page_menu.cpp): MENU (YES on SIDECAR: every page with its shortcut) and KEYS (every combo; also
 // while UP is held alone on the stock screen: rui1044's 49 1 4)

@@ -190,6 +190,8 @@ int remote_param_write(int vi, int machine, int k, int value, int lo = 0);
 // rui1045: on DSP SAMPLE the banked knob is SMP, P11 (remote_track_src_param 10; 0 P1 elsewhere): src14 is its value.
 bool remote_track_write(int t, int k, int value, int lo, int flags);
 int remote_track_src14(int t);
+// 1027e: track t's P(k+1) as the SRC view draws it (the Rytm's 2A; -1 none yet)
+int remote_track_src_value(int t, int k);
 int remote_track_src_param(int t);
 // The Rytm's mods are 0.4.0's or newer (its slot asks say 36 names, core/user/um.cpp): DSP SAMPLE's knob A is SMP (rytm-mods 7h)
 void remote_rytm_040(bool on);
