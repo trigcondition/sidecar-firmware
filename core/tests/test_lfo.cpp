@@ -601,19 +601,19 @@ int main() {
   rytm(0x30, 1, 1, 0);
   for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
   CHECK(closes == 0 && ui::remote_stats().page == 3 && ui::remote_stats().voice == 0);
-  rytm(0x30, 1, 1, 0);   // again: leaves (back to SCOPE, where the LFO page was opened over)
+  rytm(0x30, 1, 1, 0);   // again: leaves, as NO (nav044: out at once; rui1051 went back to SCOPE under it)
   for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
-  CHECK(ui::remote_page_title() && !strcmp(ui::remote_page_title(), "SCOPE"));
+  CHECK(closes == 1);
   rytm(0x30, 0, 0, 3), rytm(0x30, 0, 1, 0);   // TRK + YES: SIDECAR
   for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
   CHECK(ui::remote_stats().page == 0);
-  rytm(0x30, 1, 1, 0);   // UP + LFO over SIDECAR, again: back to SIDECAR (where it came from), not closed
+  rytm(0x30, 1, 1, 0);   // UP + LFO over SIDECAR, again: leaves, as NO (nav044; rui1051: back to SIDECAR)
   for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
   CHECK(ui::remote_stats().page == 3);
   closes = 0;
   rytm(0x30, 1, 1, 0);
   for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
-  CHECK(ui::remote_stats().page == 0 && closes == 0);
+  CHECK(closes == 1);
   lfo_on_master_lev_and_send();
   printf("test_lfo: PASS\n");
   return 0;

@@ -153,9 +153,11 @@ CORE_COLD uint32_t src_key(const Cell& cell, const Source& s) {
   int32_t ph[chop::kPerVoice];
   int np = chop::playheads(vi, ph, chop::kPerVoice);
   uint32_t h = chop::map_gen(vi) * 2654435761u ^ (uint32_t)s.param(1) << 3 ^ (uint32_t)chop::sample_ready(vi) << 1;
-  for (int i = 0; i < np; ++i) h = (h ^ (uint32_t)(ph[i] >> 10)) * 16777619u;   // (moving playheads: ~5 px steps)
+  uint32_t l = 2166136261u;
+  for (int i = 0; i < np; ++i) l = (l ^ (uint32_t)(ph[i] >> 10)) * 16777619u;   // (moving playheads: ~5 px steps)
   (void)cell;
-  return h | 1;
+  static LiveKey keys[8];   // 0.4.3: the playheads at most every kLiveMs
+  return keys[vi].get(h, l, now_ms());
 }
 CORE_COLD void src_draw(Canvas& c, const Rect& r, const Cell& cell, const Source& s, int slot) {
   (void)cell;
@@ -428,7 +430,8 @@ UI_ROM const Page kChopSrcPage = {
     {0, 1, 2, 3, 4, 5, 6, 7},
     {"SRC", "SLC", "TUNE", "MRPH", "SEED", "NBR", "VEL", "LEV"},
 };
-UI_ROM const ExtraPage kChopPage = {"CHOP", ed_shown, ed_draw, ed_enc, ed_key, 0xFF, false, nullptr, ed_trigs, ed_leds, true};
+UI_ROM const ExtraPage kChopPage = {"CHOP", ed_shown, ed_draw, ed_enc, ed_key, 0xFF, false, nullptr, ed_trigs, ed_leds, true,
+                                    nullptr, nullptr, true};   // updown044: DOWN the trig keys' next bank
 
 CORE_COLD uint32_t chop_key(const Cell& c, const Source& s) { return src_key(c, s); }
 CORE_COLD void chop_draw(Canvas& cv, const Rect& r, const Cell& c, const Source& s, int slot) { src_draw(cv, r, c, s, slot); }

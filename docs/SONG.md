@@ -540,6 +540,11 @@ count is refreshed once a second, the position shows the bar without its beat (t
 bars), the record dot is steady. The snapshot's dump requests (core/song/song.cpp) wait 1.5 s, then 3 s between tries
 (4 in all): never more than one request in 1.5 s. Not changed: other remote pages that redraw while playing (the SEQ
 page's playhead, SCOPE) - by design live; the touchscreen's VOICE / PAT pages' pattern dumps: next section.
+0.4.3 (core/ui/remote.cpp, kPlayCommitMs): while the Rytm's transport plays, every page and the SRC view commit at most
+every 200 ms (5 a second; SCOPE was ~13, the SRC view up to 20 with moving values). On an open remote page the user's
+own keys and turns (31 / 32) go at once; the SRC view gets the plain cap (the user's own knobs there arrive as 2A, so
+they too show at most 200 ms late). A page shown whole goes at once, and the latest frame always follows. Stopped: unchanged. (core/tests/test_ui.cpp,
+test_ui_live.cpp)
 
 ### The touchscreen's PAT / VOICE pages: the pattern dump (patfetch, 2026-10-21)
 

@@ -24,6 +24,7 @@
 #include "arp/arp.h"
 #include "pool/pool.h"
 #include "seq/seq.h"
+#include "seq/rytm_dump.h"
 #include "song/song.h"
 #include "version.h"
 #include "voice_name.h"
@@ -91,6 +92,18 @@ constexpr int kMaskBytes = 3 + 37;
 // remote_tick at least kInputMs after the last frame). The Rytm renders at 20 Hz: a frame waits for its next render
 // either way, so this is the host's part of the round trip, not more frames on the screen. 1020: 50 ms, no input path.
 constexpr uint32_t kTickMs = 25, kInputMs = 8, kAliveMs = 250;
+// 0.4.3 (rytm-lag): every commit (39) makes the Rytm run its whole stock draw and panel diff (rytm-mods 0026 ev_tick
+// sets ctrl + 0x20), bounded by its 156 250 baud panel link. While the Rytm's transport plays, a page that redraws by
+// itself (the SRC view's values, SCOPE, a playhead) commits at most every kPlayCommitMs (5 a second, as the SEQ page's
+// playhead already does; docs/SONG.md "Traffic to the Rytm"). What waits is not lost: the next commit diffs against
+// what the Rytm has, so it carries the latest frame. On an open remote page a key or a turn of the user's own (31 / 32)
+// goes at once, as when stopped; the SRC view gets the plain cap (the user's own knobs there come as 2A, which this
+// file cannot tell from other value changes). Another page and a whole frame go at once. Stopped: unchanged.
+constexpr uint32_t kPlayCommitMs = 200;
+// 0.4.4: on the SRC view a knob's own value (a 2A of one value: a turn, or a CC into the Rytm) or a held step's (its
+// locks as they are turned) commits at most every kSrcUserMs while playing: twice the plain cap, half the Rytm's
+// render rate, so a turn follows the knob and a constant CC stream still does not redraw the Rytm at 20 Hz.
+constexpr uint32_t kSrcUserMs = 100;
 constexpr uint8_t kEchoNone = 0x7F;
 // 1023: the connect splash (rytm-mods 0026 1023): the Rytm's hello (35) carries its uptime in 50 ms ticks; when it has
 // been up kSplashMinUp or more (the link came up after the Rytm's boot, not with it: a cable plugged in, the Sidecar
@@ -348,12 +361,12 @@ struct State {
   int scene_key = -1;
   uint16_t edit_tid = 0;
   bool edit_refused = false;   // review: a knob with no target turned under the held scene key (NOT LOCKABLE)
-  // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out): where
-  // the pages shown by a shortcut came from, newest last - kBackStock the stock screen (NO closes the page), else the
-  // page (s.voice) it was opened over; the MENU counts as SIDECAR (a page opened from the MENU goes back to SIDECAR, as
-  // before). LEFT / RIGHT and the page closing forget it (NO from a page reached by the ring goes to SIDECAR, as before).
-  int back[2] = {};
-  int nback = 0;
+  // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out), nav044
+  // (0.4.4, the user: "several NOs to leave after visiting more than one tab" - rui1051 walked back through the pages
+  // the shortcuts came from): the page shown was put up by a shortcut (UP / TRK + key, UP + T, the host's own page
+  // request), so NO leaves at once, whatever it was opened over. A page picked in the MENU or reached by LEFT / RIGHT
+  // is not one (NO goes to SIDECAR, as before); the page closing forgets it.
+  bool shortcut = false;
   // ux1027: the 30's page byte (kPageLfo, kPageIns, kPageInsOut) that put up the page shown (via_voice): the same UP +
   // key again on it leaves (as NO), as UP + TRIG leaves the SEQ page (rytm-mods 0026 rui1037)
   int via = -1, via_voice = 0;
@@ -365,6 +378,10 @@ struct State {
   bool rytm_seen[kVoices] = {};
   bool self = false;         // remote's own 0x03 in voice_report: no hold logic
   bool input = false;        // a key or a turn since the last frame: draw at once
+  bool user = false;         // 0.4.3: a key or a turn of the user's (31 / 32) since the last commit: not held while playing
+  bool src_user = false;     // 0.4.4: a knob's value on the SRC view (a 2A of one value, or a held step's) since the last commit
+  uint32_t commit_ms = 0;    // 0.4.3: the last page / SRC view commit (kPlayCommitMs) and what it showed (page_key)
+  int commit_page = -1000;
   int touched = -1;          // the encoder turned last (0..7): its cell's tiles go first, the bottom bar names it
   // the local echo (3F) as the Rytm has it: per encoder the slot (kEchoNone: none), the value, flags and prefix
   uint8_t echo_slot[8], echo_val[8], echo_flags[8];
@@ -395,6 +412,10 @@ struct State {
   // changed last (2A n 1: the bottom bar names it)
   int8_t src_track = -1, src_told = -1, src_last = -1;
   uint8_t srcv[12][16] = {};
+  // 1027e: a track's sound values while a held step's (2A <t | 0x40>) are drawn: put back at its unflagged 2A or at
+  // any 29 (the view gone or moved: the Rytm's release there sends nothing), so only the drawing ever saw the locks
+  uint8_t keep_v[12][16] = {}, keep_l[12][16] = {};
+  uint16_t keep_known[12] = {}, keep_mask = 0;
   uint8_t srcl[12][16] = {};      // rui1038: the 2A's fraction bytes (P1 of GRANULAR / WAVETABLE / MULTISAMPLE: bank << 4)
   int16_t src14[12] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // P1's last 14 bits by 2A or our 48 (song)
   int16_t wr_pat[12] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // P1 our 48 wrote, its answer owed (presetpick)
@@ -524,13 +545,9 @@ CORE_COLD void lfo_left(int from, int to) {
   if (from != to && x && !strcmp(x->title, "LFO")) lfo_page_reset();
 }
 
-constexpr int kBackStock = -100;
-CORE_COLD void back_push(int from) {   // a page shown by a shortcut over `from` (kBackStock: from the stock screen)
+CORE_COLD void shortcut_over(int from) {   // a page shown by a shortcut over `from` (the MENU's pick: none)
   const ExtraPage* x = extra_of(from);
-  if (x && !strcmp(x->title, "MENU")) from = -1;
-  if (s.nback && s.back[s.nback - 1] == from) return;
-  if (s.nback == 2) s.back[0] = s.back[1], s.nback = 1;
-  s.back[s.nback++] = from;
+  s.shortcut = !(x && !strcmp(x->title, "MENU"));
 }
 
 // The pages in order (the title bar's dots): SIDECAR, SYSTEM, the voices with a page, the extra pages shown.
@@ -559,23 +576,17 @@ CORE_COLD void go(int dir) {   // dir: -1 previous, +1 next, 0 SIDECAR
   int at = page_at(ids, n);
   at = dir == 0 ? 0 : (at + dir + n) % n;
   int nv = ids[at];
-  s.nback = 0;   // rui1051: the ring (or SIDECAR) forgets where a shortcut came from
+  s.shortcut = false;   // rui1051: the ring (or SIDECAR) forgets that a shortcut put the page up
   if (nv != s.voice) lfo_left(s.voice, nv), s.voice = nv, s.page_changed = true, s.touched = -1, s.via = -1;
 }
 
-// rui1051: NO back to where the shown page was opened from (true: done)
+// nav044: NO on a page a shortcut put up leaves in one press - the page asked closed (3A 0 0) - not back through the
+// pages under it (true: done)
 CORE_COLD bool go_back() {
-  while (s.nback) {
-    int b = s.back[--s.nback];
-    if (b == s.voice) continue;
-    if (b == kBackStock) { s.nback = 0, s.via = -1; remote_request(false); return true; }   // the stock screen: the page closes (3A 0 0)
-    const ExtraPage* x = extra_of(b);
-    if (x && x->shown && !x->shown()) continue;   // (gone from the list meanwhile)
-    if (b >= 0 && (src_capable || !page_for_voice(machine_of_voice(b), b))) continue;
-    lfo_left(s.voice, b), s.voice = b, s.page_changed = true, s.touched = -1, s.via = -1;
-    return true;
-  }
-  return false;
+  if (!s.shortcut) return false;
+  s.shortcut = false, s.via = -1;
+  remote_request(false);
+  return true;
 }
 
 CORE_COLD void set_param(int vi, int k, int nv) {
@@ -714,7 +725,7 @@ CORE_COLD void on_key(int code, bool down) {
     return;   // ux1027: no siblings
   if (code == kKeyLeft) go(-1);
   else if (code == kKeyRight || code == kKeyDown || code == kKeyPage) go(+1);
-  else if (code == kKeyNo && go_back()) {}                           // rui1051: back where a shortcut came from
+  else if (code == kKeyNo && go_back()) {}                           // nav044: a shortcut's page: out at once
   else if (code == kKeyNo && s.voice == -1) remote_request(false);   // NO on SIDECAR leaves, as TRK + YES (3A 0 0)
   else if (code == 0x44 && s.voice == -1) menu_open();               // YES on SIDECAR: the MENU (UX review R3)
   else if (code == kKeyNo) go(0);
@@ -797,8 +808,9 @@ CORE_COLD bool seq_updown() { return true; }
 // 0026 forwards any encoder 0..15 the mask names as 32 <e> (design.md 1022, "LEVEL = 8" [measured]), no mod change
 // ux1027: yes false - the SEQ page leaves YES to the Rytm (seq::yes_wanted: its YES combos, the quick saves); rytm-mods
 // 0026 catches per key (key_owner), so YES is named only while the page wants it (a question, FUNC or a trig held)
-// updown1029 (the user, 2026-10-29): updown false - the SEQ page leaves UP / DOWN to the Rytm (seq::updown_wanted: CHRO's
-// octave on the pads), named only under a question or with FUNC held (FUNC + DOWN: the poly track's menu)
+// updown1029 (the user, 2026-10-29), updown044 (0.4.4: every page alone, ExtraPage::updown): updown false - the page
+// leaves UP / DOWN to the Rytm (seq::updown_wanted: CHRO's octave on the pads), named only on the track menu or with
+// FUNC held (FUNC + DOWN: the poly track's menu)
 CORE_COLD void send_mask(const Page* p, uint8_t encs = 0, uint16_t trigs = 0, bool func = false, bool data = false,
                          bool yes = true, bool updown = true) {
   uint8_t b[kMaskBytes] = {};
@@ -872,6 +884,33 @@ CORE_COLD int send_part(const uint32_t tiles[4], uint64_t texts, bool clear_firs
   s.stats.frames++;
   return n;
 }
+
+// 0.4.3 (rytm-lag): the Rytm's transport plays (seq's TRANSPORT, rytm_dump::set_playing)
+CORE_COLD bool rytm_plays() {
+#if CORE_POLY
+  return rytm_dump::is_playing();
+#else
+  return false;
+#endif
+}
+// 0.4.3: a page's changed frame waits (kPlayCommitMs) - only while playing; never a whole frame, another page than the
+// last commit's (a page switch: UP's map, a page shown) or a 31 / 32 of the user's on an open page (the SRC view's 2A
+// values are capped too)
+// 1027e: the sound's values back for every track a held step's are drawn on (-1), or for track t
+CORE_COLD void src_unhold(int t) {
+  for (int k = 0; k < 12; ++k)
+    if ((t < 0 || k == t) && (s.keep_mask >> k & 1)) {
+      memcpy(s.srcv[k], s.keep_v[k], 16), memcpy(s.srcl[k], s.keep_l[k], 16);
+      s.src_known[k] = s.keep_known[k], s.keep_mask &= (uint16_t)~(1u << k);
+      if (k == s.src_track) s.input = true;
+    }
+}
+CORE_COLD int page_key() { return s.open ? s.voice : 1000 + s.src_track; }
+CORE_COLD bool commit_held(uint32_t ms) {
+  return !s.legacy && s.sent_valid && !s.user && page_key() == s.commit_page && rytm_plays() &&
+         ms - s.commit_ms < (s.src_user ? kSrcUserMs : kPlayCommitMs);
+}
+CORE_COLD void committed(uint32_t ms) { s.commit_ms = ms, s.user = false, s.src_user = false, s.commit_page = page_key(); }
 
 // The tiles a rectangle touches (glass rows y..y+h-1: page 7 - row / 8).
 CORE_COLD void rect_tiles(const Rect& r, uint32_t m[4]) {
@@ -953,8 +992,9 @@ CORE_COLD void frame(uint32_t ms) {
   }
   bool sq = x && !strcmp(x->title, "SEQ");
   bool fn = sq || (x && !strcmp(x->title, "MORPH"));   // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides')
+  bool updown = sq ? seq_updown() : !standalone(x) || x->updown;   // updown044: a page alone only when it uses them
   if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, page_trigs(x), fn, sq && seq_data(),
-                            !sq || seq_yes(), !sq || seq_updown());   // before the frame: the keys and knobs the page shows are its own from now on
+                            !sq || seq_yes(), updown);   // before the frame: the keys and knobs the page shows are its own from now on
   update_leds(x);
   if (!s.sent_valid) s.echo_valid = false;
   send_echoes(p, s.voice);
@@ -969,12 +1009,12 @@ CORE_COLD void frame(uint32_t ms) {
   if (!s.sent_valid)
     for (int i = 0; i < kTextSlots; ++i)
       if (wire->txt[i].s[0]) texts |= 1ull << i, ++ntext;
-  if (tiles || ntext) {
+  if ((tiles || ntext) && !commit_held(ms)) {
     // the touched knob's cell and the bottom bar first, in a commit of their own, when there is more
     uint32_t first[4] = {}, rest[4];
     uint64_t tfirst = 0;
     int ci = -1;
-    if (!s.legacy && s.sent_valid && p && s.touched >= 0 && p->enc[s.touched] != kNone &&
+    if (!s.legacy && s.sent_valid && p && s.touched >= 0 && p->enc[s.touched] != kNone && (s.user || !rytm_plays()) &&
         cell_of(*p, p->enc[s.touched], &ci)) {
       const Cell& c = p->cells[ci];
       rect_tiles(cell(c.col, c.row, c.cols, c.rows), first);
@@ -993,6 +1033,7 @@ CORE_COLD void frame(uint32_t ms) {
     } else {
       send_part(mask, texts, !s.sent_valid);
     }
+    committed(ms);
     sent = *wire;
     s.sent_valid = true;
     s.last_tx = ms;
@@ -1071,9 +1112,10 @@ CORE_COLD void src_tick(uint32_t ms) {
     else
       for (int i = 0; i < kTextSlots; ++i)
         if (work.txt[i].s[0]) texts |= 1ull << i;
-    if (tiles || texts) {
+    if ((tiles || texts) && !commit_held(ms)) {
       bool whole = !s.sent_valid;
       send_part(mask, texts, whole);
+      committed(ms);
       sent = work;
       s.sent_valid = true;
       s.last_tx = ms;
@@ -1418,7 +1460,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         if (was_open && b[0] == s.via && was == s.via_voice && extra_of(was) && (b[0] == kPageLfo || b[0] == kPageIns)) {
           s.via = -1;
           s.input = true, s.mask_valid = false;
-          if (!go_back()) go(0);   // back where it came from (the stock screen: the page asked closed), else SIDECAR
+          if (!go_back()) go(0);   // out, as NO (nav044: the page asked closed), else SIDECAR
           return;
         }
         if (!s.open) s.stats.opens++;
@@ -1451,11 +1493,11 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
             if (!strcmp(extra_page(k).title, want_title)) s.voice = kExtra0 - k;
           want_title = nullptr;
         }
-        if (!was_open || s.voice == -1) s.nback = 0;   // (SIDECAR: NO leaves, as before)
+        if (!was_open || s.voice == -1) s.shortcut = false;   // (SIDECAR: NO leaves, as before)
         if (was_open) lfo_left(was, s.voice);
         s.via = b[0], s.via_voice = s.voice;
         if (s.voice != -1 && !(was_open && was == s.voice))
-          back_push(was_open ? was : kBackStock);   // rui1051: a shortcut's page: NO goes back there
+          s.shortcut = true;   // rui1051, nav044: a shortcut's page: NO leaves
         s.page_changed = true;
         s.sent_valid = false;   // the Rytm's shadow: unknown, the whole frame goes
         s.last_draw = s.last_tx = 0;
@@ -1470,7 +1512,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         if (s.open) s.stats.closes++;
         if (s.open) lfo_left(s.voice, -1);   // ux1027 (review 5): the LFO page opens on its main view again
         s.open = false;
-        s.nback = 0, s.via = -1;
+        s.shortcut = false, s.via = -1;
         keys_map_drop(), s.map_over = false;   // (UP's map goes with the page)
         release_held();                        // 0.5.0: and every key a page holds
 #if CORE_POLY
@@ -1486,6 +1528,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     case kKey:
       if (n < 3) break;
       s.stats.keys++;
+      s.user = true;
       if (b[2]) popup_key_closed();
       // the pairing code's modal over an open page: a key takes it off (the user has read it) and does nothing else;
       // its release is eaten too, so the page does not see half a press. (With the page closed no key reaches us: the
@@ -1539,6 +1582,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     case kEnc:
       if (n < 3) break;
       s.stats.encs++;
+      s.user = true;
       popup_key_closed();   // (a turn ends the Rytm's splash as a key does)
       if (!s.open && src_bank_enc(b[0], (int)b[1] - 64, b[2] != 0)) {   // rui1038: knob A in the bank list
         s.input = true;
@@ -1601,6 +1645,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     case kSrcView:   // 1027: <track> <on>
       if (n < 2 || b[0] >= 12 || b[1] > 1) break;
       s.stats.src_views++;
+      src_unhold(-1);
       if (src_log) core::log("rui src: 29 %lu ms, track %d, %s", (unsigned long)now_ms(), b[0], b[1] ? "on" : "off");
       if (b[1]) {
         s.src_track = (int8_t)b[0];
@@ -1628,19 +1673,28 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       return;
     }
     case kSrcVals: {   // 1027: <track> <first> <n> {<int> <frac>} x n
-      if (n < 5 || b[0] >= 12 || b[1] > 15 || b[2] < 1 || b[1] + b[2] > 16 || n != 3 + 2 * b[2]) break;
-      int t = b[0];
+      // 1027e (rytm-mods 0026): <track | 0x40> while a step is held in GRID REC: that step's values (its locks, else the
+      // sound's), drawn only - not the sound's for the song, the bank list or a MIDI machine; the sound's follow at release
+      const bool held = b[0] & 0x40;
+      if (n < 5 || (b[0] & 0x3F) >= 12 || b[1] > 15 || b[2] < 1 || b[1] + b[2] > 16 || n != 3 + 2 * b[2]) break;
+      int t = b[0] & 0x3F;
+      if (held && !(s.keep_mask >> t & 1)) {   // the sound's values kept until the step is let go
+        memcpy(s.keep_v[t], s.srcv[t], 16), memcpy(s.keep_l[t], s.srcl[t], 16);
+        s.keep_known[t] = s.src_known[t], s.keep_mask |= (uint16_t)(1u << t);
+      } else if (!held) {
+        s.keep_mask &= (uint16_t)~(1u << t);   // the sound's own values come with it
+      }
       for (int i = 0; i < b[2]; ++i) {
         s.srcv[t][b[1] + i] = b[3 + 2 * i] & 0x7F;
         s.srcl[t][b[1] + i] = b[4 + 2 * i] & 0x7F;
         s.src_known[t] |= (uint16_t)(1u << (b[1] + i));
       }
-      {   // rui1038: the banked knob's 14 bits (song): P1, or DSP SAMPLE's SMP P11 (rui1045)
+      if (!held) {   // rui1038: the banked knob's 14 bits (song): P1, or DSP SAMPLE's SMP P11 (rui1045)
         int kb = remote_track_src_param(t);
         if (b[1] <= kb && kb < b[1] + b[2]) s.src14[t] = (int16_t)((b[3 + 2 * (kb - b[1])] & 0x7F) << 7 | (b[4 + 2 * (kb - b[1])] & 0x7F));
       }
 #if CORE_MSAMP
-      if (have_tracks && track_vb[t] != kNotOurs && (track_vb[t] & kMidiMachine) && s.src_known[t] == 0xFFFF) {
+      if (!held && have_tracks && track_vb[t] != kNotOurs && (track_vb[t] & kMidiMachine) && s.src_known[t] == 0xFFFF) {
         float w[16];   // MIDI: a knob sends with the voice idle too (its 0x03s only come while it plays)
         for (int k = 0; k < 16; ++k) w[k] = s.srcv[t][k] + s.srcl[t][k] / 128.0f;
         midim::report(kTrackVoice[t], -1, 0, w);
@@ -1648,7 +1702,10 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
 #endif
       if (b[2] == 1) s.src_last = (int8_t)b[1];
       else if (t == s.src_track) src_list_quiet();   // a kit's values at once (a load): no list for its SRC
-      if (t == s.src_track) s.input = true;   // drawn at once (the input path), a burst coalesced to its latest values
+      if (t == s.src_track) {   // drawn at once (the input path), a burst coalesced to its latest values
+        s.input = true;
+        if ((held || b[2] == 1) && !s.open) s.src_user = true;   // 0.4.4: a knob's (kSrcUserMs while playing)
+      }
       s.stats.src_vals++;
       if (src_log) core::log("rui src: 2A %lu ms, track %d, first %d, n %d, P%d = %d.%d", (unsigned long)now_ms(), t, b[1], b[2],
                        b[1] + 1, b[3], b[4]);
@@ -1663,9 +1720,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       if (b[0] == 5 && n >= 2) {   // rui1050: UP held alone over an open page (1): the map over it; let go (0): that page again
         if (b[1] && s.open && !s.map_over) {   // (a repeated 1: the page under it kept)
           s.map_back = s.voice, s.map_over = true;
-          int nb = s.nback, bk[2] = {s.back[0], s.back[1]};
+          bool sc = s.shortcut;
           keys_map_over(true);
-          s.nback = nb, s.back[0] = bk[0], s.back[1] = bk[1];   // rui1051: the map is no page of its own (NO's way stays)
+          s.shortcut = sc;   // rui1051: the map is no page of its own (NO's way stays)
         } else if (!b[1] && s.map_over) {
           s.map_over = false;
           if (keys_map_over(false) && s.open && s.voice != s.map_back) s.voice = s.map_back, s.page_changed = true, s.input = true, s.via = -1;
@@ -1863,18 +1920,19 @@ CORE_COLD int remote_caps() { return s.caps; }
 
 CORE_COLD void remote_show_page(const char* title) {
   if (!strcmp(title, "SYSTEM")) {   // (MENU's SYSTEM: the second status page)
-    if (s.open && s.voice != -2) back_push(s.voice), lfo_left(s.voice, -2), s.voice = -2, s.page_changed = true, s.input = true, s.via = -1;
+    if (s.open && s.voice != -2) s.shortcut = false, lfo_left(s.voice, -2), s.voice = -2, s.page_changed = true, s.input = true, s.via = -1;
     return;
   }
   if (!strcmp(title, kStatusTitle)) {   // the status page (SIDECAR, the first): the page opens on it
-    if (s.open && s.voice != -1) back_push(s.voice), lfo_left(s.voice, -1), s.voice = -1, s.page_changed = true, s.input = true, s.via = -1;
+    if (s.open && s.voice != -1) s.shortcut = false, lfo_left(s.voice, -1), s.voice = -1, s.page_changed = true, s.input = true, s.via = -1;
     else if (!s.open && !device::foreign()) want_title = nullptr, remote_request(true);
     return;
   }
   if (s.open) {
     for (int k = 0; k < extra_pages(); ++k)
       if (!strcmp(extra_page(k).title, title) && s.voice != kExtra0 - k) {
-        back_push(s.voice);   // rui1051: NO goes back to the page it was opened over
+        if (!strcmp(title, "MENU")) s.shortcut = false;   // nav044 review: the MENU (YES on SIDECAR): NO to SIDECAR
+        else shortcut_over(s.voice);   // rui1051, nav044: NO leaves (the MENU's pick: SIDECAR, as before)
         lfo_left(s.voice, kExtra0 - k), s.via = -1;
         s.voice = kExtra0 - k, s.page_changed = true, s.input = true;
       }
@@ -2133,6 +2191,9 @@ CORE_COLD bool remote_track_write(int t, int k, int value, int lo, int flags) {
   return true;
 }
 CORE_COLD int remote_track_src14(int t) { return t >= 0 && t < 12 ? s.src14[t] : -1; }
+CORE_COLD int remote_track_src_value(int t, int k) {
+  return t >= 0 && t < 12 && k >= 0 && k < 16 && (s.src_known[t] >> k & 1) ? s.srcv[t][k] : -1;
+}
 static bool g_rytm_040 = false;
 CORE_COLD void remote_rytm_040(bool on) { g_rytm_040 = on; }
 CORE_COLD bool remote_rytm_040() { return g_rytm_040; }

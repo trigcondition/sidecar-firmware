@@ -10,6 +10,7 @@
 
 #include "check.h"
 #include "lib/pools.h"
+#include "core_port.h"   // host_fake_time
 #include "engine.h"
 #include "pool/pool.h"
 #include "ui/extra.h"
@@ -82,7 +83,9 @@ int main() {
   const Page* pg = page_for_voice(core::kDspSample, 0);
   CHECK(pg && !strcmp(pg->title, "DSP SAMPLE") && page_for_machine(core::kDspSample) == pg && pg->enc[4] == 12);
   uint32_t ms = 1000;
-  auto tick = [&](int k) { for (int i = 0; i < k; ++i) remote_tick(++ms); };
+  // the host's clock follows the remote's (as on the Pi: remote_tick gets now_ms()), so pictures paced by now_ms()
+  // (extra.h LiveKey, GRANULAR's kFrameMs) see the same time as the remote's ticks
+  auto tick = [&](int k) { for (int i = 0; i < k; ++i) core::host_fake_time(true, (uint64_t)++ms * 1000), remote_tick(ms); };
   from_rytm(0x30, 0, 1, 0);
   tick(30);
   from_rytm(0x31, 0, 0x41, 1), tick(30);

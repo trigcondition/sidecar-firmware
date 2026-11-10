@@ -318,7 +318,8 @@ CORE_COLD void pool_page_reset() {
 
 // Shown where SAMPLE is (the Pi: the machines that read the lists, a recorder)
 CORE_COLD bool pool_shown() { return kRecPage.shown && kRecPage.shown(); }
-UI_ROM const ExtraPage kPoolPage = {"POOL", pool_shown, pool_draw, pool_enc, pool_key, 0x0F, false, nullptr, nullptr, nullptr};
+UI_ROM const ExtraPage kPoolPage = {"POOL", pool_shown, pool_draw, pool_enc, pool_key, 0x0F, false, nullptr, nullptr, nullptr,
+                                    false, nullptr, nullptr, true};   // updown044: UP / DOWN its rows
 
 }  // namespace ui
 }  // namespace core

@@ -190,6 +190,7 @@ struct GrKey {
   uint32_t ms = 0, key = 0;
 };
 GrKey gr_keys[8];
+LiveKey wt_keys[8];   // WAVETABLE's picture (0.4.3: its POS at most every kLiveMs)
 
 CORE_COLD uint32_t mixk(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }
 
@@ -480,8 +481,8 @@ CORE_COLD uint32_t wavegrain_key(const Cell& c, const Source& s) {
   if (c.arg == kDrawWt) {
     int nf = 0;
     float pos = wt::viz_pos(vi, &nf);
-    return (uint32_t)(wt::voice_entry(vi) + 2) * 2654435761u ^ (uint32_t)nf << 8 ^ (uint32_t)(pos * 255.0f) << 20 ^
-           (uint32_t)wt::entries() << 2;
+    return wt_keys[vi].get((uint32_t)(wt::voice_entry(vi) + 2) * 2654435761u ^ (uint32_t)nf << 8 ^ (uint32_t)wt::entries() << 2,
+                           (uint32_t)(pos * 255.0f), now_ms());
   }
   GrKey& k = gr_keys[vi];
   uint32_t now = now_ms();
