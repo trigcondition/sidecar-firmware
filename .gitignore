@@ -63,5 +63,6 @@ sidecar-wifi.txt
 wpa_supplicant.conf
 .idea/
 .omc/
-.claude/
+.claude/*
+!.claude/skills/
 .vscode/
