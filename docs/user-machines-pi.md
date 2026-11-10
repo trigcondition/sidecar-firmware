@@ -289,6 +289,47 @@ To build and install:
   on PATH) and copies them to `CARD_DIR/Plugins/<name>.rmp`.
 - Or upload the `plugins/sc_*/sc_*.a64.rmp` files on the web page.
 
+## CLOUD (plugins/cloud): granular textures
+
+`cloud.a64.rmp`, id `cloud.texture`, MIT. Shipped on its own, not in the starter set or the release zip. A Plugin
+API 3 machine: it needs the voice arena (883 KB a voice), so an API 2 host refuses it at the scan. The DSP is Beads',
+Emilie Gillet's texture synthesizer (MIT; `plugins/cloud/NOTICE`), vendored under `plugins/cloud/third_party`.
+
+**What it does.** A built-in wavetable oscillator plays the trig's note into a buffer that records all the time.
+Grains read the buffer back (position, size, density, pitch, envelope, stereo spread), with feedback into the buffer,
+FREEZE, and Beads' reverb: clouds and smears around the note, or a frozen pad that keeps playing after the note is
+gone. QUAL picks Beads' buffer formats (LOFI, TAPE, VINTAGE, DIGITAL), each with its own colour and buffer length.
+ENG SYNTH plays Beads' wavetable grains at the note instead, without a buffer.
+
+**Pitch:** the cloud follows the trig's note (C3 = note 48 is the oscillator's root); PTCH transposes the grains in
+Beads' steps (0, 1, 3, 4, 7, 12, 24 semitones each way). A trig also makes a grain when DENS is at the centre.
+
+**Why an oscillator and not the track's audio:** API 3 gives a machine no audio input yet (`plugin-api-3-plan.md`,
+part 9: `aux[]`). With it, CLOUD could granulate the Rytm's own sound as Beads granulates its input.
+
+| Page | P | Knob | Default | |
+|---|---|---|---|---|
+| SRC | P1 | TIME | 24 | where the grains read: left now, right the oldest sound; the delay time in the delay mode |
+| SRC | P2 | SIZE | 72 | grain size; below a third reversed grains; fully right the delay mode |
+| SRC | P3 | DENS | 92 | left of the centre a steady clock, the centre only the trigs, right random grains |
+| SRC | P4 | PTCH | 64 | the grains' transposition (Beads' interval steps) |
+| SRC | P5 | SHAP | 64 | grain envelope: square, decay, bell, reversed |
+| SRC | P6 | FDBK | 40 | feedback into the buffer |
+| SRC | P7 | SPRD | 64 | random grain shapes and stereo spread |
+| SRC | P8 | MIX | 96 | dry oscillator to cloud |
+| MORE | P9 | RVB | 64 | reverb amount and length |
+| MORE | P10 | FRZ | OFF | ON stops the recording; the grains play what the buffer holds (nothing yet: silence) |
+| MORE | P11 | QUAL | DIGITAL | LOFI (8-bit mu-law, 24 kHz, wow and flutter), TAPE (12-bit, 24 kHz), VINTAGE (12-bit, 48 kHz), DIGITAL (16-bit, 48 kHz, 8 s) |
+| MORE | P12 | BANK | SINE | the oscillator's wavetable bank (12) |
+| MORE | P13 | WAVE | 40 | the wave in the bank |
+| MORE | P14 | TRND | 76 | random grain position: right smooth drift, left jumps |
+| MORE | P15 | PRND | 64 | random grain pitch, the same law |
+| MORE | P16 | ENG | CLOUD | CLOUD or SYNTH |
+
+CPU: about 1.9 % of an arm64 Mac core a voice at its heaviest (dense long grains, VINTAGE); estimated 17-46 % of
+the 125 us voice budget on a Pi 4, and less than half that on a Pi 5 (to be measured on the Pi). Declared 700 per
+mille. More in `plugins/cloud/README.md`; `make -C plugins/cloud check` runs its tests.
+
 ## Tests
 
 - `teensy/libraries/RytmPlugins/extras/loader_a64_test.cpp`: verify, the target check, the two-part placement,

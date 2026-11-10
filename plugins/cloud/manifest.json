@@ -1,0 +1,33 @@
+{
+  "id": "cloud.texture",
+  "version": "0.1.0",
+  "compatible_from": "0.1.0",
+  "name": "CLOUD",
+  "short": "CLD",
+  "licence": "MIT (DSP after Beads: Emilie Gillet)",
+  "page2": "params",
+  "page2_title": "CLOUD MORE",
+  "pitch": "note",
+  "knobs": [
+    {"p": 1, "long": "Time", "short": "TIME", "look": "dial", "text": "number", "default": 24},
+    {"p": 2, "long": "Size", "short": "SIZE", "look": "dial", "text": "number", "default": 72},
+    {"p": 3, "long": "Density", "short": "DENS", "look": "centred", "text": "bipolar", "default": 92},
+    {"p": 4, "long": "Pitch", "short": "PTCH", "look": "centred", "text": "bipolar", "default": 64},
+    {"p": 5, "long": "Shape", "short": "SHAP", "look": "dial", "text": "number", "default": 64},
+    {"p": 6, "long": "Feedback", "short": "FDBK", "look": "dial", "text": "number", "default": 40},
+    {"p": 7, "long": "Spread", "short": "SPRD", "look": "dial", "text": "number", "default": 64},
+    {"p": 8, "long": "Dry/Wet", "short": "MIX", "look": "dial", "text": "number", "default": 96},
+    {"p": 9, "long": "Reverb", "short": "RVB", "look": "dial", "text": "number", "default": 64},
+    {"p": 10, "long": "Freeze", "short": "FRZ", "look": "list", "text": "enum", "names": ["OFF", "ON"], "default": 0},
+    {"p": 11, "long": "Quality", "short": "QUAL", "look": "list", "text": "enum",
+     "names": ["LOFI", "TAPE", "VINTAGE", "DIGITAL"], "default": 127},
+    {"p": 12, "long": "Bank", "short": "BANK", "look": "list", "text": "enum",
+     "names": ["SINE", "TRISTK", "ORGAN", "TRISAW", "BURST", "FORMANT", "DIGI", "WAVES", "FM 1", "FM 2", "FM 3",
+               "FM 4"], "default": 0},
+    {"p": 13, "long": "Wave", "short": "WAVE", "look": "dial", "text": "number", "default": 40},
+    {"p": 14, "long": "Time Random", "short": "TRND", "look": "centred", "text": "bipolar", "default": 76},
+    {"p": 15, "long": "Pitch Rand", "short": "PRND", "look": "centred", "text": "bipolar", "default": 64},
+    {"p": 16, "long": "Engine", "short": "ENG", "look": "list", "text": "enum", "names": ["CLOUD", "SYNTH"],
+     "default": 0}
+  ]
+}
