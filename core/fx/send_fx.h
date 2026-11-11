@@ -159,6 +159,9 @@ inline bool user_plays(int t) { return t >= kFirstUser && t < kFirstUser + 4 && 
 // rate-limited) - the Rytm asks for the list only once.
 extern volatile bool list_dirty;
 extern bool (*user_loaded)(int u);   // UFX u holds a loaded effect (READY, muted or not): its name is kept (slots_load)
+// UFX u's P2..P5 labels and zones for the Rytm (0x24), from its manifest (core/user/um.cpp fx_labels_build): null while
+// it holds no loaded effect. labels(64 + u) answers through it.
+extern const KnobLabels* (*user_labels)(int u);
 inline void list_changed() { list_dirty = true; }
 // The slot that is the STUTTER, or -1: FX 1 if both are (FX 2 is then MISSING: one ring, one insert).
 inline int stutter_slot(const Control& c) {

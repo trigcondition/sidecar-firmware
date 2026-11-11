@@ -352,6 +352,46 @@ int main() {
     link(msg({0x23, 1}));
     CHECK(count(0x24) == 8);
   }
+  {   // a user effect's labels (Plugin API 3: um builds them from the manifest, fx::user_labels hands them over): id 65
+      // (DUSTY, on FX 1) goes first with the 8 tables; with 16 all ten go; off the slots with 8 it is left out, and a
+      // slot moved to it sends the list and the labels again, 65's first
+    static const Zone z[2] = {{0, 0, 0, 1, 0, "FREE"}, {0, 64, 0, 0, 1, "1/4"}};
+    static const KnobLabels kl = {{"TIM", "FDBK", "W/F", "TONE"}, z, 2};
+    user_labels = [](int u) -> const KnobLabels* { return u == 1 ? &kl : nullptr; };
+    uint8_t m[160];
+    CHECK(sysex_labels(m, 65) == 24 + 2 * 8 && sysex_labels(m, 64) == 0 && sysex_labels(m, 66) == 0);
+    CHECK(m[6] == 65 && memcmp(&m[7], "TIM", 3) == 0 && m[7 + 16] == 4 && memcmp(&m[26], "FREE", 4) == 0);
+    CHECK(m[31] == 8 && m[32] == 64 && memcmp(&m[34], "1/4", 3) == 0);
+    CHECK(control.knob[0][0] == 65);
+    g_out.clear();
+    link(msg({0x23, 1}));   // caps 1: 8 tables, FX 1's TYPE first
+    int first24 = -1;
+    for (int i = 0; i < (int)g_out.size() && first24 < 0; ++i)
+      if (g_out[i][4] == 0x24) first24 = i;
+    CHECK(count(0x24) == 8 && first24 >= 0 && g_out[first24][6] == 65 && g_out[first24].size() == 24 + 2 * 8);
+    link(msg({0x35, 1, 0, 100, 3}));   // caps 3: 16 tables
+    g_out.clear();
+    link(msg({0x23, 1}));
+    CHECK(count(0x24) == 10);
+    link(msg({0x35, 1, 0, 100, 1}));
+    link(msg({0x20, 1, 12, 0, 0, kOff, 0, 0, 0, 0, 0, 0, 0, 0, 0}));   // FX 1 OFF: 65 now after the 8 by id
+    g_out.clear();
+    link(msg({0x23, 1}));
+    bool u65 = false;
+    for (auto& q : g_out) u65 = u65 || (q[4] == 0x24 && q[6] == 65);
+    CHECK(count(0x24) == 8 && !u65);
+    g_out.clear();
+    link(msg({0x20, 1, 12, 0, 0, 65, 0, 0, 0, 0, 0, 0, 0, 0, 0}));     // FX 1 to it: missing, so again, it first
+    first24 = -1;
+    for (int i = 0; i < (int)g_out.size() && first24 < 0; ++i)
+      if (g_out[i][4] == 0x24) first24 = i;
+    CHECK(count(0x21) == 2 && count(0x24) == 8 && first24 >= 0 && g_out[first24][6] == 65);
+    g_out.clear();
+    link(msg({0x20, 1, 12, 0, 0, 65, 7, 0, 0, 0, 0, 0, 0, 0, 0}));     // it stays: nothing again
+    CHECK(count(0x21) == 0 && count(0x24) == 0);
+    user_labels = nullptr;
+    CHECK(sysex_labels(m, 65) == 0);
+  }
   command("sendfxout=fx", r, sizeof r);
   CHECK(idle_save() && !card_dirty);
   {

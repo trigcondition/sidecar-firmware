@@ -99,6 +99,7 @@ void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
 bool (*user_ready)(int u) = nullptr;
 volatile bool list_dirty = false;
 bool (*user_loaded)(int u) = nullptr;
+const KnobLabels* (*user_labels)(int u) = nullptr;
 void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 static inline uint8_t send(int t, int s, uint8_t v) { return send_filter ? send_filter(t, s, v) : v; }
@@ -213,6 +214,7 @@ CORE_COLD int sysex_names(uint8_t* m, bool replace, int total, int first, int co
 // 0x24 SENDFX LABELS (sim/protocol.py sendfx_labels): F0 7D 52 54 24 01 <id> <4 x 4 label bytes> then per zone
 // <knob | show << 2 | step << 3> <lo> <base> <5 name bytes>, F7. Only for an id this build plays.
 CORE_COLD const KnobLabels* labels(int id) {
+  if (id >= kFirstUser && id < kFirstUser + kUserSlots) return user_labels ? user_labels(id - kFirstUser) : nullptr;
   if (!plays(id)) return nullptr;
   switch (id) {
     case kChorus: return &kChorusLabels;

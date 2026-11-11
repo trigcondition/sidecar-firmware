@@ -2067,6 +2067,87 @@ uint8_t* data_alloc(uint32_t bytes) {
   return r;
 }
 
+// ---- a user effect's labels on the Rytm's SEND FX page (0x24, core/fx/knob_labels.h), from its manifest: knob p 1..4
+// (the send slot's P2..P5) gives its short name; a knob with names (look "list") gives zones, name k from value
+// ceil(128 k / n), as the plugin reads value * n >> 7. Adjacent equal names are one zone. A name ending in '#' shows
+// the knob's number inside its zone ("6ST 21", as RINGS' "MODAL 12"); a knob whose zones all lack it steps one zone per
+// detent on the Rytm. At most kMaxZones zones in all (a knob that would pass it keeps none). Built on the control
+// core when the slot loads, published with g_fxl_on (the readers: the host link, the UI's labels on core 0). Two copies per
+// effect: a load builds the idle one and then publishes it, so a reader that took the other a moment ago still reads
+// whole strings (it would have to hold it across two loads to see one change). Without UM_NAMES_CACHE the knobs get
+// their short names but no zones.
+struct FxLabels {
+  core::fx::KnobLabels kl;
+  core::fx::Zone z[core::fx::kMaxZones];
+  char lab[4][core::fx::kLabelChars + 1];
+  char zn[core::fx::kMaxZones][core::fx::kZoneChars + 1];
+};
+FxLabels g_fxl[kUfx][2];
+volatile uint8_t g_fxl_on;   // bit u: the loaded effect u has labels; bit 4 + u: they are in g_fxl[u][1]
+const core::fx::KnobLabels* fx_labels(int u) {
+  if (u < 0 || u >= kUfx) return nullptr;
+  uint8_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);
+  return on >> u & 1 ? &g_fxl[u][on >> (4 + u) & 1].kl : nullptr;
+}
+// knob q's zones of package e into L from zone *nz on; false (nothing added) if they would not fit, or it has none
+bool fx_zones(const Pkg& e, int q, int knob, FxLabels& L, int* nz) {
+  char names[RMP_ENUM_MAX][8];
+  int n = -1;
+#if UM_NAMES_CACHE
+  if (e.nnames) {
+    NamesRd r{&e};
+    n = rmp_manifest_enum(&e.desc, q, names_rd, &r, names);
+  }
+#else
+  (void)e, (void)q;
+#endif
+  if (n < 2) return false;
+  int z = *nz, first = z;
+  bool any_show = false;
+  for (int k = 0; k < n; ++k) {
+    char nm[8];
+    memcpy(nm, names[k], 8);
+    nm[7] = 0;
+    size_t len = strlen(nm);
+    bool show = len > 0 && nm[len - 1] == '#';
+    if (show) nm[--len] = 0;
+    if (len > (size_t)core::fx::kZoneChars) nm[core::fx::kZoneChars] = 0;
+    if (z > first && L.z[z - 1].show == show && strcmp(L.zn[z - 1], nm) == 0) continue;   // one zone
+    if (z >= core::fx::kMaxZones) return false;
+    strcpy(L.zn[z], nm);
+    L.z[z] = core::fx::Zone{(uint8_t)knob, (uint8_t)((k * 128 + n - 1) / n), 0, (uint8_t)show, 0, L.zn[z]};
+    any_show |= show;
+    ++z;
+  }
+  if (z - first < 2) return false;
+  for (int j = first; j < z; ++j) L.z[j].step = !any_show;
+  *nz = z;
+  return true;
+}
+void fx_labels_build(int u, int pkg) {
+  if (pkg < 0) {
+    __atomic_fetch_and(&g_fxl_on, (uint8_t)~(1u << u), __ATOMIC_ACQ_REL);
+    return;
+  }
+  const Pkg& e = g_pkg[pkg];
+  int b = !(__atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE) >> (4 + u) & 1);   // the copy no reader was given
+  FxLabels& L = g_fxl[u][b];
+  memset(&L, 0, sizeof L);
+  int nz = 0;
+  for (int j = 0; j < 4; ++j) {
+    int q = rmp_desc_find(&e.desc, j + 1);
+    if (q < 0) continue;
+    memcpy(L.lab[j], e.desc.knob[q].short_name, core::fx::kLabelChars);
+    if (e.desc.knob[q].look == RMP_LOOK_LIST) fx_zones(e, q, j, L, &nz);
+  }
+  for (int j = 0; j < 4; ++j) L.kl.label[j] = L.lab[j];
+  L.kl.zones = L.z;
+  L.kl.nzones = (uint8_t)nz;
+  uint8_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);   // (only this core writes it)
+  on = (uint8_t)((on & ~(1u << (4 + u))) | 1u << u | b << (4 + u));
+  __atomic_store_n(&g_fxl_on, on, __ATOMIC_RELEASE);
+}
+
 // ---- loading a slot
 void slot_set(int s, rmp_slot_state st, const rmp_plugin* p, int pkg) {
   Slot& sl = g_slot[s];
@@ -2076,7 +2157,8 @@ void slot_set(int s, rmp_slot_state st, const rmp_plugin* p, int pkg) {
   sl.crc = pkg >= 0 && st == RMP_SLOT_READY ? g_pkg[pkg].crc ^ g_pkg[pkg].size : 0;
   sl.fp = st == RMP_SLOT_READY && pkg >= 0 ? g_pkg[pkg].fp : 0;
   g_pub = true;
-  if (s >= kSlots) {   // (an effect slot: the Rytm's TYPE list and states again)
+  if (s >= kSlots) {   // (an effect slot: the Rytm's TYPE list, labels and states again)
+    fx_labels_build(s - kSlots, st == RMP_SLOT_READY ? pkg : -1);
     core::fx::list_changed();
     return;
   }   // (an effect: no cost row, no presets, nothing the Rytm asks for)
@@ -3038,6 +3120,7 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_render2 = on_render2;
   core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)
   core::fx::user_run = fx_run;
+  core::fx::user_labels = fx_labels;
   core::fx::user_loaded = [](int u) { return u >= 0 && u < kUfx && g_slot[kSlots + u].st == RMP_SLOT_READY && g_fxmap[u].id[0] != 0; };
   core::hooks.slot_ask = on_ask;
   core::hooks.slot_assign = on_assign;

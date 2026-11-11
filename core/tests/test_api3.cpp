@@ -326,6 +326,16 @@ int main() {
   CHECK(v.state == RMP_SLOT_READY && v.api == 3 && !v.muted);
   CHECK(fx::user_ready(0) && std::string(fx::user[0].name) == "PINGPONG" && fx::user[0].tag == fx::fx_tag("PINGPONG"));
   CHECK(logged("um: UFX1 fx.pingpong: ready (API 3, arena 3004 KB: 2 states)") == 1);
+  {   // its labels for the Rytm's SEND FX page (0x24) from the manifest: P2..P5 short names, TIME's 8 names as stepped zones
+    const fx::KnobLabels* l = fx::labels(fx::kFirstUser);
+    CHECK(l && std::string(l->label[0]) == "TIM" && std::string(l->label[3]) == "WID");
+    CHECK(l && l->nzones == 8 && l->zones[0].knob == 0 && l->zones[1].lo == 16 && l->zones[7].lo == 112);
+    CHECK(l && std::string(l->zones[2].name) == "1/8" && l->zones[2].step && !l->zones[2].show);
+    uint8_t m[160];
+    int n = fx::sysex_labels(m, fx::kFirstUser);
+    CHECK(n == 24 + 8 * 8 && m[4] == 0x24 && m[6] == fx::kFirstUser && memcmp(m + 7, "TIM", 3) == 0);
+    CHECK(!fx::labels(fx::kFirstUser + 1));   // UFX2 empty: none
+  }
   // a machine is not an effect, an effect is not a machine
   cmd("um=fx:2:rytm.api3_test");
   CHECK(um::slot_view(6).state == RMP_SLOT_BAD && std::string(um::slot_view(6).why) == "bad: a machine (U1..U5), not an effect");
@@ -372,6 +382,7 @@ int main() {
   // a reassign stops it on core 2 first; empty: MISSING again
   cmd("um=fx:1:-");
   CHECK(!fx::user_ready(0) && fx::state(0) == fx::kStMissing);
+  CHECK(!fx::labels(fx::kFirstUser));   // its labels go with it
 
   // ---- a kit made for another effect: MISSING, and silence in that slot (not UFX1's PINGPONG)
   cmd("um=fx:1:fx.pingpong");

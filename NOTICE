@@ -22,6 +22,8 @@ Exceptions in this tree, as their headers state:
   plugins/modele/                       the MODEL E user machine: GPL-2.0-or-later as a
                                         whole, like ours, because it builds ModelDigi in
                                         (its LICENSE and NOTICE)
+  plugins/ufx_pingpong/, plugins/ufx_phaser/,  the user effects PINGPONG, PHASER and BBD,
+  plugins/ufx_bbd/, plugins/ufx_render.py      written for this repo: MIT (each folder's LICENSE)
   plugins/sc_grain/texture_data.h       the GRAIN texture sample: CC0 1.0
                                         (plugins/sc_grain/LICENSE-texture.txt)
   core/ui/fonts/                        own glyphs (core/ui/fonts/LICENSE)
