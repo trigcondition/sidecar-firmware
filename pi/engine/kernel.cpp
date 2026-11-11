@@ -1022,6 +1022,18 @@ void CKernel::LogBench (void)
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
 		m_Timer.MsDelay (2);
 	}
+	// 0.5.0: 4 send TYPE inserts at once (B1 A, B2 A, B3 A, M1 A) through core 2's paths; every booking, TYPE and MIX
+	// as before afterwards (before a kit; 0 and no line once a slot is set)
+	for (int nSet = 0; const char *pName = bridge::sfxins_bench_name (nSet); nSet++)
+	{
+		u32 nWorst = 0;
+		u64 nTicks = bridge::sfxins_bench (nSet, &nWorst);
+		if (nTicks == 0) break;
+		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		m_Logger.Write (From, LogNotice, "bench sfxins %s: %u.%02u %% of a core, worst block %u.%u %%",
+				pName, nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
+		m_Timer.MsDelay (2);
+	}
 }
 
 // Task 3's boot self-check, before the cores start: one second of a PLAITS voice rendered offline (no USB), then

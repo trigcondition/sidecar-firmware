@@ -281,6 +281,9 @@ already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices
 - **Cost** (`test_sendfx_ins`, the Mac x 13.2 for a Pi 4 as docs/core.md, an estimate): one RINGS or CLOUD ~0.5 % of a
   Mac core (~6.6..7 % of a Pi 4), four RINGS ~25 %, four CLOUDs ~27 %, RINGS + CLOUD + SPACE + HALO ~17 %, four
   CHORUS ~3 %.
+  On the Pi, the boot bench logs `bench sfxins RINGS CLOUD SPACE HALO: ...` and `bench sfxins CLOUD x4: ...`: four send
+  TYPE inserts at once (B1 A, B2 A, B3 A, M1 A, MIX 64) for 1 s of 12-frame blocks through the bus 1 / 2 hook, bus 3
+  and the master render, before a kit loads; every booking, TYPE and MIX is as before afterwards (`bench=0` skips it).
 
 ## UI
 

@@ -123,6 +123,12 @@ void take_peaks(float* in, float* out);   // the largest |sample| since the last
 // the real engine; core::cycles() ticks, *worst_block the longest block. 0 when a chain or a bus send TYPE is set (nothing
 // touched: its clear() would take the buses' rooms).
 uint64_t bench(uint32_t* worst_block);
+// The boot bench of the send TYPEs as inserts: 4 at once across the chains (B1 A, B2 A, B3 A, M1 A), set `set` (0: RINGS
+// CLOUD SPACE HALO, 1: CLOUD x4), over 1 s in 12-frame blocks through the paths core 2 runs them on (fx::bus_insert for
+// buses 1 / 2, ins::bus3, render()). Ticks as bench(). 0 (nothing touched) unless every insert slot of the buses and the
+// master is OFF (the boot's, before a kit); after it every byte of ins::control and control is as before.
+uint64_t sfx_bench(int set, uint32_t* worst_block);
+const char* sfx_bench_name(int set);   // "RINGS CLOUD SPACE HALO", "CLOUD x4"; null past the last set
 unsigned long heap_bytes();        // the inserts' SendFx (on CORE_HEAP_BUFFERS ports; else built on first use)
 void heap_place(void* mem);
 

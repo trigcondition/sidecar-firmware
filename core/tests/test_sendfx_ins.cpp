@@ -629,6 +629,43 @@ static void lows() {
   printf("test_sendfx_ins: the review's lows (bus 1 / 2 silent note, console MIX, the room footer)\n");
 }
 
+// the boot bench row (master::sfx_bench): it measures, and leaves every byte of both controls as it found them, no room
+// taken, the render side as fresh (a slot set after it plays as after a reset); refused (0, nothing touched) once a bus
+// or master slot is set
+static void sfx_bench_row() {
+  auto scene = []() {
+    ins::set_type(kB3, 0, ins::kMRings), mset(0, ins::kMCloud);
+    master::set_mix(master::slot_index(kB3, 0), 100), master::set_mix(0, 90);
+    return render3(600, 31);
+  };
+  ins::reset();
+  Run3 fresh = scene();
+  ins::reset();
+  static ins::Control ic;
+  static master::Control mc;
+  memcpy(&ic, (const void*)&ins::control, sizeof ic), memcpy(&mc, (const void*)&master::control, sizeof mc);
+  for (int set = 0; master::sfx_bench_name(set); ++set) {
+    uint32_t w = 0;
+    const uint64_t t = master::sfx_bench(set, &w);
+    const double pct = 100.0 * (double)t / (double)cycles_per_second(), blk = 100.0 * (double)w / (double)cycles_per_second() * 4000.0;
+    printf("test_sendfx_ins: bench sfxins %s: %.2f %% of a core, worst block %.1f %% (this host)\n", master::sfx_bench_name(set), pct, blk);
+    CHECK(t > 0 && w > 0);
+    CHECK(!memcmp(&ic, (const void*)&ins::control, sizeof ic) && !memcmp(&mc, (const void*)&master::control, sizeof mc));
+    CHECK(master::fx_used() == 0);
+  }
+  Run3 after = scene();
+  CHECK(maxdiff(after.b3, fresh.b3) == 0 && maxdiff(after.m, fresh.m) == 0);
+  // refused once a slot is set: nothing touched
+  ins::reset();
+  ins::set_type(ins::kBus0 + 1, 1, ins::kSat);
+  memcpy(&ic, (const void*)&ins::control, sizeof ic), memcpy(&mc, (const void*)&master::control, sizeof mc);
+  uint32_t w = 0;
+  CHECK(master::sfx_bench(0, &w) == 0 && w == 0);
+  CHECK(!memcmp(&ic, (const void*)&ins::control, sizeof ic) && !memcmp(&mc, (const void*)&master::control, sizeof mc));
+  ins::reset();
+  printf("test_sendfx_ins: the boot bench row leaves the state as it was\n");
+}
+
 // what four send TYPE inserts cost on core 2 (the numbers go to the report)
 static void cost() {
   static const struct { const char* name; int t[4]; } kSets[] = {
@@ -695,6 +732,7 @@ int main() {
   retake_after_release();
   rytm_page();
   lows();
+  sfx_bench_row();
   host_fake_time(false, 0);
   cost();
   printf("test_sendfx_ins: PASS\n");

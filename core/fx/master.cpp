@@ -379,6 +379,63 @@ uint64_t bench(uint32_t* worst_block) {
   return sum;
 }
 
+static const uint8_t kSfxSets[2][4] = {{ins::kMRings, ins::kMCloud, ins::kMSpace, ins::kMHalo},
+                                       {ins::kMCloud, ins::kMCloud, ins::kMCloud, ins::kMCloud}};
+const char* sfx_bench_name(int set) { return set == 0 ? "RINGS CLOUD SPACE HALO" : set == 1 ? "CLOUD x4" : nullptr; }
+
+uint64_t sfx_bench(int set, uint32_t* worst_block) {
+  *worst_block = 0;
+  if (set < 0 || set > 1) return 0;
+  for (int c = ins::kBus0; c < ins::kChains; ++c)   // the buses' and the master's slots all OFF, no room taken
+    for (int s = 0; s < ins::kSlots; ++s)
+      if (ins::control.type[c][s] != ins::kOff) return 0;
+  if (fx_used()) return 0;
+#ifndef CORE_HEAP_BUFFERS
+  sfx();
+#endif
+  if (!g_fx[0] || !g_fx[1]) return 0;
+  static ins::Control ic;   // (static: the boot stack is small)
+  static Control mc;
+  memcpy(&ic, (const void*)&ins::control, sizeof ic), memcpy(&mc, (const void*)&control, sizeof mc);
+  static const int kC[4] = {ins::kBus0, ins::kBus0 + 1, ins::kBus0 + 2, ins::kM0};
+  for (int i = 0; i < 4; ++i) {   // the bytes set directly (no file marked), rooms 0..3
+    const int t = kSfxSets[set][i], j = slot_index(kC[i], 0);
+    ins::control.type[kC[i]][0] = (uint8_t)t;
+    for (int k = 0; k < ins::kParams; ++k) ins::control.play[kC[i]][0][k] = ins::labels(t).def[k];
+    control.fx[j] = (int8_t)i, control.mix[j] = 64;
+  }
+  float b12[2][12][2], in3[12], pre[12][2], post[12][2], y[12][2];
+  uint64_t sum = 0;
+  uint32_t worst = 0;
+  for (int n = 0; n < 4000; ++n) {
+    for (int i = 0; i < 12; ++i) {   // (the test signal outside the timing)
+      const float a = sinf(0.05f * (float)(n * 12 + i)), b = sinf(0.031f * (float)(n * 12 + i));
+      b12[0][i][0] = b12[1][i][1] = 0.2f * a, b12[0][i][1] = b12[1][i][0] = 0.1f * b;
+      in3[i] = 0.15f * (a + b), y[i][0] = 0.2f * a + 0.1f * b, y[i][1] = 0.2f * a - 0.1f * b;
+    }
+    memset(pre, 0, sizeof pre), memset(post, 0, sizeof post);
+    const uint32_t t0 = cycles();
+    if (fx::bus_insert) fx::bus_insert(0, b12[0], 12), fx::bus_insert(1, b12[1], 12);
+    ins::bus3(in3, 12, pre, post);
+    render(y, 12);
+    const uint32_t t = cycles() - t0;
+    sum += t;
+    if (t > worst) worst = t;
+  }
+  *worst_block = worst;
+  // every byte as it was, the fades run out on silence, the render side and the rooms back to nothing
+  memcpy((void*)&ins::control, &ic, sizeof ic), memcpy((void*)&control, &mc, sizeof mc);
+  for (int n = 0; n < 200; ++n) {
+    memset(b12, 0, sizeof b12), memset(in3, 0, sizeof in3), memset(y, 0, sizeof y);
+    if (fx::bus_insert) fx::bus_insert(0, b12[0], 12), fx::bus_insert(1, b12[1], 12);
+    ins::bus3(in3, 12, pre, post);
+    render(y, 12);
+  }
+  for (int i = 0; i < kAllSlots; ++i) g_mix_set[i] = false, g_run_fx[i] = -1, g_play[i] = -1, g_waited[i] = 0;
+  for (int u = 0; u < kFxUnits; ++u) g_fx[u]->Reset();
+  return sum;
+}
+
 static constexpr unsigned long kUnitBytes = ((unsigned long)sizeof(fx::SendFx) + 63) & ~63ul;
 unsigned long heap_bytes() {
 #ifdef CORE_HEAP_BUFFERS
