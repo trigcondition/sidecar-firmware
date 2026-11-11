@@ -123,9 +123,10 @@ int main() {
         while (dirent* f = readdir(d2)) {
           std::string n = f->d_name;
           // (plugins/fault_test faults on purpose: the guard's tests, not a sound)
-          // (and the API 3 packages, plugins/api3_test and ufx_pingpong: an API 2 host plays them otherwise or not at all)
+          // (and the API 3 packages, plugins/api3_test, ufx_pingpong and mist: an API 2 host plays them otherwise or
+          // not at all)
           if (n.size() > 8 && n.compare(n.size() - 8, 8, ".a64.rmp") == 0 && n.find("fault") == std::string::npos &&
-              n.find("api3_") != 0 && n.find("ufx_") != 0)
+              n.find("api3_") != 0 && n.find("ufx_") != 0 && n.find("mist.") != 0)
             pkgs.push_back(sub + "/" + n);
         }
         closedir(d2);

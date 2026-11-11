@@ -17,7 +17,7 @@ Exceptions in this tree, as their headers state:
                                         (SPDX headers in each file)
   plugins/nusaw/, plugins/vox/,         user machines ported from MIT-licensed
   plugins/hush1/, plugins/raffo/,       instruments: MIT (each folder's LICENSE,
-  plugins/sophie/                       LICENSE.* and NOTICE)
+  plugins/sophie/, plugins/mist/       LICENSE.* and NOTICE)
   plugins/mdkit/                        the MD user machine's glue: MIT (its NOTICE)
   plugins/modele/                       the MODEL E user machine: GPL-2.0-or-later as a
                                         whole, like ours, because it builds ModelDigi in
@@ -59,6 +59,10 @@ In tree (ported or adapted; notices next to the code):
   plugins/modele/third_party/modeldigi/
                                 ModelDigi's oscillator bank (GPL-2.0-or-later),
                                 vendored unchanged at c412bdf (its VENDORED.md)
+  plugins/mist/third_party/eurorack/
+                                Mutable Instruments Beads' DSP and stmlib (MIT),
+                                vendored at f4cfa76 / e3bd7c9 with one guarded
+                                change (its VENDORED.md)
 
 Fetched at build time:
   Mutable Instruments eurorack  Plaits, stmlib (MIT)        sim/plaits/build.sh
