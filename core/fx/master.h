@@ -120,14 +120,18 @@ bool from_line(const char* const* w, int n);
 // y's peaks, in and out, kept for the meters.
 void render(float (*y)[2], int n);
 void take_peaks(float* in, float* out);   // the largest |sample| since the last call
-// The boot bench: a chain without AMP (COMP, EQ, SPACE, CLOUD, the POST EQ) over 1 s in 12-frame blocks through render(), on
-// the real engine; core::cycles() ticks, *worst_block the longest block. 0 when a chain or a bus send TYPE is set (nothing
-// touched: its clear() would take the buses' rooms).
+// The boot benches. Call them only while no other core can load a project or edit (the Pi: core 0 before cores 1-3 start,
+// pi/engine/kernel.cpp BenchChains: the project's inserts are applied by core 3's store fill, later). Each sets its bytes
+// directly (no file marked) and gives back only the bytes that still hold what it set, then runs silence until the fades
+// end, frees every room and drops the meters' peaks.
+// bench: a chain without AMP (COMP, EQ, SPACE, CLOUD, the POST EQ) over 1 s in 12-frame blocks through render(), on
+// the real engine; core::cycles() ticks, *worst_block the longest block. 0 (nothing touched) when a master slot is set or
+// a room taken.
 uint64_t bench(uint32_t* worst_block);
 // The boot bench of the send TYPEs as inserts: 4 at once across the chains (B1 A, B2 A, B3 A, M1 A), set `set` (0: RINGS
 // CLOUD SPACE HALO, 1: CLOUD x4), over 1 s in 12-frame blocks through the paths core 2 runs them on (fx::bus_insert for
 // buses 1 / 2, ins::bus3, render()). Ticks as bench(). 0 (nothing touched) unless every insert slot of the buses and the
-// master is OFF (the boot's, before a kit); after it every byte of ins::control and control is as before.
+// master is OFF and no room is taken.
 uint64_t sfx_bench(int set, uint32_t* worst_block);
 const char* sfx_bench_name(int set);   // "RINGS CLOUD SPACE HALO", "CLOUD x4"; null past the last set
 unsigned long heap_bytes();        // the inserts' SendFx (on CORE_HEAP_BUFFERS ports; else built on first use)

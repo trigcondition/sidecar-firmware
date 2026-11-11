@@ -655,6 +655,34 @@ static void sfx_bench_row() {
   }
   Run3 after = scene();
   CHECK(maxdiff(after.b3, fresh.b3) == 0 && maxdiff(after.m, fresh.m) == 0);
+  // third re-review N7: a project's load landing in the middle of a bench (another core's write) survives it: the bench
+  // gives back only its own bytes. Simulated from inside the bench's render, through the send TYPE hook. N8: the meters'
+  // peaks read 0 after it
+  for (int which = 0; which < 3; ++which) {   // master::bench, sfx_bench sets 0 and 1
+    ins::reset();
+    static int calls;
+    static void (*real)(int, int, const float*, const float*, const float*, float*, float*, int);
+    calls = 0, real = ins::send_insert;
+    ins::send_insert = [](int c, int s, const float* p, const float* x, const float* r, float* y0, float* y1, int m) {
+      if (++calls == 2000) {   // "the load": a voice chain, a voice's send, a bus EQ, the master's LEV
+        ins::control.type[2][1] = ins::kDelay, ins::control.send[2][1] = 77;
+        ins::control.peq[kB3][3] = 9, master::control.lev = 88;
+      }
+      real(c, s, p, x, r, y0, y1, m);
+    };
+    uint32_t w = 0;
+    const uint64_t t = which == 0 ? master::bench(&w) : master::sfx_bench(which - 1, &w);
+    ins::send_insert = real;
+    CHECK(t > 0 && calls >= 2000);
+    CHECK(ins::control.type[2][1] == ins::kDelay && ins::control.send[2][1] == 77 && ins::control.peq[kB3][3] == 9 &&
+          master::control.lev == 88);
+    for (int c = ins::kBus0; c < ins::kChains; ++c)
+      for (int sl = 0; sl < ins::kSlots; ++sl) CHECK(type_of(c, sl) == ins::kOff);
+    CHECK(master::fx_used() == 0);
+    float pin = 1, pout = 1;
+    master::take_peaks(&pin, &pout);
+    CHECK(pin == 0 && pout == 0);
+  }
   // refused once a slot is set: nothing touched
   ins::reset();
   ins::set_type(ins::kBus0 + 1, 1, ins::kSat);

@@ -284,7 +284,9 @@ already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices
   CHORUS ~3 %.
   On the Pi, the boot bench logs `bench sfxins RINGS CLOUD SPACE HALO: ...` and `bench sfxins CLOUD x4: ...`: four send
   TYPE inserts at once (B1 A, B2 A, B3 A, M1 A, MIX 64) for 1 s of 12-frame blocks through the bus 1 / 2 hook, bus 3
-  and the master render, before a kit loads; every booking, TYPE and MIX is as before afterwards (`bench=0` skips it).
+  and the master render, on core 0 before cores 1-3 start (so before core 3 applies the project's inserts, and nothing
+  else writes the controls meanwhile); it gives back only the bytes it set and frees every room (`bench=0` skips it).
+  Pi 5: RINGS CLOUD SPACE HALO 3.62 % of a core (worst block 16.0 %), CLOUD x4 4.72 % (18.7 %) [measured].
 
 ## UI
 

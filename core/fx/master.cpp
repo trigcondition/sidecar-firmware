@@ -337,20 +337,48 @@ void take_peaks(float* in, float* outp) {
   g_peak_in = g_peak_out = 0.0f;
 }
 
+// The benches' writes into the controls, each byte's value before: given back only where it still holds what the bench
+// wrote, so nothing written meanwhile by anyone else is undone (no snapshot of whole structs)
+struct BenchUndo {
+  volatile uint8_t* at[64];
+  uint8_t was[64], put[64];
+  int n = 0;
+  void set(volatile uint8_t* p, uint8_t v) {
+    if (n < 64) at[n] = p, was[n] = *p, put[n] = v, ++n;
+    *p = v;
+  }
+  void set(volatile int8_t* p, int8_t v) { set((volatile uint8_t*)p, (uint8_t)v); }
+  void undo() {
+    for (int i = n - 1; i >= 0; --i)
+      if (*at[i] == put[i]) *at[i] = was[i];
+    n = 0;
+  }
+};
+// the benches' common end: silence until the fades and the left effects' clears ran out, the render side's rooms and
+// smoothing back to nothing, both insert SendFx cleared, the meters' peaks dropped (the bench's signal is no sound's)
+template <typename Silence>
+void bench_end(Silence silence) {
+  for (int n = 0; n < 200; ++n) silence();
+  for (int i = 0; i < kAllSlots; ++i) g_mix_set[i] = false, g_run_fx[i] = -1, g_play[i] = -1, g_waited[i] = 0;
+  for (int u = 0; u < kFxUnits; ++u) g_fx[u]->Reset();
+  g_peak_in = g_peak_out = 0.0f;
+}
+
 uint64_t bench(uint32_t* worst_block) {
   *worst_block = 0;
-  if (on() || fx_used()) return 0;   // (the boot's, before a kit: nothing set anywhere, so the clear() below takes nothing)
+  if (on() || fx_used()) return 0;   // the boot's: nothing set (see master.h: never while another core may load a project)
 #ifndef CORE_HEAP_BUFFERS
   sfx();
 #endif
   if (!g_fx[0] || !g_fx[1]) return 0;
   static const uint8_t kT[kSlots] = {ins::kComp, ins::kEq, ins::kMSpace, ins::kMCloud};
+  static BenchUndo u;
   for (int i = 0; i < kSlots; ++i) {
-    ins::control.type[chain(i)][slot(i)] = kT[i];
-    for (int k = 0; k < ins::kParams; ++k) ins::control.play[chain(i)][slot(i)][k] = ins::labels(kT[i]).def[k];
+    u.set(&ins::control.type[chain(i)][slot(i)], kT[i]);
+    for (int k = 0; k < ins::kParams; ++k) u.set(&ins::control.play[chain(i)][slot(i)][k], ins::labels(kT[i]).def[k]);
   }
-  control.fx[2] = 0, control.fx[3] = 1, control.mix[2] = control.mix[3] = 127;
-  for (int k = 0; k < ins::kEqParams; ++k) ins::control.peq[kEqChain][k] = (int8_t)ins::eq_store(k, k < 2 ? 20 : 70);
+  u.set(&control.fx[2], 0), u.set(&control.fx[3], 1), u.set(&control.mix[2], 127), u.set(&control.mix[3], 127);
+  for (int k = 0; k < ins::kEqParams; ++k) u.set(&ins::control.peq[kEqChain][k], (int8_t)ins::eq_store(k, k < 2 ? 20 : 70));
   float y[12][2];
   uint64_t sum = 0;
   uint32_t worst = 0;
@@ -366,16 +394,8 @@ uint64_t bench(uint32_t* worst_block) {
     if (t > worst) worst = t;
   }
   *worst_block = worst;
-  // every byte back to nothing, the fades and the left effects' clears run out (no file marked: the bytes were set directly)
-  for (int i = 0; i < kSlots; ++i)
-    for (int k = 0; k < ins::kParams; ++k) ins::control.type[chain(i)][slot(i)] = 0, ins::control.play[chain(i)][slot(i)][k] = 0;
-  for (int k = 0; k < ins::kEqParams; ++k) ins::control.peq[kEqChain][k] = 0;
-  for (int n = 0; n < 200; ++n) {
-    memset(y, 0, sizeof y);
-    render(y, 12);
-  }
-  clear();
-  for (int u = 0; u < kFxUnits; ++u) g_fx[u]->Reset();
+  u.undo();   // (no file marked: the bytes were set directly)
+  bench_end([&]() { memset(y, 0, sizeof y), render(y, 12); });
   return sum;
 }
 
@@ -394,15 +414,13 @@ uint64_t sfx_bench(int set, uint32_t* worst_block) {
   sfx();
 #endif
   if (!g_fx[0] || !g_fx[1]) return 0;
-  static ins::Control ic;   // (static: the boot stack is small)
-  static Control mc;
-  memcpy(&ic, (const void*)&ins::control, sizeof ic), memcpy(&mc, (const void*)&control, sizeof mc);
+  static BenchUndo u;
   static const int kC[4] = {ins::kBus0, ins::kBus0 + 1, ins::kBus0 + 2, ins::kM0};
   for (int i = 0; i < 4; ++i) {   // the bytes set directly (no file marked), rooms 0..3
     const int t = kSfxSets[set][i], j = slot_index(kC[i], 0);
-    ins::control.type[kC[i]][0] = (uint8_t)t;
-    for (int k = 0; k < ins::kParams; ++k) ins::control.play[kC[i]][0][k] = ins::labels(t).def[k];
-    control.fx[j] = (int8_t)i, control.mix[j] = 64;
+    u.set(&ins::control.type[kC[i]][0], (uint8_t)t);
+    for (int k = 0; k < ins::kParams; ++k) u.set(&ins::control.play[kC[i]][0][k], ins::labels(t).def[k]);
+    u.set(&control.fx[j], (int8_t)i), u.set(&control.mix[j], 64);
   }
   float b12[2][12][2], in3[12], pre[12][2], post[12][2], y[12][2];
   uint64_t sum = 0;
@@ -423,16 +441,13 @@ uint64_t sfx_bench(int set, uint32_t* worst_block) {
     if (t > worst) worst = t;
   }
   *worst_block = worst;
-  // every byte as it was, the fades run out on silence, the render side and the rooms back to nothing
-  memcpy((void*)&ins::control, &ic, sizeof ic), memcpy((void*)&control, &mc, sizeof mc);
-  for (int n = 0; n < 200; ++n) {
+  u.undo();
+  bench_end([&]() {
     memset(b12, 0, sizeof b12), memset(in3, 0, sizeof in3), memset(y, 0, sizeof y);
     if (fx::bus_insert) fx::bus_insert(0, b12[0], 12), fx::bus_insert(1, b12[1], 12);
     ins::bus3(in3, 12, pre, post);
     render(y, 12);
-  }
-  for (int i = 0; i < kAllSlots; ++i) g_mix_set[i] = false, g_run_fx[i] = -1, g_play[i] = -1, g_waited[i] = 0;
-  for (int u = 0; u < kFxUnits; ++u) g_fx[u]->Reset();
+  });
   return sum;
 }
 
