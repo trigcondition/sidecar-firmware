@@ -264,8 +264,11 @@ already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices
   buffers), booked per slot (`master::slot_index`: the master's 0..3, the buses' 4..9). Bus 1 and 2's chains run inside
   the send FX's own block (after send FX 1 / 2's return), bus 3's after it and the master after that, all on core 2, so
   the bookings and the SendFx need no lock. Same output as the send FX's own return at MIX 127 [measured, `test_sendfx_ins`].
+- **Bus 1 / 2 need their send FX on**: their chains run inside send FX 1 / 2's return, so with that send FX OFF a
+  send TYPE on bus 1 or 2 is silent, yet it still holds one of the 4 rooms. The Rytm's BUS view says
+  `SEND FX 1 OFF: SILENT` (or 2). Bus 3 and the master have no such condition.
 - **MIX**: a knob per slot, 0 the dry input, 127 the effect alone, default 40. On the Rytm: G in the BUS view (FUNC + G the bus then); web: the
-  strip's MIX knob; console `ins=B3:A:mix:V`. Not an LFO target.
+  strip's MIX knob; console `ins=B3:A:mix:V` (only on a slot that holds a send TYPE; else the help). Not an LFO target.
 - **Saved** on the slot's line after P4: `B3 A RINGS 50 0 80 60 40`. A line the engine refuses (a fifth send TYPE, or a
   send TYPE on a voice: a file edited by hand or written by a later build) is logged
   (`ins: line "B3 B CHORUS" not taken: ...`) and the file is kept as it is, never written over (as any line this build

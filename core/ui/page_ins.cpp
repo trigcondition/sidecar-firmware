@@ -278,6 +278,10 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   } else if (e == 5 && ip.full) {
     sniprintf(b, sizeof b, CORE_STR("SEND FX INSERTS: %d IN USE"), master::kFxSlots);
     footer(c, b);
+  } else if (ip.bus && ip.busel < 2 && master::send_type(t) && fx::control.knob[ip.busel][0] == fx::kOff) {
+    // bus 1 / 2's chain runs in its send FX's return: that send FX OFF, the send TYPE is silent (and holds its room)
+    sniprintf(b, sizeof b, CORE_STR("SEND FX %d OFF: SILENT"), ip.busel + 1);
+    footer(c, b);
   } else if (!ip.bus && remote_track_machine(tr) == 0x7F) {
     footer(c, "ANALOG TRACK: NO SIDECAR VOICE");
   } else {
@@ -312,6 +316,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
     if (t) ins::set_param(ch, ip.slot, e, ins::param(ch, ip.slot, e) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIns, ch, ip.slot * 4 + e));
     return;
   }
+  if (e == 4 || e == 6) ip.full = false;   // another slot or bus: the room note was the last one's
   switch (e) {
     case 4: ip.slot = clampi(ip.slot + l, 0, ins::kSlots - 1); break;
     case 5: {

@@ -633,8 +633,11 @@ bool command(const char* p, char* o, int cap) {
       return true;
     }
     set_param(c, s, key[1] - '1', v), fx::edited(mod::tid(mod::kIns, c, s * 4 + key[1] - '1'));
-  } else if (same_ci(key, "mix") && master::slot_index(c, s) >= 0 && num(val) >= 0) {   // a bus's or the master's slot
-    master::set_mix(master::slot_index(c, s), num(val));
+  } else if (same_ci(key, "mix") && master::slot_index(c, s) >= 0 && master::send_type(control.type[c][s]) && num(val) >= 0) {
+    // a bus's or the master's slot holding a send TYPE (else the help: no MIX to set); the master's an edit as mfx=S:mix:
+    const int i = master::slot_index(c, s);
+    master::set_mix(i, num(val));
+    if (i < master::kSlots) fx::edited(mod::tid(mod::kMfx, 0, 1 + i));
   } else {
     sniprintf(o, cap, "%s", kHelp);
     return true;

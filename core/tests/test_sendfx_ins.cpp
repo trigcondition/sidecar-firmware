@@ -19,6 +19,7 @@
 #include "fx/master.h"
 #include "fx/send_fx.h"
 #include "lfo.h"
+#include "mod/mod.h"
 #include "msamp/cardq.h"
 #include "store/store.h"
 #include "ui/extra.h"
@@ -462,6 +463,58 @@ static void rytm_page() {
   printf("test_sendfx_ins: the Rytm page's bus TYPE list and MIX\n");
 }
 
+// review lows. L1: a send TYPE on bus 1 / 2 with that send FX OFF is silent: the BUS view says so. L3: `ins=...:mix` only
+// on a slot holding a send TYPE; the master's through fx::edited as `mfx=S:mix:`. L4: the "room full" footer goes with a
+// slot or bus change.
+static uint16_t g_edit_tid;
+static void rec_edit(uint16_t tid, float) { g_edit_tid = tid; }
+static void lows() {
+  static ui::Canvas cv;
+  // L1
+  ins::reset();
+  const uint8_t fx1 = fx::control.knob[0][0];
+  fx::control.knob[0][0] = fx::kOff;
+  ins::set_type(kB1, 0, ins::kMRings);
+  ui::ins_page_set(true, 0, 0, -1, false, false);
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(strstr(cv.txt[ui::kSlotFoot].s, "SEND FX 1 OFF"));
+  fx::control.knob[0][0] = fx::kRings;
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(!strstr(cv.txt[ui::kSlotFoot].s, "OFF"));
+  fx::control.knob[0][0] = fx1;
+  // L3
+  char o[400];
+  ins::reset();
+  ins::set_type(kB3, 1, ins::kSat);
+  const int m3 = master::control.mix[master::slot_index(kB3, 1)];
+  CHECK(ins::command("ins=B3:B:mix:99", o, sizeof o) && strstr(o, "ins="));   // no send TYPE: the help, MIX untouched
+  CHECK(master::control.mix[master::slot_index(kB3, 1)] == m3);
+  mset(0, ins::kMHalo);
+  auto* was = fx::manual_edit;
+  fx::manual_edit = rec_edit, g_edit_tid = 0;
+  CHECK(ins::command("ins=M1:A:mix:77", o, sizeof o) && master::control.mix[0] == 77);
+  CHECK(g_edit_tid == mod::tid(mod::kMfx, 0, 1));
+  fx::manual_edit = was;
+  // L4
+  ins::reset();
+  ui::list_pacing(true);
+  host_fake_time(true, 9000000);
+  mset(0, ins::kMRings), mset(1, ins::kMRings), mset(2, ins::kMRings), ins::set_type(kB3, 0, ins::kMCloud);
+  ins::set_type(kB3, 1, ins::kSat);
+  ui::ins_page_set(true, 1, 2, -1, false, false);
+  ui::kInsPage.enc(5, 1, false);   // B3 B: no room, F passes the send TYPEs over
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(strstr(cv.txt[ui::kSlotFoot].s, "IN USE"));
+  ui::kInsPage.enc(4, -1, false);   // E: slot A, which holds one
+  ui::kInsPage.enc(5, 1, false);    // F touched again within the list's pacing: no step
+  CHECK(type_of(kB3, 0) == ins::kMCloud);
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(!strstr(cv.txt[ui::kSlotFoot].s, "IN USE"));
+  host_fake_time(false, 0);
+  ins::reset();
+  printf("test_sendfx_ins: the review's lows (bus 1 / 2 silent note, console MIX, the room footer)\n");
+}
+
 // what four send TYPE inserts cost on core 2 (the numbers go to the report)
 static void cost() {
   static const struct { const char* name; int t[4]; } kSets[] = {
@@ -522,6 +575,7 @@ int main() {
   reset_keeps_buses(c);
   lfo_targets();
   rytm_page();
+  lows();
   host_fake_time(false, 0);
   cost();
   printf("test_sendfx_ins: PASS\n");
