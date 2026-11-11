@@ -14,7 +14,7 @@ CORE_SRC := $(addprefix $(CORE)/,engine.cpp project_key.cpp lfo.cpp hooks.cpp no
             pool/pool.cpp pool/sample_ram_pool.cpp presets/libs.cpp host/platform_host.cpp host/newlib_rand.cpp)
 .PHONY: all clean content fatfs-mac
 all: $(TESTS)
-	@set -e; for t in $(TESTS); do ./$$t; done; ../../../tools/tests/test_gen_version.sh; ./test_pi5_flags.sh; python3 ../../../tools/tests/test_rytm_bridge.py -q; echo "ALL PI PORTABLE TESTS PASS"
+	@set -e; for t in $(TESTS); do ./$$t; done; ../../../tools/tests/test_gen_version.sh; ./test_pi5_flags.sh; python3 ../../../tools/tests/test_rytm_bridge.py -q; python3 ../../../tools/tests/test_make_update.py -q; echo "ALL PI PORTABLE TESTS PASS"
 build/%: %.cpp $(SRC) $(wildcard ../*.h) $(wildcard shim/circle/*.h) $(CORE)/fx/out.h $(CORE)/fx/out_mix.h check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $< $(SRC)
@@ -90,6 +90,10 @@ build/test_rec_play: test_rec_play.cpp ../rec_play.cpp ../rec_play.h $(CORE)/rec
 build/test_fsweb: test_fsweb.cpp ../fsweb.cpp ../fsweb.h $(RMPSRC)/rmp_loader.cpp $(CORE)/lib/sha256.cpp check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -DFSWEB_HOST -I$(RMPSRC) -o $@ $< ../fsweb.cpp $(RMPSRC)/rmp_loader.cpp $(CORE)/lib/sha256.cpp
+# the web update (update.cpp, docs/web-update.md) on a temp folder: checks, trial, commit, revert, power cuts at every write
+build/test_update: test_update.cpp ../update.cpp ../update.h ../fsweb.cpp ../fsweb.h ../webnext_path.h $(RMPSRC)/rmp_loader.cpp $(CORE)/lib/sha256.cpp ../../../tools/make_update.py check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -DFSWEB_HOST -I$(RMPSRC) -o $@ $< ../update.cpp ../fsweb.cpp $(RMPSRC)/rmp_loader.cpp $(CORE)/lib/sha256.cpp
 # the power supply's state (power_state.cpp): get_throttled and the Pi 5's max_current to the warning and /status
 build/test_power_state: test_power_state.cpp ../power_state.cpp ../power_state.h check.h
 	@mkdir -p build

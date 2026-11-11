@@ -70,6 +70,7 @@ static int s_nRytmPatIndex = -1;
 #include "sdfiles.h"
 #include "wifi.h"
 #include "usbnet_pi.h"		// the USB-C network (docs/usb-network.md)
+#include "update_pi.h"		// the firmware update from the web page (docs/web-update.md)
 #include "rec_pi.h"
 #include "bundle_pi.h"		// project bundles (core/bundle, docs/BUNDLES.md)
 #include "lib_pi.h"		// the sample library (core/lib, docs/LIBRARY.md)
@@ -284,6 +285,15 @@ boolean CKernel::Initialize (void)
 				m_bTestCard ? "testcard=1: the card in use, Sidecar's folders only" : "no card for the engine");
 	}
 #endif
+	// updtrial=1 is only in cmdline-try.txt, the web update's trial boot (update_pi.h, docs/web-update.md): the watchdog
+	// from here on, fed at each boot step, so a trial that hangs anywhere in its start resets too - and the next boot
+	// reads config.txt again, the old kernel. Its own commit, 30 s after the start, makes it permanent.
+	m_bUpdTrial = m_Options.GetAppOptionDecimal ("updtrial", 0) != 0;
+	if (m_bUpdTrial)
+	{
+		m_Watchdog.Start (15);
+		m_Logger.Write (From, LogNotice, "updtrial=1: the web update's trial boot, the watchdog on from here");
+	}
 	m_Logger.RegisterPanicHandler (CrumbPanic);
 	s_nPmRsts = read32 (ARM_PM_RSTS);
 	crumb::Report ([this] (const char *pLine) { m_Logger.Write ("crumb", LogNotice, "%s", pLine); }, s_nPmRsts, 6144);
@@ -326,6 +336,16 @@ boolean CKernel::Initialize (void)
 	// the user machines (um_pi.h): the code arena, the card's /Plugins scanned by core 3 once it runs
 	if (bCard && m_Options.GetAppOptionDecimal ("um", 1) != 0) CUserMachines::Initialize ();
 	if (bCard) rec_pi::Init ();		// the recorder's memory (recbuf=MB) and the boot scan of /Recordings
+	// the web update (update_pi.h): a trial waits for its commit; any other boot finishes or cleans up after one.
+	// webupdate=0 turns the page's Update off; the test modes never update.
+	{
+		boolean bUpdOn = m_Options.GetAppOptionDecimal ("webupdate", 1) != 0;
+		const char *pUpdOff = "web updates are off (cmdline.txt webupdate=0)";
+#ifdef SIDECAR_PI5_TESTMODE
+		if (m_nTestSecs != 0) bUpdOn = FALSE, pUpdOff = "the engine test mode (testsecs=) never updates";
+#endif
+		update_pi::Boot (bCard, bUpdOn, pUpdOff, m_bUpdTrial);
+	}
 	s_pBundleConsole = &m_Console;
 	bundle_pi::init (BundleCommand);	// project bundles: the job on this core's loop (bridge::begin ran the boot recovery)
 	lib_pi::begin (bCard);			// the sample library: its index read and the card walked, a piece a pass (lib_pi.h)
@@ -497,6 +517,7 @@ boolean CKernel::Initialize (void)
 	}
 	else new (m_NetStore) CNetSubSystem (NetOption (&m_Options, "ip", NET_DEFAULT_IP, m_IP),
 					     NetOption (&m_Options, "netmask", NET_DEFAULT_NETMASK, m_NetMask), 0, 0, "sidecar");
+	if (m_bUpdTrial) m_Watchdog.Start (15);		// (the trial's watchdog, fed: the network's start can take seconds)
 	m_bNetOK = m_Net.Initialize (FALSE);
 	if (!m_bNetOK) m_Logger.Write (From, LogError, "network: init failed (link=tcp refused, usb only)");
 	else if (bUsbNet)
@@ -2163,6 +2184,7 @@ void CKernel::BootStep (unsigned nStep)
 #ifdef SIDECAR_PI5_TESTMODE
 	if (m_nTestSecs != 0) m_Watchdog.Start (15);	// fed through the boot
 #endif
+	if (m_bUpdTrial) m_Watchdog.Start (15);		// the web update's trial: fed through the boot as well
 	if (m_pDisplay != 0) m_pDisplay->SplashStep (nStep);
 }
 
@@ -2656,6 +2678,8 @@ void CKernel::Run (void)
 		if (bridge::take_restart ()) StopAndReboot ("another device's state folder");
 		CSdFiles::TReboot SdReboot = CSdFiles::TakeReboot ();
 		if (SdReboot != CSdFiles::RebootNone) StopAndReboot ("asked on the SD file port", SdReboot == CSdFiles::RebootTry);
+		upd::Reboot UpdReboot = update_pi::TakeReboot ();	// the web page's update (update_pi.h): a trial boot, or "previous"
+		if (UpdReboot != upd::kNone) StopAndReboot ("the web page's update", UpdReboot == upd::kTry);
 #if RASPPI >= 5
 		if (m_bPowerOff) StopAndPowerOff ("asked on the console (poweroff=1)");
 		PowerButtonPoll ();

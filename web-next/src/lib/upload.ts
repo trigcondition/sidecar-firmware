@@ -37,8 +37,11 @@ export async function fileCrc(f: Source, onProgress?: (frac: number) => void, ca
 
 export interface UploadProgress { phase: "checking" | "sending" | "resuming" | "done"; frac: number; text: string }
 
+/** Another endpoint with the same protocol (the web update's /update/put: path is ignored there) and its own cleanup. */
+export interface UploadTarget { put: string; cleanup: (api: Api) => Promise<unknown> }
+
 /** One file to path on the card. Resolves with "done, N bytes"; throws "<code> <msg>" or "cancelled". */
-export async function uploadFile(api: Api, f: Source, path: string, onProgress?: (p: UploadProgress) => void, cancelled?: () => boolean): Promise<string> {
+export async function uploadFile(api: Api, f: Source, path: string, onProgress?: (p: UploadProgress) => void, cancelled?: () => boolean, target?: UploadTarget): Promise<string> {
   onProgress?.({ phase: "checking", frac: 0, text: "checking" });
   const crc = await fileCrc(f, (x) => onProgress?.({ phase: "checking", frac: x, text: `checking ${Math.floor(100 * x)} %` }), cancelled);
   let off = 0, resumes = 0;
@@ -47,7 +50,7 @@ export async function uploadFile(api: Api, f: Source, path: string, onProgress?:
       if (cancelled?.()) throw new Error("cancelled");
       const fd = new FormData();
       fd.append("f", f.slice(off, off + CHUNK), f.name);
-      const r = await api.request(q("/fs/put", { path, off, total: f.size, crc }), { method: "POST", body: fd });
+      const r = await api.request(q(target?.put ?? "/fs/put", { path, off, total: f.size, crc }), { method: "POST", body: fd });
       const a = fsResult(await r.text());
       let m: RegExpExecArray | null;
       if (a.code === 200 && (m = /^(ok|done)\s+(\d+)/.exec(a.msg))) {
@@ -65,7 +68,7 @@ export async function uploadFile(api: Api, f: Source, path: string, onProgress?:
     }
   } catch (e) {
     const msg = (e as Error).message;
-    if (!/^(403|507) /.test(msg)) await api.request(q("/fs/del", { path: `${path}.part` }), { method: "POST" }).catch(() => undefined);
+    if (!/^(403|507) /.test(msg)) await (target ? target.cleanup(api) : api.request(q("/fs/del", { path: `${path}.part` }), { method: "POST" })).catch(() => undefined);
     throw e;
   }
 }

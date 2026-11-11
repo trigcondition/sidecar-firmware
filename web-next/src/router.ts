@@ -63,6 +63,7 @@ export const routes: RouteRecordRaw[] = [
     { path: "wifi", title: "Wi-Fi", component: () => import("./pages/settings/WifiCard.vue") },
     { path: "access", title: "Access", component: () => import("./pages/settings/AccessCard.vue") },
     { path: "bridge", title: "MIDI bridge", component: () => import("./pages/settings/BridgeCard.vue") },
+    { path: "update", title: "Update", component: () => import("./pages/settings/UpdateCard.vue") },
     { path: "about", title: "About", component: () => import("./pages/settings/AboutCard.vue") },
   ]),
   { path: "/:rest(.*)*", redirect: "/" },

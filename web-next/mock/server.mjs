@@ -18,7 +18,7 @@ const TOPICS = Object.keys(RATE);
 const LATER = ["usbMode", "scenes"];
 const NOT_PAIRED = "not paired: pair this browser first (the code is on the Rytm's screen)";
 // what GET needs no pairing for (web.cpp's Open)
-const OPEN = new Set(["/", "/index.html", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume", "/pair/show"]);
+const OPEN = new Set(["/", "/index.html", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume", "/pair/show", "/update/state"]);
 
 // web_cmd.h's list
 export function refused(c) {
@@ -129,6 +129,19 @@ export function startMock({ port = 8787, host = "127.0.0.1", quiet = false, code
       if (bd) { const s = raw.indexOf("\r\n\r\n") + 4, e = raw.lastIndexOf(Buffer.from(`\r\n--${bd}`)); data = raw.subarray(s, e); }
       return text(dev.fs.put(qp.get("path") ?? "", +(qp.get("off") ?? 0), +(qp.get("total") ?? 0), data));
     }
+    // the web update (docs/web-update.md): the file goes up as on the Pi; the mock never installs firmware
+    if (p === "/update/state") { const st = dev.status(); return json(res, { api: `sidecar-webupdate-1 v=${st.version} c=mock000`, enabled: true, why: "", board: 4, version: st.version, commit: "mock000", trial: false, state: "idle", kind: "", target: "", from: "", msg: "", prev: false, prevVersion: "", uploaded: dev.fs.files.get("/.rytm/update/update.scu")?.s ?? 0, commitIn: 0, uptime: Math.floor(process.uptime()) }); }
+    if (p === "/update/put" && req.method === "POST") {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const raw = Buffer.concat(chunks), bd = /boundary=(.+)$/.exec(req.headers["content-type"] ?? "")?.[1];
+      let data = raw;
+      if (bd) { const s = raw.indexOf("\r\n\r\n") + 4, e = raw.lastIndexOf(Buffer.from(`\r\n--${bd}`)); data = raw.subarray(s, e); }
+      dev.fs.mkdir("/.rytm/update", true);
+      return text(dev.fs.put("/.rytm/update/update.scu", +(qp.get("off") ?? 0), +(qp.get("total") ?? 0), data));
+    }
+    if (p === "/update/discard" && req.method === "POST") { dev.fs.del("/.rytm/update/update.scu"); dev.fs.del("/.rytm/update/update.scu.part"); return json(res, { ok: true, code: 200, msg: "deleted", reboot: "none" }); }
+    if ((p === "/update/install" || p === "/update/previous") && req.method === "POST") return json(res, { ok: false, code: 501, msg: "the mock does not install firmware (the file was checked and sent)", reboot: "none" });
     if (p === "/lists") return json(res, { project: "SHARED SET", ...dev.lists, voices: dev.machines.map((m, v) => ({ v, m: m.toUpperCase(), pat: m === "juno" || m === "fm" ? 0 : -1 })) });
     if (p === "/midibridge") return json(res, { ...dev.status().midibridge, token: dev.bridge.on ? "mock-bridge-token" : "", client: "" });
     if (p === "/midibridge/set" && req.method === "POST") {
