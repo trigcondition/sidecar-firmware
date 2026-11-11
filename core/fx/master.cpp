@@ -220,11 +220,15 @@ bool zone_text(int t, int k, int v, char* b, int cap) {
   return true;
 }
 
-void clear() {
+void clear_master() {
   control.byp = 0, control.src = kRet, control.lev = kLevUnity, control.trim = kTrimDef;
-  for (int i = 0; i < kAllSlots; ++i) control.mix[i] = kMixDef, control.fx[i] = -1;
+  for (int i = 0; i < kSlots; ++i) control.mix[i] = kMixDef, control.fx[i] = -1;
   for (int c = 0; c < ins::kMasters; ++c)
     for (int s = 0; s < ins::kSlots; ++s) ins::control.mpair[c][s] = 0;
+}
+void clear() {
+  clear_master();
+  for (int i = kSlots; i < kAllSlots; ++i) control.mix[i] = kMixDef, control.fx[i] = -1;
 }
 
 // The Rytm's route byte 0x80006466, a set bit: that voice off the main bus. Packed from physical voices 7,6,5,4,0,1,2,3, MSB
@@ -304,7 +308,7 @@ void take_peaks(float* in, float* outp) {
 
 uint64_t bench(uint32_t* worst_block) {
   *worst_block = 0;
-  if (on()) return 0;
+  if (on() || fx_used()) return 0;   // (the boot's, before a kit: nothing set anywhere, so the clear() below takes nothing)
 #ifndef CORE_HEAP_BUFFERS
   sfx();
 #endif
@@ -392,7 +396,7 @@ bool command(const char* p, char* o, int cap) {
     else if (same_ci(a, "reset")) {
       for (int k = 0; k < kSlots; ++k) ins::set_type(chain(k), slot(k), ins::kOff);
       for (int k = 0; k < ins::kEqParams; ++k) ins::set_eq(kEqChain, k, ins::kEqFlat(k));
-      clear();
+      clear_master();   // the master's own: the buses' send TYPEs keep their rooms and MIX
       ins::touch();
     } else if (same_ci(a, "eq")) {
       static const char* const kK[ins::kEqParams] = {"hpf", "lpf", "low", "high"};

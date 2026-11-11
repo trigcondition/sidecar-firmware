@@ -99,6 +99,7 @@ bool room(int i);                  // slot i may take a send TYPE now (it holds 
 int full_text(int t, char* b, int cap);   // the cap's refusal: "RINGS: 4 send FX inserts at most, ..."
 bool zone_text(int t, int k, int v, char* b, int cap);   // a send TYPE's zone name for knob k at v; false: none, a number
 void clear();                      // defaults: nothing set (ins::clear); the Rytm's report stays
+void clear_master();               // the master's own part only (mfx=reset): the buses' send TYPE rooms and MIX stay
 bool report(const uint8_t* d, int len);   // F0 7D 52 54 50 <8 pans> <route byte's bit 7> <its bits 0..6> F7; false: not this one
 void link_lost();                  // the Rytm's USB gone: the report is forgotten until the next
 int stems_on_main();               // how many stems are still on main (0 while no report)
@@ -119,7 +120,8 @@ bool from_line(const char* const* w, int n);
 void render(float (*y)[2], int n);
 void take_peaks(float* in, float* out);   // the largest |sample| since the last call
 // The boot bench: a chain without AMP (COMP, EQ, SPACE, CLOUD, the POST EQ) over 1 s in 12-frame blocks through render(), on
-// the real engine; core::cycles() ticks, *worst_block the longest block. 0 when a chain is set (it is not touched).
+// the real engine; core::cycles() ticks, *worst_block the longest block. 0 when a chain or a bus send TYPE is set (nothing
+// touched: its clear() would take the buses' rooms).
 uint64_t bench(uint32_t* worst_block);
 unsigned long heap_bytes();        // the inserts' SendFx (on CORE_HEAP_BUFFERS ports; else built on first use)
 void heap_place(void* mem);

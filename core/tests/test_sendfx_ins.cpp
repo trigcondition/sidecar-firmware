@@ -263,6 +263,43 @@ static void card_lines(const std::string& c) {
   printf("test_sendfx_ins: card: a bus slot's line and MIX round-trip; a refused line is said and its file kept\n");
 }
 
+// review H1: the master's "Clear the chain" (mfx=reset) clears the master's slots only: a bus's send TYPE keeps its
+// booking and MIX, a master slot then books a room of its own, the cap holds, and the kit saves and reloads unlocked
+static void reset_keeps_buses(const std::string& c) {
+  ins::kit_changed(5);
+  ins::set_type(kB1, 0, ins::kMRings);
+  const int b = master::slot_index(kB1, 0);
+  master::set_mix(b, 90);
+  const int fb = master::control.fx[b];
+  char o[400];
+  CHECK(master::command("mfx=1:type:comp", o, sizeof o) && master::command("mfx=reset", o, sizeof o));
+  CHECK(type_of(kB1, 0) == ins::kMRings && master::control.fx[b] == fb && fb >= 0 && master::control.mix[b] == 90);
+  CHECK(master::fx_used() == 1);
+  CHECK(master::command("mfx=1:type:cloud", o, sizeof o) && type_of(ins::kM0, 0) == ins::kMCloud);
+  CHECK(master::control.fx[0] >= 0 && master::control.fx[0] != fb && master::fx_used() == 2);
+  mset(1, ins::kMSpace), mset(2, ins::kMHalo);
+  CHECK(master::fx_used() == 4);
+  mset(3, ins::kMComb);
+  CHECK(type_of(ins::kM0 + 1, 1) == ins::kOff && master::fx_used() == 4);
+  saved();
+  g_log.clear();
+  ins::kit_changed(0);
+  ins::kit_changed(5);
+  CHECK(g_log.find("not taken") == std::string::npos && g_log.find("does not read") == std::string::npos);
+  CHECK(type_of(kB1, 0) == ins::kMRings && master::control.mix[b] == 90 && master::fx_used() == 4);
+  ins::set_param(kB1, 0, 0, 11);   // unlocked: an edit is written
+  saved();
+  CHECK(rd(c + "/.rytm/ins/SFI/k006.txt").find("B1 A RINGS 11 ") != std::string::npos);
+  ins::kit_changed(0);
+  // review L2: the boot bench leaves a bus's room alone (it runs only with nothing set anywhere)
+  ins::reset();
+  ins::set_type(kB3, 0, ins::kMRings);
+  uint32_t w = 0;
+  CHECK(master::bench(&w) == 0 && master::fx_used() == 1 && type_of(kB3, 0) == ins::kMRings);
+  ins::reset();
+  printf("test_sendfx_ins: the master's reset leaves the buses' send TYPEs, their rooms and MIX\n");
+}
+
 // LFO targets: M1 / M2 reach the master's slots, B3 the bus's, a send TYPE's params among them (the offset on the knob)
 static void lfo_targets() {
   lfo::reset();
@@ -371,6 +408,7 @@ int main() {
   console();
   audio();
   card_lines(c);
+  reset_keeps_buses(c);
   lfo_targets();
   rytm_page();
   host_fake_time(false, 0);
