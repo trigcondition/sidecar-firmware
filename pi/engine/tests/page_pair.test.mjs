@@ -150,10 +150,10 @@ function refusal(text) {
 // implementations of it agree. This fails if anyone widens the open set without saying so here.
 test("the open set is exactly these, in web.cpp and in the mock", () => {
   assert.deepEqual([...OPEN].sort(),
-    ["/", "/bundle-sw.js", "/health", "/index.html", "/log", "/pair", "/pair/resume", "/pair/show", "/pair/status",
-     "/status"],
-    "web.cpp's Open(): the page and its service worker, the health view, /status (open by the user's decision, " +
-    "2026-10-26), the log, and pairing itself");
+    ["/", "/bundle-sw.js", "/classic", "/health", "/index.html", "/log", "/pair", "/pair/resume", "/pair/show",
+     "/pair/status", "/status", "/update/state"],
+    "web.cpp's Open(): the page (and the classic page) and its service worker, the health view, /status (open by the " +
+    "user's decision, 2026-10-26), the web update's state (read-only, as /status), the log, and pairing itself");
   const mockOpen = [...MOCK_PY.slice(MOCK_PY.indexOf("PAIR_OPEN = {"), MOCK_PY.indexOf("}", MOCK_PY.indexOf("PAIR_OPEN = {")))
     .matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(mockOpen.sort(), [...OPEN].sort(), "mock_web.py mirrors web.cpp's open set");

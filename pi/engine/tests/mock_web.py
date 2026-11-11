@@ -777,8 +777,8 @@ PAIR_SHOW_GAP = 10          # paircode.h kShowGapS (fixed)
 # web.cpp's Open(): the whole open set, and nothing else. Everything else needs the pairing code, so a new endpoint
 # is gated unless someone deliberately adds it here (page_pair.test.mjs reads this list out of web.cpp and checks the
 # two agree, and that nothing else in web.cpp answers an unpaired client).
-PAIR_OPEN = {"/", "/index.html", "/bundle-sw.js", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume",
-             "/pair/show"}
+PAIR_OPEN = {"/", "/index.html", "/classic", "/bundle-sw.js", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume",
+             "/pair/show", "/update/state"}
 NOT_PAIRED = ("not paired: enter the pairing code shown on the Rytm's screen and on the Sidecar's screen")
 _mp = os.environ.get("MOCK_PAIR", "")
 PAIR = {"mode": "off" if _mp == "0" else "fixed" if re.fullmatch(r"\d{8}", _mp) else "on",
