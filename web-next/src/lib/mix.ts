@@ -3,10 +3,13 @@
 // "out" (core/fx/out.cpp: each voice's route, level, pan, width), "mfx" (core/fx/master.cpp), "fx" (the two send FX),
 // "machines"; the POST EQ's curve; the command lines (ins=, out=, mfx=). Pure (mix.test.ts).
 
-// the insert types a voice or bus slot takes (core/fx/insert.cpp kLabels; AMP: voices and the master only) and the
-// master's (the same plus the send FX types: 17)
+// the insert types a voice slot takes (core/fx/insert.cpp kLabels; AMP: voices and the master only), the send FX types a
+// bus or master slot also takes (0.5.0, core/fx/master.h: 4 at once over the master and the buses together), a bus's
+// list (no AMP) and the master's (all 17)
 export const INS_TYPES = ["OFF", "FILTER", "CRUSH", "DRIVE", "EQ", "COMP", "DELAY", "TREMOLO", "RINGMOD", "AMP", "SAT"];
-export const MFX_TYPES = [...INS_TYPES, "CHORUS", "COMB", "SPACE", "RINGS", "CLOUD", "HALO"];
+export const SEND_TYPES = ["CHORUS", "COMB", "SPACE", "RINGS", "CLOUD", "HALO"];
+export const BUS_TYPES = [...INS_TYPES.filter((t) => t !== "AMP"), ...SEND_TYPES];
+export const MFX_TYPES = [...INS_TYPES, ...SEND_TYPES];
 export const INS_LABELS: Record<string, string[]> = {
   FILTER: ["CUT", "RES", "MODE", "DRV"],
   CRUSH: ["RATE", "BITS", "DRV", "MIX"],
@@ -30,6 +33,7 @@ export interface Slot {
   v?: string[];
   mix?: number;
   pair?: number;
+  n4?: string[]; // a bus slot's send TYPE: its knobs' names
 }
 export interface Strip {
   id: string; // V1..V8, B1..B3, M
@@ -40,6 +44,7 @@ export interface Strip {
   sends?: number[]; // a voice's to B1..B3
   out?: { route: string; lev: number; pan: number; wid: number };
   level: number | null; // the meter, 0..1 (null: no meter source)
+  room?: { used: number; cap: number }; // the send TYPEs' room, the master and the buses together (mfx fxused / fxcap)
 }
 
 type Any = Record<string, any>;
@@ -54,6 +59,7 @@ export function strips(st: Any | null, levels?: (number | null)[] | null): Strip
   const fx: Any[] = Array.isArray(st?.fx) ? st!.fx : [];
   const mfx: Any = ins.mfx ?? {};
   const lv = (i: number) => (levels && typeof levels[i] === "number" ? (levels[i] as number) : null);
+  const room = typeof mfx.fxcap === "number" ? { used: Number(mfx.fxused) || 0, cap: mfx.fxcap as number } : undefined;
   const list: Strip[] = [];
   for (let i = 0; i < 11; i++) {
     const c = chains[i] ?? {};
@@ -68,10 +74,22 @@ export function strips(st: Any | null, levels?: (number | null)[] | null): Strip
       sends: voice && Array.isArray(c.send) ? c.send : undefined,
       out: voice && out[i] ? { route: out[i].route, lev: out[i].lev, pan: out[i].pan, wid: out[i].wid } : undefined,
       level: lv(i),
+      room: voice ? undefined : room,
     });
   }
-  list.push({ id: "M", chain: -1, name: "Master", slots: Array.isArray(mfx.s) ? mfx.s : [], peq: Array.isArray(mfx.peq) ? mfx.peq : EQ_FLAT, level: lv(11) });
+  list.push({ id: "M", chain: -1, name: "Master", slots: Array.isArray(mfx.s) ? mfx.s : [], peq: Array.isArray(mfx.peq) ? mfx.peq : EQ_FLAT, level: lv(11), room });
   return list;
+}
+
+/** The TYPEs a strip's slot lists: a voice the inserts, a bus no AMP but the send TYPEs, the master all. */
+export function slotTypes(s: Strip): string[] {
+  return s.chain < 0 ? MFX_TYPES : s.chain < 8 ? INS_TYPES : BUS_TYPES;
+}
+
+/** A send TYPE the slot cannot take now: the room is full and the slot holds none (it would be refused). */
+export function typeBlocked(s: Strip, slot: number, t: string): boolean {
+  if (!SEND_TYPES.includes(t) || !s.room) return false;
+  return s.room.used >= s.room.cap && !SEND_TYPES.includes(s.slots[slot]?.t ?? "OFF");
 }
 
 /** "FILTER · COMP", "—" when both slots are off. */
@@ -137,4 +155,5 @@ export const mixCmd = {
   mfxSource: (src: "ret" | "mix") => `mfx=src:${src}`,
   mfxTrim: (db: number) => `mfx=trim:${clamp(db, -24, 0)}`,
   mfxMix: (slot: number, v: number) => `mfx=${slot + 1}:mix:${clamp(v, 0, 127)}`,
+  mix: (s: Strip, slot: number, v: number) => (s.chain < 0 ? `mfx=${slot + 1}:mix:${clamp(v, 0, 127)}` : `ins=${s.id}:${"AB"[slot]}:mix:${clamp(v, 0, 127)}`),
 };

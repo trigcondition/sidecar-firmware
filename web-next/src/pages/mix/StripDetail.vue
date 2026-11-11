@@ -1,5 +1,6 @@
 <!-- web-next/src/pages/mix/StripDetail.vue - the selected strip: its POST EQ (the curve large, its 4 knobs), its two
-     insert slots (type, P1..P4), and for a voice its output (route, pan, width) and its 3 sends. -->
+     insert slots (type, P1..P4; a send FX type on a bus or the master: its MIX, and the shared room's note when it is
+     full), and for a voice its output (route, pan, width) and its 3 sends. -->
 <script setup lang="ts">
 import DotFill from "../../ui/DotFill.vue";
 import SpectrumDots from "../../ui/SpectrumDots.vue";
@@ -7,16 +8,18 @@ import { computed, ref } from "vue";
 import Card from "../../ui/Card.vue";
 import Knob from "../../ui/Knob.vue";
 import Segmented from "../../ui/Segmented.vue";
-import { EQ_NAMES, INS_LABELS, INS_TYPES, MFX_TYPES, eqPath, eqText, mixCmd, type Strip } from "../../lib/mix";
+import { EQ_NAMES, INS_LABELS, SEND_TYPES, eqPath, eqText, mixCmd, slotTypes, typeBlocked, type Strip } from "../../lib/mix";
 
 const props = defineProps<{ strip: Strip; disabled: boolean }>();
 const emit = defineEmits<{ cmd: [string] }>();
 const s = computed(() => props.strip);
-const types = computed(() => (s.value.chain < 0 ? MFX_TYPES : s.value.chain < 8 ? INS_TYPES : INS_TYPES.filter((t) => t !== "AMP")));
+const types = computed(() => slotTypes(s.value));
+const isSend = (slot: number) => SEND_TYPES.includes(s.value.slots[slot]?.t ?? "OFF");
 const labels = (slot: number) => {
   const x = s.value.slots[slot];
   if (!x) return ["P1", "P2", "P3", "P4"];
   if (x.l && typeof x.l[0] === "string") return x.l as string[]; // the master gives its labels
+  if (x.n4) return x.n4; // a bus slot's send TYPE
   return INS_LABELS[x.t] ?? ["P1", "P2", "P3", "P4"];
 };
 const valueText = (slot: number, k: number) => (v: number) => s.value.slots[slot]?.v?.[k] || String(v);
@@ -56,9 +59,12 @@ const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey d
       <div class="row">
         <label :for="`ins-${s.id}-${slot}`" class="label">{{ s.chain < 0 ? `Slot ${slot + 1}` : `Insert ${"AB"[slot]}` }}</label>
         <select :id="`ins-${s.id}-${slot}`" :value="s.slots[slot]?.t ?? 'OFF'" :disabled="disabled" @change="emit('cmd', mixCmd.type(s, slot, ($event.target as HTMLSelectElement).value))">
-          <option v-for="t in types" :key="t" :value="t">{{ t }}</option>
+          <option v-for="t in types" :key="t" :value="t" :disabled="typeBlocked(s, slot, t)">{{ t }}</option>
         </select>
       </div>
+      <p v-if="s.room && s.room.used >= s.room.cap && !isSend(slot)" class="small">
+        Send FX types: {{ s.room.cap }} play at once, the master and the buses together; all {{ s.room.cap }} are in use.
+      </p>
       <div v-if="s.slots[slot] && s.slots[slot].t !== 'OFF'" class="knobs">
         <Knob
           v-for="k in 4"
@@ -69,7 +75,7 @@ const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey d
           :format="valueText(slot, k - 1)"
           @commit="(v: number) => emit('cmd', mixCmd.param(s, slot, k - 1, v))"
         />
-        <Knob v-if="s.chain < 0" :disabled="disabled" label="MIX" :model-value="s.slots[slot].mix ?? 127" @commit="(v: number) => emit('cmd', mixCmd.mfxMix(slot, v))" />
+        <Knob v-if="s.chain < 0 || isSend(slot)" :disabled="disabled" label="MIX" :model-value="s.slots[slot].mix ?? 127" @commit="(v: number) => emit('cmd', mixCmd.mix(s, slot, v))" />
       </div>
     </section>
 

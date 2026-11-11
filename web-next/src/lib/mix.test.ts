@@ -1,6 +1,6 @@
 // web-next/src/lib/mix.test.ts
 import { describe, expect, it } from "vitest";
-import { EQ_FLAT, eqDb, eqPath, eqText, insertText, mixCmd, strips } from "./mix";
+import { EQ_FLAT, eqDb, eqPath, eqText, insertText, mixCmd, slotTypes, strips, typeBlocked } from "./mix";
 
 const status = {
   machines: ["plaits", "juno", "daisy", "dsps", "fm", "dd", "daisy", "plaits"],
@@ -65,5 +65,27 @@ describe("mix", () => {
     expect(mixCmd.type(m, 0, "RINGS")).toBe("mfx=1:type:RINGS");
     expect(mixCmd.param(m, 3, 0, 5)).toBe("mfx=4:p1:5");
     expect(mixCmd.mfxTrim(-30)).toBe("mfx=trim:-24");
+  });
+
+  it("offers the send TYPEs on a bus and the master, never a voice; blocks them while the room is full", () => {
+    const st = JSON.parse(JSON.stringify(status));
+    st.ins.c[10] = { n: "B3", s: [{ t: "RINGS", p: [50, 0, 80, 60], l: [50, 0, 80, 60], mix: 77, n4: ["NOTE", "STRC", "BRIT", "DAMP"] }, { t: "OFF", p: [0, 0, 0, 0], l: [0, 0, 0, 0] }], peq: [0, 0, 64, 64] };
+    st.ins.mfx.fxcap = 4;
+    st.ins.mfx.fxused = 4;
+    const s = strips(st, null);
+    const [v1, b3, m] = [s[0], s[10], s[11]];
+    expect(slotTypes(v1)).not.toContain("RINGS");
+    expect(slotTypes(b3)).toContain("RINGS");
+    expect(slotTypes(b3)).not.toContain("AMP");
+    expect(slotTypes(m)).toContain("AMP");
+    expect(b3.room).toEqual({ used: 4, cap: 4 });
+    expect(typeBlocked(b3, 1, "CLOUD")).toBe(true); // full, B holds none
+    expect(typeBlocked(b3, 0, "CLOUD")).toBe(false); // A holds one: a change keeps its room
+    expect(typeBlocked(b3, 1, "COMP")).toBe(false);
+    expect(mixCmd.mix(b3, 0, 90)).toBe("ins=B3:A:mix:90");
+    expect(mixCmd.mix(m, 2, 300)).toBe("mfx=3:mix:127");
+    st.ins.mfx.fxused = 3;
+    expect(typeBlocked(strips(st, null)[10], 1, "CLOUD")).toBe(false);
+    expect(typeBlocked(strips(status, null)[10], 1, "CLOUD")).toBe(false); // an older build: no room reported
   });
 });
