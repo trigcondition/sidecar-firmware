@@ -1121,9 +1121,11 @@ function mfxHtml(m) {
   let h = `<div class="row">${key(m.byp ? "byp:0" : "byp:1", m.byp ? "Bypassed" : "On", !m.byp)}${key(m.src === "mix" ? "src:ret" : "src:mix", "SRC " + m.src.toUpperCase(), m.src === "mix")}` +
     `<label>LEV <input type="range" min="0" max="127" value="${m.lev}" data-mfx-v="lev:"></label> ${m.lev}` +
     `<label>STEM TRIM <input type="range" min="-24" max="0" value="${m.trim}" data-mfx-v="trim:"></label> ${m.trim} dB</div><div class="fxs">`;
+  // 0.5.0: the send TYPEs' room is shared with the buses (core/fx/master.h): full, a slot without one cannot take one
+  const full = m.fxcap > 0 && m.fxused >= m.fxcap, SENDS = MFX_TYPES.slice(11);
   m.s.forEach((s, i) => {
-    const n = i + 1;
-    h += `<div><label>${n} <select data-mfx-t="${n}">` + MFX_TYPES.map((t) => `<option${t === s.t ? " selected" : ""}>${t}</option>`).join("") + "</select></label>";
+    const n = i + 1, off = full && !SENDS.includes(s.t);
+    h += `<div><label>${n} <select data-mfx-t="${n}">` + MFX_TYPES.map((t) => `<option${t === s.t ? " selected" : ""}${off && SENDS.includes(t) ? " disabled" : ""}>${t}</option>`).join("") + "</select></label>";
     if (s.t !== "OFF") {
       s.p.forEach((v, k) => { h += `<div><label>${s.l[k]} <input type="range" min="0" max="127" value="${v}" data-mfx-v="${n}:p${k + 1}:"></label> ${s.v[k]}</div>`; });
       if (s.send) h += `<div><label>MIX <input type="range" min="0" max="127" value="${s.mix}" data-mfx-v="${n}:mix:"></label> ${s.mix}</div>`;
@@ -1131,6 +1133,7 @@ function mfxHtml(m) {
     }
     h += "</div>";
   });
+  if (full) h += `<p class="note">Send FX types: ${m.fxcap} play at once, the master and the buses together; all ${m.fxcap} are in use.</p>`;
   return h + "</div>";
 }
 function showMfx(m) {
