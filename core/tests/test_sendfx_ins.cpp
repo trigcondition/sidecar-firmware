@@ -143,32 +143,61 @@ static void console() {
 }
 
 // the audio: each slot on its own booking (the bus chains' index is not the master's), MIX 0 dry, 127 the effect alone
-static void audio() {
-  ins::reset();
-  ins::set_type(kB3, 0, ins::kMRings), ins::set_type(kB3, 1, ins::kMCloud), ins::set_type(kB1, 1, ins::kMSpace);
-  mset(2, ins::kMHalo);
-  for (int i = 0; i < master::kAllSlots; ++i) master::set_mix(i, 127);
-  uint32_t r = 3;
-  double pk_b3 = 0, pk_b1 = 0, pk_m = 0;
-  for (int b = 0; b < 4000; ++b) {   // 1 s in 12-frame blocks, the three chains as core 2 runs them
+// n 12-frame blocks of noise through B1, B3 and the master as core 2 runs them (B1, B3, then the master), each output kept
+struct Run3 { std::vector<float> b1, b3, m; };
+static Run3 render3(int n, uint32_t seed, float gain = 0.1f) {
+  Run3 o;
+  uint32_t r = seed;
+  for (int b = 0; b < n; ++b) {
     float y3[12][2], y1[12][2], ym[12][2];
     for (int j = 0; j < 12; ++j) {
       r = r * 1664525u + 1013904223u;
-      float x = 0.1f * (float)(int32_t)r * (1.0f / 2147483648.0f);
+      float x = gain * (float)(int32_t)r * (1.0f / 2147483648.0f);
       y3[j][0] = y3[j][1] = y1[j][0] = y1[j][1] = ym[j][0] = ym[j][1] = x;
     }
     ins::engine().ProcessStereo(kB1, y1, 12, ins::control);
     ins::engine().ProcessStereo(kB3, y3, 12, ins::control);
     master::render(ym, 12);
-    for (int j = 0; j < 12; ++j) {
-      CHECK(std::isfinite(y3[j][0]) && std::isfinite(y1[j][0]) && std::isfinite(ym[j][0]));
-      pk_b3 = std::max(pk_b3, (double)std::fabs(y3[j][0])), pk_b1 = std::max(pk_b1, (double)std::fabs(y1[j][0]));
-      pk_m = std::max(pk_m, (double)std::fabs(ym[j][0]));
-    }
+    for (int j = 0; j < 12; ++j)
+      o.b1.push_back(y1[j][0]), o.b1.push_back(y1[j][1]), o.b3.push_back(y3[j][0]), o.b3.push_back(y3[j][1]),
+          o.m.push_back(ym[j][0]), o.m.push_back(ym[j][1]);
   }
-  printf("test_sendfx_ins: peaks B3 RINGS>CLOUD %.3f, B1 SPACE %.3f, master HALO %.3f\n", pk_b3, pk_b1, pk_m);
-  CHECK(pk_b3 > 1e-4 && pk_b1 > 1e-4 && pk_m > 1e-4);
+  return o;
+}
+static double maxdiff(const std::vector<float>& a, const std::vector<float>& b, size_t from = 0, size_t to = ~(size_t)0) {
+  double d = 0;
+  for (size_t i = from; i < a.size() && i < b.size() && i < to; ++i) d = std::max(d, (double)std::fabs(a[i] - b[i]));
+  return d;
+}
+static double peak(const std::vector<float>& a, size_t from = 0) {
+  double p = 0;
+  for (size_t i = from; i < a.size(); ++i) p = std::max(p, (double)std::fabs(a[i]));
+  return p;
+}
+
+// the audio: each slot on its own booking (the bus chains' index is not the master's), MIX 0 dry, 127 the effect alone
+static void audio() {
+  // four send TYPEs on three chains at once = each chain rendered alone (review: two slots sharing a SendFx slot differ)
+  auto setup = [](int which) {   // bit 0 B1 B SPACE, bit 1 B3 RINGS > CLOUD, bit 2 M2 A HALO
+    ins::reset();
+    if (which & 2) ins::set_type(kB3, 0, ins::kMRings), ins::set_type(kB3, 1, ins::kMCloud);
+    if (which & 1) ins::set_type(kB1, 1, ins::kMSpace);
+    if (which & 4) mset(2, ins::kMHalo);
+    for (int i = 0; i < master::kAllSlots; ++i) master::set_mix(i, 127);
+  };
+  setup(7);
+  Run3 all = render3(4000, 3);
   CHECK(ins::engine().Faults() == 0);
+  setup(1);
+  Run3 b1 = render3(4000, 3);
+  setup(2);
+  Run3 b3 = render3(4000, 3);
+  setup(4);
+  Run3 m = render3(4000, 3);
+  printf("test_sendfx_ins: peaks B3 RINGS>CLOUD %.3f, B1 SPACE %.3f, master HALO %.3f; vs alone %.1e %.1e %.1e\n", peak(all.b3),
+         peak(all.b1), peak(all.m), maxdiff(all.b3, b3.b3), maxdiff(all.b1, b1.b1), maxdiff(all.m, m.m));
+  CHECK(peak(all.b3) > 1e-4 && peak(all.b1) > 1e-4 && peak(all.m) > 1e-4);
+  CHECK(maxdiff(all.b3, b3.b3) == 0 && maxdiff(all.b1, b1.b1) == 0 && maxdiff(all.m, m.m) == 0);
   // MIX 0 on a bus slot: the chain passes its input untouched (after the fades)
   ins::reset();
   ins::set_type(kB3, 0, ins::kMRings);
@@ -195,7 +224,7 @@ static void audio() {
   ins::set_type(kB3, 1, ins::kMRings);
   master::set_mix(master::slot_index(kB3, 1), 127);
   double d = 0, pk = 0;
-  r = 7;
+  uint32_t r = 7;
   for (int b = 0; b < 24000; ++b) {
     float st[16][fx::kStems] = {}, o[16][2], m[16][2], sl[16][4], y[16][2];
     for (int j = 0; j < 16; ++j) {
@@ -214,6 +243,65 @@ static void audio() {
   CHECK(pk > 1e-4 && d <= 1e-3 * pk + 2e-6);
   ins::reset();
   printf("test_sendfx_ins: bus slots play on their own booking and MIX\n");
+}
+
+// review M1: a room freed while its slot still fades out is not shared: the fading slot finishes on it undisturbed
+// (bit for bit as alone), the slot that took the room passes its input dry meanwhile, then plays from clean
+static void fade_not_shared() {
+  auto start = []() {
+    ins::reset();
+    ins::set_type(kB1, 0, ins::kMCloud);
+    master::set_mix(master::slot_index(kB1, 0), 127);
+    render3(400, 9, 0.2f);   // 100 ms of CLOUD on B1
+    ins::set_type(kB1, 0, ins::kOff);   // B1 A fades out over its 5 ms
+  };
+  start();
+  Run3 alone = render3(80, 11);
+  start();
+  ins::set_type(kB3, 0, ins::kMRings);   // takes the room B1 A just left (a kit change does this to every room)
+  CHECK(master::control.fx[master::slot_index(kB3, 0)] >= 0);
+  master::set_mix(master::slot_index(kB3, 0), 127);
+  Run3 both = render3(80, 11);
+  printf("test_sendfx_ins: B1's fade-out with B3 on its room: %.1e from alone\n", maxdiff(both.b1, alone.b1));
+  CHECK(maxdiff(both.b1, alone.b1) == 0);
+  // B3 while B1 still fades (5 ms: B1 ends it in block 20, then lets the room go): dry, the noise as it came
+  uint32_t r = 11;
+  double dry = 0;
+  for (int i = 0; i < 19 * 12; ++i) {
+    r = r * 1664525u + 1013904223u;
+    float x = 0.1f * (float)(int32_t)r * (1.0f / 2147483648.0f);
+    dry = std::max(dry, (double)std::fabs(both.b3[2 * i] - x));
+  }
+  CHECK(dry < 1e-7);
+  Run3 later = render3(2000, 13);   // then RINGS plays
+  CHECK(peak(later.b3, 2 * 1000 * 12) > 1e-4);
+  ins::reset();
+  printf("test_sendfx_ins: a room left mid-fade is not shared\n");
+}
+
+// review M2: a room taken again never resumes the tail its last user left in the SendFx slot (SPACE's echoes)
+static void no_old_tail() {
+  for (int same = 0; same < 2; ++same) {   // another slot (M2 A) takes it, or the same slot again
+    ins::reset();
+    ins::set_type(kB3, 0, ins::kMSpace);
+    master::set_mix(master::slot_index(kB3, 0), 127);
+    for (int k = 0; k < 4; ++k) ins::set_param(kB3, 0, k, 100);   // long echoes
+    render3(2000, 5, 0.3f);
+    ins::set_type(kB3, 0, ins::kOff);
+    render3(400, 5, 0.0f);   // faded out, the slot off
+    if (same) {
+      ins::set_type(kB3, 0, ins::kMSpace);
+      for (int k = 0; k < 4; ++k) ins::set_param(kB3, 0, k, 100);
+    } else {
+      mset(2, ins::kMSpace);
+      for (int k = 0; k < 4; ++k) ins::set_param(master::chain(2), 0, k, 100);
+    }
+    master::set_mix(same ? master::slot_index(kB3, 0) : 2, 127);
+    Run3 o = render3(4000, 5, 0.0f);   // silence in: anything out is the old tail
+    printf("test_sendfx_ins: SPACE taken again (%s): out of silence %.2e\n", same ? "B3 A again" : "M2 A", same ? peak(o.b3) : peak(o.m));
+    CHECK((same ? peak(o.b3) : peak(o.m)) < 1e-6);
+  }
+  ins::reset();
 }
 
 // the card: a bus slot's line with its MIX round-trips; a line over the cap is said and its file kept
@@ -407,6 +495,8 @@ int main() {
   cap_and_chains();
   console();
   audio();
+  no_old_tail();
+  fade_not_shared();
   card_lines(c);
   reset_keeps_buses(c);
   lfo_targets();
