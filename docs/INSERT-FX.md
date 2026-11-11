@@ -264,7 +264,7 @@ already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices
   buffers), booked per slot (`master::slot_index`: the master's 0..3, the buses' 4..9). Bus 1 and 2's chains run inside
   the send FX's own block (after send FX 1 / 2's return), bus 3's after it and the master after that, all on core 2, so
   the bookings and the SendFx need no lock. Same output as the send FX's own return at MIX 127 [measured, `test_sendfx_ins`].
-- **MIX**: a knob per slot, 0 the dry input, 127 the effect alone, default 40. On the Rytm: H in the BUS view; web: the
+- **MIX**: a knob per slot, 0 the dry input, 127 the effect alone, default 40. On the Rytm: G in the BUS view (FUNC + G the bus then); web: the
   strip's MIX knob; console `ins=B3:A:mix:V`. Not an LFO target.
 - **Saved** on the slot's line after P4: `B3 A RINGS 50 0 80 60 40`. A line the engine refuses (a fifth send TYPE, or a
   send TYPE on a voice: a file edited by hand or written by a later build) is logged
@@ -286,7 +286,8 @@ already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices
   voice (FUNC + G another track), a strip `[A TYPE] > [B TYPE] > sends`, A..D P1..P4 (values as the effect reads them:
   Hz, dB, ms), E SLOT, F TYPE, G BUS, H SEND. **YES**: BUS view (A..D, E SLOT, F TYPE, G BUS 1..3, H ROUTE for bus 3);
   NO / YES back. `30 02` opens it directly (`kPageIns`). 0.5.0: the BUS view's F runs on past SAT into the send TYPEs
-  (below), and H is the slot's MIX while it holds one (bus 3's ROUTE is then set from the other slot, or the console).
+  (below), and G is the slot's MIX while it holds one, as on the MASTER FX page (FUNC + G picks the bus then); H stays
+  bus 3's ROUTE, seen and set whatever the slots hold.
 - **Pi touchscreen INSERT FX** page (both themes, OLED default; page 9): the voice's two slots as dials with labels and
   values, a TYPE key per slot (tap: the next TYPE), V1..V8 keys, the three sends as bars, each bus's chain and return.
   It follows the Rytm's selected track. Open it from Settings > Send FX > **Inserts**, or with the Rytm's UP + T5

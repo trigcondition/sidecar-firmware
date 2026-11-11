@@ -23,6 +23,7 @@
 #include "store/store.h"
 #include "ui/extra.h"
 #include "ui/ui.h"
+#include "ui/widgets.h"
 
 using namespace core;
 using Clock = std::chrono::steady_clock;
@@ -418,14 +419,33 @@ static void lfo_targets() {
 // the Rytm's INSERT page, BUS view: F TYPE runs on into the send TYPEs, H is the MIX of a send TYPE's slot; TRACK view: never
 static void rytm_page() {
   ins::reset();
+  ui::list_pacing(false);   // each turn a step (the page's logic, not the knob's pacing)
   ui::ins_page_set(true, 0, 2, -1, false, false);   // the BUS view, bus 3, slot A
   ins::set_type(kB3, 0, ins::kSat);
   ui::kInsPage.enc(5, 1, false);
   CHECK(type_of(kB3, 0) == ins::kMChorus);
-  ui::kInsPage.enc(7, 5, false);   // H: MIX
+  ui::kInsPage.enc(6, 5, false);   // G: MIX (as the master view's G)
   CHECK(master::control.mix[master::slot_index(kB3, 0)] == master::kMixDef + 5 && !ins::control.route3);
   static ui::Canvas cv;
   ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(!strcmp(cv.txt[ui::kSlotLabels + 6].s, "MIX") && !strcmp(cv.txt[ui::kSlotLabels + 7].s, "ROUT"));
+  // review M3: bus 3's ROUTE stays on H, seen and set, with both its slots on a send TYPE
+  ins::set_type(kB3, 1, ins::kMCloud);
+  ui::ins_page_set(true, 1, 2, -1, false, false);
+  ui::kInsPage.enc(7, 1, false);
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(ins::control.route3 && !strcmp(cv.txt[ui::kSlotCells + 7].s, "POST"));
+  ui::kInsPage.enc(7, -1, false);
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(!ins::control.route3 && !strcmp(cv.txt[ui::kSlotCells + 7].s, "PRE"));
+  CHECK(master::control.mix[master::slot_index(kB3, 1)] == master::kMixDef);
+  ui::kInsPage.enc(6, -1, true);   // FUNC + G: the bus (G being the MIX here)
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(!strcmp(cv.txt[ui::kSlotCells + 6].s, "2") && master::control.mix[master::slot_index(kB3, 1)] == master::kMixDef);
+  ui::kInsPage.enc(6, 1, false);   // bus 2's slot B is OFF: G the bus again, back to bus 3 (G its MIX there)
+  ui::kInsPage.draw(cv, 3, 9, 0);
+  CHECK(!strcmp(cv.txt[ui::kSlotRight].s, "BUS 3") && !strcmp(cv.txt[ui::kSlotLabels + 6].s, "MIX"));
+  ins::set_type(kB3, 1, ins::kOff);
   mset(0, ins::kMRings), mset(1, ins::kMRings), ins::set_type(kB1, 0, ins::kMRings);   // the room filled
   CHECK(master::fx_used() == 4);
   ui::ins_page_set(true, 1, 2, -1, false, false);   // bus 3, slot B: F stays off the send TYPEs (SAT the list's end)
@@ -438,6 +458,7 @@ static void rytm_page() {
   ui::kInsPage.enc(5, 1, false);
   CHECK(type_of(0, 0) == ins::kSat);
   ins::reset();
+  ui::list_pacing(true);
   printf("test_sendfx_ins: the Rytm page's bus TYPE list and MIX\n");
 }
 

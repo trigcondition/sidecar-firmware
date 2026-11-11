@@ -9,7 +9,8 @@
 // POST; buses 1 and 2 return as their send FX's P1 says: shown, not set here). Step locks of A..H: hold a trig on the
 // SEQ page and press FX twice (seq.h kLpIns). 0.5.0: a bus's F TYPE runs on past SAT into the send FX's TYPEs (CHORUS
 // COMB SPACE RINGS CLOUD HALO; core/fx/master.h: 4 at once with the master's), skipping them while there is no room
-// (the footer says so); H is the slot's MIX while it holds one (bus 3's ROUTE then: from the other slot).
+// (the footer says so); G is the slot's MIX while it holds one (as on the MASTER FX page; FUNC + G the bus then), H
+// stays the ROUTE.
 // OUT view (YES from the BUS view, i.e. YES twice; YES or NO back to the TRACK view): the voice's OUT route (core/fx/out.h,
 // docs/STEREO.md): A OUT (TRK / PRE / POST), B LEV, C PAN, D WID, E DEC (DSP SAMPLE only, else -); the line under the
 // title says what PRE / POST leave out (the Rytm's FLTR, AMP, DEL / REV). The TRACK view's strip ends in the OUT box
@@ -73,8 +74,8 @@ CORE_COLD int voice_now() {
   return vi >= 0 && vi < ins::kVoices ? vi : 0;
 }
 CORE_COLD int chain_now() { return ip.bus ? ins::kBus0 + ip.busel : voice_now(); }
-// 0.5.0: the BUS view's slot holds a send TYPE: H is its MIX
-CORE_COLD bool mix_on_h(int ch) { return ip.bus && master::send_type(ins::control.type[ch][ip.slot]); }
+// 0.5.0: the BUS view's slot holds a send TYPE: G is its MIX
+CORE_COLD bool mix_on_g(int ch) { return ip.bus && master::send_type(ins::control.type[ch][ip.slot]); }
 
 CORE_COLD void strip(Canvas& c, int ch) {
   // [A TYPE] > [B TYPE] > the sends (TRACK) / the return (BUS)
@@ -239,14 +240,16 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   sniprintf(val[4], 8, "%c", 'A' + ip.slot);
   sniprintf(lab[5], 6, "TYPE");
   sniprintf(val[5], 8, "%.7s", ins::type_name(t));
-  sniprintf(lab[6], 6, "BUS");
-  sniprintf(val[6], 8, CORE_STR("%d"), ip.busel + 1);
+  if (mix_on_g(ch)) {
+    sniprintf(lab[6], 6, "MIX");
+    sniprintf(val[6], 8, CORE_STR("%d"), master::control.mix[master::slot_index(ch, ip.slot)]);
+  } else {
+    sniprintf(lab[6], 6, "BUS");
+    sniprintf(val[6], 8, CORE_STR("%d"), ip.busel + 1);
+  }
   if (!ip.bus) {
     sniprintf(lab[7], 6, "SEND");
     sniprintf(val[7], 8, CORE_STR("%d"), ins::send_knob(ch, ip.busel));
-  } else if (mix_on_h(ch)) {
-    sniprintf(lab[7], 6, "MIX");
-    sniprintf(val[7], 8, CORE_STR("%d"), master::control.mix[master::slot_index(ch, ip.slot)]);
   } else {
     sniprintf(lab[7], 6, "ROUT");
     if (ip.busel == 2) sniprintf(val[7], 8, "%s", ins::control.route3 ? "POST" : "PRE");
@@ -268,7 +271,7 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   } else if (e == 7 && !ip.bus) {
     sniprintf(b, sizeof b, CORE_STR("%s SEND BUS %d:%d"), voice_name(ch), ip.busel + 1, ins::send_knob(ch, ip.busel));
     footer(c, b, ins::send_knob(ch, ip.busel));
-  } else if (e == 7 && mix_on_h(ch)) {
+  } else if (e == 6 && mix_on_g(ch)) {
     const int m = master::control.mix[master::slot_index(ch, ip.slot)];
     sniprintf(b, sizeof b, CORE_STR("%s %c MIX:%d"), ins::chain_name(ch), 'A' + ip.slot, m);
     footer(c, b, m);
@@ -335,16 +338,16 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
     case 6:
       if (func && !ip.bus) {   // FUNC + G: another track
         ip.track = clampi(track_now() + l, 0, 11), ip.manual = true;
+      } else if (!func && mix_on_g(ch)) {   // a bus slot's send TYPE: G its MIX (FUNC + G the bus)
+        const int i = master::slot_index(ch, ip.slot);
+        master::set_mix(i, master::control.mix[i] + d);
       } else {
         ip.busel = clampi(ip.busel + l, 0, ins::kBuses - 1);
       }
       break;
     case 7:
       if (!ip.bus) ins::set_send(ch, ip.busel, ins::send_knob(ch, ip.busel) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIsnd, ch, ip.busel));
-      else if (mix_on_h(ch)) {
-        const int i = master::slot_index(ch, ip.slot);
-        master::set_mix(i, master::control.mix[i] + d * (func ? 8 : 1));
-      } else if (ip.busel == 2 && l) ins::set_route3(l > 0);
+      else if (ip.busel == 2 && l) ins::set_route3(l > 0);
       break;
     default: break;
   }
