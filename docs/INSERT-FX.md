@@ -264,10 +264,13 @@ already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices
   buffers), booked per slot (`master::slot_index`: the master's 0..3, the buses' 4..9). Bus 1 and 2's chains run inside
   the send FX's own block (after send FX 1 / 2's return), bus 3's after it and the master after that, all on core 2, so
   the bookings and the SendFx need no lock. Same output as the send FX's own return at MIX 127 [measured, `test_sendfx_ins`].
+- **A room handed over** (a kit change, a TYPE released and taken elsewhere): the room starts from clean (no old tail).
+  A slot that takes a room its last user still fades out on passes its input dry until that fade ends (at most 10 ms of
+  its own frames, so a frozen bus 1 / 2 chain holds nothing), then fades from dry into the effect.
 - **Bus 1 / 2 need their send FX on**: their chains run inside send FX 1 / 2's return, so with that send FX OFF a
   send TYPE on bus 1 or 2 is silent, yet it still holds one of the 4 rooms. The Rytm's BUS view says
   `SEND FX 1 OFF: SILENT` (or 2). Bus 3 and the master have no such condition.
-- **MIX**: a knob per slot, 0 the dry input, 127 the effect alone, default 40. On the Rytm: G in the BUS view (FUNC + G the bus then); web: the
+- **MIX**: a knob per slot, 0 the dry input, 127 the effect alone, default 40. On the Rytm: G in the BUS view, 1 a detent (FUNC + G is the bus there, so no coarse step); web: the
   strip's MIX knob; console `ins=B3:A:mix:V` (only on a slot that holds a send TYPE; else the help). Not an LFO target.
 - **Saved** on the slot's line after P4: `B3 A RINGS 50 0 80 60 40`. A line the engine refuses (a fifth send TYPE, or a
   send TYPE on a voice: a file edited by hand or written by a later build) is logged

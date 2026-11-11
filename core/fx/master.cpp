@@ -25,7 +25,11 @@ fx::Control g_ctl[kFxUnits];          // their knobs: only knob[][] (from the sl
 float g_mix[kAllSlots];               // the render core's: each slot's MIX, smoothed
 bool g_mix_set[kAllSlots];
 int8_t g_run_fx[kAllSlots] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
-uint32_t g_ran[kAllSlots];            // the render core's: cycles() at each slot's last chunk
+int8_t g_play[kAllSlots] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // the room each slot played on its last chunk
+int16_t g_waited[kAllSlots];          // the frames a slot has waited for its room (the render core's, as these two)
+// the longest wait for a room's last user to fade out: its fade and as much again (a holder frozen meanwhile, bus 1 / 2
+// with its send FX off, plays no more and is let go then), counted in the waiting slot's own frames
+constexpr int kWaitFrames = 2 * ins::kFadeFrames;
 volatile float g_peak_in, g_peak_out;
 float g_lev = 1.0f;
 
@@ -75,12 +79,11 @@ void sfx() {
 #endif
 }
 
-// room f still played by a slot other than i that has left it (fading out after its TYPE went, a kit change) and ran
-// within the last 20 ms (a bus chain frozen meanwhile, its send FX off, does not hold the room). The render core's.
+// room f played on its last chunk by a slot other than i that has left it (fading out after its TYPE went, a kit
+// change). A slot waiting for its own room plays none, so two slots whose rooms swap never wait for each other.
 bool held_by_other(int f, int i) {
-  const uint32_t now = cycles(), recent = cycles_per_second() / 50;
   for (int k = 0; k < kAllSlots; ++k)
-    if (k != i && g_run_fx[k] == f && control.fx[k] != f && now - g_ran[k] < recent) return true;
+    if (k != i && g_play[k] == f && control.fx[k] != f) return true;
   return false;
 }
 
@@ -96,19 +99,21 @@ void send_run(int c, int s, const float* p, const float* x, const float* r, floa
       for (int j = 0; j < m; ++j) y1[j] = r[j];
     return;
   }
-  g_ran[i] = cycles();
   const int want = control.fx[i];
   bool wait = false;
   if (want >= 0 && want < kFxSlots && g_run_fx[i] != want) {   // a room newly taken
-    if (held_by_other(want, i)) {
+    if (held_by_other(want, i) && g_waited[i] < kWaitFrames) {
       wait = true;   // its last user still fades out on it: this slot passes its input dry until that is done
+      g_waited[i] = (int16_t)(g_waited[i] + m);
     } else {         // from clean, never the last user's tail; a frozen last user lets it go (dry when it runs again)
       for (int k = 0; k < kAllSlots; ++k)
-        if (g_run_fx[k] == want) g_run_fx[k] = -1;
+        if (g_run_fx[k] == want) g_run_fx[k] = -1, g_play[k] = -1;
       g_run_fx[i] = (int8_t)want;
       if (g_fx[want / fx::kSlots]) g_fx[want / fx::kSlots]->Drop(want % fx::kSlots);
+      if (g_waited[i]) g_mix[i] = 0.0f, g_mix_set[i] = true;   // it waited dry: MIX fades in from there (the one-pole below), no step
     }
   }
+  if (!wait) g_waited[i] = 0;
   const int f = wait ? -1 : g_run_fx[i], u = f / fx::kSlots, fs = f % fx::kSlots;
   for (int j = 0; j < m; ++j) in[j] = r ? 0.5f * (x[j] + r[j]) : x[j];
   if (f >= 0 && f < kFxSlots && g_fx[u]) {
@@ -119,7 +124,9 @@ void send_run(int c, int s, const float* p, const float* x, const float* r, floa
     k.kill = fx::control.kill;
     k.clock = fx::control.clock;
     g_fx[u]->Insert(fs, in, m, w, k);
-  } else {   // no room to play on (waiting, or let go): the input as it is, so MIX changes nothing
+    g_play[i] = (int8_t)f;
+  } else {
+    g_play[i] = -1;   // no room to play on (waiting, or let go): the input as it is, so MIX changes nothing
     for (int j = 0; j < m; ++j) w[j][0] = x[j], w[j][1] = r ? r[j] : x[j];
   }
   const float tgt = ins::knob01((uint8_t)played_mix(i));   // the knob + core/mod's offset
@@ -288,7 +295,7 @@ void reset() {
   for (int u = 0; u < kFxUnits; ++u)
     if (g_fx[u]) g_fx[u]->Reset();
   memset((void*)g_ctl, 0, sizeof g_ctl);
-  for (int i = 0; i < kAllSlots; ++i) g_mix_set[i] = false, g_run_fx[i] = -1, g_ran[i] = 0;
+  for (int i = 0; i < kAllSlots; ++i) g_mix_set[i] = false, g_run_fx[i] = -1, g_play[i] = -1, g_waited[i] = 0;
   g_peak_in = g_peak_out = 0.0f;
   g_lev = 1.0f;
 }

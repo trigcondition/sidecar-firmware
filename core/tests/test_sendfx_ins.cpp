@@ -281,6 +281,96 @@ static void fade_not_shared() {
   printf("test_sendfx_ins: a room left mid-fade is not shared\n");
 }
 
+// the noise render3 feeds every chain: block b's largest |out - in| on the L side, and that block's out / in rms
+static void vs_dry(const std::vector<float>& o, uint32_t seed, float gain, std::vector<double>& diff, std::vector<double>& ratio) {
+  uint32_t r = seed;
+  diff.clear(), ratio.clear();
+  for (size_t b = 0; b * 24 < o.size(); ++b) {
+    double d = 0, eo = 0, ei = 0;
+    for (int j = 0; j < 12; ++j) {
+      r = r * 1664525u + 1013904223u;
+      const float x = gain * (float)(int32_t)r * (1.0f / 2147483648.0f), y = o[b * 24 + 2 * j];
+      d = std::max(d, (double)std::fabs(y - x)), eo += (double)y * y, ei += (double)x * x;
+    }
+    diff.push_back(d), ratio.push_back(std::sqrt(eo / (ei + 1e-30)));
+  }
+}
+
+// re-review N1: two slots whose rooms swap (a kit loaded in another order than the bookings were made) both play: a
+// slot waiting for its room is no holder of the one it leaves, so neither waits for the other for ever
+static void swap_rooms() {
+  ins::reset();
+  mset(0, ins::kMCloud), ins::set_type(kB1, 0, ins::kMRings);   // M1 A room 0, B1 A room 1
+  master::set_mix(0, 127), master::set_mix(master::slot_index(kB1, 0), 127);
+  render3(400, 3);
+  const int m0 = master::control.fx[0];
+  mset(0, ins::kOff), ins::set_type(kB1, 0, ins::kOff);
+  ins::set_type(kB1, 0, ins::kMRings), mset(0, ins::kMCloud);   // the other order: the rooms swap
+  CHECK(master::control.fx[master::slot_index(kB1, 0)] == m0 && master::control.fx[0] != m0);
+  Run3 o = render3(2000, 7);
+  std::vector<double> d1, dm, q;
+  vs_dry(o.b1, 7, 0.1f, d1, q), vs_dry(o.m, 7, 0.1f, dm, q);
+  double w1 = 0, wm = 0;
+  for (int b = 1000; b < 2000; ++b) w1 = std::max(w1, d1[(size_t)b]), wm = std::max(wm, dm[(size_t)b]);
+  printf("test_sendfx_ins: rooms swapped: B1 %.2e, M1 %.2e from dry\n", w1, wm);
+  CHECK(w1 > 1e-3 && wm > 1e-3);
+  ins::reset();
+}
+
+// re-review N4: a holder that stops running (bus 1's chain, its send FX off) keeps no room: the taker waits at most the
+// fade and a margin, counted in its own frames, then plays; the old holder, run again, is dry
+static void frozen_holder() {
+  ins::reset();
+  ins::set_type(kB1, 0, ins::kMCloud);
+  master::set_mix(master::slot_index(kB1, 0), 127);
+  render3(400, 9, 0.2f);
+  ins::set_type(kB1, 0, ins::kOff);   // B1 frozen from here: it fades no further
+  ins::set_type(kB3, 0, ins::kMRings);
+  master::set_mix(master::slot_index(kB3, 0), 127);
+  std::vector<float> b3;
+  uint32_t r = 21;
+  for (int b = 0; b < 400; ++b) {
+    float y[12][2];
+    for (int j = 0; j < 12; ++j) r = r * 1664525u + 1013904223u, y[j][0] = y[j][1] = 0.1f * (float)(int32_t)r * (1.0f / 2147483648.0f);
+    ins::engine().ProcessStereo(kB3, y, 12, ins::control);
+    for (int j = 0; j < 12; ++j) b3.push_back(y[j][0]), b3.push_back(y[j][1]);
+  }
+  std::vector<double> d, q;
+  vs_dry(b3, 21, 0.1f, d, q);
+  int first = -1;
+  for (int b = 0; b < 400 && first < 0; ++b)
+    if (d[(size_t)b] > 1e-7) first = b;
+  printf("test_sendfx_ins: frozen holder: B3 takes the room after %d blocks\n", first);
+  CHECK(first >= 0 && first <= 2 * ins::kFadeFrames / 12 + 2);
+  Run3 back = render3(40, 23);   // B1 runs again: its fade-out ends dry, off the room B3 now has
+  std::vector<double> d1;
+  vs_dry(back.b1, 23, 0.1f, d1, q);
+  double w = 0;
+  for (double v : d1) w = std::max(w, v);
+  CHECK(w == 0);
+  ins::reset();
+  printf("test_sendfx_ins: a frozen holder lets its room go\n");
+}
+
+// re-review N2: the hand-over to a slot that waited fades from dry to the effect (no level step)
+static void handover_ramp() {
+  ins::reset();
+  ins::set_type(kB1, 0, ins::kMCloud);
+  master::set_mix(master::slot_index(kB1, 0), 127);
+  render3(400, 9, 0.2f);
+  ins::set_type(kB1, 0, ins::kOff);
+  ins::set_type(kB3, 0, ins::kMChorus);   // waits for B1's fade-out, then plays at MIX 127
+  master::set_mix(master::slot_index(kB3, 0), 127);
+  Run3 o = render3(80, 11);
+  std::vector<double> d, q;
+  vs_dry(o.b3, 11, 0.1f, d, q);
+  double step = 0;
+  for (size_t b = 1; b < q.size(); ++b) step = std::max(step, std::fabs(q[b] - q[b - 1]));
+  printf("test_sendfx_ins: hand-over: largest block-to-block level step %.3f of the input\n", step);
+  CHECK(step < 0.2);
+  ins::reset();
+}
+
 // review M2: a room taken again never resumes the tail its last user left in the SendFx slot (SPACE's echoes)
 static void no_old_tail() {
   for (int same = 0; same < 2; ++same) {   // another slot (M2 A) takes it, or the same slot again
@@ -574,6 +664,10 @@ int main() {
   card_lines(c);
   reset_keeps_buses(c);
   lfo_targets();
+  swap_rooms();
+  frozen_holder();
+
+  handover_ramp();
   rytm_page();
   lows();
   host_fake_time(false, 0);
