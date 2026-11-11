@@ -64,6 +64,7 @@ private:
 	static void ToHost (const u8 *pData, int nLength);	// the engine's SysEx for the host (control core)
 	void SelfCheck (void);
 	void LogBench (void);
+	void BenchChains (void);
 	void SetSelfTest (boolean bOn, const char *pWhy);
 	void LogStats (void);
 	void LoadClock (boolean bCard);				// cpumhz= (display.txt, cmdline): at boot, before the bench

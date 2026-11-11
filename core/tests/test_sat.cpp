@@ -163,12 +163,16 @@ static void bus_page_reaches_sat() {
   CHECK(ins::control.type[ins::kBus0][0] == ins::kSat);
   p->enc(5, -1, false);
   CHECK(ins::control.type[ins::kBus0][0] == ins::kRing);
-  // past the list's end nothing happens: a tuned slot keeps its knobs, the card file stays clean
+  // 0.5.0: past SAT a bus's list runs on into the send TYPEs (core/fx/master.h); past its end (HALO) nothing happens: a
+  // tuned slot keeps its knobs, the card file stays clean
   ins::set_type(ins::kBus0, 0, ins::kSat);
+  p->enc(5, 1, false);
+  CHECK(ins::control.type[ins::kBus0][0] == ins::kMChorus);
+  ins::set_type(ins::kBus0, 0, ins::kMHalo);
   ins::set_param(ins::kBus0, 0, 1, 99);
   ins::settings_clean();
   p->enc(5, 1, false);
-  CHECK(ins::control.type[ins::kBus0][0] == ins::kSat && ins::param(ins::kBus0, 0, 1) == 99 && !ins::settings_dirty(nullptr));
+  CHECK(ins::control.type[ins::kBus0][0] == ins::kMHalo && ins::param(ins::kBus0, 0, 1) == 99 && !ins::settings_dirty(nullptr));
   ins::set_type(ins::kBus0, 0, ins::kOff);
   ins::settings_clean();
   p->enc(5, -1, false);

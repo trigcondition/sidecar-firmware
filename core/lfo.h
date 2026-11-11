@@ -46,7 +46,7 @@ enum StepShape : uint8_t { kHold, kRamp, kSmooth, kShapes };
 // 19..21 B1..B3 the buses' (core/fx/insert.h; params 0..7: slot A P1..P4, slot B P1..P4; ins1112: 8..11 the chain's
 // POST EQ HPF / LPF / LOW / HIGH; an offset on the knob / lock); 22..29 O1..O8 the voices' OUT route (core/fx/out.h;
 // params 0..2: LEV PAN WID, an offset on the knob). 0.5.0 (spec-050 1.6): 30 31 M1 M2 the master's two chains (params as
-// an INSERT chain's), 32 MFX the master's LEV and MIX1..4 (0..4), 33..44 S1..S12 a Rytm track's sends to FX1 / FX2
+// an INSERT chain's), 32 MFX the master's LEV and MIX1..4 (0..4), the bus slots' send TYPE MIX B1A..B3B (5..10), 33..44 S1..S12 a Rytm track's sends to FX1 / FX2
 // (0..1: F1 F2), 45..52 X1..X8 a voice's sends to the buses (0..2: B1..B3); all through core/mod (an LFO file naming
 // one is locked on 0.4.0, as any line it does not read).
 #if CORE_POLY

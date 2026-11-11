@@ -23,6 +23,8 @@ static const char *const *voice_map (void)
 	s_VoiceMap[8] = "";
 	return s_VoiceMap;
 }
+// a voice slot's TYPE key: the INSERT TYPEs only (the send FX TYPEs, 11..16, are the buses' and the master's: they run on
+// core 2, a voice's chain on its own render core; the bus chains here are text, named by the view)
 static const char *const kTypeName[11] = {"OFF", "FILTER", "CRUSH", "DRIVE", "EQ", "COMP", "DELAY", "TREMOLO", "RINGMOD", "AMP", "SAT"};
 
 static int oled (void) { return TH->id == THEME_OLED; }

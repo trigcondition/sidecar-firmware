@@ -3,6 +3,8 @@
 // while the Rytm has not named a kit). One line per slot with a TYPE ("V1 A FILTER 80 20 0 0"), per voice with sends
 // ("SEND V1 0 0 90"), "ROUTE B3 POST" when bus 3 returns POST. The card half of insert.cpp (as send_fx_card.cpp is
 // send_fx.cpp's), so the DSP and the values build without the card (pi/engine/tests).
+// 0.5.0: a bus slot with a send TYPE adds its MIX ("B3 A RINGS 50 0 80 60 40"); a line set_type refuses (past the send
+// TYPEs' room, a send TYPE on a voice) is logged and locks the file, as a line this build does not read.
 #include <string.h>
 
 #include "fmt/fmt.h"
@@ -117,10 +119,19 @@ bool from_line(const char* b) {
   int t = type_from_name(w[2]);
   if (c < 0 || s < 0 || t < 0) return false;
   set_type(c, s, t);   // its defaults, then the line's params (a missing one keeps its default)
+  if (control.type[c][s] != t) {   // refused (a send TYPE on a voice, or past the room: master.h kFxSlots): said, and the
+    char m[96];                    // line counted as one this build does not read, so its file is kept, not written over
+    if (master::send_type(t) && c >= kBus0) master::full_text(t, m, sizeof m);
+    else sniprintf(m, sizeof m, CORE_STR("%s takes no %s"), w[0], w[2]);
+    log(CORE_STR("ins: line \"%s %s %s\" not taken: %s"), w[0], w[1], w[2], m);
+    return false;
+  }
   for (int k = 0; k < kParams && 3 + k < n; ++k) {
     int v = num(w[3 + k]);
     if (v >= 0) set_param(c, s, k, v);
   }
+  if (master::send_type(t) && c < kM0 && n > 3 + kParams && num(w[3 + kParams]) >= 0)   // 0.5.0: a bus slot's MIX
+    master::set_mix(master::slot_index(c, s), num(w[3 + kParams]));
   return true;
 }
 
@@ -238,8 +249,14 @@ static bool save_text(bool queue) {
     for (int s = 0; s < kSlots; ++s) {
       int ty = control.type[c][s];
       if (!ty) continue;
-      add(b, sniprintf(b, sizeof b, CORE_STR("%s %c %s %d %d %d %d\n"), chain_name(c), 'A' + s, type_name(ty),
-                       param(c, s, 0), param(c, s, 1), param(c, s, 2), param(c, s, 3)));
+      // 0.5.0: a bus slot's send TYPE has its MIX after P4 (the master's are on the MFX line; 0.4.x reads no fifth number,
+      // and refuses the TYPE on a bus without a word: its next save drops the line)
+      if (master::send_type(ty) && c < kM0)
+        add(b, sniprintf(b, sizeof b, CORE_STR("%s %c %s %d %d %d %d %d\n"), chain_name(c), 'A' + s, type_name(ty), param(c, s, 0),
+                         param(c, s, 1), param(c, s, 2), param(c, s, 3), master::control.mix[master::slot_index(c, s)]));
+      else
+        add(b, sniprintf(b, sizeof b, CORE_STR("%s %c %s %d %d %d %d\n"), chain_name(c), 'A' + s, type_name(ty),
+                         param(c, s, 0), param(c, s, 1), param(c, s, 2), param(c, s, 3)));
       const char* af = ty == kAmp ? amp::slot_file(c, s) : "";
       if (af[0]) {   // AMP's capture by name: the knob's position follows /NAM/'s list when files come and go
         int n = sniprintf(b, sizeof b, CORE_STR("AMP %s %c %s\n"), chain_name(c), 'A' + s, af);

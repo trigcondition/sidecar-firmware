@@ -121,11 +121,13 @@ CORE_COLD float rnd(uint32_t& s) { return (float)(xorshift(s) >> 8) * (2.0f / 16
 
 CORE_COLD bool is_voice(int t) { return t >= kTVoice && t < kTVoice + kVoices; }
 CORE_COLD bool is_fx(int t) { return t == kTFx || t == kTFx + 1; }
+// MFX's params: LEV, the master's 4 slots' MIX, the 6 bus slots' (core/fx/master.h slot_index + 1 = core/mod's kMfx param)
+constexpr int kMfxMaster = 4, kMfxParams = 11;
 #if CORE_POLY
 CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTOut; }   // fx-ins: never true without CORE_POLY
 CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTMaster; }   // the OUT route's LEV PAN WID (core/fx/out.h)
 CORE_COLD bool is_mchain(int t) { return t == kTMaster || t == kTMaster + 1; }   // 0.5.0: M1 M2 (insert chains 11, 12)
-CORE_COLD bool is_mfx(int t) { return t == kTMfx; }                               // the master's LEV, MIX1..4
+CORE_COLD bool is_mfx(int t) { return t == kTMfx; }                               // LEV, MIX1..4, B1A..B3B
 CORE_COLD bool is_snd(int t) { return t >= kTSnd && t < kTSnd + 12; }             // a Rytm track's FX1 / FX2 send
 CORE_COLD bool is_isnd(int t) { return t >= kTIsnd && t < kTIsnd + 8; }           // a voice's sends to the buses
 #else
@@ -379,7 +381,7 @@ CORE_COLD int params_of(int t) {
   if (is_fx(t)) return 4;
   if (is_ins(t) || is_mchain(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
   if (is_out(t) || is_isnd(t)) return 3;
-  if (is_mfx(t)) return 5;
+  if (is_mfx(t)) return kMfxParams;   // LEV, MIX1..4, B1A..B3B (the bus slots' send TYPE MIX, 0.5.0)
   if (is_snd(t)) return 2;
   return 0;
 }
@@ -405,7 +407,9 @@ CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
     static const char* const kO[3] = {"LEV", "PAN", "WID"};
     sniprintf(b, cap, "%s", kO[p % 3]);
   } else if (is_mfx(t)) {   // 0.5.0: the master's LEV, its slots' MIX
-    if (p % 5) sniprintf(b, cap, CORE_STR("MIX%d"), p % 5);
+    const int q = p % kMfxParams;
+    if (q > kMfxMaster) sniprintf(b, cap, CORE_STR("B%d%c"), (q - 1 - kMfxMaster) / 2 + 1, 'A' + (q - 1 - kMfxMaster) % 2);
+    else if (q) sniprintf(b, cap, CORE_STR("MIX%d"), q);
     else sniprintf(b, cap, "LEV");
   } else if (is_snd(t)) {   // a track's send to FX1 / FX2
     sniprintf(b, cap, CORE_STR("F%d"), (p & 1) + 1);
@@ -525,7 +529,7 @@ CORE_COLD mod::Tid tid_of(int t, int p) {
   if (is_ins(t)) return mod::tid(mod::kIns, t - kTIns, p);   // I1..I8 B1..B3: chains 0..10; params 0..11
   if (is_out(t)) return mod::tid(mod::kOut, t - kTOut, p % 3);
   if (is_mchain(t)) return mod::tid(mod::kIns, ins::kM0 + t - kTMaster, p);   // 0.5.0: M1 M2, chains 11 12
-  if (is_mfx(t)) return mod::tid(mod::kMfx, 0, p % 5);
+  if (is_mfx(t)) return mod::tid(mod::kMfx, 0, p % kMfxParams);
   if (is_snd(t)) return mod::tid(mod::kSnd, t - kTSnd, p & 1);
   if (is_isnd(t)) return mod::tid(mod::kIsnd, t - kTIsnd, p % 3);
   return 0;

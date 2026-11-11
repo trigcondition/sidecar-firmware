@@ -180,6 +180,52 @@ static void unreadable_default_does_not_lock_the_kit(const std::string& card) {
   printf("lfo: an unreadable default does not lock a kit without its own file; an unreadable own file does\n");
 }
 
+// 0.5.0 (owner): a bus slot's send TYPE MIX as an LFO target, MFX's params 5..10 (B1A B1B B2A B2B B3A B3B) after LEV and
+// the master's MIX1..4; no lock space (an LFO and core/mod target only). It moves what plays, never the knob; the line
+// round-trips in the kit's file; an older line (MFX 0..4) loads as it was
+static void lfo_on_bus_mix(const std::string& card) {
+  lfo::reset();
+  ins::reset();
+  const int b3a = master::slot_index(ins::kBus0 + 2, 0);
+  ins::set_type(ins::kBus0 + 2, 0, ins::kMCloud), master::set_mix(b3a, 64);
+  const int mfx = lfo::target_from_name("MFX");
+  char pn[8];
+  CHECK(lfo::params_of(mfx) == 11 && !strcmp(lfo::param_name(mfx, 9, pn, sizeof pn), "B3A") &&
+        !strcmp(lfo::param_name(mfx, 5, pn, sizeof pn), "B1A") && !strcmp(lfo::param_name(mfx, 4, pn, sizeof pn), "MIX4"));
+  mod::Tid t = 0;
+  char nm[16];
+  CHECK(mod::parse("MFX:B3A", &t) && t == mod::tid(mod::kMfx, 0, 1 + b3a) && !strcmp(mod::name(t, nm, sizeof nm), "MFX:B3A"));
+  set(1, "tgt:MFX"), set(1, "par:9"), set(1, "wav:4"), set(1, "rate:127"), set(1, "dep:20");
+  int lo = 999, hi = -1;
+  for (int i = 0; i < 400; ++i) {
+    run_ms(1);
+    const int m = master::played_mix(b3a);
+    lo = m < lo ? m : lo, hi = m > hi ? m : hi;
+  }
+  printf("lfo: MFX:B3A (bus 3 A's MIX) %d..%d\n", lo, hi);
+  CHECK(lo <= 49 && hi >= 79 && master::control.mix[b3a] == 64);
+  // the kit's file: saved with the bus MIX target, read back; an older line beside it as it was
+  lfo::kit_changed(11);
+  set(1, "tgt:MFX"), set(1, "par:9"), set(1, "dep:20");
+  set(2, "tgt:MFX"), set(2, "par:2"), set(2, "dep:-5");
+  at(g_us + 1100000);
+  for (int i = 0; i < 8; ++i) idle_save();
+  const std::string f12 = card + "/.rytm/lfo/STO/k012.txt";
+  CHECK(rd_file(f12).find("1 MFX 9 ") != std::string::npos && rd_file(f12).find("2 MFX 2 ") != std::string::npos);
+  wr_file(card + "/.rytm/lfo/STO/k013.txt", "# Sidecar LFOs\n1 MFX 3 4 127 0 0 12 0\n2 MFX 10 4 127 0 0 -8 0\n");
+  CHECK(fill_store());
+  lfo::kit_changed(5), lfo::kit_changed(11);
+  CHECK(lfo::get(0).target == mfx && lfo::get(0).param == 9 && lfo::get(1).param == 2 && lfo::get(1).depth == -5);
+  lfo::kit_changed(12);
+  CHECK(lfo::get(0).target == mfx && lfo::get(0).param == 3 && lfo::get(1).param == 10 && lfo::get(1).depth == -8);
+  for (int i = 1; i <= 2; ++i) set(i, "off");
+  run_ms(3);
+  CHECK(master::played_mix(b3a) == 64);
+  lfo::reset();
+  ins::reset();
+  printf("lfo: a bus slot's MIX as a target (MFX:B1A..B3B), saved and read back\n");
+}
+
 static bool near(float a, float b, float e = 0.02f) { return fabsf(a - b) <= e; }
 static bool near_ph(float a, float b, float e) { float d = fabsf(a - b); return d <= e || 1.0f - d <= e; }   // on the circle
 
@@ -505,6 +551,7 @@ int main() {
   kit_change_reads_ram_only(tmpl);
   edit_then_switch_back(tmpl);
   unreadable_default_does_not_lock_the_kit(tmpl);
+  lfo_on_bus_mix(tmpl);
 
   // ---- the page through the remote host: LEFT x 3 from SIDECAR (SCOPE, then the LFO page: no REC here), its mask
   lfo::reset();

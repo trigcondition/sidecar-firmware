@@ -7,7 +7,10 @@
 // type's defaults), G BUS (which send H edits), H SEND (the voice's level into that bus).
 // BUS view (YES; NO back): the same for bus G's chain: A..D, E SLOT, F TYPE, G BUS 1..3, H ROUTE (bus 3: PRE /
 // POST; buses 1 and 2 return as their send FX's P1 says: shown, not set here). Step locks of A..H: hold a trig on the
-// SEQ page and press FX twice (seq.h kLpIns).
+// SEQ page and press FX twice (seq.h kLpIns). 0.5.0: a bus's F TYPE runs on past SAT into the send FX's TYPEs (CHORUS
+// COMB SPACE RINGS CLOUD HALO; core/fx/master.h: 4 at once with the master's), skipping them while there is no room
+// (the footer says so); G is the slot's MIX while it holds one (as on the MASTER FX page; FUNC + G the bus then), H
+// stays the ROUTE.
 // OUT view (YES from the BUS view, i.e. YES twice; YES or NO back to the TRACK view): the voice's OUT route (core/fx/out.h,
 // docs/STEREO.md): A OUT (TRK / PRE / POST), B LEV, C PAN, D WID, E DEC (DSP SAMPLE only, else -); the line under the
 // title says what PRE / POST leave out (the Rytm's FLTR, AMP, DEL / REV). The TRACK view's strip ends in the OUT box
@@ -20,6 +23,7 @@
 #include <string.h>
 
 #include "fx/insert.h"
+#include "fx/master.h"
 #include "fx/out.h"
 #include "fx/send_fx.h"
 #include "machines.h"
@@ -50,6 +54,7 @@ struct InsPage {
   bool manual = false;   // FUNC + G picked the track: kept until the Rytm selects another
   int touched = -1;
   bool out_top = false;  // nav044: the OUT view as UP + AMP opened it (its top: NO leaves), until YES / RIGHT move on
+  bool full = false;     // 0.5.0: F skipped the send TYPEs for want of room (the footer says so until the next turn)
 };
 CORE_RAM2 InsPage ip;
 
@@ -69,6 +74,8 @@ CORE_COLD int voice_now() {
   return vi >= 0 && vi < ins::kVoices ? vi : 0;
 }
 CORE_COLD int chain_now() { return ip.bus ? ins::kBus0 + ip.busel : voice_now(); }
+// 0.5.0: the BUS view's slot holds a send TYPE: G is its MIX
+CORE_COLD bool mix_on_g(int ch) { return ip.bus && master::send_type(ins::control.type[ch][ip.slot]); }
 
 CORE_COLD void strip(Canvas& c, int ch) {
   // [A TYPE] > [B TYPE] > the sends (TRACK) / the return (BUS)
@@ -233,8 +240,13 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   sniprintf(val[4], 8, "%c", 'A' + ip.slot);
   sniprintf(lab[5], 6, "TYPE");
   sniprintf(val[5], 8, "%.7s", ins::type_name(t));
-  sniprintf(lab[6], 6, "BUS");
-  sniprintf(val[6], 8, CORE_STR("%d"), ip.busel + 1);
+  if (mix_on_g(ch)) {
+    sniprintf(lab[6], 6, "MIX");
+    sniprintf(val[6], 8, CORE_STR("%d"), master::control.mix[master::slot_index(ch, ip.slot)]);
+  } else {
+    sniprintf(lab[6], 6, "BUS");
+    sniprintf(val[6], 8, CORE_STR("%d"), ip.busel + 1);
+  }
   if (!ip.bus) {
     sniprintf(lab[7], 6, "SEND");
     sniprintf(val[7], 8, CORE_STR("%d"), ins::send_knob(ch, ip.busel));
@@ -259,6 +271,17 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   } else if (e == 7 && !ip.bus) {
     sniprintf(b, sizeof b, CORE_STR("%s SEND BUS %d:%d"), voice_name(ch), ip.busel + 1, ins::send_knob(ch, ip.busel));
     footer(c, b, ins::send_knob(ch, ip.busel));
+  } else if (e == 6 && mix_on_g(ch)) {
+    const int m = master::control.mix[master::slot_index(ch, ip.slot)];
+    sniprintf(b, sizeof b, CORE_STR("%s %c MIX:%d"), ins::chain_name(ch), 'A' + ip.slot, m);
+    footer(c, b, m);
+  } else if (e == 5 && ip.full) {
+    sniprintf(b, sizeof b, CORE_STR("SEND FX INSERTS: %d IN USE"), master::kFxSlots);
+    footer(c, b);
+  } else if (ip.bus && ip.busel < 2 && master::send_type(t) && fx::control.knob[ip.busel][0] == fx::kOff) {
+    // bus 1 / 2's chain runs in its send FX's return: that send FX OFF, the send TYPE is silent (and holds its room)
+    sniprintf(b, sizeof b, CORE_STR("SEND FX %d OFF: SILENT"), ip.busel + 1);
+    footer(c, b);
   } else if (!ip.bus && remote_track_machine(tr) == 0x7F) {
     footer(c, "ANALOG TRACK: NO SIDECAR VOICE");
   } else {
@@ -293,18 +316,36 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
     if (t) ins::set_param(ch, ip.slot, e, ins::param(ch, ip.slot, e) + d * (func ? 8 : 1)), mod::manual_knob(mod::tid(mod::kIns, ch, ip.slot * 4 + e));
     return;
   }
+  if (e == 4 || e == 6) ip.full = false;   // another slot or bus: the room note was the last one's
   switch (e) {
     case 4: ip.slot = clampi(ip.slot + l, 0, ins::kSlots - 1); break;
     case 5: {
       if (!l) break;
-      int n = clampi(t + l, 0, ins::kTypes - 1);
-      if (n == ins::kAmp && ip.bus) n = clampi(n + l, 0, ins::kTypes - 1);   // a bus takes no AMP: past it
+      ip.full = false;
+      int n = t;
+      if (!ip.bus) {
+        n = clampi(t + l, 0, ins::kTypes - 1);   // a voice: no send TYPE (they run on core 2 only)
+      } else {   // a bus: past SAT the send TYPEs, AMP skipped, a send TYPE only while there is room (the list's ends stay)
+        const bool room = master::room(master::slot_index(ch, ip.slot));
+        for (int k = t + l; k >= 0 && k < ins::kAllTypes; k += l) {
+          if (k == ins::kAmp) continue;
+          if (master::send_type(k) && !room) {
+            ip.full = true;
+            continue;
+          }
+          n = k;
+          break;
+        }
+      }
       if (n != t) ins::set_type(ch, ip.slot, n);   // the list's end: no reset of the knobs
       break;
     }
     case 6:
       if (func && !ip.bus) {   // FUNC + G: another track
         ip.track = clampi(track_now() + l, 0, 11), ip.manual = true;
+      } else if (!func && mix_on_g(ch)) {   // a bus slot's send TYPE: G its MIX (FUNC + G the bus)
+        const int i = master::slot_index(ch, ip.slot);
+        master::set_mix(i, master::control.mix[i] + d);
       } else {
         ip.busel = clampi(ip.busel + l, 0, ins::kBuses - 1);
       }

@@ -109,6 +109,9 @@ extern bool g_bCardGuard;			// card_guard.cpp: testcard=1
 #endif
 
 static const char From[] = "engine";
+// BenchChains' results (core 0, before cores 1-3), LogBench's rows: [0] the master chain, [1..] the send TYPE insert sets
+static const int ChainBenches = 3;
+static struct { u64 nTicks; u32 nWorst; } s_ChainBench[ChainBenches];
 static const char RebootMagic[] = "RYTM-REBOOT";
 static volatile boolean s_bRebootRequested = FALSE;
 static void RebootRequest (void) { s_bRebootRequested = TRUE; }   // UART IRQ: core 0's loop stops cleanly first
@@ -357,6 +360,7 @@ boolean CKernel::Initialize (void)
 	boolean bBench = m_Options.GetAppOptionDecimal ("bench", 1) != 0;
 	LoadClock (bCard);				// the CPU clock option, before the bench: the bench measures the clock the engine plays at
 	if (bBench) CEngineCores::BenchCore (0);		// cores 1-3 bench as they start (LogBench)
+	if (bBench) BenchChains ();			// the master / send TYPE insert rows: before cores 1-3 start (LogBench)
 	SelfCheck ();
 	// boot defaults (the user's decision, 2026-10-16): out=tracks, the voices on their tracks' inputs, through the
 	// Rytm's filters and FX (the mod build); MIDI notes off (notes=on is for a stock Rytm, with out=main); no drone
@@ -1034,15 +1038,38 @@ void CKernel::LogBench (void)
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10, nBp * 6 / 100, nBp * 6 % 100);	// the cap: core/fx/amp.h kMaxRunning
 		m_Timer.MsDelay (2);
 	}
-	// the master chain (core/fx/master.h): add 2 x the AMP line for an L/R pair
+	// the master chain (core/fx/master.h): add 2 x the AMP line for an L/R pair (measured by BenchChains, logged here)
+	if (s_ChainBench[0].nTicks != 0)
 	{
-		u32 nWorst = 0;
-		u64 nTicks = bridge::mfx_bench (&nWorst);
+		u32 nWorst = s_ChainBench[0].nWorst;
+		u64 nTicks = s_ChainBench[0].nTicks;
 		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
 		m_Logger.Write (From, LogNotice, "bench mfx COMP EQ SPACE CLOUD POSTEQ: %u.%02u %% of a core, worst block %u.%u %%",
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
 		m_Timer.MsDelay (2);
 	}
+	// 0.5.0: 4 send TYPE inserts at once (B1 A, B2 A, B3 A, M1 A) through core 2's paths (BenchChains)
+	for (int nSet = 0; const char *pName = bridge::sfxins_bench_name (nSet); nSet++)
+	{
+		if (nSet + 1 >= ChainBenches || s_ChainBench[nSet + 1].nTicks == 0) break;
+		u32 nWorst = s_ChainBench[nSet + 1].nWorst;
+		u64 nTicks = s_ChainBench[nSet + 1].nTicks;
+		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		m_Logger.Write (From, LogNotice, "bench sfxins %s: %u.%02u %% of a core, worst block %u.%u %%",
+				pName, nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
+		m_Timer.MsDelay (2);
+	}
+}
+
+// The master chain's and the send TYPE inserts' benches (core/fx/master.h bench, sfx_bench), run on core 0 before cores
+// 1-3 start: then nothing else touches the insert and master controls. Core 3's idle pass steps the project's store fill
+// and applies its inserts once it runs; a bench at the same time could book a room the kit wants, or the kit's load land
+// mid-bench. Logged later by LogBench, in the rows' usual place.
+void CKernel::BenchChains (void)
+{
+	s_ChainBench[0].nTicks = bridge::mfx_bench (&s_ChainBench[0].nWorst);
+	for (int nSet = 0; nSet + 1 < ChainBenches && bridge::sfxins_bench_name (nSet); nSet++)
+		s_ChainBench[nSet + 1].nTicks = bridge::sfxins_bench (nSet, &s_ChainBench[nSet + 1].nWorst);
 }
 
 // Task 3's boot self-check, before the cores start: one second of a PLAITS voice rendered offline (no USB), then

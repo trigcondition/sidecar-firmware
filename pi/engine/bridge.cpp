@@ -546,6 +546,8 @@ uint64_t ins_bench(int a, int b, uint32_t* worst_block, uint32_t* hash) {
 const char* ins_bench_name(int t) { return core::ins::type_name(t); }
 uint64_t amp_bench(uint32_t* worst_block) { return core::amp::bench(worst_block); }
 uint64_t mfx_bench(uint32_t* worst_block) { return core::master::bench(worst_block); }
+uint64_t sfxins_bench(int set, uint32_t* worst_block) { return core::master::sfx_bench(set, worst_block); }
+const char* sfxins_bench_name(int set) { return core::master::sfx_bench_name(set); }
 int ins_json(char* out, int cap) {   // "ins":{... "out":[...]}, then "stream":{...} (the OUT route, the streaming budget)
   int n = core::ins::json(out, cap);
   if (n > 0 && n < cap - 2) {

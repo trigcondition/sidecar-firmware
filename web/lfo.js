@@ -14,7 +14,7 @@ export const LFO_PRESETS = ["ramp", "tri", "steps", "rnd"];
 // fx-ins: I1..I8 the voices' INSERT chains, B1..B3 the FX buses' (core/fx/insert.h; params A P1..P4, B P1..P4, then
 // ins1112's POST EQ HPF / LPF / LOW / HIGH, the stage after both slots);
 // O1..O8 the voices' OUT route (core/fx/out.h, docs/STEREO.md: LEV PAN WID; the Pi only); 0.5.0: M1 M2 the master's
-// chains, MFX its LEV / MIX1..4, S1..S12 a Rytm track's sends to FX1 / FX2, X1..X8 a voice's sends to the buses
+// chains, MFX its LEV / MIX1..4 (and the bus slots' send TYPE MIX B1A..B3B), S1..S12 a Rytm track's sends to FX1 / FX2, X1..X8 a voice's sends to the buses
 export const LFO_TARGETS = ["OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2",
   "I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "B1", "B2", "B3", "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8",
   "M1", "M2", "MFX", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12",
@@ -28,7 +28,7 @@ export function lfoParams(tgt, par, pn) {
   if (t <= 0) return [];
   if (t < 9) return Array.from({ length: 16 }, (_, k) => (k === par && pn && pn !== `P${k + 1}` ? `P${k + 1} ${pn}` : `P${k + 1}`));
   if (tgt[0] === "O") return ["LEV", "PAN", "WID"];
-  if (tgt === "MFX") return ["LEV", "MIX1", "MIX2", "MIX3", "MIX4"];
+  if (tgt === "MFX") return ["LEV", "MIX1", "MIX2", "MIX3", "MIX4", "B1A", "B1B", "B2A", "B2B", "B3A", "B3B"];   // B1A: bus 1 slot A's MIX (a send TYPE)
   if (tgt[0] === "S") return ["F1", "F2"];
   if (tgt[0] === "X") return ["B1", "B2", "B3"];
   if (tgt[0] === "I" || tgt[0] === "B" || tgt[0] === "M") {   // an INSERT chain: both slots, then the POST EQ (core/lfo.cpp params_of)

@@ -750,6 +750,14 @@ class SendFx {
     Run(s, t, Gate(s, same, x, xf, n), n, y, c);
     for (int i = 0; i < n; ++i) y[i][0] *= g_[i], y[i][1] *= g_[i];
   }
+  // The inserts' bookings (core/fx/master.cpp): slot s handed to a new user. What it played is left to be cleared (a large
+  // TYPE: zeroed a little a call, as after a TYPE change; a small one is built afresh when it starts), so the next TYPE
+  // starts from clean and never resumes the old user's tail. No allocation, bounded: the render core's.
+  FX_DSP void Drop(int s) {
+    if (s < 0 || s >= kSlots) return;
+    if (plays(cur_[s]) && !small_type(cur_[s])) dirty_[s] |= Bit(cur_[s]);
+    cur_[s] = kOff, zone_[s] = -1, fade_[s] = 0, kill_[s] = false;
+  }
 #if RYTM_SENDFX_LARGE
   const Stutter& stutter() const { return stutter_; }
 #endif
