@@ -101,7 +101,7 @@ Four slots in a row, then a POST EQ, then LEV.
 | POST EQ | HPF LPF LOW HIGH | |
 
 No p-locks. LFO targets (0.5.0, core/lfo.h): `M1`, `M2` for the slots (params as an INSERT chain's: A P1..P4, B P1..P4,
-the POST EQ), `MFX` for LEV and MIX1..4.
+the POST EQ), `MFX` for LEV and MIX1..4, and (0.5.0) B1A..B3B: the bus slots' send TYPE MIX (docs/INSERT-FX.md).
 
 ## Where to set it
 

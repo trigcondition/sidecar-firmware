@@ -60,8 +60,9 @@ struct Control {
   volatile uint8_t lev;            // the chain's output, 0..127, 100 unity
   volatile uint8_t trim;           // SRC MIX: every stem before the sum, dB down, 0..kTrimMax (smoothed: masterfx_pi)
   volatile uint8_t mix[kAllSlots]; // a send TYPE slot's dry / wet, 0..127 (slot_index: the master's, then the buses')
-  // core/mod kMfx (MFX:LEV, MFX:MIX1..4): offsets on lev / mix as they play (played_lev / played_mix), never saved
-  volatile int8_t mod_lev, mod_mix[kSlots];
+  // core/mod kMfx (MFX:LEV, MFX:MIX1..4 the master's, MFX:B1A..B3B the buses'): offsets on lev / mix as they play
+  // (played_lev / played_mix), never saved
+  volatile int8_t mod_lev, mod_mix[kAllSlots];
   volatile int8_t fx[kAllSlots];   // the SendFx slot (0..kFxSlots-1) a send TYPE holds, -1 none
   // The Rytm's report 50: the stems' pans (0..127, 64 centre, as they play: p-locks and LFOs in) and the stems off ROUTE TO
   // MAIN (a bit a stem). Not saved, not the kit's. known 0: no report (older mods): every stem summed, centred
@@ -71,12 +72,12 @@ struct Control {
 };
 extern Control control;
 inline int played_lev() { int x = control.lev + control.mod_lev; return x < 0 ? 0 : x > 127 ? 127 : x; }
-inline int played_mix(int i) {   // (the buses' MIX has no modulation: MFX:MIX1..4 are the master's)
+inline int played_mix(int i) {   // slot_index i's MIX with its modulation (MFX:MIX1..4, MFX:B1A..B3B)
   if (i < 0 || i >= kAllSlots) return 0;
-  int x = control.mix[i] + (i < kSlots ? control.mod_mix[i] : 0);
+  int x = control.mix[i] + control.mod_mix[i];
   return x < 0 ? 0 : x > 127 ? 127 : x;
 }
-void mod_offset(int param, int off);   // core/mod kMfx: param 0 LEV, 1..4 MIX of slot 1..4; -127..127
+void mod_offset(int param, int off);   // core/mod kMfx: param 0 LEV, 1 + slot_index the MIX (1..4 the master's, 5..10 B1A..B3B); -127..127
 extern volatile float lim_gain;    // core 0's: the limiter's lowest gain of the last second or so, 1 while it is out
 int gr10();                        // ... as its reduction, in tenths of a dB (any core but the audio's: a log)
 

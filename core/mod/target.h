@@ -4,7 +4,7 @@
 // indices 1-based: V3:P5 (voice 3's P5), FX1:P2 (send FX 1's P2), S5:F1 (Rytm track 5's send to FX1), I3:A2 / B1:E1 /
 // M1:B3 (an INSERT chain: I1..I8 the voices', B1..B3 the buses', M1 M2 the master's; A1..A4 / B1..B4 slot A / B's
 // P1..P4, E1..E4 its POST EQ HPF LPF LOW HIGH), X2:B1 (voice 2's send to bus 1), MFX:LEV, MFX:MIX2 (the master's LEV,
-// slot 2's MIX), O4:PAN (voice 4's OUT LEV PAN WID), T1:SPD (a Sidecar seq track's SPD DIR SWG LEN RNDM RLOW ROCT
+// slot 2's MIX), MFX:B3A (bus 3 slot A's send TYPE MIX), O4:PAN (voice 4's OUT LEV PAN WID), T1:SPD (a Sidecar seq track's SPD DIR SWG LEN RNDM RLOW ROCT
 // RWGT), R1:GATE (track 1's arpeggiator MODE SPD RNG GATE SWNG), LOOP:BAL (the looper's BAL LEV), RYTM:SCN,
 // RYTM:PERF3 (the Rytm's scene and PERF macros). A name this build does not know does not parse.
 // Without CORE_POLY (the Sidecar Mini) only kV and kFx are targets.
@@ -22,7 +22,7 @@ enum Kind : uint8_t {
   kSnd,    // Rytm track 0..11, param 0..1 = its SEND to FX1 / FX2         base: 0x20 sends, writer: fx::control.send
   kIns,    // insert chain 0..12 (0..7 voices, 8..10 buses, 11..12 master), param 0..7 slot A/B P1..P4, 8..11 POST EQ
   kIsnd,   // voice vi 0..7 -> bus param 0..2 (ins::control.send)
-  kMfx,    // master: param 0 LEV, 1..4 MIX of master slot 1..4 (core/fx/master.h Control lev, mix[])
+  kMfx,    // param 0 LEV, 1..4 MIX of master slot 1..4, 5..10 the bus slots' (B1A..B3B; master.h lev, mix[slot_index])
   kOut,    // voice vi 0..7, param 0..2 = LEV PAN WID (core/fx/out.h)
   kSeq,    // Rytm track r 0..11 (a Sidecar seq track), param 0 SPD 1 DIR 2 SWG 3 LEN 4 RNDM 5 RLOW 6 ROCT 7 RWGT
   kArp,    // Rytm track r 0..11, param 0..4 = MODE SPD RNG GATE SWNG (core/arp/arp.h Cfg)

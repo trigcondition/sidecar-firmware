@@ -30,7 +30,8 @@ struct Row {
 const char* const kSndP[] = {"F1", "F2"};
 const char* const kInsP[] = {"A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "E1", "E2", "E3", "E4"};
 const char* const kIsndP[] = {"B1", "B2", "B3"};
-const char* const kMfxP[] = {"LEV", "MIX1", "MIX2", "MIX3", "MIX4"};
+// LEV, the master's slots' MIX, then (0.5.0) the bus slots' send TYPE MIX: B1A = bus 1 slot A's (master::slot_index + 1)
+const char* const kMfxP[] = {"LEV", "MIX1", "MIX2", "MIX3", "MIX4", "B1A", "B1B", "B2A", "B2B", "B3A", "B3B"};
 const char* const kOutP[] = {"LEV", "PAN", "WID"};
 const char* const kSeqP[] = {"SPD", "DIR", "SWG", "LEN", "RNDM", "RLOW", "ROCT", "RWGT"};
 const char* const kArpP[] = {"MODE", "SPD", "RNG", "GATE", "SWNG"};
@@ -44,7 +45,7 @@ const Row kRows[kKinds] = {
     {"S", 12, 2, kSndP, 0, true},          // kSnd (core/fx/send_fx.h kTracks)
     {"I", 13, 12, kInsP, 0, true},         // kIns (core/fx/insert.h kChains, kParams x kSlots + kEqParams)
     {"X", 8, 3, kIsndP, 0, true},          // kIsnd (ins::kBuses)
-    {"MFX", 1, 5, kMfxP, 0, true},         // kMfx
+    {"MFX", 1, 11, kMfxP, 0, true},        // kMfx (1 + master::kAllSlots)
     {"O", 8, 3, kOutP, 0, true},           // kOut
     {"T", 12, 8, kSeqP, 0, true},          // kSeq (the Rytm's tracks)
     {"R", 12, 5, kArpP, 0, true},          // kArp
@@ -178,7 +179,7 @@ CORE_COLD float knob_now(Tid t) {
         return (float)(l >= 0 ? l : ins::param(i, (p >> 2) & 1, p & 3));
       }
     case kIsnd: return (float)ins::send_knob(i, p);
-    case kMfx: return (float)(p ? master::control.mix[(p - 1) & 3] : master::control.lev);
+    case kMfx: return (float)(p ? master::control.mix[(p - 1) % master::kAllSlots] : master::control.lev);
     case kOut: return (float)out::param(i, p % 3);
 #endif
     default: return base_now(t);

@@ -209,7 +209,7 @@ void set_lev(int v) {
 void mod_offset(int param, int off) {   // never saved, no touch: the knobs are the file's
   int8_t o = (int8_t)clampi(off, -127, 127);
   if (param == 0) control.mod_lev = o;
-  else if (param >= 1 && param <= kSlots) control.mod_mix[param - 1] = o;
+  else if (param >= 1 && param <= kAllSlots) control.mod_mix[param - 1] = o;
 }
 void set_trim(int db) {
   control.trim = (uint8_t)clampi(-db, 0, kTrimMax);
@@ -291,7 +291,7 @@ int stems_on_main() {
 void reset() {
   clear();
   control.mod_lev = 0;
-  for (int i = 0; i < kSlots; ++i) control.mod_mix[i] = 0;
+  for (int i = 0; i < kAllSlots; ++i) control.mod_mix[i] = 0;
   for (int u = 0; u < kFxUnits; ++u)
     if (g_fx[u]) g_fx[u]->Reset();
   memset((void*)g_ctl, 0, sizeof g_ctl);

@@ -52,7 +52,7 @@ assert.ok(!LFO_TARGETS.includes("BD") && LFO_TARGETS.at(-1) === "X8" && LFO_TARG
 // 0.5.0: the master, the sends, the voice sends after O8 (core/lfo.h kTMaster 30, kTMfx 32, kTSnd 33, kTIsnd 45)
 assert.ok(LFO_TARGETS.indexOf("M1") === 30 && LFO_TARGETS.indexOf("MFX") === 32 && LFO_TARGETS.indexOf("S1") === 33 &&
           LFO_TARGETS.indexOf("X1") === 45);
-assert.deepEqual(lfoParams("MFX", 0, ""), ["LEV", "MIX1", "MIX2", "MIX3", "MIX4"]);
+assert.deepEqual(lfoParams("MFX", 0, ""), ["LEV", "MIX1", "MIX2", "MIX3", "MIX4", "B1A", "B1B", "B2A", "B2B", "B3A", "B3B"]);   // 0.5.0: the bus slots' send TYPE MIX
 assert.deepEqual(lfoParams("S12", 1, ""), ["F1", "F2"]);
 assert.deepEqual(lfoParams("X3", 0, ""), ["B1", "B2", "B3"]);
 assert.equal(lfoParams("M2", 0, "").length, 12);

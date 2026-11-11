@@ -243,7 +243,8 @@ MODEL capture A is SYNTHETIC (random weights, not an amp: no amp colour); with M
   the knobs, a shared voice's lock belongs to the track that set it. An older Sidecar drops these locks from the file.
 - **LFOs**: targets `I1..I8` (voice chains), `B1..B3` (bus chains) and, 0.5.0, `M1`, `M2` (the master's,
   docs/MASTER-FX.md), params 0..7 = A P1..P4, B P1..P4 (names "ACUT"), 8..11 the POST EQ, an offset on top of the knob /
-  lock. A send TYPE's P1..P4 on a bus or the master are targets like any other. A bus slot's MIX is not a target.
+  lock. A send TYPE's P1..P4 on a bus or the master are targets like any other. A bus slot's send TYPE MIX is one too: `MFX` B1A..B3B (bus 1 slot A .. bus 3 slot B), core/mod `MFX:B1A`..`MFX:B3B`;
+  an LFO, never a step lock (the lock space is unchanged).
 
 ## Send FX types on the buses (0.5.0)
 
@@ -271,7 +272,7 @@ already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices
   send TYPE on bus 1 or 2 is silent, yet it still holds one of the 4 rooms. The Rytm's BUS view says
   `SEND FX 1 OFF: SILENT` (or 2). Bus 3 and the master have no such condition.
 - **MIX**: a knob per slot, 0 the dry input, 127 the effect alone, default 40. On the Rytm: G in the BUS view, 1 a detent (FUNC + G is the bus there, so no coarse step); web: the
-  strip's MIX knob; console `ins=B3:A:mix:V` (only on a slot that holds a send TYPE; else the help). Not an LFO target.
+  strip's MIX knob; console `ins=B3:A:mix:V` (only on a slot that holds a send TYPE; else the help). An LFO target: `MFX` B1A..B3B (below).
 - **Saved** on the slot's line after P4: `B3 A RINGS 50 0 80 60 40`. A line the engine refuses (a fifth send TYPE, or a
   send TYPE on a voice: a file edited by hand or written by a later build) is logged
   (`ins: line "B3 B CHORUS" not taken: ...`) and the file is kept as it is, never written over (as any line this build
