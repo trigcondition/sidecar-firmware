@@ -50,6 +50,9 @@
 #include <circle/usb/usbstandardhub.h>
 #include <circle/usb/usb.h>
 #include <circle/usb/xhciendpoint.h>
+#if RASPPI >= 4
+#include <circle/usb/xhciconfig.h>
+#endif
 #include <circle/koptions.h>
 #include <circle/synchronize.h>
 #include <circle/timer.h>
@@ -110,6 +113,8 @@ static unsigned Clamp (unsigned v, unsigned lo, unsigned hi)
 
 CObUsb *CObUsb::s_pThis = 0;
 unsigned CObUsb::s_nGen = 0, CObUsb::s_nPipeResets = 0;
+u8 *CObUsb::s_PipeBuf[CObUsb::MaxPipes] = {}, *CObUsb::s_pCtlBuf = 0;	// usb=mirror's: allocated once, as s_InBuf
+unsigned CObUsb::s_nDetaches = 0, CObUsb::s_nFreedInFlight = 0, CObUsb::s_nKeptInFlight = 0;
 static obspeed::Retry s_Retry;				// a box refused below high speed (ob_speed.h)
 static CUSBHCIRootPort *s_pRetryPort = 0;		// its root port: Circle's, it lives as long as the controller
 static CUSBStandardHub *s_pRetryHub = 0;		// or the Pi 4's VL805 hub (BuiltInHub), which lives as long too
@@ -390,6 +395,15 @@ boolean CObUsb::Recover (boolean bIn, unsigned nNowUs)
 	return s_bResetDone;
 }
 
+unsigned CObUsb::UsbRequestsLimit (void)
+{
+#if RASPPI >= 4
+	return XHCI_CONFIG_MAX_REQUESTS;
+#else
+	return 0;				// the DWHCI host: no such limit to report here
+#endif
+}
+
 void CObUsb::SetActive (boolean bActive)
 {
 	s_bActive = bActive;
@@ -432,34 +446,63 @@ CObUsb::CObUsb (CUSBFunction *pFunction, const core::out::Device *pAudio)
 	m_nMidiFailUs = 0;
 	m_pCtlBuf = 0;
 	m_bCtlBusy = FALSE;
+	m_pCtlURB = 0;
+	m_pCtlSetup = 0;
 	m_nGen = ++s_nGen;
+	m_bConfigured = FALSE;
 
 	s_pThis = this;
 }
 
+// The box left (Circle's ~CUSBDevice, task level), or Configure failed (CUSBDevice::Configure deletes the function).
+// Left: ~CXHCIUSBDevice ran first (the derived class's destructor) and disabled and freed the xHC slot, so no transfer
+// event reaches these endpoints any more (CXHCISlotManager::TransferEvent drops a freed slot's): the URBs still queued
+// are never completed, and each is freed here, in flight or not. A failed Configure leaves the slot running, so an URB
+// in flight there is left allocated (its completion may still come), as every one was before.
 CObUsb::~CObUsb (void)
 {
 	s_pThis = 0;
 	m_bStreaming = FALSE;
 	core::out::set_device (0);
+	const boolean bGone = m_bConfigured;
+	unsigned nFreed = 0, nKept = 0;
+	auto Free = [&] (CUSBRequest *pURB, boolean bBusy)
+	{
+		if (pURB == 0) return;
+		if (!bBusy) { delete pURB; return; }
+		if (bGone) { delete pURB; nFreed++; }
+		else nKept++;
+	};
 #ifdef CIRCLE_GADGET_MIRROR
 	if (m_bMirror && CSidecarGadget::Get () != 0) CSidecarGadget::Get ()->MirrorBoxUp (FALSE);
-	for (unsigned i = 0; i < m_nPipes; i++)		// a URB in flight is leaked, as below
+	for (unsigned i = 0; i < m_nPipes; i++)
 	{
-		if (!m_Pipe[i].bBusy) delete m_Pipe[i].pURB;
+		Free (m_Pipe[i].pURB, m_Pipe[i].bBusy);
+		m_Pipe[i].pURB = 0;
 		delete m_Pipe[i].pEP;
+		m_Pipe[i].pEP = 0;
+	}
+	if (m_pCtlURB != 0)				// a forwarded request in flight (on EP0, which ~CUSBDevice deletes next)
+	{
+		Free (m_pCtlURB, TRUE);
+		if (bGone) delete m_pCtlSetup;
+		m_pCtlURB = 0;
+		m_pCtlSetup = 0;
 	}
 #endif
 	if (m_pAudio == &core::out::kRytmMk2) core::device::rytm_on_usb (false);
-	// URBs still queued on the (gone) endpoint are leaked, not freed under the controller
 	for (unsigned i = 0; i < MaxURBs; i++)
 	{
-		if (!m_bInBusy[i]) delete m_pInURB[i];
-		if (!m_bOutBusy[i]) delete m_pOutURB[i];
+		Free (m_pInURB[i], m_bInBusy[i]);
+		Free (m_pOutURB[i], m_bOutBusy[i]);
+		m_pInURB[i] = m_pOutURB[i] = 0;
 	}
 	delete m_pOut;
 	delete m_pIn;
 	m_pOut = m_pIn = 0;
+	CountDetach (bGone, nFreed, nKept);
+	CLogger::Get ()->Write (From, LogNotice, "%s: %u URBs in flight freed, %u kept (USB requests now %u)",
+				bGone ? "box gone" : "not configured", nFreed, nKept, UsbRequests ());
 }
 
 // Log every interface/alternate/endpoint of the default configuration; find alt 3's endpoints.
@@ -638,6 +681,7 @@ boolean CObUsb::Configure (void)
 		return FALSE;
 	}
 
+	m_bConfigured = TRUE;
 	return TRUE;
 }
 
@@ -690,7 +734,8 @@ void CObUsb::MirrorAttach (void)
 	if (!pGadget->MirrorSetDescriptors ((const u8 *) pDev, pC, nCfg)) return;
 	m_bMirror = TRUE;
 
-	if (m_pCtlBuf == 0) m_pCtlBuf = AllocDmaBuf ();
+	if (s_pCtlBuf == 0) s_pCtlBuf = AllocDmaBuf ();
+	m_pCtlBuf = s_pCtlBuf;
 	CUSBHostController *pHost = GetHost ();
 	u8 *pBuf = m_pCtlBuf;
 	u16 nLang = 0x0409;
@@ -749,7 +794,8 @@ void CObUsb::MirrorAttach (void)
 		p.uchAddr = e.addr;
 		p.nMps = (pDesc->wMaxPacketSize & 0x7FF) > 512 ? 512 : pDesc->wMaxPacketSize & 0x7FF;
 		p.pEP = new CUSBEndpoint (GetDevice (), pDesc);
-		p.pBuf = AllocDmaBuf ();
+		if (s_PipeBuf[m_nPipes] == 0) s_PipeBuf[m_nPipes] = AllocDmaBuf ();
+		p.pBuf = s_PipeBuf[m_nPipes];
 		p.bBusy = p.bStopped = FALSE;
 		p.nPackets = p.nErrors = p.nTries = p.nLastTry = 0;
 		p.bRefused = FALSE;
@@ -825,7 +871,9 @@ boolean CObUsb::MirrorPipeOut (u8 uchAddr, const u8 *pData, unsigned nLength)
 		CUSBRequest *pURB = new CUSBRequest (p.pEP, p.pBuf, nLength);	// its length is this packet's (IRQ-safe heap)
 		pURB->SetCompletionRoutine (PipeOutStub, Param (pThis->m_nGen, i), pThis);
 		p.bBusy = TRUE;
+		p.pURB = pURB;					// ~CObUsb frees it if the box leaves first
 		if (pThis->GetHost ()->SubmitAsyncRequest (pURB)) return TRUE;
+		p.pURB = 0;
 		p.bBusy = FALSE;
 		p.nErrors++;
 		delete pURB;
@@ -840,6 +888,7 @@ void CObUsb::PipeOutStub (CUSBRequest *pURB, void *pParam, void *pContext)
 	if (pThis == s_pThis && ParamGen (pParam) == pThis->m_nGen)
 	{
 		TPipe &p = pThis->m_Pipe[ParamIndex (pParam)];
+		p.pURB = 0;
 		p.bBusy = FALSE;
 		if (pURB->GetStatus () == 0) { p.nErrors++; p.bStopped = TRUE; }	// halted: MirrorPipePoll clears it
 		else { p.nPackets++; p.nTries = 0; }
@@ -862,7 +911,11 @@ boolean CObUsb::MirrorControl (const TSetupData *pSetup, const u8 *pOutData, uns
 	CUSBRequest *pURB = new CUSBRequest (pThis->GetEndpoint0 (), pThis->m_pCtlBuf, pSetup->wLength, pS);
 	pURB->SetCompletionRoutine (MirrorCtlStub, Param (pThis->m_nGen, nSeq), pThis);
 	pThis->m_bCtlBusy = TRUE;
+	pThis->m_pCtlSetup = pS;
+	pThis->m_pCtlURB = pURB;			// ~CObUsb frees it if the box leaves first
 	if (pThis->GetHost ()->SubmitAsyncRequest (pURB)) return TRUE;
+	pThis->m_pCtlURB = 0;
+	pThis->m_pCtlSetup = 0;
 	pThis->m_bCtlBusy = FALSE;
 	delete pURB;
 	delete pS;
@@ -875,6 +928,8 @@ void CObUsb::MirrorCtlStub (CUSBRequest *pURB, void *pParam, void *pContext)
 	TSetupData *pS = pURB->GetSetupData ();
 	if (pThis == s_pThis && ParamGen (pParam) == pThis->m_nGen)
 	{
+		pThis->m_pCtlURB = 0;
+		pThis->m_pCtlSetup = 0;
 		pThis->m_bCtlBusy = FALSE;
 		int n = pURB->GetStatus () ? (int) pURB->GetResultLength () : -1;
 		InvalidateDataCacheRange ((uintptr) pThis->m_pCtlBuf, kBufSize);

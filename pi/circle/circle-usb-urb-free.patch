@@ -1,0 +1,154 @@
+diff -ruN a/include/circle/usb/usbmidihost.h b/include/circle/usb/usbmidihost.h
+--- a/include/circle/usb/usbmidihost.h
++++ b/include/circle/usb/usbmidihost.h
+@@ -71,6 +71,11 @@
+ 	u8 *m_pTxBuffer = 0;			// one transfer's, written only while none is in flight
+ 	volatile boolean m_bTxBusy = FALSE;
+ 	volatile boolean m_bTxFailed = FALSE;
++
++	// circle-usb-urb-free.patch: the URBs in flight, freed by the destructor. A function is deleted by ~CUSBDevice, after
++	// ~CXHCIUSBDevice has disabled and freed the slot, so the controller completes neither of them any more.
++	CUSBRequest * volatile m_pRxURB = 0;
++	CUSBRequest * volatile m_pTxURB = 0;
+ };
+ 
+ #endif
+diff -ruN a/include/circle/usb/usbrequest.h b/include/circle/usb/usbrequest.h
+--- a/include/circle/usb/usbrequest.h
++++ b/include/circle/usb/usbrequest.h
+@@ -89,6 +89,12 @@
+ 	boolean m_bCompleteOnNAK;
+ 	boolean m_bCompleteImmediately;
+ 
++public:
++	// circle-usb-urb-free.patch: the instances the class allocator holds out now and at most since boot (its limit is the
++	// host's reservation: XHCI_CONFIG_MAX_REQUESTS on a Pi 4, LogPanic past it); objects on the stack are not counted
++	static unsigned GetHeapInstances (void);
++	static unsigned GetHeapInstancesPeak (void);
++
+ 	DECLARE_CLASS_ALLOCATOR
+ };
+ 
+diff -ruN a/lib/usb/usbmidihost.cpp b/lib/usb/usbmidihost.cpp
+--- a/lib/usb/usbmidihost.cpp
++++ b/lib/usb/usbmidihost.cpp
+@@ -88,7 +88,12 @@
+ 	delete m_pEndpointOut;
+ 	m_pEndpointOut = 0;
+ 
+-	delete [] m_pTxBuffer;			// (an URB left in flight dies with the device, as the IN endpoint's does)
++	delete m_pRxURB;			// circle-usb-urb-free.patch: the URBs left in flight (no completion comes any more)
++	m_pRxURB = 0;
++	delete m_pTxURB;
++	m_pTxURB = 0;
++
++	delete [] m_pTxBuffer;
+ 	m_pTxBuffer = 0;
+ }
+ 
+@@ -242,8 +247,10 @@
+ 	pURB->SetCompletionRoutine (TxCompletionStub, 0, pThis);
+ 
+ 	pThis->m_bTxBusy = TRUE;
++	pThis->m_pTxURB = pURB;
+ 	if (!pThis->GetHost ()->SubmitAsyncRequest (pURB))
+ 	{
++		pThis->m_pTxURB = 0;
+ 		pThis->m_bTxBusy = FALSE;
+ 		delete pURB;
+ 
+@@ -323,6 +330,7 @@
+ 	assert (pThis != 0);
+ 
+ 	pThis->m_bTxFailed = pURB->GetStatus () == 0;
++	pThis->m_pTxURB = 0;
+ 	delete pURB;
+ 	pThis->m_bTxBusy = FALSE;
+ }
+@@ -350,7 +358,16 @@
+ 		pURB->SetCompleteOnNAK (); // do not retry if request cannot be served immediately
+ 	}
+ 
+-	return GetHost ()->SubmitAsyncRequest (pURB);
++	m_pRxURB = pURB;
++	if (!GetHost ()->SubmitAsyncRequest (pURB))
++	{
++		m_pRxURB = 0;			// circle-usb-urb-free.patch: was leaked
++		delete pURB;
++
++		return FALSE;
++	}
++
++	return TRUE;
+ }
+ 
+ void CUSBMIDIHostDevice::CompletionRoutine (CUSBRequest *pURB)
+@@ -358,6 +375,8 @@
+ 	assert (pURB != 0);
+ 	assert (m_pInterface != 0);
+ 
++	m_pRxURB = 0;				// circle-usb-urb-free.patch
++
+ 	boolean bRestart = FALSE;
+ 	u8 *pPacketBuffer = static_cast<u8 *> (pURB->GetBuffer ());
+ 	unsigned nResultLength = pURB->GetStatus () ? pURB->GetResultLength () : 0;
+diff -ruN a/lib/usb/usbrequest.cpp b/lib/usb/usbrequest.cpp
+--- a/lib/usb/usbrequest.cpp
++++ b/lib/usb/usbrequest.cpp
+@@ -167,4 +167,55 @@
+ 	return m_bCompleteImmediately;
+ }
+ 
+-IMPLEMENT_CLASS_ALLOCATOR (CUSBRequest)
++// circle-usb-urb-free.patch: IMPLEMENT_CLASS_ALLOCATOR (CUSBRequest) written out, with a count of the instances out
++static volatile unsigned s_nHeapInstances = 0, s_nHeapInstancesPeak = 0;
++
++unsigned CUSBRequest::GetHeapInstances (void)		{ return s_nHeapInstances; }
++unsigned CUSBRequest::GetHeapInstancesPeak (void)	{ return s_nHeapInstancesPeak; }
++
++CClassAllocator *CUSBRequest::s_pAllocator = 0;
++
++void *CUSBRequest::operator new (size_t nSize)
++{
++	assert (nSize == sizeof (CUSBRequest));
++	assert (s_pAllocator != 0);
++	void *p = s_pAllocator->Allocate ();
++	if (p != 0)
++	{
++		unsigned n = __atomic_add_fetch (&s_nHeapInstances, 1, __ATOMIC_RELAXED);
++		unsigned nPeak = s_nHeapInstancesPeak;
++		while (n > nPeak && !__atomic_compare_exchange_n (&s_nHeapInstancesPeak, &nPeak, n, TRUE,
++								  __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++		{
++		}
++	}
++	return p;
++}
++
++void CUSBRequest::operator delete (void *pBlock, size_t nSize)
++{
++	assert (nSize == sizeof (CUSBRequest));
++	assert (s_pAllocator != 0);
++	s_pAllocator->Free (pBlock);
++	__atomic_sub_fetch (&s_nHeapInstances, 1, __ATOMIC_RELAXED);
++}
++
++void CUSBRequest::InitAllocator (unsigned nReservedObjects)
++{
++	assert (s_pAllocator == 0);
++	s_pAllocator = new CClassAllocator (sizeof (CUSBRequest), nReservedObjects, "CUSBRequest");
++	assert (s_pAllocator != 0);
++}
++
++void CUSBRequest::InitProtectedAllocator (unsigned nReservedObjects, unsigned nTargetLevel)
++{
++	if (s_pAllocator == 0)
++	{
++		s_pAllocator = new CClassAllocator (sizeof (CUSBRequest), nReservedObjects, nTargetLevel, "CUSBRequest");
++		assert (s_pAllocator != 0);
++	}
++	else
++	{
++		s_pAllocator->Extend (nReservedObjects, nTargetLevel);
++	}
++}

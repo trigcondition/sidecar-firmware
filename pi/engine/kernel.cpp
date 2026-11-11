@@ -657,6 +657,12 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		unsigned long nHeapFree = (unsigned long) CMemorySystem::Get ()->GetHeapFreeSpace (HEAP_LOW);	// new's heap
 		if (bridge::store_json (Store, sizeof Store, nHeapFree) > 0) { pOut->Append (","); pOut->Append (Store); }
 	}
+	// Circle's CUSBRequest instances (every driver's; the limit is the allocator's, a LogPanic past it) and the boxes'
+	// detaches with the URBs in flight freed then (ob_usb.h): live stays flat over Rytm restarts
+	s.Format (",\"usbreq\":{\"live\":%u,\"peak\":%u,\"limit\":%u,\"detaches\":%u,\"freedInFlight\":%u,\"keptInFlight\":%u}",
+		  CObUsb::UsbRequests (), CObUsb::UsbRequestsPeak (), CObUsb::UsbRequestsLimit (), CObUsb::Detaches (),
+		  CObUsb::FreedInFlight (), CObUsb::KeptInFlight ());
+	pOut->Append (s);
 	sendfx_pi::View fx;				// the send FX tab: each FX's TYPE, PRE/POST and the 12 sends
 	sendfx_pi::Read (&fx);
 	pOut->Append (",\"fx\":[");

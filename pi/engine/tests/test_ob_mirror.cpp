@@ -75,8 +75,8 @@ static uint8_t g_rytm[263] = {
     0x00, 0x09, 0x05, 0x01, 0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x05, 0x25, 0x01, 0x01, 0x01, 0x09, 0x05, 0x81,
     0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x05, 0x25, 0x01, 0x01, 0x03};
 
-// the driver holds its URBs and endpoints for the life of the device; on the Pi nothing frees them
-extern "C" const char *__asan_default_options () { return "detect_leaks=0"; }
+// leak checks on: the driver frees its URBs, endpoints and buffers when the box goes, so a leak here is a bug
+extern "C" const char *__asan_default_options () { return "detect_leaks=1"; }
 
 static CSidecarGadget g_gadget;
 
@@ -229,16 +229,25 @@ int main() {
     TSetupData z = {0xC0, 0x01, 0, 0, 0};          // IN with no data stage: never forwarded
     CHECK(!CObUsb::MirrorControl(&z, nullptr, 44) && b.host.ep0.empty());
 
-    // the box goes away with a pipe IN request and a forwarded request in flight (they never complete on the Pi; here
-    // they are kept to be completed later), and comes back as a new attach
+    // the box goes away with a pipe IN request, a pipe OUT packet and a forwarded request in flight. On the Pi they
+    // never complete (~CXHCIUSBDevice has freed the slot before ~CUSBDevice deletes the driver), so ~CObUsb frees them
+    // all, with the stream's URBs: back to no CUSBRequest at all (2026-11-09: they were leaked, ~17 a Rytm restart, and
+    // Circle's 256 ran out after ~15 restarts on one boot)
     in = b.pipe(0x82);
+    CHECK(CObUsb::MirrorPipeOut(0x02, pkt, 4));
     CHECK(CObUsb::MirrorControl(&s, nullptr, 45));
     CUSBRequest* ctl = b.host.ep0[0];
-    void* old_ctx = in->ctx;
-    b.host.in.erase(std::find(b.host.in.begin(), b.host.in.end(), in));
-    b.host.ep0.clear();
+    CHECK(b.pipe(0x02) != nullptr);
+    void *in_param = in->param, *ctl_param = ctl->param;      // the old attach's, for the generation check below
+    TURBCompletionRoutine *in_fn = in->fn, *ctl_fn = ctl->fn;
+    b.host.in.clear(), b.host.out.clear(), b.host.ep0.clear();     // the controller forgets them (the slot is gone)
+    unsigned nFreed = CObUsb::FreedInFlight(), nDet = CObUsb::Detaches();
     delete b.ob;
     b.ob = nullptr;
+    CHECK(CUSBRequest::live() == 0);
+    CHECK(CObUsb::Detaches() == nDet + 1);
+    CHECK(CObUsb::FreedInFlight() - nFreed == 8 + 3);   // the 8 IN stream URBs (paced OUT: none in flight), pipe IN, OUT, EP0
+    CHECK(logged("box gone: 11 URBs in flight freed, 0 kept (USB requests now 0)"));
     CHECK(g_gadget.box.size() == 2 && g_gadget.box.back() == 0);
     CHECK(CObUsb::MirrorPipeResets() == 9);   // every clear sent, both pipes (the mirror line's "reset")
 
@@ -246,21 +255,25 @@ int main() {
     CHECK(g_gadget.box.back() == 1);
     CUSBRequest* nin = c.pipe(0x82);
     CHECK(nin);
-    (void) old_ctx;
-    // the old attach's completions, with the new object as their context, as if it were at the old one's address (the
-    // Pi's heap can do that): ignored (no packet to
-    // the gadget, nothing resubmitted, the new pipe untouched)
+    // a completion of the old attach with the new object as its context (the Pi's heap can put the new one at the old
+    // one's address; a defence only now, since no old completion comes after the slot is freed): ignored (no packet to
+    // the gadget, nothing resubmitted, the new pipe untouched). Stand-ins carry the old attach's parameters.
     size_t nPkt = g_gadget.pipe_in.size(), nIn = c.host.in.size(), nDone = g_gadget.done.size();
-    in->ctx = nin->ctx, ctl->ctx = nin->ctx;
-    in->SetStatus(1), in->SetResultLen(7);
-    in->fn(in, in->param, in->ctx);
+    CUSBRequest* old_in = new CUSBRequest(nin->ep, nin->buf, 64);
+    old_in->SetCompletionRoutine(in_fn, in_param, nin->ctx);
+    old_in->SetStatus(1), old_in->SetResultLen(7);
+    old_in->fn(old_in, old_in->param, old_in->ctx);
     CHECK(g_gadget.pipe_in.size() == nPkt && c.host.in.size() == nIn && c.pipe(0x82) == nin);
-    in->SetStatus(0);                            // nor does an error mark the new pipe halted
-    in->fn(in, in->param, in->ctx);
+    old_in->SetStatus(0);                        // nor does an error mark the new pipe halted
+    old_in->fn(old_in, old_in->param, old_in->ctx);
     poll_at(t + 1000);
     CHECK(c.clears(0x82) == 0);
-    ctl->SetStatus(1), ctl->SetResultLen(4);
-    ctl->fn(ctl, ctl->param, ctl->ctx);          // the old request's answer: not passed on (deletes the URB)
+    delete old_in;
+    TSetupData* old_s = new TSetupData(s);
+    CUSBRequest* old_ctl = new CUSBRequest(nin->ep, nin->buf, 4, old_s);
+    old_ctl->SetCompletionRoutine(ctl_fn, ctl_param, nin->ctx);
+    old_ctl->SetStatus(1), old_ctl->SetResultLen(4);
+    old_ctl->fn(old_ctl, old_ctl->param, old_ctl->ctx);   // the old request's answer: not passed on (deletes the URB)
     CHECK(g_gadget.done.size() == nDone);
     CHECK(CObUsb::MirrorControl(&s, nullptr, 46));   // and EP0 of the new attach is free
     c.complete(c.host.ep0[0], true, 3);
@@ -268,7 +281,25 @@ int main() {
     // the new attach's own completion still goes through
     c.complete(nin, true, 9);
     CHECK(g_gadget.pipe_in.size() == nPkt + 1 && g_gadget.pipe_in.back().n == 9);
-    delete in;
+  }
+  CHECK(CUSBRequest::live() == 0);
+
+  {  // 40 Rytm restarts on one boot (the test target on a unit): each leaves with everything in flight that can be, and
+     // the count of CUSBRequest instances is the same after every one
+    unsigned nDet = CObUsb::Detaches();
+    for (int k = 0; k < 40; k++) {
+      Box b;
+      CHECK(CUSBRequest::live() == 8 + 8 + 1);   // 8 IN + 8 OUT stream URBs, the pipe IN's
+      static const u8 pkt[4] = {1, 2, 3, 4};
+      TSetupData s = {0xC0, 0x01, 0, 0, 16};
+      CHECK(CObUsb::MirrorPipeOut(0x02, pkt, 4) && CObUsb::MirrorControl(&s, nullptr, 100 + k));
+      CHECK(CUSBRequest::live() == 8 + 8 + 1 + 2);
+      b.host.in.clear(), b.host.out.clear(), b.host.ep0.clear();
+      delete b.ob;
+      b.ob = nullptr;
+      CHECK(CUSBRequest::live() == 0);
+    }
+    CHECK(CObUsb::Detaches() == nDet + 40);
   }
 
   {  // The Pi 5 hardware order at a boot with usb=mirror and the box plugged in: the box is configured and read while

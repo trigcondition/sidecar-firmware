@@ -65,6 +65,25 @@ public:
 	static void Stop (void);			// task level: the stream stopped cleanly (alt 0)
 	static void EmergencyStop (void);		// exception context: no more resubmits
 
+	// The URBs of a box that left: ~CObUsb (and ~CObFollow) free every one, those still in flight too. Circle deletes a
+	// configured function from ~CUSBDevice, which runs after ~CXHCIUSBDevice has disabled and freed the xHC slot, so the
+	// controller completes none of them any more. They used to be left allocated; with Circle's 256 CUSBRequest
+	// instances (a LogPanic past that) ~17 a Rytm restart rebooted the Pi after about 15 restarts on one boot.
+	static unsigned Detaches (void)		{ return s_nDetaches; }
+	static unsigned FreedInFlight (void)	{ return s_nFreedInFlight; }	// URBs in flight freed at detaches, all told
+	static unsigned KeptInFlight (void)	{ return s_nKeptInFlight; }	// left allocated: a Configure that failed
+	static void CountDetach (boolean bGone, unsigned nFreed, unsigned nKept)
+	{
+		if (bGone) s_nDetaches++;
+		s_nFreedInFlight += nFreed;
+		s_nKeptInFlight += nKept;
+	}
+	// Circle's CUSBRequest instances on the heap, every driver's (circle-usb-urb-free.patch): now, the most since boot,
+	// and the allocator's limit (XHCI_CONFIG_MAX_REQUESTS on the Pi 4 and 5; past it a LogPanic)
+	static unsigned UsbRequests (void)	{ return CUSBRequest::GetHeapInstances (); }
+	static unsigned UsbRequestsPeak (void)	{ return CUSBRequest::GetHeapInstancesPeak (); }
+	static unsigned UsbRequestsLimit (void);
+
 	// 10 s capture of IN MAIN L/R (channels 0, 1) as the raw int32 samples (the on-wire scale is not yet measured on the Rytm side: MAIN peaks of ~3.9e6 with a pattern playing would be -55 dBFS as int32 full scale, so nothing is cut off),
 	// interleaved little-endian, i.e. WAV PCM data. Task level: CaptureAlloc once (1.92 MB on the
 	// heap), CaptureStart arms it; the IN completion fills it (no allocation, no logging) and
@@ -153,8 +172,8 @@ private:
 		u8 uchAddr;
 		unsigned nMps;
 		CUSBEndpoint *pEP;
-		CUSBRequest *pURB;			// IN: the one in flight (OUT: a new one each packet)
-		u8 *pBuf;				// DMA, 512 B
+		CUSBRequest *pURB;			// IN: its one URB, reused; OUT: a new one each packet, here while in flight
+		u8 *pBuf;				// DMA, 512 B (s_PipeBuf: allocated once, reused by every attach)
 		volatile boolean bBusy;
 		volatile boolean bStopped;		// an error: halted until MirrorPipePoll clears it (IN: then resubmitted)
 		volatile unsigned nPackets, nErrors;
@@ -165,10 +184,17 @@ private:
 	unsigned m_nPipes;
 	boolean m_bMirror;
 	volatile boolean m_bAttachDue;			// configured while CSidecarGadget::Get () was 0
-	u8 *m_pCtlBuf;					// DMA, 512 B: the forwarded request's data
+	u8 *m_pCtlBuf;					// DMA, 512 B: the forwarded request's data (s_pCtlBuf, allocated once)
 	volatile boolean m_bCtlBusy;
+	CUSBRequest *volatile m_pCtlURB;		// the forwarded request in flight, and its setup packet
+	TSetupData *volatile m_pCtlSetup;
 	unsigned m_nGen;				// this box's attach: a completion of an earlier one is ignored
 	static unsigned s_nGen, s_nPipeResets;
+	boolean m_bConfigured;				// Configure returned TRUE: only ~CUSBDevice deletes this (the slot is gone)
+	static unsigned s_nDetaches, s_nFreedInFlight, s_nKeptInFlight;
+	// usb=mirror's DMA buffers (pipes, forwarded requests): allocated once and reused by every attach (one box at a time,
+	// and an old attach's transfers are over before a new one exists: ~CObUsb); they were allocated anew each attach
+	static u8 *s_PipeBuf[MaxPipes], *s_pCtlBuf;
 
 private:
 	const core::out::Device *m_pAudio;		// the box's row: channels, what it is called

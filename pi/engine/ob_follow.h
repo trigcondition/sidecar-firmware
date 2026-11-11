@@ -72,6 +72,7 @@ private:
 	volatile unsigned m_nLastInUs, m_nLastOutUs;	// the last completion of each (CTimer::GetClockTicks): the stall check
 	EpHalt<CXHCIEndpoint> m_InHalt, m_OutHalt;	// a URB failed: none submitted on it until PollHalt reset it
 	EpBox m_Box;					// both failed together: a likely unplug (ep_halt.h)
+	boolean m_bConfigured;				// Configure returned TRUE: only ~CUSBDevice deletes this (~CObFollow)
 	static unsigned s_nHaltResets[2], s_nHaltRefused, s_nHaltHeld;
 
 	static CObFollow *s_pThis;
