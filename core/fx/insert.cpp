@@ -293,8 +293,8 @@ void slot_value_text(int c, int s, int k, int v, char* b, int cap) {
 void set_type(int c, int s, int t, bool keep) {
   if (!valid(c, s) || t < 0 || t >= kAllTypes) return;
   if (t == kAmp && c >= kVoices && c < kM0) return;   // AMP: the voice chains and the master (amp.h)
-  if (t >= kTypes && c < kM0) return;                 // a send TYPE: the master's chains only
-  if (c >= kM0 && !master::accept(c, s, t)) return;   // no room for another send TYPE
+  if (t >= kTypes && c < kBus0) return;               // a send TYPE: the buses' and the master's chains (core 2's) only
+  if (c >= kBus0 && !master::accept(c, s, t)) return;   // no room for another send TYPE (master.h kFxSlots)
   if (control.type[c][s] == t && keep) return;
   control.type[c][s] = (uint8_t)t;
   if (!keep)
@@ -556,8 +556,8 @@ bool command(const char* p, char* o, int cap) {
   field(q, val, sizeof val);
   int c = chain_from_name(a);
   static const char kHelp[] =
-      "ins=C:S:type:T|p1..p4:V|off (C V1..V8 B1..B3, S A|B), ins=C:eq:hpf|lpf|low|high:V|off, ins=Vn:send:B:V (B 1..3), "
-      "ins=b3:route:pre|post, ins=reset";
+      "ins=C:S:type:T|p1..p4:V|off (C V1..V8 B1..B3, S A|B), ins=Bn:S:mix:V (a send TYPE's), ins=C:eq:hpf|lpf|low|high:V|off, "
+      "ins=Vn:send:B:V (B 1..3), ins=b3:route:pre|post, ins=reset";
   if (c < 0) {
     sniprintf(o, cap, "%s", kHelp);
     return true;
@@ -609,18 +609,23 @@ bool command(const char* p, char* o, int cap) {
   } else if (same_ci(key, "type")) {
     int t = type_from_name(val);
     if (t < 0) {
-      sniprintf(o, cap, CORE_STR("ins: no type \"%s\" (OFF FILTER CRUSH DRIVE EQ COMP DELAY TREMOLO RINGMOD AMP SAT)"), val);
+      sniprintf(o, cap, CORE_STR("ins: no type \"%s\" (OFF FILTER CRUSH DRIVE EQ COMP DELAY TREMOLO RINGMOD AMP SAT; buses: CHORUS COMB SPACE RINGS CLOUD HALO)"), val);
       return true;
     }
     if (t == kAmp && c >= kVoices && c < kM0) {
       sniprintf(o, cap, "ins: AMP is for the voice chains (V1..V8) and the master, not the buses");
       return true;
     }
-    if (t >= kTypes && c < kM0) {
-      sniprintf(o, cap, "ins: %s is for the master chain (mfx=)", kLabels[t].name);
+    if (t >= kTypes && c < kBus0) {
+      sniprintf(o, cap, "ins: %s is for the buses (B1..B3) and the master (mfx=), not a voice", kLabels[t].name);
       return true;
     }
     set_type(c, s, t);
+    if (control.type[c][s] != t) {   // the send TYPEs' room is full (master.h kFxSlots)
+      int n = sniprintf(o, cap, CORE_STR("ins: %s %c: "), kChainNames[c], 'A' + s);
+      master::full_text(t, o + n, cap - n);
+      return true;
+    }
   } else if ((key[0] == 'p' || key[0] == 'P') && key[1] >= '1' && key[1] <= '4' && !key[2]) {
     int v = num(val);
     if (v < 0) {
@@ -628,6 +633,8 @@ bool command(const char* p, char* o, int cap) {
       return true;
     }
     set_param(c, s, key[1] - '1', v), fx::edited(mod::tid(mod::kIns, c, s * 4 + key[1] - '1'));
+  } else if (same_ci(key, "mix") && master::slot_index(c, s) >= 0 && num(val) >= 0) {   // a bus's or the master's slot
+    master::set_mix(master::slot_index(c, s), num(val));
   } else {
     sniprintf(o, cap, "%s", kHelp);
     return true;
@@ -635,8 +642,9 @@ bool command(const char* p, char* o, int cap) {
   int t = control.type[c][s];
   char v4[4][8];
   for (int k = 0; k < kParams; ++k) slot_value_text(c, s, k, g_knob[c][s][k], v4[k], sizeof v4[k]);
-  sniprintf(o, cap, CORE_STR("ins: %s %c %s %s %s %s %s %s %s %s %s"), kChainNames[c], 'A' + s, kLabels[t].name,
-            kLabels[t].label[0], v4[0], kLabels[t].label[1], v4[1], kLabels[t].label[2], v4[2], kLabels[t].label[3], v4[3]);
+  int n = sniprintf(o, cap, CORE_STR("ins: %s %c %s %s %s %s %s %s %s %s %s"), kChainNames[c], 'A' + s, kLabels[t].name,
+                    kLabels[t].label[0], v4[0], kLabels[t].label[1], v4[1], kLabels[t].label[2], v4[2], kLabels[t].label[3], v4[3]);
+  if (master::send_type(t) && n > 0 && n < cap) sniprintf(o + n, cap - n, CORE_STR(" mix %d"), master::control.mix[master::slot_index(c, s)]);
   return true;
 }
 
@@ -648,9 +656,19 @@ int json(char* o, int cap) {
     n += k;
     for (int s = 0; s < kSlots; ++s) {
       int t = control.type[c][s];
-      k = sniprintf(o + n, cap - n, CORE_STR("%s{\"t\":\"%s\",\"p\":[%d,%d,%d,%d],\"l\":[%d,%d,%d,%d]}"), s ? "," : "",
+      k = sniprintf(o + n, cap - n, CORE_STR("%s{\"t\":\"%s\",\"p\":[%d,%d,%d,%d],\"l\":[%d,%d,%d,%d]"), s ? "," : "",
                     kLabels[t].name, g_knob[c][s][0], g_knob[c][s][1], g_knob[c][s][2], g_knob[c][s][3],
                     control.play[c][s][0], control.play[c][s][1], control.play[c][s][2], control.play[c][s][3]);
+      if (k < 0 || k >= cap - n) return cap;
+      n += k;
+      if (master::send_type(t)) {   // 0.5.0: a bus's send TYPE: its MIX and its knobs' names (the pages have no list of them)
+        const Labels& L = kLabels[t];
+        k = sniprintf(o + n, cap - n, CORE_STR(",\"mix\":%d,\"n4\":[\"%s\",\"%s\",\"%s\",\"%s\"]"),
+                      master::control.mix[master::slot_index(c, s)], L.label[0], L.label[1], L.label[2], L.label[3]);
+        if (k < 0 || k >= cap - n) return cap;
+        n += k;
+      }
+      k = sniprintf(o + n, cap - n, "}");
       if (k < 0 || k >= cap - n) return cap;
       n += k;
     }
