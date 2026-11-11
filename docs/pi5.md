@@ -261,6 +261,32 @@ Expected log:
     display: touch screen bound (touch1)
     engine: display: 800x480, input touch (USB), longest update N us      (the stats line)
 
+### Only the backlight, or 640x480: the screen did not answer at power-on
+
+*Reported* (a user, Waveshare 10.1" HDMI LCD (B), 1280x800, Pi 5): the panel showed only its backlight. The log:
+
+    display: firmware 1 display(s): 0=HDMI0 -> frame buffer on 0 640x480
+    display: EDID: not available (forced hotplug without a display, or the firmware did not answer)
+    display: HDMI 640x480 with no EDID: the screen did not answer at power-on. Power the screen first, then the Pi (HDMI0, next to USB-C; config.txt [pi5] hdmi_force_hotplug=1). docs/pi5.md "HDMI display"
+    display: res=1280x800 does not fit the frame buffer's 640x480: automatic
+
+The firmware reads the screen's EDID once, at power-on. When the screen is not fully powered yet (a panel fed from
+the Pi's USB, or switched on after the Pi), the EDID comes back empty (its header `00 00 00` instead of
+`00 FF FF ...`) and the firmware falls back to **640x480**. Circle cannot change the Pi 5's HDMI mode afterwards (above),
+so the engine cannot fix it at run time; many panels (this one among them) show no picture at 640x480.
+
+Since 0.5.0 the engine says so when the frame buffer is 640x480 and the EDID gave no preferred mode (the decision:
+`pi/ui/display_hint.h`, tested in `pi/engine/tests/test_display_hint.cpp`; the Pi 4 is unchanged):
+
+- the warning above in the log (`/log`, the serial console);
+- on the boot screen, under the progress bar, large: "No screen info at power-on. Power the screen first, then the
+  Pi." (in the dot font's capitals), kept at least 5 s; then the normal UI at 640x480, for a screen that does show it;
+- `/status` gets `"displayHint":"No screen info at power-on: ..."` (absent otherwise; the web pages do not show it yet).
+
+The fix: **power the screen first, then the Pi** (its own supply, or plugged in and on before the Pi's USB-C), with
+the screen on **HDMI0** (next to USB-C) and `hdmi_force_hotplug=1` in `[pi5]`. A screen whose EDID really prefers
+640x480 gets no hint.
+
 ## DSI display
 
 Built, **not yet run** (everything here *inferred* from Circle 51.1.1's `addon/rp1dsi`, `sample/28-touchscreen` and
