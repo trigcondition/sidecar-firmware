@@ -79,9 +79,13 @@ Four slots in a row, then a POST EQ, then LEV.
 - **One FX code path.** Slots 1, 2 are chain M1 of `ins::Engine`, slots 3, 4 chain M2, with its POST EQ. Every INSERT TYPE works, SAT among them (docs/INSERT-FX.md): 15 frames each, tape on the mix is the use it was built for.
 - **AMP**: its own cap, 2 instances, outside the voices' 6. One instance on (L + R) / 2 on both sides, or an L/R pair (two instances,
   each side its own). `MAX 2` past that.
-- **Send FX types as inserts**: CHORUS, COMB, SPACE, RINGS, CLOUD, HALO: a second `fx::SendFx`, through `SendFx::Insert`, the same
-  fades, zones and clears, the same output [measured: under 1e-4 of the send FX's own return after a settling time]. Two at a time; a third is refused and the slot keeps what
-  it has. Mono in, as on the buses. A MIX knob each (127: only the return). CRUSH and RINGMOD exist as INSERT types.
+- **Send FX types as inserts**: CHORUS, COMB, SPACE, RINGS, CLOUD, HALO: through `SendFx::Insert`, the same
+  fades, zones and clears, the same output [measured: under 1e-4 of the send FX's own return after a settling time].
+  0.5.0: the buses B1..B3 take them too (docs/INSERT-FX.md), and the room is shared: **4 at a time, the master and the buses
+  together**, on two insert `fx::SendFx` of two slots each (the send FX's own is apart). A fifth is refused and the slot keeps
+  what it has; the console says why (`mfx: RINGS: 4 send FX inserts at most, the master and the buses together (4 in use)`),
+  the Rytm's F TYPE passes them over with `SEND FX INSERTS: 4 IN USE` in the footer, the web pages grey them out with a line.
+  Mono in, as on the buses. A MIX knob each (127: only the return). CRUSH and RINGMOD exist as INSERT types.
 - **STUTTER** is not a master type: its ring is mono; idle, it would fold the chain to mono.
 - **BYPASS** crossfades over 10 ms. The chain keeps running, so tails stay and re-engaging is instant; its core time stays too.
   Bypassed and faded, the 12 channels are bit for bit what they were [measured]. Every slot off: no work on any core.
@@ -96,7 +100,8 @@ Four slots in a row, then a POST EQ, then LEV.
 | MIX | a send type's dry / wet | 0..127 |
 | POST EQ | HPF LPF LOW HIGH | |
 
-No p-locks and no LFO targets yet.
+No p-locks. LFO targets (0.5.0, core/lfo.h): `M1`, `M2` for the slots (params as an INSERT chain's: A P1..P4, B P1..P4,
+the POST EQ), `MFX` for LEV and MIX1..4.
 
 ## Where to set it
 
@@ -131,7 +136,7 @@ The added latency is the way back: `kPrime` 96 frames, the send FX's margin agai
 
 ## Cost
 
-See `test_master`, `bench mfx` in the boot log (a chain without AMP; add 2 x `bench amp` for a pair). Memory: +5.9 MB (the second SendFx),
+See `test_master`, `bench mfx` in the boot log (a chain without AMP; add 2 x `bench amp` for a pair). Memory: +11.8 MB (0.5.0: the two insert SendFx, shared with the buses; 5.9 MB before),
 +280 KB (2 AMP engines), +128 KB (DELAY lines). The limiter runs on core 0: about 5 ns a frame on a Mac [measured], 40-60 cycles a frame on
 a Pi [inferred], under 0.3 % of core 0 at the worst; 384 B of delay.
 

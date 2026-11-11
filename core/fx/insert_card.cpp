@@ -1,9 +1,10 @@
 // core/fx/insert_card.cpp - see insert.h: the INSERT settings on the Sidecar's card, per kit as the LFOs (core/lfo.h):
 // /.rytm/ins/<project>/kNNN.txt for kit NNN (1..128), /.rytm/ins/<project>.txt the project's default (and what is used
 // while the Rytm has not named a kit). One line per slot with a TYPE ("V1 A FILTER 80 20 0 0"), per voice with sends
-// ("SEND V1 0 0 90"), "ROUTE B3 POST" when bus 3 returns POST. 0.5.0: a bus slot with a send TYPE adds its MIX ("B3 A RINGS
-// 50 0 80 60 40"); a line set_type refuses (past the send TYPEs' room, a send TYPE on a voice) is logged and locks the file. The card half of insert.cpp (as send_fx_card.cpp is
+// ("SEND V1 0 0 90"), "ROUTE B3 POST" when bus 3 returns POST. The card half of insert.cpp (as send_fx_card.cpp is
 // send_fx.cpp's), so the DSP and the values build without the card (pi/engine/tests).
+// 0.5.0: a bus slot with a send TYPE adds its MIX ("B3 A RINGS 50 0 80 60 40"); a line set_type refuses (past the send
+// TYPEs' room, a send TYPE on a voice) is logged and locks the file, as a line this build does not read.
 #include <string.h>
 
 #include "fmt/fmt.h"
