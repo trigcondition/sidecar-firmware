@@ -27,6 +27,7 @@ struct MfxPage {
   bool eq = false;
   int slot = 0;
   int touched = -1;
+  bool full = false;   // 0.5.0: F skipped the send TYPEs for want of room (the buses share it: master.h kFxSlots)
 };
 CORE_RAM2 MfxPage mp;
 
@@ -109,6 +110,9 @@ CORE_COLD void mfx_draw(Canvas& c, int page, int npages, uint32_t ms) {
   if (e >= 0 && e < 4 && t) {
     sniprintf(b, sizeof b, CORE_STR("%d %s:%s"), mp.slot + 1, L.label[e], val[e]);
     footer(c, b, ins::param(ch, s, e));
+  } else if (e == 5 && mp.full) {
+    sniprintf(b, sizeof b, CORE_STR("SEND FX INSERTS: %d IN USE"), master::kFxSlots);
+    footer(c, b);
   } else if (master::control.src == master::kMix) {
     const int on = master::stems_on_main();
     if (on) sniprintf(b, sizeof b, CORE_STR("%d VOICES STILL ON MAIN"), on);
@@ -133,7 +137,14 @@ CORE_COLD void mfx_enc(int e, int d, bool func) {
   } else if (e == 4) {
     mp.slot = clampi(mp.slot + l, 0, master::kSlots - 1);
   } else if (e == 5) {
-    if (l) ins::set_type(ch, s, master::next_type(mp.slot, t, l));
+    if (l) {
+      const int n = master::next_type(mp.slot, t, l);
+      mp.full = false;
+      if (!master::room(mp.slot))   // a send TYPE passed over on the way: the room is full
+        for (int k = (t + l + ins::kAllTypes) % ins::kAllTypes; k != n; k = (k + l + ins::kAllTypes) % ins::kAllTypes)
+          mp.full |= master::send_type(k);
+      ins::set_type(ch, s, n);
+    }
   } else if (e == 6) {
     if (master::send_type(t)) master::set_mix(mp.slot, master::control.mix[mp.slot] + d * st), mod::manual_knob(mod::tid(mod::kMfx, 0, 1 + mp.slot));
     else if (t == ins::kAmp && l) master::set_pair(mp.slot, l > 0);
