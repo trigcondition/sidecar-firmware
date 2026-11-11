@@ -4,11 +4,12 @@
 <script setup lang="ts">
 import DotFill from "../../ui/DotFill.vue";
 import SpectrumDots from "../../ui/SpectrumDots.vue";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import Card from "../../ui/Card.vue";
 import Knob from "../../ui/Knob.vue";
 import Segmented from "../../ui/Segmented.vue";
-import { EQ_NAMES, INS_LABELS, SEND_TYPES, eqPath, eqText, mixCmd, slotTypes, typeBlocked, type Strip } from "../../lib/mix";
+import { EQ_NAMES, INS_LABELS, SEND_TYPES, eqPath, eqText, mixCmd, slotTypes, typeBlocked, typeOutcome, type Strip } from "../../lib/mix";
+import { notify } from "../../lib/notify";
 
 const props = defineProps<{ strip: Strip; disabled: boolean }>();
 const emit = defineEmits<{ cmd: [string] }>();
@@ -27,6 +28,20 @@ const valueText = (slot: number, k: number) => (v: number) => s.value.slots[slot
 const at = (hz: number) => Math.log10(hz / 20) / 3; // 0..1 across the curve
 const freqs = [[50, "50"], [200, "200"], [1000, "1k"], [5000, "5k"], [20000, "20k"]].map(([hz, t]) => ({ t: t as string, x: at(hz as number) }));
 const grid = [200, 1000, 5000].map((hz) => at(hz) * 360);
+// a send TYPE sent: the next statuses say whether it was taken; refused (the room filled meanwhile): a toast saying why
+const sent = ref<{ id: string; slot: number; t: string; at: number } | null>(null);
+const setType = (slot: number, t: string) => {
+  sent.value = SEND_TYPES.includes(t) ? { id: s.value.id, slot, t, at: Date.now() } : null;
+  emit("cmd", mixCmd.type(s.value, slot, t));
+};
+watch(s, (now) => {
+  const p = sent.value;
+  if (!p || p.id !== now.id || Date.now() - p.at > 5000) return void (sent.value = null);
+  const o = typeOutcome(now, p.slot, p.t);
+  if (o === "wait") return;
+  sent.value = null;
+  if (o !== "taken") notify.error(new Error(o.refused));
+});
 const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey dots), the curve stays the accent
 </script>
 
@@ -58,7 +73,7 @@ const live = ref(false); // the spectrum shows: the EQ's fill steps back (grey d
     <section v-for="slot in s.chain < 0 ? [0, 1, 2, 3] : [0, 1]" :key="slot" class="part" :aria-label="s.chain < 0 ? `Slot ${slot + 1}` : `Insert ${'AB'[slot]}`">
       <div class="row">
         <label :for="`ins-${s.id}-${slot}`" class="label">{{ s.chain < 0 ? `Slot ${slot + 1}` : `Insert ${"AB"[slot]}` }}</label>
-        <select :id="`ins-${s.id}-${slot}`" :value="s.slots[slot]?.t ?? 'OFF'" :disabled="disabled" @change="emit('cmd', mixCmd.type(s, slot, ($event.target as HTMLSelectElement).value))">
+        <select :id="`ins-${s.id}-${slot}`" :value="s.slots[slot]?.t ?? 'OFF'" :disabled="disabled" @change="setType(slot, ($event.target as HTMLSelectElement).value)">
           <option v-for="t in types" :key="t" :value="t" :disabled="typeBlocked(s, slot, t)">{{ t }}</option>
         </select>
       </div>

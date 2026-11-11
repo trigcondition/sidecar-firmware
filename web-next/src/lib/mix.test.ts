@@ -1,6 +1,6 @@
 // web-next/src/lib/mix.test.ts
 import { describe, expect, it } from "vitest";
-import { EQ_FLAT, eqDb, eqPath, eqText, insertText, mixCmd, slotTypes, strips, typeBlocked } from "./mix";
+import { EQ_FLAT, eqDb, eqPath, eqText, insertText, mixCmd, slotTypes, strips, typeBlocked, typeOutcome } from "./mix";
 
 const status = {
   machines: ["plaits", "juno", "daisy", "dsps", "fm", "dd", "daisy", "plaits"],
@@ -87,5 +87,11 @@ describe("mix", () => {
     st.ins.mfx.fxused = 3;
     expect(typeBlocked(strips(st, null)[10], 1, "CLOUD")).toBe(false);
     expect(typeBlocked(strips(status, null)[10], 1, "CLOUD")).toBe(false); // an older build: no room reported
+    // a TYPE sent while the room had space, then another page took the last one: the refusal, as the console words it
+    const full = strips({ ...st, ins: { ...st.ins, mfx: { ...st.ins.mfx, fxused: 4 } } }, null)[10];
+    expect(typeOutcome(full, 1, "CLOUD")).toEqual({ refused: "CLOUD: 4 send FX inserts at most, the master and the buses together (4 in use)" });
+    expect(typeOutcome(full, 0, "RINGS")).toBe("taken");
+    expect(typeOutcome(strips(st, null)[10], 1, "CLOUD")).toBe("wait"); // room left: not applied yet
+    expect(typeOutcome(full, 1, "COMP")).toBe("wait"); // not a send TYPE: no room to refuse it for
   });
 });

@@ -92,6 +92,17 @@ export function typeBlocked(s: Strip, slot: number, t: string): boolean {
   return s.room.used >= s.room.cap && !SEND_TYPES.includes(s.slots[slot]?.t ?? "OFF");
 }
 
+/**
+ * A TYPE sent to a slot, read from the strip's next status: taken, not applied yet ("wait"), or refused because the
+ * room filled meanwhile (another page took the last one). The /ws reply carries no console text, so the refusal is
+ * worded here as the console words it.
+ */
+export function typeOutcome(s: Strip, slot: number, t: string): "taken" | "wait" | { refused: string } {
+  if ((s.slots[slot]?.t ?? "OFF") === t) return "taken";
+  if (!typeBlocked(s, slot, t) || !s.room) return "wait";
+  return { refused: `${t}: ${s.room.cap} send FX inserts at most, the master and the buses together (${s.room.used} in use)` };
+}
+
 /** "FILTER · COMP", "—" when both slots are off. */
 export function insertText(s: Strip): string {
   const t = s.slots.map((x) => x.t).filter((t) => t && t !== "OFF");
