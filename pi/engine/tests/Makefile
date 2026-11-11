@@ -60,6 +60,12 @@ build/test_gadget_wake: test_gadget_wake.cpp ../../circle/gadget_wake.h check.h
 build/test_gadget_flush: test_gadget_flush.cpp ../../circle/gadget_flush.h check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $<
+# the Pi 5's 640x480-without-EDID hint (pi/ui/display_hint.h) and the boot screen that shows it (sidecar_splash.c, C)
+HINT_C := ../../ui/sidecar_splash.c ../../ui/sidecar_dot.c ../../ui/sidecar_dotfont.c ../../ui/sidecar_wordmark.c
+build/test_display_hint: test_display_hint.cpp ../../ui/display_hint.h ../../ui/sidecar_splash.h $(HINT_C) check.h
+	@mkdir -p build/hint
+	for f in $(HINT_C); do $(CC) -O2 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=all -c $$f -o build/hint/$$(basename $$f .c).o || exit 1; done
+	$(CXX) $(CXXFLAGS) -o $@ $< $(patsubst ../../ui/%.c,build/hint/%.o,$(HINT_C))
 # the touch screen's 4-point calibration (pi/ui/touch_cal.c, Settings > Display)
 build/test_touch_cal: test_touch_cal.cpp ../../ui/touch_cal.c ../../ui/touch_cal.h check.h
 	@mkdir -p build

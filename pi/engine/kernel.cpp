@@ -735,6 +735,14 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  SIDECAR_DIRTY ? "true" : "false", __DATE__, __TIME__, CIRCLE_NAME, CIRCLE_VERSION_STRING, k->m_nSaverMin, k->m_nBright, k->m_bTouchHidden ? 0u : 1u,
 		  k->m_pDisplay != 0 ? "true" : "false", k->m_pDisplay != 0 && k->m_pDisplay->IsBlank () ? "true" : "false");
 	pOut->Append (s);
+#if RASPPI >= 5
+	if (k->m_pDisplay != 0 && k->m_pDisplay->GetHint () != 0)	// the screen did not answer at power-on (display_hint.h)
+	{
+		pOut->Append (",\"displayHint\":\"");
+		pOut->Append (k->m_pDisplay->GetHint ());		// a constant, no quotes or backslashes
+		pOut->Append ("\"");
+	}
+#endif
 	{
 		char Power[400];		// the supply (power_state.h): the page's warning
 		powerstate::json (k->m_Power, Power, sizeof Power);

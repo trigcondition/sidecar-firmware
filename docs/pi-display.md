@@ -506,6 +506,19 @@ A USB mouse on this panel still moves in the panel's portrait range: not handled
     (a touch on the black border lands on the UI's edge). The Pi 5's scaled HDMI: the range covers the UI.
   - If the result is off, set `touchscreen=minx,maxx,miny,maxy` (raw values from the readout) in `cmdline.txt`.
 
+## Troubleshooting
+
+- **Pi 5, HDMI: only the backlight, or a 640x480 picture.** The log says
+  `display: firmware 1 display(s): 0=HDMI0 -> frame buffer on 0 640x480`, `display: EDID: not available ...` and
+  `display: HDMI 640x480 with no EDID: the screen did not answer at power-on. Power the screen first, then the Pi
+  (HDMI0, next to USB-C; config.txt [pi5] hdmi_force_hotplug=1). docs/pi5.md "HDMI display"`; a `res=` bigger than
+  640x480 is then ignored (`res=WxH does not fit the frame buffer's 640x480: automatic`). The screen was not fully
+  powered when the Pi started, so the firmware read no EDID and fell back to 640x480, which the Pi 5 cannot change
+  later. Fix: power the screen first, then the Pi; HDMI0; `hdmi_force_hotplug=1` in `[pi5]`. A screen that shows
+  640x480 also shows "No screen info at power-on. Power the screen first, then the Pi." on the boot screen, and
+  `/status` carries `displayHint`. Reported with the Waveshare 10.1" HDMI LCD (B) (1280x800), which shows only its
+  backlight at 640x480. Details: docs/pi5.md "HDMI display".
+
 ## Screensaver and brightness
 
 - **Screensaver:** after 1 hour (default) without interaction the screen goes black. Interaction is a touch on

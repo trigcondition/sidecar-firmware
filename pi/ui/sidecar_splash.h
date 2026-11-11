@@ -18,6 +18,9 @@ extern "C" {
 void sidecar_splash_style (int style);
 void sidecar_splash_draw (uint16_t *fb, unsigned pitch, unsigned w, unsigned h);
 void sidecar_splash_progress (uint16_t *fb, unsigned pitch, unsigned w, unsigned h, unsigned step, unsigned steps);
+// A warning under the progress bar (after sidecar_splash_draw; the bar's steps leave it alone): lines split at '\n',
+// centred, plain white pixels in the 5x9 face as large as fits (scale 2..4). Returns the scale, 0: did not fit.
+int sidecar_splash_hint (uint16_t *fb, unsigned pitch, unsigned w, unsigned h, const char *text);
 
 #ifdef __cplusplus
 }

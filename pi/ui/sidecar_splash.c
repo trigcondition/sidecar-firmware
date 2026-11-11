@@ -244,3 +244,47 @@ void sidecar_splash_progress (uint16_t *fb, unsigned pitch, unsigned w, unsigned
 	if (step > steps) step = steps;
 	rect (fb, pitch, w, h, x, by, (int) ((unsigned) WORDMARK_A4_W * step / steps), 3, ACC);
 }
+
+// the hint's area: from under the bar to the bottom, the bar's place as the two looks draw it
+int sidecar_splash_hint (uint16_t *fb, unsigned pitch, unsigned w, unsigned h, const char *text)
+{
+	int top;
+	if (!s_Style)
+	{
+		int gw, gh;
+		oled_layout (w, h, &gw, &gh);
+		top = (gh / 2 + (gw >= 640 ? 16 + 6 : 27 + 4)) * SIDECAR_DOT + 12;
+	}
+	else
+	{
+		int x, y, by;
+		layout (w, h, &x, &y, &by);
+		top = by + 3 + 12;
+	}
+	char line[8][64];
+	int n = 0, len = 0, maxw = 0;
+	for (const char *p = text;; p++)
+	{
+		if (*p == '\n' || *p == 0)
+		{
+			line[n][len] = 0;
+			int lw = dotfont_width (&dotfont_5x9, line[n], 0);
+			if (lw > maxw) maxw = lw;
+			n++;
+			len = 0;
+			if (*p == 0 || n == 8) break;
+		}
+		else if (len < 63) line[n][len++] = *p;
+	}
+	if (!n || !maxw) return 0;
+	const int fh = dotfont_5x9.h, room = (int) h - 8 - top;
+	int s = 4;
+	while (s >= 2 && (maxw * s > (int) w - 32 || n * fh * s + (n - 1) * 4 * s > room)) s--;
+	if (s < 2) return 0;
+	const int th = n * fh * s + (n - 1) * 4 * s;
+	int y = top + (room - th) / 2;
+	for (int i = 0; i < n; i++, y += (fh + 4) * s)
+		dotfont_draw (&dotfont_5x9, line[i], ((int) w - dotfont_width (&dotfont_5x9, line[i], 0) * s) / 2, y, s, 0, 0xFFFF,
+			      fb, pitch, w, h);
+	return s;
+}
