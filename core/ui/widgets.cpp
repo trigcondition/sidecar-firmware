@@ -18,7 +18,17 @@ static CORE_COLD void begin(Canvas& c, const Rect& r) {
   c.clip(r);
 }
 
+namespace {
+char g_tag[12];
+}  // namespace
+CORE_COLD void header_tag(const char* tag) {
+  if (!tag) tag = "";
+  strncpy(g_tag, tag, sizeof g_tag - 1);
+  g_tag[sizeof g_tag - 1] = 0;
+}
+
 CORE_COLD void header(Canvas& c, const char* title, int page, int npages, const char* right) {
+  if (g_tag[0]) right = g_tag;
   Rect r = {0, 0, kW, kHeaderH};
   begin(c, r);
   c.fill(r, kOn);

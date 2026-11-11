@@ -114,11 +114,12 @@ static void set(int i, int t) { ins::set_type(master::chain(i), master::slot(i),
 
 static void types() {
   all_off();
-  // a send TYPE is the master's alone; AMP is not a bus's
+  // a send TYPE is not a voice's; AMP is not a bus's
   ins::set_type(0, 0, ins::kMSpace);
   CHECK(ins::control.type[0][0] == ins::kOff);
-  ins::set_type(ins::kBus0, 0, ins::kMRings);
-  CHECK(ins::control.type[ins::kBus0][0] == ins::kOff);
+  ins::set_type(ins::kBus0, 0, ins::kMRings);   // 0.5.0: a bus takes one too (test_sendfx_ins.cpp)
+  CHECK(ins::control.type[ins::kBus0][0] == ins::kMRings);
+  ins::set_type(ins::kBus0, 0, ins::kOff);
   ins::set_type(ins::kBus0, 0, ins::kAmp);
   CHECK(ins::control.type[ins::kBus0][0] == ins::kOff);
   char o[200];
@@ -129,7 +130,9 @@ static void types() {
     CHECK(ins::type_from_name(ins::type_name(t)) == t);
     CHECK(ins::labels(t).label[0][0] != 0);
   }
-  // two send TYPEs at a time: the third is refused and its slot keeps what it has; a freed room is free again
+  // 0.5.0: four send TYPEs at a time with the buses' (two taken there here): the master's third is refused and its slot
+  // keeps what it has; a freed room is free again
+  ins::set_type(ins::kBus0 + 2, 0, ins::kMRings), ins::set_type(ins::kBus0 + 2, 1, ins::kMChorus);
   set(0, ins::kMSpace), set(1, ins::kMCloud), set(2, ins::kComp);
   set(2, ins::kMHalo);
   CHECK(ins::control.type[master::chain(2)][master::slot(2)] == ins::kComp);
@@ -143,7 +146,7 @@ static void types() {
   CHECK(master::next_type(1, ins::kSat, 1) == ins::kMChorus);
   all_off();
   CHECK(!master::on());
-  printf("test_master: send TYPEs on the master only, two at a time; AMP not on a bus\n");
+  printf("test_master: send TYPEs not on a voice, four at a time with the buses'; AMP not on a bus\n");
 }
 
 // one code path: a send TYPE as a master slot at MIX 127 = the send FX's own return for the same input and knobs

@@ -42,3 +42,12 @@ test("it says what the chain does not hold", () => {
   assert.match(MFX_NOTE.mix, /outside the chain/);
   assert.match(MFX_NOTE.old, /mono/);
 });
+test("0.5.0: the send TYPEs' room, shared with the buses: full, a slot without one cannot pick one", () => {
+  const full = mfxHtml({ ...m, fxcap: 4, fxused: 4 });
+  assert.match(full, /4 play at once, the master and the buses together/);
+  assert.match(full, /data-mfx-t="1">[\s\S]*?<option disabled>RINGS</);   // COMP's slot
+  assert.doesNotMatch(full.slice(full.indexOf('data-mfx-t="3"'), full.indexOf('data-mfx-t="4"')), /disabled/);   // SPACE's slot holds one
+  const free = mfxHtml({ ...m, fxcap: 4, fxused: 3 });
+  assert.doesNotMatch(free, /disabled|play at once/);
+  assert.doesNotMatch(mfxHtml(m), /disabled|play at once/);   // an older build: no room reported
+});

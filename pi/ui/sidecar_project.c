@@ -1,7 +1,7 @@
 // pi/ui/sidecar_project.c - see sidecar_project.h. Labels and keys only (no code-drawn area): a view that changes a
 // status number redraws that label (th_label_set skips an unchanged text), the progress bar is one meter, a list
 // change redraws its rows. OLED: the dotted look, captions in the micro face, the selection inverted, the FUNC teal for
-// the destination picked; CLASSIC: display windows on the grey panel, rubber keys.
+// the destination picked; SIDECAR: cards on the night blue, pill keys.
 #include "sidecar_project.h"
 #include "sidecar_theme.h"
 #include "lvgl.h"
@@ -33,7 +33,7 @@ enum { K_EXPORT, K_IMPORT, K_DELETE, K_UP, K_DOWN, K_TRASH };
 enum { L_PROJECTS, L_BUNDLES, L_TRASH };
 
 static int oled (void) { return TH->id == THEME_OLED; }
-static int W (void) { return oled () ? TH->w - LU (48) : TH->w; }
+static int W (void) { return th_page_w (); }
 static int H (void) { return oled () ? TH->h : LU (428) + TH->dy; }
 static uint32_t c_ink (void) { return oled () ? TH->ink : TH->win_ink; }
 static uint32_t c_dim (void) { return oled () ? TH->dim : TH->win_dim; }
@@ -641,7 +641,7 @@ void sidecar_project_create (void *parent, int y0, sidecar_project_cmd_t c)
 		if (r >= s_nRows) continue;
 		int y = ly + hdr + r * pitch;
 		lv_obj_t *row = th_box (pg, lx + 1, y, lw - 2, pitch);
-		lv_obj_set_style_bg_color (row, lv_color_hex (O ? TH->sel_bg : 0x2A3A4C), 0);
+		lv_obj_set_style_bg_color (row, lv_color_hex (O ? TH->sel_bg : TH->row_root), 0);
 		lv_obj_set_style_bg_opa (row, LV_OPA_TRANSP, 0);
 		lv_obj_add_flag (row, LV_OBJ_FLAG_CLICKABLE);
 		lv_obj_add_event_cb (row, row_cb, LV_EVENT_CLICKED, (void *) (intptr_t) r);

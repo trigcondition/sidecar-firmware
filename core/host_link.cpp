@@ -1,5 +1,6 @@
 // core/host_link.cpp - see host_link.h. Per SysEx message, never per sample: cold.
 #include "md/md.h"
+#include "mod/scene.h"
 #include "device/device.h"
 #include "host_link.h"
 #include "inst.h"
@@ -42,26 +43,36 @@ static CORE_COLD void sendfx_names_out() {
 // left out sends the list and the labels again (0x20 below).
 constexpr int kRytmLabelTables = 8, kRytmLabelTables1049 = 16;
 static CORE_COLD int rytm_label_tables() { return ui::remote_caps() & 2 ? kRytmLabelTables1049 : kRytmLabelTables; }
-static uint64_t s_labels_sent;   // bit id: its 0x24 went in the last burst
+static uint64_t s_labels_sent;   // bit id: its 0x24 went in the last burst (ids 1..63)
+static uint8_t s_ulabels_sent;   // bit u: user TYPE 64 + u's (Plugin API 3's user effects, from their manifests)
+static CORE_COLD bool label_sent(int id, uint64_t lo, uint8_t hi) {
+  return id < fx::kFirstUser ? (lo >> id & 1) : (hi >> (id - fx::kFirstUser) & 1);
+}
+static CORE_COLD bool label_id(int id) { return id >= 1 && id < fx::kFirstUser + fx::kUserSlots; }
 static CORE_COLD void sendfx_labels_out() {
   if (!hooks.to_rytm) return;
   uint8_t m[160];
   uint64_t sent = 0;
+  uint8_t usent = 0;
   int k = 0;
   auto one = [&](int id) {
-    if (id < 1 || id >= 64 || (sent >> id & 1) || k >= rytm_label_tables()) return;
-    if (int n = fx::sysex_labels(m, id)) hooks.to_rytm(m, n), sent |= 1ull << id, ++k;
+    if (!label_id(id) || label_sent(id, sent, usent) || k >= rytm_label_tables()) return;
+    if (int n = fx::sysex_labels(m, id)) {
+      hooks.to_rytm(m, n), ++k;
+      if (id < fx::kFirstUser) sent |= 1ull << id;
+      else usent |= (uint8_t)(1u << (id - fx::kFirstUser));
+    }
   };
   one(fx::control.knob[0][0]);
   one(fx::control.knob[1][0]);
-  for (int id = 1; id < 64; ++id) one(id);
-  s_labels_sent = sent;
+  for (int id = 1; id < fx::kFirstUser + fx::kUserSlots; ++id) one(id);
+  s_labels_sent = sent, s_ulabels_sent = usent;
 }
 // a slot's TYPE has labels the Rytm was not sent (the cap above)
 static CORE_COLD bool sendfx_labels_missing() {
   for (int s = 0; s < fx::kSlots; ++s) {
     int id = fx::control.knob[s][0];
-    if (id >= 1 && id < 64 && fx::labels(id) && !(s_labels_sent >> id & 1)) return true;
+    if (label_id(id) && fx::labels(id) && !label_sent(id, s_labels_sent, s_ulabels_sent)) return true;
   }
   return false;
 }
@@ -89,8 +100,19 @@ CORE_COLD void sendfx_project() {
   sendfx_step();
 }
 
+static uint32_t s_list_ms = 0;
 CORE_COLD bool sendfx_step() {
+  // a user effect slot changed (fx::list_changed): the list, the labels and the states again, at most every 100 ms
+  if (fx::list_dirty && !fx_owed && now_ms() - s_list_ms >= 100) {
+    fx::list_dirty = false;
+    s_list_ms = now_ms();
+    sendfx_names_out();
+    sendfx_labels_out();
+    sendfx_state_out(true);
+    return true;
+  }
   if (!fx_owed || !fx::slots_step()) return false;
+  fx::list_dirty = false;   // (the list below has it)
   fx_owed = false;
   sendfx_names_out();
   sendfx_labels_out();
@@ -198,6 +220,7 @@ static CORE_COLD void contact() {
 
 CORE_COLD void link_reset(const char* why) {
   for (int vi = 0; vi < kVoices; ++vi) voice_silence(vi);
+  scene::qperf_rebase();   // the QPERF knob's next report a baseline, not a move (core/mod/scene.h)
 #if CORE_MSAMP
   midim::kit_changed();   // the Rytm starts over: PRG and the rest again at the next report
 #endif

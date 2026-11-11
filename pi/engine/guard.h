@@ -13,6 +13,18 @@
 #include <circle/exceptionhandler.h>
 #include <circle/logger.h>
 #include <circle/types.h>
+// The guarded calls' jump (ControlCallOn): GCC's __builtin_setjmp on the Pi (five words, as the render guard's); a test
+// on a host whose compiler lacks it (Apple clang on arm64) builds with CGUARD_HOST_JMP: the C library's setjmp
+#ifdef CGUARD_HOST_JMP
+#include <setjmp.h>
+typedef jmp_buf TGuardJmp;
+#define GUARD_SETJMP(b) setjmp (b)
+#define GUARD_LONGJMP(b) longjmp (b, 1)
+#else
+typedef void *TGuardJmp[5];
+#define GUARD_SETJMP(b) __builtin_setjmp (b)
+#define GUARD_LONGJMP(b) __builtin_longjmp (b, 1)
+#endif
 
 class CGuard
 {
@@ -89,6 +101,41 @@ public:
 	void ArmOverrun (unsigned nVoice, unsigned nBlocks) { m_nOverVoice = nVoice; m_nOverBlocks = nBlocks; }
 	void ArmHang (unsigned nVoice)		{ m_nHangTest = nVoice + 1; }
 
+	// Plugin API 3 (core/user/um.h Exec::guard, docs/plugin-api-3-plan.md): a user plugin's call guarded as a voice's
+	// render is - on the control core (core 3: init, setup, voice_init, params, note_on ...) and on core 2 (a user
+	// effect's render in the send FX, after the block): a fault inside it returns from the exception into ResumeControl
+	// (guard.cpp), which longjmps back into ControlCall: 1 then, *pPC the faulting address; the caller mutes the
+	// plugin's slot and the core plays on. 0: it returned. On cores 0 and 1, or nested, the call runs unguarded (a
+	// fault there is fatal, as before).
+	int ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC);
+	// ControlCall on core nCore (its portable part: tests/test_guard.cpp stands in for the exception with a longjmp into
+	// ControlJumpBuffer, as ResumeControl does after Throw's eret)
+	int __attribute__ ((noinline)) ControlCallOn (unsigned nCore, void (*pFunc) (void *), void *pParam, u64 *pPC)
+	{
+		volatile unsigned c = nCore & 3;		// (volatile: read again after the jump)
+		if ((c != 2 && c != 3) || m_bCtlArmed[c] || (c == 2 && m_bArmed[2]))	// (core 2 inside a voice: the voice's guard)
+		{
+			pFunc (pParam);
+			return 0;
+		}
+		m_pCtlPC[c] = pPC;
+		if (GUARD_SETJMP (m_CtlJmp[c]))
+		{
+			const unsigned c2 = c;
+			m_bCtlArmed[c2] = FALSE;
+			*m_pCtlPC[c2] = m_nCtlPC[c2];
+			return 1;
+		}
+		m_bCtlArmed[c] = TRUE;
+		pFunc (pParam);
+		m_bCtlArmed[c] = FALSE;
+		return 0;
+	}
+	boolean ControlArmed (unsigned nCore) const	{ return m_bCtlArmed[nCore & 3]; }
+	TGuardJmp &ControlJumpBuffer (unsigned nCore)	{ return m_CtlJmp[nCore & 3]; }
+	void NoteControlFault (unsigned nCore, u64 nPC)	{ m_nCtlPC[nCore & 3] = nPC; m_nCtlFaults++; }
+	unsigned ControlFaults (void) const		{ return m_nCtlFaults; }
+
 private:
 	void Mute (unsigned nVoice, const char *pWhy, const void *pMach, u32 nGen)
 	{
@@ -116,6 +163,13 @@ private:
 	volatile boolean m_bResumedOK[4] = {FALSE, FALSE, FALSE, FALSE};	// the worker back in EL1t, IRQs as before
 	const char *volatile m_pFatal = 0;
 	volatile unsigned m_nFaultTest = 0, m_nOverVoice = 0, m_nOverBlocks = 0, m_nHangTest = 0;
+	volatile boolean m_bCtlArmed[4] = {FALSE, FALSE, FALSE, FALSE};	// the core is inside a guarded plugin call
+	TGuardJmp m_CtlJmp[4];			// its jump buffer (GUARD_SETJMP)
+	u64 *volatile m_pCtlPC[4] = {0, 0, 0, 0};	// where ControlCall puts the faulting address
+	volatile u64 m_nCtlPC[4] = {0, 0, 0, 0};
+	volatile u64 m_nCtlLastPC[4] = {0, 0, 0, 0};		// the last fault's PC, for LogNews (core 0)
+	volatile boolean m_bCtlResumedOK[4] = {FALSE, FALSE, FALSE, FALSE};	// after it: at task level, SP_EL0
+	volatile unsigned m_nCtlFaults = 0;
 };
 
 extern CGuard g_Guard;

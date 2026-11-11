@@ -285,6 +285,26 @@ int main() {
   CHECK(pools::command("pool=smp:assign:B011:0", o, sizeof o) && E(pools::kSamples, "B011").type == pools::kSample);
   CHECK(pools::command("pool=smp:shown:C", o, sizeof o) && pools::shown_bank(pools::kSamples) == 2);
   pools::shown(pools::kSamples, 0);
+  {   // take:PATH - the next row with room, answered like add:; a second take answers IN POOL with the same row
+    CHECK(system(("mkdir -p '" + g_card + "/Samples/Inbox'").c_str()) == 0);
+    wg::write_file(g_card + "/Samples/Inbox/a.wav", wg::wav_bytes(1300, 1, 16, 48000, 1, "", tone(777)));
+    lib_ready();
+    lib::rescan();
+    { lib::Ref r; bool k = false;
+      for (int i = 0; i < 200000 && !(k = lib::ref_for_path("/Samples/Inbox/a.wav", &r)); ++i) lib::step();
+      CHECK(k); }
+    char t1[400], t2[400];
+    CHECK(pools::command("pool=smp:take:/Samples/Inbox/a.wav", t1, sizeof t1) && strstr(t1, "SET"));
+    const char* rw = strstr(t1, "smp ");
+    CHECK(rw && rw[4] >= 'A' && rw[4] <= 'H');
+    char row[5] = {0};
+    if (rw) memcpy(row, rw + 4, 4);
+    CHECK(E(pools::kSamples, row).type == pools::kSample && !strcmp(E(pools::kSamples, row).name, "a"));
+    CHECK(pools::command("pool=smp:take:/Samples/Inbox/a.wav", t2, sizeof t2) && strstr(t2, "IN POOL") && strstr(t2, row));
+    CHECK(pools::unload(pools::kSamples, C(row), pools::kForced) == pools::kOk);
+    lib_ready();   // (the rescan finished: later cases read the library as before)
+    run(1500);
+  }
   CHECK(pools::command("pool", o, sizeof o) && strstr(o, "pool:"));
   CHECK(!pools::command("lib=status", o, sizeof o));
   char js[8192];

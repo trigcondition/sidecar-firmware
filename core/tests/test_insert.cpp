@@ -639,13 +639,13 @@ int main() {
     CHECK(ins::control.type[2][0] == ins::kFilter && ins::control.play[2][0][0] == 80 && ins::param(2, 0, 0) == 80);
     ins::lock(2, 0, 0, 30);
     CHECK(ins::control.play[2][0][0] == 30 && ins::locked(2, 0, 0) == 30);
-    ins::lfo_offset(2, 0, 0, 10);
+    ins::mod_offset(2, 0, 0, 10);
     CHECK(ins::control.play[2][0][0] == 40);
     ins::lock(2, 0, 0, -1);
     CHECK(ins::control.play[2][0][0] == 90);
-    ins::lfo_offset(2, 0, 0, 100);
+    ins::mod_offset(2, 0, 0, 100);
     CHECK(ins::control.play[2][0][0] == 127);
-    ins::lfo_offset(2, 0, 0, 0);
+    ins::mod_offset(2, 0, 0, 0);
     char b[400], t[16];
     ins::value_text(ins::kFilter, 0, 72, t, sizeof t);
     CHECK(!strcmp(t, "1.0K"));
@@ -851,9 +851,9 @@ int main() {
     ins::set_eq(2, 0, 90);
     CHECK(ins::eq_on(2) && ins::eq_any_on() && ins::any_on() && ins::eq_playing(2, 0) == 90);
     CHECK(ins::control.peq[2][0] == 90);
-    ins::eq_lfo_offset(2, 0, -20);
+    ins::eq_mod_offset(2, 0, -20);
     CHECK(ins::eq_param(2, 0) == 90 && ins::eq_playing(2, 0) == 70 && ins::control.peq[2][0] == 70);
-    ins::eq_lfo_offset(2, 0, 0);
+    ins::eq_mod_offset(2, 0, 0);
     ins::set_eq(2, 2, 100);   // a shelf: stored as the knob less 64, so flat is a zero
     CHECK(ins::control.peq[2][2] == 36 && ins::eq_param(2, 2) == 100);
     ins::set_eq(2, 2, 64);

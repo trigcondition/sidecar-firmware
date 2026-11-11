@@ -11,6 +11,8 @@
 #endif
 #include "lib/sha256.h"
 #include "rmp_api.h"
+#include "rmp_api3.h"
+#include "rmp_format.h"
 #include "rmp_loader.h"
 
 namespace fsweb {
@@ -216,12 +218,35 @@ const char* check_package(const Backend& b, const char* path, uint64_t size) {
     if (b.yield) b.yield();
   }
   if (~c != info.crc32) return "CRC wrong: the file is damaged (upload it again)";
-  uint8_t t[8];
-  if (!b.read(path, RMP_HEADER_BYTES + info.entry_offset, t, 8, &got) || got != 8) return "read error while checking";
+  // the entry table (RMP_PLUGIN_BYTES_A64: an RMPA package's): magic, api as the header says, and (Plugin API 3) the
+  // rmp3_plugin reserved[RMP_P_V3] points at - inside the image's code part, its magic, size and kind, an effect API 3
+  // only, the header's flags saying the same (the engine's loader checks it all again, tools/rmp_pack.py writes it)
+  uint8_t t[RMP_PLUGIN_BYTES_A64];
+  if (!b.read(path, RMP_HEADER_BYTES + info.entry_offset, t, sizeof t, &got) || got != sizeof t) return "read error while checking";
   uint32_t magic, api;
   memcpy(&magic, t, 4);
   memcpy(&api, t + 4, 4);
-  if (magic != RMP_PLUGIN_MAGIC || api < RMP_API_MIN || api > RMP_API) return "its entry table is not a plugin's";
+  if (magic != RMP_PLUGIN_MAGIC || api < RMP_API_MIN || api > RMP_API_RMPA || api != info.api) return "its entry table is not a plugin's";
+  uint64_t v3;
+  memcpy(&v3, t + 64 + 8 * RMP_P_V3, 8);   // (the link address: an offset into the image before relocation)
+  bool has3 = api >= 2u && v3 != 0;
+  if (api >= RMP_API3 && !has3) return "an API 3 entry table without its rmp3_plugin";
+  bool effect = false;
+  if (has3) {
+    if ((v3 & 7u) || v3 + RMP3_PLUGIN_BYTES_A64 > info.data_start) return "its rmp3_plugin is outside its code";
+    uint8_t q[16];
+    if (!b.read(path, RMP_HEADER_BYTES + (uint32_t)v3, q, sizeof q, &got) || got != sizeof q) return "read error while checking";
+    uint32_t m3, sz, kind;
+    memcpy(&m3, q, 4);
+    memcpy(&sz, q + 4, 4);
+    memcpy(&kind, q + 12, 4);
+    if (m3 != RMP3_MAGIC || sz < RMP3_PLUGIN_BYTES_A64) return "bad rmp3_plugin (magic or size)";
+    if (kind != RMP3_KIND_MACHINE && kind != RMP3_KIND_EFFECT) return "bad rmp3_plugin kind";
+    effect = kind == RMP3_KIND_EFFECT;
+    if (effect && api < RMP_API3) return "an effect must be API 3 only (api 3)";
+  }
+  if (((info.flags & RMP_HF_API3) != 0) != has3 || ((info.flags & RMP_HF_EFFECT) != 0) != effect)
+    return "its header's API 3 flags do not match its tables (pack it with tools/rmp_pack.py)";
   return nullptr;
 }
 

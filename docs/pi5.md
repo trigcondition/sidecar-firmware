@@ -261,6 +261,32 @@ Expected log:
     display: touch screen bound (touch1)
     engine: display: 800x480, input touch (USB), longest update N us      (the stats line)
 
+### Only the backlight, or 640x480: the screen did not answer at power-on
+
+*Reported* (a user, Waveshare 10.1" HDMI LCD (B), 1280x800, Pi 5): the panel showed only its backlight. The log:
+
+    display: firmware 1 display(s): 0=HDMI0 -> frame buffer on 0 640x480
+    display: EDID: not available (forced hotplug without a display, or the firmware did not answer)
+    display: HDMI 640x480 with no EDID: the screen did not answer at power-on. Power the screen first, then the Pi (HDMI0, next to USB-C; config.txt [pi5] hdmi_force_hotplug=1). docs/pi5.md "HDMI display"
+    display: res=1280x800 does not fit the frame buffer's 640x480: automatic
+
+The firmware reads the screen's EDID once, at power-on. When the screen is not fully powered yet (a panel fed from
+the Pi's USB, or switched on after the Pi), the EDID comes back empty (its header `00 00 00` instead of
+`00 FF FF ...`) and the firmware falls back to **640x480**. Circle cannot change the Pi 5's HDMI mode afterwards (above),
+so the engine cannot fix it at run time; many panels (this one among them) show no picture at 640x480.
+
+Since 0.5.0 the engine says so when the frame buffer is 640x480 and the EDID gave no preferred mode (the decision:
+`pi/ui/display_hint.h`, tested in `pi/engine/tests/test_display_hint.cpp`; the Pi 4 is unchanged):
+
+- the warning above in the log (`/log`, the serial console);
+- on the boot screen, under the progress bar, large: "No screen info at power-on. Power the screen first, then the
+  Pi." (in the dot font's capitals), kept at least 5 s; then the normal UI at 640x480, for a screen that does show it;
+- `/status` gets `"displayHint":"No screen info at power-on: ..."` (absent otherwise; the web pages do not show it yet).
+
+The fix: **power the screen first, then the Pi** (its own supply, or plugged in and on before the Pi's USB-C), with
+the screen on **HDMI0** (next to USB-C) and `hdmi_force_hotplug=1` in `[pi5]`. A screen whose EDID really prefers
+640x480 gets no hint.
+
 ## DSI display
 
 Built, **not yet run** (everything here *inferred* from Circle 51.1.1's `addon/rp1dsi`, `sample/28-touchscreen` and
@@ -427,6 +453,23 @@ What replaces it for now:
 - **Estimate**: 1-2 days to bring up Circle's MIDI gadget on the Pi 5 (steps 1-4), then about a day for our UAC2
   12/12 + MIDI on it and the Mac tests (`pi/engine/tests/sidecar_*_test.py`), unless the core differs. A risk worth
   a first spike: Circle's own `sample/29-miniorgan` as a MIDI gadget on the Pi 5.
+
+## Power button
+
+The Pi 5's own power button shuts the Sidecar down cleanly (the Pi 5 build only; the Pi 4 has no such button):
+
+- **Short press** while it runs: the screen goes dark, the audio to the Rytm fades out over 20 ms (no click), the
+  Overbridge stream stops, a recording take is closed (its WAV files valid), the settings and the edits that wait to be
+  saved (LFOs, INSERT FX, the sequencer's patterns, the project, `display.txt`) are written, then the black box, then the
+  board turns off (PSCI SYSTEM_OFF). The card's work gets 3 s at most: a hung card does not keep the board on (a take cut
+  there is repaired at the next boot, as after a power loss). The log says `power-off: the card's work done in N ms`.
+- **Press again** while it is off: the Pi 5's firmware powers it back on and the Sidecar boots.
+- **Long press** (held a few seconds): the power chip's hard off. It skips all of the above, as pulling the cable does.
+
+A press only counts once the button has been seen released since the boot, so the press that powered the board on
+does not turn it off again. The button is read every 20 ms; Circle's 50 ms debounce runs only when it reads pressed.
+The console (and the web page's `/cmd`) can do the same: `:poweroff=1`. The Pi 4 build answers `poweroff: refused,
+the Pi 5 only`.
 
 ## Test checklist (Pi 5, Rytm, Mac)
 

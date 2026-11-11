@@ -22,8 +22,8 @@ inline float at_max(const float* x, int ch, uint32_t i) {
 inline float mono(const float* x, int ch, uint32_t i) {
   return ch == 2 ? 0.5f * (x[(size_t)i * 2] + x[(size_t)i * 2 + 1]) : x[i];
 }
-inline void put16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8); }
-inline void put32(uint8_t* p, uint32_t v) {
+inline void le16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8); }
+inline void le32(uint8_t* p, uint32_t v) {
   p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8), p[2] = (uint8_t)(v >> 16), p[3] = (uint8_t)(v >> 24);
 }
 }  // namespace
@@ -225,25 +225,25 @@ CORE_COLD int wav_header(uint8_t* o, int ch, int bits, uint32_t rate, uint32_t f
   uint32_t data = wav_data_bytes(ch, bits, frames);
   uint32_t smpl = loop ? 8 + 60 : 0;
   int p = 0;
-  memcpy(o + p, "RIFF", 4), put32(o + p + 4, 4 + 24 + smpl + 8 + data + (data & 1)), memcpy(o + p + 8, "WAVE", 4);
+  memcpy(o + p, "RIFF", 4), le32(o + p + 4, 4 + 24 + smpl + 8 + data + (data & 1)), memcpy(o + p + 8, "WAVE", 4);
   p += 12;
-  memcpy(o + p, "fmt ", 4), put32(o + p + 4, 16);
-  put16(o + p + 8, 1), put16(o + p + 10, (uint16_t)ch), put32(o + p + 12, rate);
-  put32(o + p + 16, rate * ch * (bits / 8)), put16(o + p + 20, (uint16_t)(ch * (bits / 8))), put16(o + p + 22, (uint16_t)bits);
+  memcpy(o + p, "fmt ", 4), le32(o + p + 4, 16);
+  le16(o + p + 8, 1), le16(o + p + 10, (uint16_t)ch), le32(o + p + 12, rate);
+  le32(o + p + 16, rate * ch * (bits / 8)), le16(o + p + 20, (uint16_t)(ch * (bits / 8))), le16(o + p + 22, (uint16_t)bits);
   p += 24;
   if (loop) {
-    memcpy(o + p, "smpl", 4), put32(o + p + 4, 60);
+    memcpy(o + p, "smpl", 4), le32(o + p + 4, 60);
     memset(o + p + 8, 0, 60);
-    put32(o + p + 16, (uint32_t)(1000000000.0 / rate));   // sample period, ns
-    put32(o + p + 20, (uint32_t)root);                    // MIDI unity note
-    put32(o + p + 36, 1);                                 // one loop
-    put32(o + p + 44 + 0, 0);                             // cue id
-    put32(o + p + 44 + 4, 0);                             // forward
-    put32(o + p + 44 + 8, loop_s);
-    put32(o + p + 44 + 12, loop_e);
+    le32(o + p + 16, (uint32_t)(1000000000.0 / rate));   // sample period, ns
+    le32(o + p + 20, (uint32_t)root);                    // MIDI unity note
+    le32(o + p + 36, 1);                                 // one loop
+    le32(o + p + 44 + 0, 0);                             // cue id
+    le32(o + p + 44 + 4, 0);                             // forward
+    le32(o + p + 44 + 8, loop_s);
+    le32(o + p + 44 + 12, loop_e);
     p += 68;
   }
-  memcpy(o + p, "data", 4), put32(o + p + 4, data);
+  memcpy(o + p, "data", 4), le32(o + p + 4, data);
   return p + 8;
 }
 

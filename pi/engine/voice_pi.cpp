@@ -1,5 +1,6 @@
 // pi/engine/voice_pi.cpp - see voice_pi.h. Hosted (the core's flags); core 0.
 #include "voice_pi.h"
+#include "seditview_pi.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -18,13 +19,14 @@ namespace voice_pi {
 
 namespace {
 constexpr int kPgHome = 0, kPgSound = 1, kPgSeq = 4, kPgRytm = 5, kPgVoice = 8, kPgIns = 9, kPgSong = 10, kPgRec = 11,
-              kPgScope = 12, kPgStatus = 13, kPgProject = 14, kPgPool = 15;
+              kPgScope = 12, kPgStatus = 13, kPgProject = 14, kPgPool = 15, kPgMorph = 20;
 // the touchscreen's pages by the device table's names (ui/page_keys.h; sidecar_ui.h's page numbers); a name not here
 // (SAMPLE) is the Rytm's screen's alone. VOICE: VoicePage (the machine view or VOICE).
 struct TouchPage { const char* name; int page; };
 constexpr TouchPage kTouch[] = {{"HOME", kPgHome}, {"SEQ", kPgSeq}, {"PAT", kPgRytm}, {"VOICE", kPgVoice}, {"SET", kPgSound},
                                 {"INSERT FX", kPgIns}, {"REC", kPgRec}, {"SCOPE", kPgScope}, {"STATUS", kPgStatus},
-                                {"SONG", kPgSong}, {"PROJECT", kPgProject}, {"POOL", kPgPool}};
+                                {"SONG", kPgSong}, {"PROJECT", kPgProject}, {"POOL", kPgPool},
+                                {"MORPH", kPgMorph}};
 int touch_page(const char* name) {
   for (const TouchPage& t : kTouch) if (sc_streq(t.name, name)) return t.page;
   return -1;
@@ -123,7 +125,7 @@ void fill_daisy(sidecar_voice_view_t& v) {
 int VoicePage() {
   int t = core::ui::remote_selected_track(nullptr);
   int vb = t >= 0 ? core::ui::remote_track_machine(t) : -1;
-  return PageForMachine(vb);
+  return VoiceTarget(PageForMachine(vb), seditview_pi::Open());
 }
 
 void Seen(uint32_t* seen, uint32_t* track_seen) {
@@ -147,7 +149,7 @@ int Request(uint32_t* seen, bool voice_mode, uint32_t* track_seen) {
   int vb = selected_vb();
   if (tg != *track_seen || vb != g_vb) {   // another track selected, or its machine changed on the Rytm (33 / 49 2):
     *track_seen = tg, g_vb = vb;           // VOICE follows it, and its kind of view (the machine view or VOICE)
-    if (voice_mode) return VoicePage();
+    if (voice_mode) return PageForMachine(vb);   // (not SAMPLE EDIT: only VOICE's key leads back to an open edit)
   }
   return -1;
 }
@@ -157,7 +159,7 @@ void Pick(int track) {
   core::ui::remote_selected_track(&g_pick_sel);
 }
 
-void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern) {
+void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern, bool scope) {
   int t = -1, m = -1;
   char name[13];
   uint8_t val[8];
@@ -179,6 +181,18 @@ void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern) {
     else
       sniprintf(name, sizeof name, "%s", "TRK+PAD: KNOBS");   // an analog track: its knobs only once the Rytm selects it
   }
+  // the Rytm reports no labels for many Sidecar machines (PLAITS, DSP SAMPLE, WAVETABLE, CHOP...): then the Sidecar's own
+  // (voice_label, as for a picked tile above), so the touchscreen and the web show their knobs
+  if (t >= 0) {
+    int vb = core::ui::remote_track_machine(t), vi = core::ui::remote_track_voice(t);
+    bool none = true;
+    for (int k = 0; k < 8; ++k) none = none && label[k][0] == 0;
+    if (none && vb >= 0 && vb != 0x7F && vi >= 0)
+      for (int k = 0; k < 8; ++k) {
+        const char* l = core::ui::voice_label(vi, k);
+        if (l) sniprintf(label[k], sizeof label[k], "%.4s", l);
+      }
+  }
   sidecar_voice_view_t v;
   memset(&v, 0, sizeof v);
   v.valid = t >= 0;
@@ -191,7 +205,7 @@ void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern) {
   memcpy(v.val, val, 8);
   memcpy(v.label, label, sizeof v.label);
   // the scope and level: the track's stem from the input tap (its voice's channel)
-  if (t >= 0) {
+  if (t >= 0 && scope) {
     int vi = core::ui::remote_track_voice(t);
     core::ui::tap_enable(true);
     core::ui::tap_source(vi + 1);
@@ -257,7 +271,9 @@ void OwnPages() {
   const sc_keymap_t* m = sc_keymap();
   uint16_t own = 0;
   for (int i = 0; i < m->npages; ++i)
-    if (m->pages[i].rytm && m->pages[i].code < 16 && touch_page(m->pages[i].name) >= 0) own |= (uint16_t)(1u << m->pages[i].code);
+    // 0.5.0: MORPH stays the Rytm's too (its trig keys and knob are the scenes' controls there): UP + T14 shows both
+    if (m->pages[i].rytm && m->pages[i].code < 16 && touch_page(m->pages[i].name) >= 0 && !sc_streq(m->pages[i].rytm, "MORPH"))
+      own |= (uint16_t)(1u << m->pages[i].code);
   core::ui::remote_display_owns(own);
 }
 

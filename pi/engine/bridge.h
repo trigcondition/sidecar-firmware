@@ -75,6 +75,12 @@ int fxin_json(char* out, int cap);
 // console's `lfo`, `lfo=N:KEY:VALUE` (false: not an lfo command) and /status's "lfo":{...} (any core, plain reads).
 void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2);
 bool lfo_command(const char* p, char* out, int cap);
+// the modulation layer (core/mod/mod.h): "mod" (the live targets), "mod=stats"; "\"mod\":{...}" for /status
+bool mod_command(const char* p, char* out, int cap);
+int mod_json(char* out, int cap);
+bool scene_command(const char* p, char* out, int cap);   // scene, scene=...: the morph scenes (core/mod/scene.h)
+bool learn_command(const char* p, char* out, int cap);   // learn, learn=...: the MIDI-learn routes (core/mod/learn.h)
+int scene_json(char* out, int cap);
 // Poly FM (core/poly.h): the Rytm's channel messages (its pads' notes: live chords), the console's `poly` (its stats;
 // false: not a poly command)
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2);
@@ -102,6 +108,9 @@ bool sdtest_command(const char* p, bool busy, char* out, int cap);
 void card_worker(bool on);
 int card_service(int n);
 bool card_busy();
+// the Pi 5's power-off (kernel.cpp): the idle saves without their settle waits (core::idle_flush); all on the card (idle_settled)
+void save_flush(bool on);
+bool save_settled();
 // SAMPLING and the AUTO-SAMPLER (core/samp/sampler.h, autosamp.h): the console's samp... / asamp... (core 3), MIDI
 // realtime for the sampler's PLAY / bar starts and tempo (core 3), the producer's frames (core 0: the IN completion,
 // the OUT fill), the card side (core 0's loop: true when it did a step), /status's ,"samp":{...},"asamp":{...}.
@@ -186,6 +195,9 @@ const char* ins_bench_name(int type);
 // ins_bench
 uint64_t amp_bench(uint32_t* worst_block);
 uint64_t mfx_bench(uint32_t* worst_block);   // the master chain without AMP (core/fx/master.h bench); 0 when one is set
+// 0.5.0: 4 send TYPE inserts at once across B1 / B2 / B3 / M1 (core/fx/master.h sfx_bench), set 0.. while its name is not null
+uint64_t sfxins_bench(int set, uint32_t* worst_block);
+const char* sfxins_bench_name(int set);
 unsigned poly_voices();
 int rytm_pattern(int* transport);   // UX review T1: the Rytm's pattern (-1 not known) and transport (core/seq's view)   // UX review S1: bit vi - a Rytm track on voice vi is a poly track (the Sidecar sequences it)
 uint32_t machine_gen(int voice);       // with machine_name, the guard's key: 0, or a user voice's slot + 1 and the

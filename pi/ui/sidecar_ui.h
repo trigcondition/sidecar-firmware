@@ -43,7 +43,7 @@ typedef struct
 	unsigned char	uslot_state[5];			// 0 empty 1 ready 6 loading, else a problem (rmp_slot_state)
 	int		rec;				// the recorder: 0 off, 1 armed (waits for PLAY), 2 recording
 	unsigned	rec_secs;			// the take's length so far
-	int		ui_style;			// the display's theme (sidecar_theme.h THEME_*: 0 OLED, 1 CLASSIC), -1: not known
+	int		ui_style;			// the display's theme (sidecar_theme.h THEME_*: 0 OLED, 1 SIDECAR), -1: not known
 	int		ui_look;			// UX review L1: the OLED look, 0 STUDIO 1 STAGE (sidecar_dot_look), -1: not known
 	unsigned	poly;				// UX review S1: bit v - voice v plays a poly track (a POLY badge on HOME)
 	int		pattern;			// UX review T1: the Rytm's pattern 0..127 (-1 not known) and transport (0 stop,
@@ -74,12 +74,15 @@ void sidecar_ui_set_command (sidecar_ui_command_t fn, void *param);
 // 12 SCOPE (sidecar_scope.h; UP + T9, or a tap on VOICE's scope), 13 SIDECAR STATUS (sidecar_status.h; UP + T10, or a tap
 // on the home page's ENGINE / Status panel), 14 PROJECT (sidecar_project.h: project bundles; a tap on
 // the home page's PROJECT panel), 15 POOL (sidecar_wgview.h's POOL page: the three pool lists; Settings > Pool, or the
-// machine view's ALL POOLS), 16 SERVICE (settings), 17 CHOP (sidecar_chop.h: a CHOP voice's page; VOICE on a CHOP track), 18 PRESET (sidecar_preset.h: the POOL page's JUNO / 6-OP FM tabs)
+// machine view's ALL POOLS), 16 SERVICE (settings), 17 CHOP (sidecar_chop.h: a CHOP voice's page; VOICE on a CHOP track), 18 PRESET (sidecar_preset.h: the POOL page's JUNO / 6-OP FM tabs),
+// 21 SAMPLE EDIT (sidecar_sedit.h: shown while the sample editor has an edit open)
 void sidecar_ui_show (int page);
 // UX review N3: the Rytm's UP held alone: the UP + T map over the screen (0: gone); cheap when unchanged
 void sidecar_ui_combo_map (int on);
 int sidecar_ui_combo_map_shown (void);
 const char *sidecar_ui_banner (void);				// the warning banner's text while it is shown (the supply's, or the temperature's), else 0 (tests)
+int sidecar_ui_banner_close (int *x, int *y);			// 1: the supply warning's close key is shown, at x, y (its middle, UI coordinates; tests)
+void sidecar_ui_banner_reopen (void);				// forget the closed supply warning (tests: a new boot)
 int sidecar_ui_page (void);					// the page shown
 int sidecar_ui_nav_lit (void);					// the navigation key lit for it (-1: none; tests)
 // rui1052: navigation key i (0..7 top to bottom), its page's name in the device's table and the caption painted on the
@@ -94,16 +97,16 @@ int sidecar_ui_touch_test_shown (void);				// HOME shows the touch test (until t
 // pixels: the caller expands them by sidecar_ui_dot () (sidecar_dot_expand, at sidecar_ui_origin ()) and divides its
 // pointer's coordinates the same way (sidecar_ui_to_ui).
 void sidecar_ui_create (void);					// on lv_screen_active ()
-// The theme (THEME_OLED / THEME_CLASSIC): the screen is rebuilt and redrawn at once (core 0's loop only: a few ms of
+// The theme (THEME_OLED / THEME_SIDECAR): the screen is rebuilt and redrawn at once (core 0's loop only: a few ms of
 // object creation plus one full redraw; nothing on the audio cores). A tap on Settings > Display > UI style calls it
-// and sends "uistyle=oled|classic" (stored in /.rytm/display.txt); a status with another ui_style calls it too.
+// and sends "uistyle=oled|sidecar" (stored in /.rytm/display.txt); a status with another ui_style calls it too.
 void sidecar_ui_style (int style);
 int sidecar_ui_get_style (void);
 int sidecar_ui_dot (void);					// physical pixels a UI pixel now: 1 or SIDECAR_DOT
 void sidecar_ui_origin (int *x, int *y);			// where the UI's pixel 0,0 is on the screen (the dot grid centred)
 void sidecar_ui_to_ui (int *x, int *y);				// screen -> UI coordinates (clamped)
 int sidecar_ui_bright (void);					// OLED: the dots' brightness for the expansion, 0..256
-								// (CLASSIC: 256, a black layer dims the picture)
+								// (SIDECAR: 256, a black layer dims the picture)
 void sidecar_ui_status (const sidecar_ui_status_t *s);		// labels change only when their text does
 // The box in use, as the last status said (the Rytm before one): its word ("Rytm", "A4"; upper: "RYTM", "A4") and its voices'
 // names, for every page. A box with its own names lists its voices in their order; the Rytm's in its track order.

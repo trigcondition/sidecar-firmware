@@ -14,6 +14,10 @@
 #include "hooks.h"
 #include "keys.h"
 #include "lfo.h"
+#include "mod/mod.h"
+#include "mod/rytm_out.h"
+#include "mod/scene.h"
+#include "mod/target.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "poly.h"
@@ -337,6 +341,7 @@ int kit_said = -1;                   // the kit the last 3B named
 constexpr uint8_t kPageArp = 4;      // 7ae: UP + FLTR, the ARP page (page_arp.cpp); an older host reads it as the SIDECAR page
 constexpr uint8_t kPagePoly = 0x20;  // rui1048: 0x20 + t (32..43) POLY CONFIG of track t (the Rytm's track menu, FUNC + CHRO; page_poly.cpp); an older host reads it as the SIDECAR page
 constexpr int kExtra0 = -10;   // s.voice of extra page k (extra.h: SCOPE, REC): kExtra0 - k
+constexpr int kNoPage = 1000;   // no page id (voices 0.., -1 SIDECAR, -2 SYSTEM, extra pages kExtra0 - k)
 constexpr int kMaxIds = 2 + kVoices + 16;
 
 struct State {
@@ -349,12 +354,25 @@ struct State {
   bool clock_set = false;
   bool map_over = false;     // rui1050: UP's map shown over the open page (49 1 5 1), map_back the page under it
   int map_back = -1;
+  // 0.5.0 (spec-050 2.6): the keys an engine page with key_up took at their press (bit c: code c), and that page
+  uint32_t held_keys[8] = {};
+  const ExtraPage* held_page = nullptr;
+  // 0.5.0 (spec-050 2.6, EDIT): the scene key (T1..T12: 0..11) held on a page that locks, -1 none; the target a turn
+  // locked last while it is held (the bottom bar shows its locked value), 0 none
+  int scene_key = -1;
+  uint16_t edit_tid = 0;
+  bool edit_refused = false;   // review: a knob with no target turned under the held scene key (NOT LOCKABLE)
   // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out), nav044
   // (0.4.4, the user: "several NOs to leave after visiting more than one tab" - rui1051 walked back through the pages
   // the shortcuts came from): the page shown was put up by a shortcut (UP / TRK + key, UP + T, the host's own page
   // request), so NO leaves at once, whatever it was opened over. A page picked in the MENU or reached by LEFT / RIGHT
   // is not one (NO goes to SIDECAR, as before); the page closing forgets it.
   bool shortcut = false;
+  // sedit050 (the 0.4.4 merge): the Sidecar page SAMPLE EDIT was opened over (POOL's EDIT) and that page's
+  // shortcut flag, so closing the edit goes back there; kNoPage: opened from the Rytm's own screen (the SRC view) or
+  // the MENU, so closing it follows nav044 (a shortcut's page closes, else SIDECAR)
+  int sedit_back = kNoPage;
+  bool sedit_back_sc = false;
   // ux1027: the 30's page byte (kPageLfo, kPageIns, kPageInsOut) that put up the page shown (via_voice): the same UP +
   // key again on it leaves (as NO), as UP + TRIG leaves the SEQ page (rytm-mods 0026 rui1037)
   int via = -1, via_voice = 0;
@@ -577,18 +595,35 @@ CORE_COLD bool go_back() {
   return true;
 }
 
+#if CORE_POLY && CORE_MSAMP
+// sedit050: SAMPLE EDIT closed: back to the Sidecar page it was opened over, with that page's own NO rule (true: done)
+CORE_COLD bool sedit_back_to() {
+  int b = s.sedit_back;
+  s.sedit_back = kNoPage;
+  if (b == kNoPage || b == s.voice) return false;
+  const ExtraPage* x = extra_of(b);
+  if (x && x->shown && !x->shown()) return false;   // (gone from the list meanwhile)
+  if (b >= 0 && (src_capable || !page_for_voice(machine_of_voice(b), b))) return false;
+  lfo_left(s.voice, b), s.voice = b, s.page_changed = true, s.touched = -1, s.via = -1;
+  s.shortcut = s.sedit_back_sc;
+  return true;
+}
+#endif
+
 CORE_COLD void set_param(int vi, int k, int nv) {
+  mod::manual(mod::tid(mod::kV, vi, k), (float)nv);   // 0.5.0: a page edit wins over a scene's morph (spec-050 2.5)
   V& x = v[vi];
   int m = machine_of_voice(vi);
   if (s.held_m[vi] != m) s.held[vi] = 0, s.held_m[vi] = (uint8_t)m;
-  if (!(s.held[vi] & (1u << k))) s.rytm_v[vi][k] = (uint8_t)(int)lfo::base_of(vi, k, x.p[k]);   // the Rytm's value until now
+  if (!(s.held[vi] & (1u << k))) s.rytm_v[vi][k] = (uint8_t)(int)mod::base_of(vi, k, x.p[k]);   // the Rytm's value until now
   s.held[vi] |= (uint16_t)(1u << k);
   s.held_v[vi][k] = (uint8_t)nv;
   // a 0x03 PARAMS for the voice, its machine and every P (the edited one whole, the others as they are)
   uint8_t r[39] = {0xF0, 0x7D, 0x52, 0x54, 0x03, (uint8_t)(m | vi)};
   int n = 6;
+  uint32_t t0 = now_us();
   for (int i = 0; i < 16; ++i) {
-    float p = i == k ? (float)nv : lfo::base_of(vi, i, x.p[i]);   // an LFO's target: its base, not the modulated value
+    float p = i == k ? (float)nv : mod::base_of(vi, i, x.p[i]);   // an LFO's target: its base, not the modulated value
     int iv = (int)p;
     iv = iv < 0 ? 0 : iv > 127 ? 127 : iv;
     int fr = (int)((p - iv) * 128.0f);
@@ -596,39 +631,129 @@ CORE_COLD void set_param(int vi, int k, int nv) {
     r[n++] = (uint8_t)(fr < 0 ? 0 : fr > 127 ? 127 : fr);
   }
   r[n++] = 0xF7;
+  mod::note_lookup(now_us() - t0);
   s.self = true;
   voice_report(0x03, r, n);
   s.self = false;
   s.stats.edits++;
 }
 
+// 0.5.0 (spec-050 2.6, EDIT): with the scenes' EDIT on, a voice page and the pages that name their knobs' targets
+// (ExtraPage::enc_tid: INSERT, MASTER) take T1..T12 too; a turn while one is held locks the knob's target into that
+// scene (from the scene's lock, else from the base) instead of editing it. The SEQ page keeps its trig keys (steps).
+CORE_COLD bool edit_page(const ExtraPage* x) {
+  if (!s.open || !scene::edit()) return false;
+  return x ? x->enc_tid != nullptr : s.voice >= 0 && !src_capable;
+}
+CORE_COLD uint16_t page_trigs(const ExtraPage* x) {
+  uint16_t t = x && x->trigs_now ? x->trigs_now() : 0;
+  return edit_page(x) ? (uint16_t)(t | 0x0FFF) : t;
+}
+// the scene key's lock of t moved by `units` (whole units of the target; lo..hi its range there), from the lock, else
+// from the base; the value a voice page's step gives when `voice_nv` >= 0
+CORE_COLD void edit_lock(mod::Tid t, int units, int voice_nv) {
+  const scene::Scene& sc = scene::state().s[s.scene_key];
+  int cur = -1;
+  for (int i = 0; i < sc.n; ++i)
+    if (sc.l[i].t == t) cur = sc.l[i].v;
+  int nv;
+  if (voice_nv >= 0) {
+    nv = voice_nv * 128;
+  } else {
+    mod::Range r = mod::range(t);
+    bool off = mod::is_offset(mod::kind_of(t));
+    int lo = off || r.lo < 0 ? 0 : (int)r.lo, hi = off || r.hi > 127 ? 127 : (int)r.hi;
+    int u = cur >= 0 ? (cur + 64) / 128 : (int)(mod::base(t) + 0.5f);
+    u += units;
+    nv = (u < lo ? lo : u > hi ? hi : u) * 128;
+  }
+  if (scene::lock(s.scene_key, t, (uint16_t)nv)) s.edit_tid = t;
+}
+
 CORE_COLD void on_enc(int e, int delta, bool func) {
   s.input = true;
+  const bool lock = s.scene_key >= 0 && edit_page(extra_of(s.voice));
   if (const ExtraPage* x = extra_of(s.voice)) {
-    if (e >= 0 && e < 8 && (extra_encs(*x) >> e & 1)) x->enc(e, delta, func);
+    if (e < 0 || e >= 8 || !(extra_encs(*x) >> e & 1)) return;
+    if (!lock) x->enc(e, delta, func);
+    else if (mod::Tid t = x->enc_tid(e)) edit_lock(t, delta * (func ? 8 : 1), -1), s.edit_refused = false;
+    else s.edit_refused = true, s.edit_tid = 0;
     return;
   }
   if (s.voice < 0 || src_capable || e < 0 || e > 7) return;
   s.touched = e;
   const Page* p = page_for_voice(machine_of_voice(s.voice), s.voice);
   if (!p || p->enc[e] == kNone) return;
-  int k = p->enc[e] & 15, cur = (int)lfo::base_of(s.voice, k, v[s.voice].p[k]);
+  int k = p->enc[e] & 15, cur = (int)mod::base_of(s.voice, k, v[s.voice].p[k]);
   if (is_list(*p, k)) delta = list_turn(e, delta);
   if (!delta) return;
+  if (lock) {   // EDIT: the scene's lock, from its value (else the base), never the voice
+    mod::Tid t = mod::tid(mod::kV, s.voice, k);
+    const scene::Scene& sc = scene::state().s[s.scene_key];
+    for (int i = 0; i < sc.n; ++i)
+      if (sc.l[i].t == t) cur = (sc.l[i].v + 64) / 128;
+    edit_lock(t, 0, step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func));
+    s.edit_refused = false;
+    return;
+  }
   int nv = step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func);
   if (nv != cur) set_param(s.voice, k, nv);
 }
 
+// 0.5.0: every key still held goes up at the page that took it (a hello, the page closing: the releases are lost)
+CORE_COLD void release_held() {
+  const ExtraPage* x = s.held_page;
+  for (int c = 0; c < 256; ++c)
+    if (s.held_keys[c >> 5] >> (c & 31) & 1) {
+      s.held_keys[c >> 5] &= ~(1u << (c & 31));
+      if (x && x->key_up) x->key_up(c);
+    }
+  s.held_page = nullptr;
+  s.scene_key = -1, s.edit_tid = 0, s.edit_refused = false;
+}
+
+CORE_COLD bool key_held(int code) { return code >= 0 && code < 256 && (s.held_keys[code >> 5] >> (code & 31) & 1); }
+
+
 CORE_COLD void on_key(int code, bool down) {
-  if (!down) return;
+  if (!down) {   // 0.5.0: a release goes to the page that took its press (key_up), else nowhere
+    if (code == s.scene_key) {   // EDIT's scene key let go
+      s.scene_key = -1, s.edit_tid = 0, s.edit_refused = false, s.input = true;
+      return;
+    }
+    if (key_held(code)) {
+      s.held_keys[code >> 5] &= ~(1u << (code & 31));
+      s.input = true;
+      if (s.held_page && s.held_page->key_up) s.held_page->key_up(code);
+    }
+    return;
+  }
   s.input = true;
+  if (code >= 0 && code < 12 && edit_page(extra_of(s.voice))) {   // EDIT: a scene key
+    s.scene_key = code, s.edit_tid = 0, s.edit_refused = false;
+    return;
+  }
   if (const ExtraPage* x = extra_of(s.voice))
-    if (x->key && x->key(code)) return;
+    if (x->key && x->key(code)) {
+      if (x->key_up && code >= 0 && code < 256) {
+        if (s.held_page != x) release_held();
+        s.held_page = x, s.held_keys[code >> 5] |= 1u << (code & 31);
+      }
+#if CORE_POLY && CORE_MSAMP
+      // SAMPLE EDIT's DISCARD EDIT? YES closed the edit: the page is out of the list, so back where it was opened from
+      // (SAMPLE EDIT alone: other pages a key hides keep their own way, PROJECT's answer note among them)
+      if (x == &kSeditPage && extra_of(s.voice) == x && !x->shown() && !sedit_back_to() && !go_back()) go(0);
+#endif
+      return;
+    }
   if (code == kKeyUp) return;   // fix1049: UP is the Sidecar's modifier (page_keys.h), no page arrow: LEFT / RIGHT step
   if (standalone(extra_of(s.voice)) && (code == kKeyLeft || code == kKeyRight || code == kKeyDown || code == kKeyPage))
     return;   // ux1027: no siblings
   if (code == kKeyLeft) go(-1);
   else if (code == kKeyRight || code == kKeyDown || code == kKeyPage) go(+1);
+#if CORE_POLY && CORE_MSAMP
+  else if (code == kKeyNo && extra_of(s.voice) == &kSeditPage && sedit_back_to()) {}   // sedit050: back to its opener
+#endif
   else if (code == kKeyNo && go_back()) {}                           // nav044: a shortcut's page: out at once
   else if (code == kKeyNo && s.voice == -1) remote_request(false);   // NO on SIDECAR leaves, as TRK + YES (3A 0 0)
   else if (code == 0x44 && s.voice == -1) menu_open();               // YES on SIDECAR: the MENU (UX review R3)
@@ -847,11 +972,17 @@ CORE_COLD void frame(uint32_t ms) {
   const ExtraPage* x = extra_of(s.voice);
   if (standalone(x)) at = 0, n = 1;   // ux1027: no siblings, no page dots
   tap_enable(x && x->tap);
+  char tag[12] = "";   // 0.5.0: EDIT on - every page's header says so, with the scene key held
+  if (scene::edit()) {
+    if (s.scene_key >= 0) sniprintf(tag, sizeof tag, "EDIT S%d", s.scene_key + 1);
+    else strcpy(tag, "EDIT");
+  }
+  header_tag(tag);
   int drawn = 1;
   if (p) {
-    char right[8];
+    char right[12];
     vsrc.vi = s.voice;
-    sniprintf(right, sizeof right, "%s", voice_label(s.voice));
+    sniprintf(right, sizeof right, "%s", tag[0] ? tag : voice_label(s.voice));
     drawn = view.draw(work, *p, vsrc, right, at, n);
     voice_footer(*p, voice_label(s.voice), vsrc, s.touched >= 0 ? s.touched : 0);
   } else if (x) {
@@ -860,6 +991,22 @@ CORE_COLD void frame(uint32_t ms) {
   } else {
     view.invalidate();   // the status pages are drawn whole; a voice page after them starts clean
     ssrc.draw(work, s.voice == -2 ? 1 : 0, at, n);
+  }
+  if (s.scene_key >= 0 && s.edit_refused && edit_page(x)) {   // EDIT: that knob names no target
+    char b[kTextLen + 1];
+    sniprintf(b, sizeof b, "S%d: NOT LOCKABLE", s.scene_key + 1);
+    footer(work, b);
+  }
+  if (s.scene_key >= 0 && s.edit_tid && edit_page(x)) {   // EDIT: the bottom bar shows the scene's locked value
+    const scene::Scene& sc = scene::state().s[s.scene_key];
+    for (int i = 0; i < sc.n; ++i)
+      if (sc.l[i].t == s.edit_tid) {
+        char nm[16], val[8], b[kTextLen + 1];
+        mod::name(s.edit_tid, nm, sizeof nm);
+        morph_value_text(s.edit_tid, sc.l[i].v, val, sizeof val);
+        int n2 = sniprintf(b, sizeof b, "S%d %s:%s", s.scene_key + 1, nm, val);
+        footer(work, b, n2 <= 16 ? sc.l[i].v >> 7 : -1);
+      }
   }
   s.stats.widgets += (uint32_t)drawn;
   {   // the pairing code's modal goes on top of the page, and the page comes back whole when it goes
@@ -873,8 +1020,10 @@ CORE_COLD void frame(uint32_t ms) {
     s.modal_shown = on;
   }
   bool sq = x && !strcmp(x->title, "SEQ");
+  // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides'); SAMPLE EDIT's FUNC + YES (save) too
+  bool fn = sq || (x && (!strcmp(x->title, "MORPH") || !strcmp(x->title, "SAMPLE EDIT")));
   bool updown = sq ? seq_updown() : !standalone(x) || x->updown;   // updown044: a page alone only when it uses them
-  if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, x && x->trigs_now ? x->trigs_now() : 0, sq, sq && seq_data(),
+  if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, page_trigs(x), fn, sq && seq_data(),
                             !sq || seq_yes(), updown);   // before the frame: the keys and knobs the page shows are its own from now on
   update_leds(x);
   if (!s.sent_valid) s.echo_valid = false;
@@ -1319,6 +1468,12 @@ CORE_COLD void page_two_tick(uint32_t ms) {
 
 }  // namespace
 
+CORE_COLD bool remote_is_list(int vi, int k) {
+  if (vi < 0 || vi >= kVoices || k < 0 || k > 15) return false;
+  const Page* p = page_for_voice(machine_of_voice(vi), vi);
+  return p && is_list(*p, k);
+}
+
 CORE_COLD void remote_sysex(const uint8_t* d, int len) {
   if (len < 7 || d[5] != 1 || d[len - 1] != 0xF7) { s.stats.bad++; return; }
   const uint8_t* b = d + 6;
@@ -1387,8 +1542,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         if (s.open) s.stats.closes++;
         if (s.open) lfo_left(s.voice, -1);   // ux1027 (review 5): the LFO page opens on its main view again
         s.open = false;
-        s.shortcut = false, s.via = -1;
+        s.shortcut = false, s.via = -1, s.sedit_back = kNoPage;
         keys_map_drop(), s.map_over = false;   // (UP's map goes with the page)
+        release_held();                        // 0.5.0: and every key a page holds
 #if CORE_POLY
         seq::page_closed();   // seq-ux: a prompt, TRK + TRIG's view end with the page
         poly_page_closed();   // rui1048
@@ -1430,6 +1586,10 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
           s.input = true;
           return;
         }
+        if (sedit_src_push(s.src_track, b[1], b[2] != 0)) {   // DSP SAMPLE: a push of B opens SAMPLE EDIT
+          s.input = true;
+          return;
+        }
 #endif
         if (b[1] == kKeyPushA) src_list_push(b[2] != 0);   // P1's: held - the list stays open; a click - the row acts
         s.input = true;
@@ -1438,7 +1598,14 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
 #if CORE_POLY
       {   // the sequencer's trig keys and PAGE: in seq mode (the page open or not) and on its SEQ page
         const ExtraPage* x = s.open ? extra_of(s.voice) : nullptr;
-        if (seq::ui_key(b[0] << 7 | b[1], b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
+        int code = b[0] << 7 | b[1];
+        // 0.5.0: a trig key another engine page takes now (MORPH's scenes, the LFO design view's steps), or the release
+        // of one it took, is that page's, not the sequencer's (seq mode sends the trig keys on a seq track)
+        // review: a release of a key a page holds is that page's whatever page shows now (SEQ too)
+        bool page_trig = code < 16 && s.open &&
+                         ((b[2] && !(x && !strcmp(x->title, "SEQ")) && (page_trigs(x) >> code & 1)) ||
+                          (!b[2] && (key_held(code) || code == s.scene_key)));
+        if (!page_trig && seq::ui_key(code, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
         }
@@ -1459,7 +1626,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       {
         const ExtraPage* x = s.open ? extra_of(s.voice) : nullptr;
         // rui1048: POLY CONFIG's knobs are its own, also in seq mode (seq::ui_enc takes every turn then)
-        if (!(x && !strcmp(x->title, "POLY")) && seq::ui_enc(b[0], (int)b[1] - 64, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
+        // review (0.5.0): MORPH's knobs, and a turn under EDIT's held scene key, are the page's too
+        bool own = (x && (!strcmp(x->title, "POLY") || !strcmp(x->title, "MORPH"))) || (s.scene_key >= 0 && edit_page(x));
+        if (!own && seq::ui_enc(b[0], (int)b[1] - 64, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
         }
@@ -1662,6 +1831,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       }
 #if CORE_POLY
       ins::kit_changed(b[0]);   // the inserts are per kit too (core/fx/insert.h)
+      scene::kit_changed(b[0]);   // and the scenes (core/mod/scene.h)
 #endif
 #if CORE_MSAMP
       gr::kit_changed(b[0]);   // GRANULAR's picks are per kit too
@@ -1682,7 +1852,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         // no close (a splash over it would be ignored by the Rytm, which holds the page, while we stopped serving it).
         // What the hello invalidates on the Rytm's side is sent again, as after an open.
         s.sent_valid = false, s.mask_valid = false, s.echo_valid = false, s.leds_on = false, s.clock_set = false;
+        release_held();   // 0.5.0: a key held across the new link sends no release
         s.caps36 = (b[2] & 1) != 0, s.caps = b[2];
+        mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
         core::log("rui: hello, Rytm up %d.%d s, caps %d, page opened %d ms ago: kept", up / 20, (up % 20) / 2, b[2],
                   (int)(s.now_ms - s.open_ms));
         src_names_resend();
@@ -1693,7 +1865,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       s.src_track = -1, s.src_told = -1, s.splash = false, s.clock_set = false;
       tap_enable(false);
       s.caps36 = (b[2] & 1) != 0, s.caps = b[2];
+      mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
       keys_map_drop(), s.map_over = false;   // (a release lost with the link: no map left up)
+      release_held();                        // 0.5.0: and every key a page holds
       // A status popup goes with the old link. The pairing code's modal does not: it is owed until it has been on
       // this Rytm's screen, and a hello arriving while it was owed or up (the Rytm restarting, or saying hello again
       // after a silence) dropped it, so the code was never seen (audit 2026-10-26). It starts again, on this link.
@@ -1791,6 +1965,13 @@ CORE_COLD void remote_show_page(const char* title) {
   if (s.open) {
     for (int k = 0; k < extra_pages(); ++k)
       if (!strcmp(extra_page(k).title, title) && s.voice != kExtra0 - k) {
+#if CORE_POLY && CORE_MSAMP
+        if (!strcmp(title, "SAMPLE EDIT")) {   // sedit050: closing the edit comes back here (not over the MENU)
+          const ExtraPage* now = extra_of(s.voice);
+          bool menu = now && !strcmp(now->title, "MENU");
+          s.sedit_back = menu ? kNoPage : s.voice, s.sedit_back_sc = s.shortcut;
+        }
+#endif
         if (!strcmp(title, "MENU")) s.shortcut = false;   // nav044 review: the MENU (YES on SIDECAR): NO to SIDECAR
         else shortcut_over(s.voice);   // rui1051, nav044: NO leaves (the MENU's pick: SIDECAR, as before)
         lfo_left(s.voice, kExtra0 - k), s.via = -1;
@@ -1799,6 +1980,9 @@ CORE_COLD void remote_show_page(const char* title) {
     return;
   }
   if (device::foreign()) return;   // a box's screen opens by its user alone (a4_rx takes 3A's close only): nothing to ask, and a title left here would land the next open on it
+#if CORE_POLY && CORE_MSAMP
+  if (!strcmp(title, "SAMPLE EDIT")) s.sedit_back = kNoPage;   // sedit050: from the Rytm's own screen: closing leaves
+#endif
   want_title = title;
   remote_request(true);
 }

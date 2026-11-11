@@ -21,6 +21,13 @@
 #include <stdint.h>
 
 #include "fx/send_fx.h"   // RYTM_SENDFX_LARGE
+#include "mod/target.h"
+
+// 0.5.0 (spec-050 1.1): the LFOs are a source of the modulation layer (core/mod): core/mod owns their targets, their
+// bases and the writes. CORE_MOD_LFO 0 keeps 0.4.0's own write path compiled (the rollback; removed in Phase 2).
+#ifndef CORE_MOD_LFO
+#define CORE_MOD_LFO 1
+#endif
 
 namespace core {
 namespace lfo {
@@ -38,9 +45,13 @@ enum StepShape : uint8_t { kHold, kRamp, kSmooth, kShapes };
 // Targets: 0 OFF, 1..8 V1..V8, 9 / 10 FX1 / FX2; fx-ins (CORE_POLY builds): 11..18 I1..I8 the voices' INSERT chains,
 // 19..21 B1..B3 the buses' (core/fx/insert.h; params 0..7: slot A P1..P4, slot B P1..P4; ins1112: 8..11 the chain's
 // POST EQ HPF / LPF / LOW / HIGH; an offset on the knob / lock); 22..29 O1..O8 the voices' OUT route (core/fx/out.h;
-// params 0..2: LEV PAN WID, an offset on the knob).
+// params 0..2: LEV PAN WID, an offset on the knob). 0.5.0 (spec-050 1.6): 30 31 M1 M2 the master's two chains (params as
+// an INSERT chain's), 32 MFX the master's LEV and MIX1..4 (0..4), the bus slots' send TYPE MIX B1A..B3B (5..10), 33..44 S1..S12 a Rytm track's sends to FX1 / FX2
+// (0..1: F1 F2), 45..52 X1..X8 a voice's sends to the buses (0..2: B1..B3); all through core/mod (an LFO file naming
+// one is locked on 0.4.0, as any line it does not read).
 #if CORE_POLY
-constexpr int kTVoice = 1, kTFx = 9, kTIns = 11, kTOut = 22, kTargets = 30;
+constexpr int kTVoice = 1, kTFx = 9, kTIns = 11, kTOut = 22, kTMaster = 30, kTMfx = 32, kTSnd = 33, kTIsnd = 45,
+              kTargets = 53;
 #else
 constexpr int kTVoice = 1, kTFx = 9, kTIns = 11, kTargets = 11;
 #endif
@@ -69,12 +80,16 @@ constexpr int kPresets = 4;
 const char* preset_name(int which);
 
 // ---- the engine's hooks (control side)
-void tick(uint32_t us);                                 // every pass of the control loop
+// every pass of the control loop. 0.5.0: a forwarder to mod::tick (core/mod/mod.h) for one release (removed in 0.6.0):
+// the platforms call mod::tick; tests, the emulator lib (core_c_lfo_tick) and older callers keep meaning the same
+void tick(uint32_t us);
+void waves(uint32_t us, uint32_t dus);                  // mod::tick's source: the clock position, each LFO's offset
+mod::Tid tid_of(int target, int param);                 // an LFO target's id on the layer (0: OFF)
 void clock(uint8_t status, uint16_t spp);               // fx::clock_in's MIDI realtime / SPP (F8 FA FB FC F2)
 void midi_in(uint8_t status, uint8_t d1, uint8_t d2);   // the Rytm's channel messages: its notes (an FX target's TRIG)
-void voice_params(int vi, float* p, int np, bool trig); // voice_report: base = the report's P1..Pnp, p modulated
-uint8_t fx_knob(int slot, int knob, uint8_t v);         // take_sendfx: knob 0..5 of FX slot reported v; returns the value to play
-float base_of(int vi, int k, float cur);                // a voice parameter's base (the remote page's edits), cur when unmodulated
+void voice_params(int vi, float* p, int np, bool trig); // voice_report: the bases (mod::voice_params), a trig's retrig
+uint8_t fx_knob(int slot, int knob, uint8_t v);         // take_sendfx: knob 0..5 of FX slot reported v (mod::fx_knob)
+float base_of(int vi, int k, float cur);                // mod::base_of (the callers use it directly)
 void project_changed();                                 // the Rytm's project changed: the LFOs of the new one (card)
 void kit_changed(int kit);                              // the Rytm's active kit (0..127): its LFOs (card), when another
 int kit();                                              // the kit the settings are of (0..127), -1 unknown
@@ -112,6 +127,11 @@ float phase(int i);                  // the LFO's phase now, 0..1
 // (mod 2304, locked to the Rytm's song position while it plays, else on at the last tempo) and a tick's length in us.
 // False until tick() first ran (tests without the control loop).
 bool clock_now(float* ticks, float* tick_us);
+// Plugin API 3's transport (core/user/um.cpp pre_block): the clock as clock() keeps it - running (FA / FB .. FC), ticking
+// (an F8 seen), the latest tick's song position (24 ppqn since Start or an F2, -1 none) and when it came, the tempo, the
+// position tick() keeps (clock_now's), and counts of Start / Continue, Stop and song position messages since boot.
+struct ClockState { bool run, ticking; int32_t pos; uint32_t last_us; float tick_us, tp; uint32_t starts, stops, jumps; };
+void clock_state(ClockState* out);
 float out(int i);                    // its wave now, -1..1
 bool active(int i);                  // on a target with a nonzero depth
 

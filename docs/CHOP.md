@@ -8,6 +8,8 @@ and the Mac tests (`CORE_MSAMP`); the Sidecar Mini (Teensy) has no CHOP. The des
 chop and chop screen and the Dirtywave M8's slice list are the models for behaviour only (their manuals and use), none
 of their code.
 
+See also `docs/SAMPLE-EDIT.md`: crop, trim, normalise and fade the sample before chopping it.
+
 Tags as in the other docs: **[measured]** run on the Mac (or in rytm-emu) and recorded; **[code]** read in the source;
 **[inferred]** follows from those, not run on the real Rytm; **[open]** to be measured on the real Rytm.
 
@@ -129,7 +131,7 @@ A CHOP track's VOICE page (UP + T4 on the Rytm, the VOICE key) after the MPC Liv
   move it (sent at the release), tap a slice to select it, drag elsewhere to pan, **ZOOM - / +** around the selection
   (the whole sample down to 1/64 of it); LAZY: the markers so far and the sample's playhead.
 - **16 pads** with bank tabs **A..D** (slices 1..16 .. 49..64): a tap selects and auditions; LAZY: a tap is a tap.
-- **the slice list** (the M8's): the slice, its start and length in ms, and the settings in columns (OLED one, CLASSIC
+- **the slice list** (the M8's): the slice, its start and length in ms, and the settings in columns (OLED one, SIDECAR
   two, three on 1024x600), the cursor's cell framed; **arrows** move the cursor (row, column), **- / +** edit it (x10 on
   the long ranges).
 - **keys**: LAZY (again: STOP), TAP, UNDO, GRID (4 8 16 32), TRANS, ADD (split the selection), DEL, RSMP; an offer:

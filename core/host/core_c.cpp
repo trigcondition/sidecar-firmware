@@ -175,6 +175,7 @@ void core_c_render(int16_t* out, int n) {
     while (g_n < want) {
       core::refill_neediest((uint32_t)(want - g_n) + 4 * core::kBlock);
       core::seq::pre_block();   // the sequencer's notes due in this block (core/seq/seq.h)
+      um::pre_block();          // API 3: the block's transport snapshot for the user machines
       core::render_voices(g_ring, kRingFrames, (g_rd + g_n) % kRingFrames, 0, core::kVoices, g_mach);
       g_n += core::kBlock;
     }

@@ -431,7 +431,7 @@ UI_ROM const Page kChopSrcPage = {
     {"SRC", "SLC", "TUNE", "MRPH", "SEED", "NBR", "VEL", "LEV"},
 };
 UI_ROM const ExtraPage kChopPage = {"CHOP", ed_shown, ed_draw, ed_enc, ed_key, 0xFF, false, nullptr, ed_trigs, ed_leds, true,
-                                    true};   // updown044: DOWN the trig keys' next bank
+                                    nullptr, nullptr, true};   // updown044: DOWN the trig keys' next bank
 
 CORE_COLD uint32_t chop_key(const Cell& c, const Source& s) { return src_key(c, s); }
 CORE_COLD void chop_draw(Canvas& cv, const Rect& r, const Cell& c, const Source& s, int slot) { src_draw(cv, r, c, s, slot); }

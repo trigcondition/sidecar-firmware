@@ -1,9 +1,17 @@
 // core/host/um_host.cpp - the user machines' executable memory on the Mac (arm64): one MAP_JIT region, a bump
 // allocator of 4096-aligned blocks, the per-thread write toggle, sys_icache_invalidate. The same RMPA images the Pi
 // runs (sdk/rmp/plugin.mk `make a64`) run here, so the core lib (sim/um_link.py, core/tests/test_um.cpp) plays them.
+// On Linux (tools/golden_a64.sh's aarch64 build of the core tests) a plain RWX mapping and the compiler's cache flush.
+#ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
 #include <pthread.h>
+#else
+#define MAP_JIT 0
+#endif
+#include <setjmp.h>
+#include <signal.h>
 #include <sys/mman.h>
+#include <sys/ucontext.h>
 
 #include "user/um.h"
 #include "um_host.h"
@@ -41,12 +49,73 @@ uint8_t* data_alloc(uint32_t bytes) {
   g_dused += bytes;
   return r;
 }
+#ifdef __APPLE__
 void write_begin() { pthread_jit_write_protect_np(0); }
 void sync(void* p, uint32_t n) {
   pthread_jit_write_protect_np(1);
   sys_icache_invalidate(p, n);
 }
-const um::Exec kExec = {alloc, reset, write_begin, sync, nullptr, kArena, nullptr, data_alloc};
+#else
+void write_begin() {}
+void sync(void* p, uint32_t n) { __builtin___clear_cache((char*)p, (char*)p + n); }
+#endif
+// ---- Plugin API 3 (docs/plugin-api-3-plan.md)
+// The slot arenas' pool: 64 MB (the proposal's default for a 2 GB board), mapped once, not from um_heap (the user
+// machines' heap keeps the layout it had before API 3: test_api3_compat places it at a fixed address).
+constexpr uint32_t kPool = 64u << 20;
+uint8_t* arena(uint32_t* bytes) {
+  static uint8_t* p = nullptr;
+  if (!p) {
+    void* m = mmap(nullptr, kPool, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    p = m == MAP_FAILED ? nullptr : (uint8_t*)m;
+  }
+  *bytes = p ? kPool : 0;
+  return p;
+}
+// The guard: a fault inside a guarded plugin call (SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE on this thread) leaves the
+// call through siglongjmp, as the Pi's exception handler leaves it into the control core's loop. Outside a guarded call
+// the handler puts the default action back and returns: the instruction faults again and the process dies as before.
+thread_local sigjmp_buf* t_jb = nullptr;
+thread_local uint64_t t_pc = 0;
+const int kSigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE};
+void on_fault(int sig, siginfo_t*, void* uc) {
+  if (!t_jb) {
+    signal(sig, SIG_DFL);
+    return;
+  }
+#ifdef __APPLE__
+  t_pc = (uint64_t)((ucontext_t*)uc)->uc_mcontext->__ss.__pc;
+#else
+  t_pc = (uint64_t)((ucontext_t*)uc)->uc_mcontext.pc;
+#endif
+  siglongjmp(*t_jb, 1);
+}
+int guard(void (*fn)(void*), void* ctx, uint64_t* pc) {
+  static bool on = false;
+  if (!on) {
+    on = true;
+    struct sigaction sa = {};
+    sa.sa_sigaction = on_fault;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;   // (NODEFER: the signal is not left blocked after the jump)
+    sigemptyset(&sa.sa_mask);
+    for (int s : kSigs) sigaction(s, &sa, nullptr);
+  }
+  sigjmp_buf jb;
+  sigjmp_buf* was = t_jb;
+  if (sigsetjmp(jb, 0)) {
+    t_jb = was;
+#ifdef __APPLE__
+    pthread_jit_write_protect_np(1);   // (a fault while a write window was open: closed again)
+#endif
+    *pc = t_pc;
+    return 1;
+  }
+  t_jb = &jb;
+  fn(ctx);
+  t_jb = was;
+  return 0;
+}
+const um::Exec kExec = {alloc, reset, write_begin, sync, nullptr, kArena, nullptr, data_alloc, arena, guard, 0};
 }  // namespace
 
 namespace core {

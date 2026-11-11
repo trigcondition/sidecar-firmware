@@ -12,6 +12,7 @@
 #include "../seq/seq.h"
 #include "../song/song.h"
 #include "../fx/insert.h"
+#include "../mod/scene.h"
 #if CORE_MSAMP
 #include "../bundle/kits.h"
 #include "../bundle/prjslot.h"
@@ -22,6 +23,7 @@
 #include "../lib/srclib.h"
 #include "../store/store.h"
 #include "../msamp/cardq.h"
+#include "../samp/sedit.h"
 #include "../presets/preset_index.h"
 #endif
 
@@ -397,6 +399,9 @@ CORE_COLD static void switch_to(const char* n) {
   g_next_name[0] = 0;
   if (strcmp(project, project_name)) log(CORE_STR("project: %s (%s)"), project, project_name);
   else log(CORE_STR("project: %s"), project);
+#if CORE_MSAMP
+  sedit::project_changed();   // the sample editor closed first: its edit is the old project's sample (samp/sedit.h)
+#endif
   pool_load();
 #if CORE_MSAMP
   if (cardq::worker()) {
@@ -506,6 +511,7 @@ CORE_COLD void project_fill_begin() {
   kits::want_files();   // (every kit's saved and kept-aside record: core/bundle/kits.h)
 #if CORE_POLY
   ins::want_files();
+  scene::want_files();   // (the scenes: core/mod/scene.h)
   seq::want_files();   // (phase 2: tracks.txt, the patterns, their saved states)
   song::want_files();  // (UNDO REPLAY's backup slots: .backups.txt)
   seq::loading_begin();   // (its edits refused until project_changed: they would be lost to the load)
@@ -522,6 +528,7 @@ CORE_COLD bool project_fill_step() {
   lfo::project_changed();
 #if CORE_POLY
   ins::project_changed();
+  scene::project_changed();
   seq::project_changed();   // (the boot's too: seq::init leaves its tracks and A01 to this)
 #endif
   log(CORE_STR("store: %s loaded: %d files of %d paths, %u bytes"), project, store::present(), store::entries(),

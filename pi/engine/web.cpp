@@ -25,10 +25,27 @@
 #include "presetweb.h"
 #include "paircode.h"
 #include "paircode_pi.h"
+#include "usbnet_pi.h"		// the USB-C cable is trusted (docs/usb-network.md)
+#include "update_pi.h"		// the firmware update from this page (update.h, docs/web-update.md)
 #include "blackbox_pi.h"
 #include "midibridge_pi.h"
 #include "sidecar_gadget.h"	// usbmidi=os: /cmd refuses link=tcp:<address> while it is on
 #include "wifi_conf.h"
+#include "web_cmd.h"		// the commands the web may send (/cmd and /ws)
+#include "web_ws.h"		// /ws (docs/web-ws.md)
+#include "ws_frame.h"		// its handshake
+#include "webnext_path.h"	// /next: the new app from the card
+#include "voiceview_json.h"	// the voices topic
+#include "voice_pi.h"
+#include "ws_topics.h"		// its levels and log payloads
+#include "sendfx_pi.h"		// the buses' meters
+#include "spectrum_pi.h"		// the spectrum topic
+#include "shared.h"		// g_Output, g_PeakFan: the levels
+#if SIDECAR_SEQED
+#include "seqed_pi.h"		// the sequencer view (the touch editor's)
+#include "seqview_json.h"
+#endif
+#include "version.h"		// the hello's version (tools/gen_version.sh)
 #include "hosted/web_page.h"	// build.sh: www/index.html as WebPage[] (a raw string)
 #include "hosted/web_page_gz.h"	// build.sh: the same, gzip -9n, as WebPageGz[] (what "/" sends)
 #include "user/lists.h"
@@ -94,6 +111,7 @@ unsigned CLogTee::ReadSince (u64 nSince, char *pOut, unsigned nMax, u64 *pStart,
 unsigned CWebServer::s_nWorkers = 0, CWebServer::s_nRefused = 0, CWebServer::s_nIdle = 0, CWebServer::s_nMaxLifeMs = 0;
 unsigned CWebServer::s_nRequests, CWebServer::s_nMaxUs, CWebServer::s_nCommands, CWebServer::s_nUnpaired;
 CWebServer *CWebServer::s_pWorker[MaxWorkers];
+unsigned CWebServer::s_nWs = 0, CWebServer::s_nWsTotal = 0, CWebServer::s_nWsRefused = 0;
 
 CWebServer::CWebServer (CNetSubSystem *pNet, CLogTee *pLog, CConsole *pConsole, TWebStatus *pStatus, TWebStatus *pHealth,
 			void *pParam, CSocket *pSocket)
@@ -362,6 +380,7 @@ static void BRenamed (const char *a, const char *b) { core::lib::moved (a, b); }
 static bool BBusy (const char *p) { return rec_pi::TakeBusy (p); }	// the take being recorded: no delete, no rename
 static const fsweb::Backend s_Card = {BStat, BList, BRead, BWrite, BRemove, BRename, BMkdir, BSpace, BYield, BChanged,
 				      BStored, BRemoved, BRenamed, BBusy};
+const fsweb::Backend *g_pWebCard = &s_Card;	// the web update's card too (update_pi.cpp: the boot check, the commit)
 
 // The Wi-Fi settings' changes come from this page only (wifi_conf.h's same_origin; pi/circle/circle-http-origin.patch
 // keeps the headers): the Host one of the Pi's names (sidecar.local, its IP), the Origin (else the Referer) that host.
@@ -388,7 +407,9 @@ static const char kNotPaired[] = "not paired: enter the pairing code shown on th
 // THE OPEN SET, and nothing else. Everything not named here needs the pairing code, so a new endpoint is gated unless
 // someone deliberately adds it (the old list was the other way round, and a read that nobody thought about - /fs/get -
 // served the Wi-Fi key and, worse, the pairing code itself).
-//   "/", "/index.html"  the page, so someone can load sidecar.local and see the dialog at all
+//   "/", "/index.html"  the page, so someone can load sidecar.local and see the dialog at all (with the new app on
+//                       the card: a few bytes that send the browser on to /next/, see NewAppOnCard)
+//   "/classic"          the classic page itself, wherever "/" goes
 //   "/bundle-sw.js"     the download's service worker: the browser fetches it on its own, without the page's header,
 //                       and it is a built-in static script with nothing of the device in it
 //   "/health"           alive, the build, uptime, temperature, the links, the supply, underruns - no names, no
@@ -402,19 +423,65 @@ static const char kNotPaired[] = "not paired: enter the pairing code shown on th
 //                       ring in about 25 s (docs/pi-engine.md "Pairing code" > "What is open")
 //   "/pair", "/pair/status", "/pair/resume"   pairing itself has to work before you are paired
 //   "/pair/show"        the dialog asks for the code on the Rytm's screen (rate-limited: paircode_pi::kShowGapS)
+//   "/update/state"     the web update's state (update.h): the versions and where a trial stands, as /status shows
+//                       the version - no secret; the page asks it while the Sidecar restarts, before it is paired again
 static boolean Open (const char *pPath)
 {
-	static const char *const kOpen[] = {"/", "/index.html", "/bundle-sw.js", "/health", "/status", "/log", "/pair",
-					    "/pair/status", "/pair/resume", "/pair/show"};
+	static const char *const kOpen[] = {"/", "/index.html", "/classic", "/bundle-sw.js", "/health", "/status", "/log",
+					    "/pair", "/pair/status", "/pair/resume", "/pair/show", "/update/state"};
 	for (unsigned i = 0; i < sizeof kOpen / sizeof kOpen[0]; i++) if (strcmp (pPath, kOpen[i]) == 0) return TRUE;
-	return FALSE;
+	return strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0;	// the new app's files (webnext_path.h): no data in them
+}
+
+// The new web app is on the card (sdboot.py web, or web-next's card script): "/" sends the browser to /next/, the
+// classic page stays at /classic. Asked at each load of "/": a card without the app (or an
+// app taken off again) gets the classic page at once, with no setting to forget.
+static boolean NewAppOnCard (void)
+{
+	FILINFO fi;
+	return f_stat ("SD:/.rytm/www-next/index.html", &fi) == FR_OK || f_stat ("SD:/.rytm/www-next/index.html.gz", &fi) == FR_OK;
+}
+
+static const char NewAppHop[] = "<!doctype html><meta charset=utf-8><title>Sidecar</title>"
+	"<meta http-equiv=refresh content=\"0;url=/next/\"><script>location.replace(\"/next/\")</script>"
+	"<p><a href=\"/next/\">The Sidecar's page</a> &middot; <a href=\"/classic\">the classic page</a></p>";
+
+// GET /next/<file>: the new web app from the card (webnext_path.h), the .gz sibling when there is one. false: no such
+// file (or not one of the app's names): 404; too big for the buffer: 500 and a log line
+static THTTPStatus NextFile (const char *pPath, u8 *pBuffer, unsigned *pLength, const char **ppContentType)
+{
+	char sd[160];
+	if (!webnext::path (pPath, sd, sizeof sd - 4)) return HTTPNotFound;
+	size_t n = strlen (sd);
+	strcpy (sd + n, ".gz");
+	bool bGz = true;
+	FIL f;
+	if (f_open (&f, sd, FA_READ) != FR_OK)
+	{
+		sd[n] = 0;
+		bGz = false;
+		if (f_open (&f, sd, FA_READ) != FR_OK) return HTTPNotFound;
+	}
+	FSIZE_t nSize = f_size (&f);
+	UINT got = 0;
+	bool bOK = nSize <= *pLength && f_read (&f, pBuffer, (UINT) nSize, &got) == FR_OK && got == nSize;
+	f_close (&f);
+	if (!bOK)
+	{
+		CLogger::Get ()->Write (From, LogWarning, "next: %s not served (%u bytes)", sd + 4, (unsigned) nSize);
+		return HTTPInternalServerError;
+	}
+	sd[n] = 0;					// (the type from the name without .gz)
+	*pLength = got;
+	*ppContentType = webnext::headers (sd, bGz, webnext::immutable (pPath));
+	return HTTPOK;
 }
 
 // The refusal's body: "<code> <message>" for the endpoints whose client reads text, JSON for the rest. Decided here,
 // in one place, so the Content-Type and the body can never disagree.
 static boolean WantsText (const char *pPath)
 {
-	return strncmp (pPath, "/fs/", 4) == 0 || strcmp (pPath, "/cmd") == 0;
+	return strncmp (pPath, "/fs/", 4) == 0 || strcmp (pPath, "/cmd") == 0 || strcmp (pPath, "/update/put") == 0;
 }
 
 // The session token a request carries: the X-Sidecar-Auth header (what the page sends: a header cannot be set by
@@ -476,6 +543,232 @@ static void Reply (const fsweb::Result &r, u8 *pBuffer, unsigned *pLength, const
 	*ppContentType = "text/plain; charset=utf-8";
 }
 
+// The web update's answer: {"ok","code","msg","reboot":"none"|"plain"|"tryboot"} (HTTP 200, as every refusal here)
+static void UpdateReply (const fsweb::Result &r, upd::Reboot Rb, u8 *pBuffer, unsigned *pLength, const char **ppContentType)
+{
+	char Msg[2 * sizeof r.msg];
+	unsigned q = 0;
+	for (const char *c = r.msg; *c && q < sizeof Msg - 3; c++)
+	{
+		if (*c == '"' || *c == '\\') Msg[q++] = '\\';
+		Msg[q++] = *c >= 0x20 && *c <= 0x7e ? *c : ' ';
+	}
+	Msg[q] = 0;
+	CString s;
+	s.Format ("{\"ok\":%s,\"code\":%d,\"msg\":\"%s\",\"reboot\":\"%s\"}", r.status == 200 ? "true" : "false", r.status, Msg,
+		  Rb == upd::kTry ? "tryboot" : Rb == upd::kPlain ? "plain" : "none");
+	unsigned n = s.GetLength () < *pLength ? s.GetLength () : *pLength;
+	memcpy (pBuffer, (const char *) s, n);
+	*pLength = n;
+	*ppContentType = "application/json";
+}
+
+// What GET /status answers (the /ws status topic too: the same function, so the two can never differ)
+void CWebServer::StatusJson (CString *pOut)
+{
+	CString &s = *pOut;
+	s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u,"
+		  "\"idle\":%u,\"open\":%u},",
+		  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused,
+		  s_nIdle, s_nWorkers);
+	(*m_pStatus) (&s, m_pParam);
+	paircode_pi::Status (&s);		// "pair":{...}: the gate, the counts - never the code itself
+	midibridge_pi::Status (&s);		// "midibridge":{...}: the state, the counts - never its token
+	s.Append ("}");
+}
+
+// ---- /ws, the WebSocket (web_ws.h, docs/web-ws.md). The device's side of ws_session.h: the pairing gate, the status,
+// the console. The token arrives in the first "auth" message, never in the URL (a browser cannot set a header on a
+// WebSocket); the status topic is open, as GET /status is; a command needs the token, checked again each time.
+bool CWebServer::WsToken (void *pParam, const char *pToken)
+{
+	return usbnet_pi::Trusted () || paircode_pi::Gate ().check (pToken);	// the USB-C cable: trusted (usbnet_pi.h)
+}
+
+// One topic's payload (ws_session.h's Host::build). Core 0 (this connection's worker task), like the display loop and the
+// stats line that share the peaks (peak_fan.h) and the sequencer view (seqed_pi.h)
+size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size_t nMax)
+{
+	CWebServer *pThis = (CWebServer *) pParam;
+	switch (Topic)
+	{
+	case wsproto::kStatus:
+	{
+		CString s;
+		pThis->StatusJson (&s);
+		size_t n = s.GetLength ();
+		if (n > nMax) return 0;
+		memcpy (pOut, (const char *) s, n);
+		return n;
+	}
+	case wsproto::kLevels:
+	{
+		float Pk[8][2];
+		g_Output.TakeVoicePeaks (Pk);			// into every reader's share, then this connection's own
+		g_PeakFan.feed_voices (Pk);
+		g_PeakFan.feed_master (g_Output.TakePeak ());
+		float X[peakfan::Fan::kExtra];
+		g_Output.TakeTrkPeaks (X);			// each voice on its own track (only the web reads these)
+		sendfx_pi::TakeBusPeaks (X + 8);		// B1..B3
+		g_PeakFan.feed_extra (X, 0, peakfan::Fan::kExtra);
+		peakfan::Reader r = (peakfan::Reader) (peakfan::kWeb + pThis->m_nWsSlot);
+		g_PeakFan.take_voices (r, Pk);
+		g_PeakFan.take_extra (r, X);
+		return wstopics::levels (Pk, X, X + 8, g_PeakFan.take_master (r), pOut, nMax);
+	}
+#if SIDECAR_SEQED
+	case wsproto::kSeq:
+	case wsproto::kSeqPos:
+	{
+		static sidecar_seq_view_t *s_pView = 0;		// the newest view, shared by the connections (core 0)
+		static unsigned s_nSeen = 0;
+		if (s_pView == 0) { s_pView = new sidecar_seq_view_t; memset (s_pView, 0, sizeof *s_pView); }
+		if (s_pView == 0) return 0;
+		seqed_pi::View (s_pView, &s_nSeen);		// (a copy only when it changed)
+		if (Topic == wsproto::kSeq) return seqjson::view (*s_pView, pOut, nMax);
+		return seqjson::pos (seqed_pi::Playhead (), s_pView->valid ? s_pView->track : -1, s_pView->transport,
+				     s_pView->valid ? s_pView->pattern : -1, s_pView->bpm10, pOut, nMax);
+	}
+#endif
+	case wsproto::kSpectrum:
+	{
+		u8 b[spectrum_pi::kBands];
+		int s;
+		boolean bOn = spectrum_pi::Read (b, &s);	// (analysed when due, shared by the connections)
+		if (!bOn) memset (b, 0, sizeof b);
+		return wstopics::spectrum (bOn ? spectrum_pi::StripName (s) : 0, b, spectrum_pi::kBands, spectrum_pi::kLoHz,
+					   spectrum_pi::kHiHz, spectrum_pi::kFloorDb, pOut, nMax);
+	}
+	case wsproto::kVoices:
+	{
+		static sidecar_voice_view_t *s_pVoice = new sidecar_voice_view_t;	// (core 0; ~3 KB, not on the stack)
+		if (s_pVoice == 0) return 0;
+		voice_pi::Fill (s_pVoice, 0, -1, false);	// no scope: the display's tap is its own; no p-locks (the display's dump)
+		return voicejson::view (*s_pVoice, pOut, nMax);
+	}
+	case wsproto::kLog:
+	{
+		static const unsigned kChunk = 8192;		// the log bytes in one push
+		static char *s_pBuf = new char[kChunk];
+		if (s_pBuf == 0) return 0;
+		u64 nStart, nEnd;
+		u64 nSince = pThis->m_nWsLogAt;
+		if (!pThis->m_bWsLogStarted)			// a new subscriber: the last few KB for context
+		{
+			pThis->m_pLog->ReadSince (~0ull >> 1, s_pBuf, 0, &nStart, &nEnd);
+			nSince = nEnd > kChunk ? nEnd - kChunk : 0;
+		}
+		unsigned n = pThis->m_pLog->ReadSince (nSince, s_pBuf, kChunk, &nStart, &nEnd);
+		boolean bGap = pThis->m_bWsLogStarted && nStart > nSince;
+		size_t nOut = wstopics::log (nStart, nEnd, bGap, s_pBuf, n, pOut, nMax);
+		if (nOut != 0)
+		{
+			pThis->m_nWsLogAt = nEnd;
+			pThis->m_bWsLogStarted = TRUE;
+		}
+		return nOut;
+	}
+	default:
+		return 0;
+	}
+}
+
+// As POST /cmd: the same list (web_cmd.h), a /ws message counting as a body (never a URL). The upgrade passed the
+// strict same-origin check, so usbmode=overbridge is taken here, as on /cmd from the page.
+const char *CWebServer::WsCommand (void *pParam, const char *pCmd)
+{
+	CSidecarGadget *pSidecar = CSidecarGadget::Get ();
+	const char *pWhy = webcmd::refused (pCmd, true, pSidecar != 0 && pSidecar->OsUpdate ());
+	if (pWhy != 0)
+	{
+		CLogger::Get ()->Write (From, LogWarning, "ws: command refused: %s", pWhy);
+		return pWhy;
+	}
+	s_nCommands++;
+	CLogger::Get ()->Write (From, LogNotice, "command :%s (ws)", CWifi::IsSecret (pCmd) ? "wifi=join:..." : pCmd);
+	((CWebServer *) pParam)->m_pConsole->Command (pCmd);
+	return 0;
+}
+
+static boolean WsStillOn (void) { return paircode_pi::WebOn (); }
+
+// a sub to "spectrum" named its strip: one for all readers, the last pick wins (spectrum_pi.h)
+bool CWebServer::WsStrip (void *pParam, const char *pName)
+{
+	int s = spectrum_pi::StripIndex (pName);
+	if (s < 0) return false;
+	spectrum_pi::Select (s);
+	return true;
+}
+
+// the topics this build serves (the sequencer's only with core/seq in the tree)
+static const unsigned WsTopics = 1u << wsproto::kLevels | 1u << wsproto::kLog | 1u << wsproto::kVoices | 1u << wsproto::kSpectrum
+#if SIDECAR_SEQED
+				 | 1u << wsproto::kSeq | 1u << wsproto::kSeqPos
+#endif
+				 ;
+
+// A refused upgrade: a plain HTTP answer, no body, the connection closed
+void CWebServer::WsRefuse (const char *pStatus, const char *pWhy)
+{
+	s_nWsRefused++;
+	CLogger::Get ()->Write (From, LogWarning, "ws: refused (%s): %s (Origin \"%s\")", pStatus, pWhy, GetRequestOrigin ());
+	CString s;
+	s.Format ("HTTP/1.1 %s\r\nContent-Length: 0\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n\r\n", pStatus);
+	m_pSocketForWs->Send ((const char *) s, s.GetLength (), MSG_DONTWAIT);
+}
+
+boolean CWebServer::UpgradeConnection (const char *pPath, CSocket *pSocket)
+{
+	if (strcmp (pPath, "/ws") != 0) return FALSE;		// another path: plain HTTP, as before
+	m_bServed = TRUE;
+	s_nRequests++;
+	m_pSocketForWs = pSocket;
+	char Accept[29];
+	if (!paircode_pi::WebOn ()) WsRefuse ("503 Service Unavailable", paircode_pi::kWebOff);
+	else if (!wsframe::is_websocket (GetRequestUpgrade ())) WsRefuse ("400 Bad Request", "Upgrade is not websocket");
+	else if (strcmp (GetRequestWsVersion (), "13") != 0) WsRefuse ("426 Upgrade Required", "Sec-WebSocket-Version is not 13");
+	else if (!wsframe::accept_key (GetRequestWsKey (), Accept)) WsRefuse ("400 Bad Request", "no valid Sec-WebSocket-Key");
+	// the strict same-origin check, as /midibridge/set: a browser always sends Origin on a WebSocket, and another
+	// site's page must not reach the console through it (WebSockets are not covered by the same-origin policy)
+	else if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+		WsRefuse ("403 Forbidden", "not from this page (the strict same-origin check)");
+	else if (s_nWs >= MaxWs) WsRefuse ("503 Service Unavailable", "busy: MaxWs connections open");
+	else
+	{
+		// counted as a WebSocket, no longer as an HTTP worker (MaxWorkers stays for the page's requests)
+		s_nWorkers--;
+		for (unsigned i = 0; i < MaxWorkers; i++) if (s_pWorker[i] == this) s_pWorker[i] = 0;
+		s_nWs++;
+		static_assert (peakfan::kReaders - peakfan::kWeb == (int) MaxWs, "one peak reader per /ws connection (peak_fan.h)");
+		static boolean s_bSlot[MaxWs];			// which slot is in use (each its own share of the peaks)
+		m_nWsSlot = 0;
+		while (m_nWsSlot < MaxWs - 1 && s_bSlot[m_nWsSlot]) m_nWsSlot++;
+		s_bSlot[m_nWsSlot] = TRUE;
+		s_nWsTotal++;
+		CLogger::Get ()->Write (From, LogNotice, "ws: a client connected (%u open)", s_nWs);
+		static const ws_pi::TDevice Device = {0, WsToken, WsBuild, WsTopics, WsCommand, WsStillOn, SIDECAR_VERSION, CWebServer::Commands, WsStrip};
+		ws_pi::TDevice Dev = Device;
+		Dev.pParam = this;
+		ws_pi::TStats St;
+		m_pSocketForWs = 0;
+		ws_pi::Serve (pSocket, Accept, Dev, &St);		// deletes pSocket
+		m_nStart = CTimer::GetClockTicks ();		// "longest connection" (LogStats) stays the HTTP requests'
+		s_bSlot[m_nWsSlot] = FALSE;
+		s_nWs--;
+		s_nWorkers++;					// the destructor counts it out again
+		CLogger::Get ()->Write (From, LogNotice, "ws: closed (%u%s): %u pushes, %u coalesced, %u refused, %u malformed "
+					"(%u open, %u since the boot, %u refused upgrades)", St.nCode,
+					St.nCode == 1008 ? ", a policy close: bad requests, a ping flood or a client that stopped reading" : "",
+					St.nPushes, St.nCoalesced,
+					St.nRefused, St.nBad, s_nWs, s_nWsTotal, s_nWsRefused);
+		return TRUE;
+	}
+	m_pSocketForWs = 0;
+	delete pSocket;
+	return TRUE;
+}
+
 THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, const char *pFormData, u8 *pBuffer,
 				    unsigned *pLength, const char **ppContentType)
 {
@@ -502,13 +795,25 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 											: "application/json";
 		return HTTPOK;
 	}
-	if (!Open (pPath) && !paircode_pi::Gate ().check (pTok))
+	// the pairing gate; skipped on the USB-C network (usbnet_pi.h): the stack runs on the cable, so every request came
+	// over it - trust follows the interface, never an address. The X-Sidecar-Auth header must still be there (any value,
+	// the pages send "usb"): another site's page open on the computer cannot send it (a CORS preflight, never answered),
+	// so it cannot change the Sidecar through the trusted cable (an <img> GET, a form POST)
+	if (!Open (pPath) && !(usbnet_pi::Trusted () && GetRequestAuth ()[0]) && !paircode_pi::Gate ().check (pTok))
 	{
 		PairRefused (pPath, pBuffer, pLength, ppContentType);
 		s_nUnpaired++;
 		return HTTPOK;
 	}
-	if (strcmp (pPath, "/") == 0 || strcmp (pPath, "/index.html") == 0)
+	if ((strcmp (pPath, "/") == 0 || strcmp (pPath, "/index.html") == 0) && strstr (pParams, "raw") == 0 && NewAppOnCard ())
+	{
+		unsigned n = sizeof NewAppHop - 1;
+		if (n > *pLength) return HTTPInternalServerError;
+		memcpy (pBuffer, NewAppHop, n);
+		*pLength = n;
+		*ppContentType = "text/html; charset=utf-8\r\nCache-Control: no-store";
+	}
+	else if (strcmp (pPath, "/") == 0 || strcmp (pPath, "/index.html") == 0 || strcmp (pPath, "/classic") == 0)
 	{
 		// No code on the Rytm from here any more: a page load never carries the header, so every reload of a
 		// PAIRED owner's tab flashed the code over the Rytm (audit 2026-10-26). The page asks for it itself, with
@@ -524,6 +829,10 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		*pLength = n;
 		*ppContentType = bRaw ? "text/html; charset=utf-8\r\nCache-Control: no-store"
 				      : "text/html; charset=utf-8\r\nContent-Encoding: gzip\r\nVary: Accept-Encoding\r\nCache-Control: no-cache";
+	}
+	else if (strcmp (pPath, "/next") == 0 || strncmp (pPath, "/next/", 6) == 0)
+	{
+		Status = NextFile (pPath, pBuffer, pLength, ppContentType);
 	}
 	else if (strcmp (pPath, "/health") == 0)
 	{
@@ -543,14 +852,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 	else if (strcmp (pPath, "/status") == 0)
 	{
 		CString s;
-		s.Format ("{\"host\":\"%s\",\"uptime\":%u,\"web\":{\"requests\":%u,\"maxus\":%u,\"commands\":%u,\"refused\":%u,"
-			  "\"idle\":%u,\"open\":%u},",
-			  CWebStart::Hostname (), CTimer::Get ()->GetUptime (), s_nRequests, s_nMaxUs, s_nCommands, s_nRefused,
-			  s_nIdle, s_nWorkers);
-		(*m_pStatus) (&s, m_pParam);
-		paircode_pi::Status (&s);		// "pair":{...}: the gate, the counts - never the code itself
-		midibridge_pi::Status (&s);		// "midibridge":{...}: the state, the counts - never its token
-		s.Append ("}");
+		StatusJson (&s);
 		unsigned n = s.GetLength ();
 		if (n > *pLength) return HTTPInternalServerError;
 		memcpy (pBuffer, (const char *) s, n);
@@ -570,6 +872,17 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		memmove (pBuffer + nh, pBuffer + Head, n);
 		memcpy (pBuffer, (const char *) h, nh);
 		*pLength = nh + n;
+		*ppContentType = "text/plain; charset=utf-8";
+	}
+	else if (strcmp (pPath, "/prevboot") == 0)	// the last crashed boot's report and log tail (kernel.cpp CrumbToCard; paired only)
+	{
+		core::File f;
+		if (!f.open ("/.rytm/prevboot.txt", core::kRead)) return HTTPNotFound;
+		const unsigned nMax = *pLength < 65536 ? *pLength : 65536;
+		int n = f.read (pBuffer, nMax);
+		f.close ();
+		if (n < 0) return HTTPInternalServerError;
+		*pLength = (unsigned) n;
 		*ppContentType = "text/plain; charset=utf-8";
 	}
 	else if (strcmp (pPath, "/log") == 0)
@@ -614,10 +927,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			pWhy = "not from this page (the same-origin check)";
 		else if (usb_mode::raises (Cmd) && !FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
 			pWhy = "usbmode=overbridge: not from this page (the strict same-origin check)";
-		else if ((!bForm && strncmp (Cmd, "wifi=", 5) == 0) || strncmp (Cmd, "midibridge=", 11) == 0
-			 || strncmp (Cmd, "usbmidi=", 8) == 0 || strncmp (Cmd, "osupdate=", 9) == 0
-			 || (strncmp (Cmd, "link=tcp:", 9) == 0 && pSidecar != 0 && pSidecar->OsUpdate ()))
-			pWhy = "not taken on /cmd (wifi= in the URL, midibridge=, usbmidi=, osupdate=, link=tcp: with usbmidi=os:)";
+		else pWhy = webcmd::refused (Cmd, bForm, pSidecar != 0 && pSidecar->OsUpdate ());	// (web_cmd.h: the list /ws shares)
 		if (pWhy != 0)
 		{
 			CLogger::Get ()->Write (From, LogWarning, "web: /cmd refused: %s (Host \"%s\", Origin \"%s\", Referer \"%s\")",
@@ -625,8 +935,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			memset (Cmd, 0, sizeof Cmd);
 			return HTTPBadRequest;
 		}
-		// wdtest hangs core 0 on purpose: the watchdog's reboot ends a RAM kernel (needs a reflash, or sdboot's engine.img)
-		if (Cmd[0] == 0 || strcmp (Cmd, "wdtest") == 0) return HTTPBadRequest;
+		// (wdtest hangs core 0 on purpose: the watchdog's reboot ends a RAM kernel; web_cmd.h refuses it, and an empty one)
 		s_nCommands++;
 		CLogger::Get ()->Write (From, LogNotice, "command :%s", CWifi::IsSecret (Cmd) ? "wifi=join:..." : Cmd);
 		m_pConsole->Command (Cmd);
@@ -649,13 +958,14 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 			// "host": the mDNS name, so the page can say that http://<host>.local and http://<ip> are different
 			// sites to a browser and do not share a remembered device. Both are already public on the LAN.
 			// "wait": this address's own (paircode.h: per peer). "rng": false, the gate refuses everything
-			// (the random generator failed its self-test).
+			// (the random generator failed its self-test). "trusted": this connection came over the USB-C cable
+			// (usbnet_pi.h): nothing to pair, the page goes on as with the gate off.
 			s.Format ("{\"gate\":\"%s\",\"paired\":%s,\"clients\":%u,\"sessions\":%u,\"wait\":%u,\"digits\":%u,"
-				  "\"hdr\":%s,\"rng\":%s,\"host\":\"%s\"}",
+				  "\"hdr\":%s,\"rng\":%s,\"host\":\"%s\",\"trusted\":%s}",
 				  g.mode () == paircode::kOff ? "off" : g.mode () == paircode::kFixed ? "fixed" : "on",
 				  g.check_quiet (pTok) ? "true" : "false", g.clients (), g.sessions (), g.lock_left_s (m_nPeer),
 				  paircode::kDigits, GetRequestAuth ()[0] ? "true" : "false", g.rng_ok () ? "true" : "false",
-				  CWebStart::Hostname ());
+				  CWebStart::Hostname (), usbnet_pi::Trusted () ? "true" : "false");
 		}
 		else if (strcmp (op, "show") == 0)	// open, POST: the dialog puts the code on the Rytm's screen
 		{
@@ -856,6 +1166,25 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		*pLength = n;
 		*ppContentType = "application/json";
 	}
+	else if (strcmp (pPath, "/usbnet/reboot") == 0)	// docs/usb-network.md: the page's "Reboot onto USB-C"
+	{
+		// gated (above), from this page only (strict), and only while a computer's USB-C network started after the
+		// boot chose Wi-Fi or Ethernet: not a general reboot button
+		CString s;
+		if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+			s = "{\"ok\":false,\"error\":\"not from this page (the same-origin check)\"}";
+		else if (!usbnet_pi::RequestReboot ())
+			s = "{\"ok\":false,\"error\":\"no computer started a USB-C network late: nothing to reboot for\"}";
+		else
+		{
+			s = "{\"ok\":true}";
+			CLogger::Get ()->Write (From, LogNotice, "the page asked for a reboot onto the USB-C network");
+		}
+		unsigned n = s.GetLength () < *pLength ? s.GetLength () : *pLength;
+		memcpy (pBuffer, (const char *) s, n);
+		*pLength = n;
+		*ppContentType = "application/json";
+	}
 	else if (strncmp (pPath, "/bundle", 7) == 0 || strcmp (pPath, "/time") == 0 || strncmp (pPath, "/usb/", 5) == 0)
 	{						// project bundles (bundleweb.h): every POST from this page only
 		bundleweb::Reply r;
@@ -864,6 +1193,56 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		if (r.status == 404 && strcmp (pPath, "/bundle/zip") == 0) return HTTPNotFound;	// (the download's end)
 		*pLength = r.len;	// other refusals: HTTP 200 with {"ok":false,...} (Circle's error pages carry no message)
 		*ppContentType = r.type;
+	}
+	else if (strncmp (pPath, "/update/", 8) == 0)		// the firmware update (update.h, docs/web-update.md)
+	{
+		// paired (the gate above; /update/state is open) and every POST from this page only (strict, as the Wi-Fi
+		// settings): this is the one way from the network to the boot files when cmdline.txt has sdport=0
+		const char *op = pPath + 8;
+		upd::Env Env = update_pi::Env ();
+		char Num[24];
+		if (strcmp (op, "state") == 0)
+		{
+			int n = upd::state_json (Env, (char *) pBuffer, *pLength);
+			if (n <= 0) return HTTPInternalServerError;
+			*pLength = n;
+			*ppContentType = "application/json";
+		}
+		else if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), TRUE))
+		{
+			fsweb::Result rf = {403, "refused: not from this page (the same-origin check)"};
+			if (strcmp (op, "put") == 0) Reply (rf, pBuffer, pLength, ppContentType);
+			else UpdateReply (rf, upd::kNone, pBuffer, pLength, ppContentType);
+		}
+		else if (strcmp (op, "put") == 0)		// off=, total=, crc= ; the chunk as the multipart's one part (as /fs/put)
+		{
+			const char *pHead;
+			const u8 *pData = 0;
+			unsigned nData = 0;
+			if (!GetMultipartFormPart (&pHead, &pData, &nData)) { pData = (const u8 *) ""; nData = 0; }
+			u64 nOff = FormValue (pParams, "off", Num, sizeof Num) ? ParseU64 (Num) : 0;
+			u64 nTotal = FormValue (pParams, "total", Num, sizeof Num) ? ParseU64 (Num) : 0;
+			u32 nCrc = FormValue (pParams, "crc", Num, sizeof Num) ? (u32) ParseU64 (Num) : 0;
+			fsweb::Result r = {400, "bad request"};
+			upd::put (Env, nOff, nTotal, nCrc, pData, nData, &r);
+			if (!(r.status == 200 && strncmp (r.msg, "ok", 2) == 0)) FileClose ();
+			Reply (r, pBuffer, pLength, ppContentType);
+		}
+		else if (strcmp (op, "install") == 0 || strcmp (op, "previous") == 0 || strcmp (op, "discard") == 0)
+		{
+			boolean bForce = (FormValue (pFormData, "force", Num, sizeof Num) || FormValue (pParams, "force", Num, sizeof Num)) && Num[0] == '1';
+			fsweb::Result r = {400, "bad request"};
+			upd::Reboot Rb = upd::kNone;
+			if (op[0] == 'i') Rb = upd::install (Env, bForce, &r);
+			else if (op[0] == 'p') Rb = upd::previous (Env, bForce, &r);
+			else upd::discard (Env, &r);
+			FileClose ();
+			if (op[0] != 'd') CLogger::Get ()->Write (From, Rb != upd::kNone ? LogNotice : LogWarning, "update: %s%s: %d %s", op,
+								 bForce ? " (forced)" : "", r.status, r.msg);
+			if (Rb != upd::kNone) update_pi::RequestReboot (Rb);
+			UpdateReply (r, Rb, pBuffer, pLength, ppContentType);
+		}
+		else return HTTPNotFound;
 	}
 	else if (strncmp (pPath, "/fs/", 4) == 0)		// the file browser (fsweb.h)
 	{

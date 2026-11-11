@@ -18,7 +18,9 @@ static volatile unsigned s_nTempC;	// the SoC temperature as the stats line last
 #include "wgview_pi.h"		// the display's WAVETABLE / GRANULAR view
 #include "preset_pi.h"		// the display's JUNO / 6-OP FM preset pages
 #include "chopview_pi.h"		// the display's CHOP page
+#include "seditview_pi.h"		// the display's SAMPLE EDIT page (core/samp/sedit.h)
 #include "song_pi.h"		// the display's SONG page (core/song)
+#include "morph_pi.h"		// 0.5.0: the display's MORPH page (core/mod/scene.h)
 #include "voice_pi.h"		// the display's VOICE page, the Rytm's UP + T1..T5 (rui1036b)
 #include "insfx_pi.h"		// the display's INSERT FX page (fx-ins)
 #include "scope_pi.h"		// touch2: the display's SCOPE page (UP + T9)
@@ -47,6 +49,10 @@ static int s_nRytmPatIndex = -1;
 #include <circle/synchronize.h>
 #include <circle/util.h>
 #include <circle/version.h>
+#if RASPPI >= 5
+#include <circle/bcm2712.h>		// the power button's GPIO
+#include <circle/macros.h>
+#endif
 #include <fatfs/ff.h>
 
 #include "bridge.h"
@@ -63,6 +69,8 @@ static int s_nRytmPatIndex = -1;
 #include "midibridge_pi.h"	// the Rytm MIDI bridge (midibridge.h): off at every boot
 #include "sdfiles.h"
 #include "wifi.h"
+#include "usbnet_pi.h"		// the USB-C network (docs/usb-network.md)
+#include "update_pi.h"		// the firmware update from the web page (docs/web-update.md)
 #include "rec_pi.h"
 #include "bundle_pi.h"		// project bundles (core/bundle, docs/BUNDLES.md)
 #include "lib_pi.h"		// the sample library (core/lib, docs/LIBRARY.md)
@@ -101,6 +109,9 @@ extern bool g_bCardGuard;			// card_guard.cpp: testcard=1
 #endif
 
 static const char From[] = "engine";
+// BenchChains' results (core 0, before cores 1-3), LogBench's rows: [0] the master chain, [1..] the send TYPE insert sets
+static const int ChainBenches = 3;
+static struct { u64 nTicks; u32 nWorst; } s_ChainBench[ChainBenches];
 static const char RebootMagic[] = "RYTM-REBOOT";
 static volatile boolean s_bRebootRequested = FALSE;
 static void RebootRequest (void) { s_bRebootRequested = TRUE; }   // UART IRQ: core 0's loop stops cleanly first
@@ -277,6 +288,15 @@ boolean CKernel::Initialize (void)
 				m_bTestCard ? "testcard=1: the card in use, Sidecar's folders only" : "no card for the engine");
 	}
 #endif
+	// updtrial=1 is only in cmdline-try.txt, the web update's trial boot (update_pi.h, docs/web-update.md): the watchdog
+	// from here on, fed at each boot step, so a trial that hangs anywhere in its start resets too - and the next boot
+	// reads config.txt again, the old kernel. Its own commit, 30 s after the start, makes it permanent.
+	m_bUpdTrial = m_Options.GetAppOptionDecimal ("updtrial", 0) != 0;
+	if (m_bUpdTrial)
+	{
+		m_Watchdog.Start (15);
+		m_Logger.Write (From, LogNotice, "updtrial=1: the web update's trial boot, the watchdog on from here");
+	}
 	m_Logger.RegisterPanicHandler (CrumbPanic);
 	s_nPmRsts = read32 (ARM_PM_RSTS);
 	crumb::Report ([this] (const char *pLine) { m_Logger.Write ("crumb", LogNotice, "%s", pLine); }, s_nPmRsts, 6144);
@@ -287,7 +307,7 @@ boolean CKernel::Initialize (void)
 		unsigned ts = m_Timer.GetClockTicks ();
 		m_pDisplay = new CSidecarDisplay (m_Options.GetWidth (), m_Options.GetHeight ());
 		const char *pStyle = m_Options.GetAppOptionString ("uistyle", 0);	// the card is not read yet: cmdline only
-		sidecar_splash_style (pStyle != 0 && strcmp (pStyle, "classic") == 0 ? 1 : 0);
+		sidecar_splash_style (pStyle != 0 && (strcmp (pStyle, "sidecar") == 0 || strcmp (pStyle, "classic") == 0) ? 1 : 0);
 		if (!m_pDisplay->Splash ()) m_Logger.Write (From, LogNotice, "boot screen: no frame buffer");
 		else m_Logger.Write (From, LogNotice, "boot screen: %ux%u in %u us", m_pDisplay->GetFrameWidth (),
 				     m_pDisplay->GetFrameHeight (), m_Timer.GetClockTicks () - ts);
@@ -319,6 +339,16 @@ boolean CKernel::Initialize (void)
 	// the user machines (um_pi.h): the code arena, the card's /Plugins scanned by core 3 once it runs
 	if (bCard && m_Options.GetAppOptionDecimal ("um", 1) != 0) CUserMachines::Initialize ();
 	if (bCard) rec_pi::Init ();		// the recorder's memory (recbuf=MB) and the boot scan of /Recordings
+	// the web update (update_pi.h): a trial waits for its commit; any other boot finishes or cleans up after one.
+	// webupdate=0 turns the page's Update off; the test modes never update.
+	{
+		boolean bUpdOn = m_Options.GetAppOptionDecimal ("webupdate", 1) != 0;
+		const char *pUpdOff = "web updates are off (cmdline.txt webupdate=0)";
+#ifdef SIDECAR_PI5_TESTMODE
+		if (m_nTestSecs != 0) bUpdOn = FALSE, pUpdOff = "the engine test mode (testsecs=) never updates";
+#endif
+		update_pi::Boot (bCard, bUpdOn, pUpdOff, m_bUpdTrial);
+	}
 	s_pBundleConsole = &m_Console;
 	bundle_pi::init (BundleCommand);	// project bundles: the job on this core's loop (bridge::begin ran the boot recovery)
 	lib_pi::begin (bCard);			// the sample library: its index read and the card walked, a piece a pass (lib_pi.h)
@@ -330,6 +360,7 @@ boolean CKernel::Initialize (void)
 	boolean bBench = m_Options.GetAppOptionDecimal ("bench", 1) != 0;
 	LoadClock (bCard);				// the CPU clock option, before the bench: the bench measures the clock the engine plays at
 	if (bBench) CEngineCores::BenchCore (0);		// cores 1-3 bench as they start (LogBench)
+	if (bBench) BenchChains ();			// the master / send TYPE insert rows: before cores 1-3 start (LogBench)
 	SelfCheck ();
 	// boot defaults (the user's decision, 2026-10-16): out=tracks, the voices on their tracks' inputs, through the
 	// Rytm's filters and FX (the mod build); MIDI notes off (notes=on is for a stock Rytm, with out=main); no drone
@@ -388,6 +419,7 @@ boolean CKernel::Initialize (void)
 	// what pi/circle/sdboot.py and make-sd-dual.sh tell a Pi 5 kernel by, gadget or not (older ones: the line below)
 	m_Logger.Write (From, LogNotice, "board: Raspberry Pi 5 build (kernel_2712.img)");
 #endif
+	const unsigned nGadgetT0 = CTimer::GetClockTicks ();	// net=auto's wait counts from here (UsbNetProbe)
 #ifdef SIDECAR_NO_GADGET
 	const char *pGadgetMode = "0";			// Pi 5 without PI5_GADGET=1 (docs/pi5.md); gadget= is ignored
 	m_pGadgetMode = pGadgetMode;
@@ -440,11 +472,46 @@ boolean CKernel::Initialize (void)
 	}
 #endif
 	// the network: one stack on one device (Circle), Ethernet (static: the direct cable has no DHCP server) or, with
-	// wifi=1 and a stored network, Wi-Fi (DHCP unless wifi.txt has ip=); mDNS: sidecar.local on either (web.h)
+	// wifi=1 and a stored network, Wi-Fi (DHCP unless wifi.txt has ip=); mDNS: sidecar.local on either (web.h).
+	// Or the USB-C network (usbnet_pi.h, docs/usb-network.md): net=auto (the default) takes it when a computer on
+	// USB-C starts its network driver in time, net=usb always, net=wifi|lan never; a Sidecar with no computer on USB-C
+	// comes up as before. On USB-C the Wi-Fi chip stays up for scans (Wi-Fi can be set up from the page) and joins nothing.
 	m_pWifi = new CWifi;				// reads /.rytm/wifi.txt (the card is mounted by bridge::begin)
 	CWifi::TMode WifiMode = m_pWifi->BootMode (&m_Options);
-	if (WifiMode != CWifi::ModeOff && !m_pWifi->StartChip ()) WifiMode = CWifi::ModeOff;
-	if (WifiMode == CWifi::ModeNet)
+	const usbnet::Options UsbOpt = usbnet::options (m_Options.GetAppOptionString ("net", 0),
+		m_Options.GetAppOptionString ("usbnet", 0), m_Options.GetAppOptionString ("usbip", 0),
+		m_Options.GetAppOptionString ("usbwait", 0), m_Options.GetAppOptionString ("usbquiet", 0),
+		m_Options.GetAppOptionString ("usbtrust", 0));
+	if (UsbOpt.bad_net) m_Logger.Write (From, LogWarning, "network: net= is auto, usb, wifi or lan: auto used");
+	if (UsbOpt.bad_ip) m_Logger.Write (From, LogWarning, "network: usbip= is not a usable address: 172.31.77.1 used");
+	usbnet::Inputs UsbIn;
+	UsbIn.net = UsbOpt.net;
+	UsbIn.function = m_pSidecar != 0 && m_pSidecar->NetInDevice ();
+	UsbIn.wifi_trial = WifiMode == CWifi::ModeNet && m_pWifi->TrialPending ();
+	const char *pLinkOpt = m_Options.GetAppOptionString ("link", "usb");
+	UsbIn.link_tcp = strncmp (pLinkOpt, "tcp", 3) == 0 && (pLinkOpt[3] == 0 || pLinkOpt[3] == ':');
+	const char *pUsbWhy = "";
+	const usbnet::Plan UsbPlan = usbnet::plan (UsbIn, &pUsbWhy);
+	if (WifiMode != CWifi::ModeOff && !m_pWifi->StartChip ()) WifiMode = CWifi::ModeOff;	// (net=auto's wait runs meanwhile)
+	boolean bUsbNet = UsbPlan == usbnet::kForced;
+	if (UsbPlan == usbnet::kProbe) bUsbNet = UsbNetProbe (UsbOpt, nGadgetT0, &pUsbWhy);
+	if (bUsbNet || UsbOpt.net == usbnet::kLan)
+	{
+		m_pWifi->OtherNet (bUsbNet ? "usb" : "ethernet");
+		WifiMode = m_pWifi->Mode ();
+	}
+	if (!bUsbNet && m_pSidecar != 0 && m_pSidecar->NetInDevice ()) m_pSidecar->NetDetach ();	// told "not connected"
+	usbnet_pi::Gadget (m_pSidecar);			// its late link: the page offers a reboot onto USB-C
+	u8 UsbClient[4];
+	usbnet::client_ip (UsbOpt.ip, UsbClient);
+	if (bUsbNet)
+	{
+		new CUsbNetDevice (m_pSidecar);		// before the stack: it picks the device by its type (Unknown)
+		memcpy (m_IP, UsbOpt.ip, sizeof m_IP);
+		memcpy (m_NetMask, usbnet::kMask, sizeof m_NetMask);
+		new (m_NetStore) CNetSubSystem (m_IP, m_NetMask, 0, 0, "sidecar", NetDeviceTypeUnknown);
+	}
+	else if (WifiMode == CWifi::ModeNet)
 	{
 		u8 GW[4], DNS[4];
 		boolean bStatic = m_pWifi->StaticIP (m_IP, m_NetMask, GW, DNS);
@@ -454,8 +521,17 @@ boolean CKernel::Initialize (void)
 	}
 	else new (m_NetStore) CNetSubSystem (NetOption (&m_Options, "ip", NET_DEFAULT_IP, m_IP),
 					     NetOption (&m_Options, "netmask", NET_DEFAULT_NETMASK, m_NetMask), 0, 0, "sidecar");
+	if (m_bUpdTrial) m_Watchdog.Start (15);		// (the trial's watchdog, fed: the network's start can take seconds)
 	m_bNetOK = m_Net.Initialize (FALSE);
 	if (!m_bNetOK) m_Logger.Write (From, LogError, "network: init failed (link=tcp refused, usb only)");
+	else if (bUsbNet)
+	{
+		m_Logger.Write (From, LogNotice, "network: USB-C %u.%u.%u.%u/24, the computer %u.%u.%u.%u by DHCP (%s; Wi-Fi and Ethernet "
+				"unused this boot, net=wifi or net=lan for them)%s", m_IP[0], m_IP[1], m_IP[2], m_IP[3], UsbClient[0],
+				UsbClient[1], UsbClient[2], UsbClient[3], pUsbWhy,
+				UsbOpt.trust ? "; the cable is trusted (no pairing code on it, usbtrust=0 asks for it)" : "");
+		new CUsbDhcpd (&m_Net, m_IP, UsbClient);
+	}
 	else if (WifiMode == CWifi::ModeNet)
 	{
 		m_Logger.Write (From, LogNotice, "network: Wi-Fi (%s; Ethernet unused, wifi=0 for Ethernet)", m_IP[0] ? "static" : "DHCP");
@@ -464,6 +540,8 @@ boolean CKernel::Initialize (void)
 			     m_IP[0], m_IP[1], m_IP[2], m_IP[3], m_NetMask[0], m_NetMask[1], m_NetMask[2], m_NetMask[3],
 			     WifiMode == CWifi::ModeScan ? "; Wi-Fi chip up for scans" : "");
 	m_pWifi->StartSupplicant (m_bNetOK);		// ModeNet: joins; any mode: a join's trial may judge from now on
+	usbnet_pi::Use (bUsbNet ? usbnet::kIfUsb : WifiMode == CWifi::ModeNet ? usbnet::kIfWifi : usbnet::kIfEthernet, UsbOpt,
+			pUsbWhy);
 	UseLink (m_Options.GetAppOptionString ("link", "usb"));
 	// the pairing code (paircode.h, docs/pi-engine.md "Pairing code"): before anything on the network is served, so
 	// no request can arrive ungated. cmdline paircode=0 turns the gate off (loudly), paircode=<8 digits> fixes the code.
@@ -480,8 +558,9 @@ boolean CKernel::Initialize (void)
 	// the SD card's boot files on TCP 7310 (sdfiles.h, pi/circle/sdboot.py: install to SD); sdport=0 turns it off
 	if (m_bNetOK && m_Options.GetAppOptionDecimal ("sdport", 1) != 0) new CSdFiles (&m_Net);
 	new CSdFiles (0, &m_Serial);		// and on the serial port after the console's ":sdf"
-	// the Rytm's USB MIDI over TCP 7330 for hardware testing (midibridge_pi.h): listening, but OFF until turned on
-	if (m_bNetOK) midibridge_pi::Start (&m_Net);
+	// the Rytm's USB MIDI over TCP 7330 for hardware testing (midibridge_pi.h): listening, but OFF until turned on.
+	// Not on the USB-C network: the computer has the Rytm's MIDI on that cable already (USB MIDI)
+	if (m_bNetOK && !bUsbNet) midibridge_pi::Start (&m_Net);
 	return TRUE;
 }
 
@@ -557,6 +636,8 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  ST.gap_us, ST.at_frames, ST.gaps_over_2ms, ST.sec_us[0], ST.sec_us[1], ST.sec_us[2], ST.sec_us[3], ST.sec_us[4],
 		  ST.sec_us[5], CEngineCores::StallStep (), ST.step_us, ST.step_sum, ST.here_us);	// -1: did not happen
 	pOut->Append (s);
+	usbnet_pi::Status (pOut, k->m_pSidecar != 0 && k->m_pSidecar->NetInDevice (), k->m_pSidecar != 0 && k->m_pSidecar->NetUp (),
+			   k->m_pSidecar != 0 && k->m_pSidecar->NetLate ());	// late: reboot to use the cable
 	{	// the USB-C mode (usb_mode.h): set (chosen), from (card, cmdline, default), runs (set, or class where the unit cannot
 		// show it), modes (what this unit can show; [] no Sidecar gadget), shown (what the computer sees now: sidecar, box,
 		// switching, none), boxUp (the box has been read and is up: shown, or about to be) and board (4, 5)
@@ -679,6 +760,14 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  SIDECAR_DIRTY ? "true" : "false", __DATE__, __TIME__, CIRCLE_NAME, CIRCLE_VERSION_STRING, k->m_nSaverMin, k->m_nBright, k->m_bTouchHidden ? 0u : 1u,
 		  k->m_pDisplay != 0 ? "true" : "false", k->m_pDisplay != 0 && k->m_pDisplay->IsBlank () ? "true" : "false");
 	pOut->Append (s);
+#if RASPPI >= 5
+	if (k->m_pDisplay != 0 && k->m_pDisplay->GetHint () != 0)	// the screen did not answer at power-on (display_hint.h)
+	{
+		pOut->Append (",\"displayHint\":\"");
+		pOut->Append (k->m_pDisplay->GetHint ());		// a constant, no quotes or backslashes
+		pOut->Append ("\"");
+	}
+#endif
 	{
 		char Power[400];		// the supply (power_state.h): the page's warning
 		powerstate::json (k->m_Power, Power, sizeof Power);
@@ -706,6 +795,23 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		bridge::lfo_json (Lfo, sizeof Lfo);
 		pOut->Append (",");
 		pOut->Append (Lfo);
+	}
+	{
+		char Mo[160];			// the modulation layer: live targets, the tick's worst us and counts (core/mod/mod.h)
+		if (bridge::mod_json (Mo, sizeof Mo) > 0)
+		{
+			pOut->Append (",");
+			pOut->Append (Mo);
+		}
+	}
+	{
+		static char Sc[16384];		// the scenes: A / B, the fader, every lock (core/mod/scene.h; core 3's, plain reads)
+		int n = bridge::scene_json (Sc, sizeof Sc);
+		if (n > 0 && n < (int) sizeof Sc)
+		{
+			pOut->Append (",");
+			pOut->Append (Sc);
+		}
 	}
 	{
 		char Bb[128];			// the black box's counts (blackbox_pi.h)
@@ -770,6 +876,40 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 // usb) and MIDIPacketHandler (g_MidiIn's producer) then never run while this task is inside the TCP link's Pull or
 // push, so flipping CObUsb::SetActive here hands the single-consumer/single-producer queues over cleanly. Routing
 // that IRQ to another core would need a handshake (the IRQ acknowledging the flag) before the TCP link touches them.
+// net=auto (usbnet_cfg.h's BootProbe, docs/usb-network.md): after the Wi-Fi chip's start, timed from the gadget's, so
+// the two overlap. No start-of-frame on USB-C within usbquiet ms: no computer (a power supply), the network of today.
+// A computer that has not started a USB network driver within usbwait s (Windows 10 without the NCM driver): today's
+// too. Its driver selecting the data interface: the USB-C network. The gadget is polled meanwhile (its enumeration).
+boolean CKernel::UsbNetProbe (const usbnet::Options &rOpt, unsigned nGadgetT0, const char **ppWhy)
+{
+	usbnet::BootProbe Probe (rOpt.quiet_ms, rOpt.wait_s);
+	const unsigned nFrame0 = m_pSidecar->BusFrame ();
+	usbnet::Probe r;
+	do
+	{
+		m_Timer.MsDelay (2);			// a frame is 1 ms: two reads this far apart differ while a computer drives the bus
+		m_pSidecar->Poll ();
+		r = Probe.step ((CTimer::GetClockTicks () - nGadgetT0) / 1000, m_pSidecar->BusFrame () != nFrame0,
+				m_pSidecar->NetUp ());
+	}
+	while (r == usbnet::kWaiting);
+	const unsigned nMs = (CTimer::GetClockTicks () - nGadgetT0) / 1000;
+	switch (r)
+	{
+	case usbnet::kUsbUp:
+		*ppWhy = "a computer on USB-C started its network driver";
+		break;
+	case usbnet::kNoDriver:
+		*ppWhy = "a computer on USB-C, but no USB network driver started (Windows 10: docs/usb-network.md)";
+		break;
+	default:
+		*ppWhy = "no computer on USB-C";
+		break;
+	}
+	m_Logger.Write (From, LogNotice, "network: net=auto: %s (%u ms after the gadget's start)", *ppWhy, nMs);
+	return r == usbnet::kUsbUp;
+}
+
 void CKernel::UseLink (const char *pSpec)
 {
 	if (pSpec != 0 && strncmp (pSpec, "tcp", 3) == 0 && (pSpec[3] == 0 || pSpec[3] == ':'))
@@ -906,15 +1046,38 @@ void CKernel::LogBench (void)
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10, nBp * 6 / 100, nBp * 6 % 100);	// the cap: core/fx/amp.h kMaxRunning
 		m_Timer.MsDelay (2);
 	}
-	// the master chain (core/fx/master.h): add 2 x the AMP line for an L/R pair
+	// the master chain (core/fx/master.h): add 2 x the AMP line for an L/R pair (measured by BenchChains, logged here)
+	if (s_ChainBench[0].nTicks != 0)
 	{
-		u32 nWorst = 0;
-		u64 nTicks = bridge::mfx_bench (&nWorst);
+		u32 nWorst = s_ChainBench[0].nWorst;
+		u64 nTicks = s_ChainBench[0].nTicks;
 		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
 		m_Logger.Write (From, LogNotice, "bench mfx COMP EQ SPACE CLOUD POSTEQ: %u.%02u %% of a core, worst block %u.%u %%",
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
 		m_Timer.MsDelay (2);
 	}
+	// 0.5.0: 4 send TYPE inserts at once (B1 A, B2 A, B3 A, M1 A) through core 2's paths (BenchChains)
+	for (int nSet = 0; const char *pName = bridge::sfxins_bench_name (nSet); nSet++)
+	{
+		if (nSet + 1 >= ChainBenches || s_ChainBench[nSet + 1].nTicks == 0) break;
+		u32 nWorst = s_ChainBench[nSet + 1].nWorst;
+		u64 nTicks = s_ChainBench[nSet + 1].nTicks;
+		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		m_Logger.Write (From, LogNotice, "bench sfxins %s: %u.%02u %% of a core, worst block %u.%u %%",
+				pName, nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
+		m_Timer.MsDelay (2);
+	}
+}
+
+// The master chain's and the send TYPE inserts' benches (core/fx/master.h bench, sfx_bench), run on core 0 before cores
+// 1-3 start: then nothing else touches the insert and master controls. Core 3's idle pass steps the project's store fill
+// and applies its inserts once it runs; a bench at the same time could book a room the kit wants, or the kit's load land
+// mid-bench. Logged later by LogBench, in the rows' usual place.
+void CKernel::BenchChains (void)
+{
+	s_ChainBench[0].nTicks = bridge::mfx_bench (&s_ChainBench[0].nWorst);
+	for (int nSet = 0; nSet + 1 < ChainBenches && bridge::sfxins_bench_name (nSet); nSet++)
+		s_ChainBench[nSet + 1].nTicks = bridge::sfxins_bench (nSet, &s_ChainBench[nSet + 1].nWorst);
 }
 
 // Task 3's boot self-check, before the cores start: one second of a PLAITS voice rendered offline (no USB), then
@@ -988,6 +1151,16 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 {
 	CKernel *pThis = (CKernel *) pParam;
 	if (pThis->UsbCommand (pCmd)) return TRUE;			// usbmode= (the USB-C mode)
+	if (strncmp (pCmd, "poweroff", 8) == 0 && (pCmd[8] == 0 || pCmd[8] == '='))	// a clean power-off (docs/pi5.md)
+	{
+#if RASPPI >= 5
+		if (strcmp (pCmd + 8, "=1") == 0) pThis->m_bPowerOff = TRUE;
+		else pThis->m_Logger.Write (From, LogWarning, "poweroff=1: a clean power-off, as the power button");
+#else
+		pThis->m_Logger.Write (From, LogWarning, "poweroff: refused, the Pi 5 only (this board has no power button)");
+#endif
+		return TRUE;
+	}
 	boolean bSaver = strncmp (pCmd, "screensaver", 11) == 0 && (pCmd[11] == 0 || pCmd[11] == '=');
 	boolean bBright = strncmp (pCmd, "brightness", 10) == 0 && (pCmd[10] == 0 || pCmd[10] == '=');
 	if (strncmp (pCmd, "uistyle", 7) == 0 && (pCmd[7] == 0 || pCmd[7] == '='))	// the display's theme
@@ -995,8 +1168,8 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 		if (pCmd[7] == '=')
 		{
 			int n = strcmp (pCmd + 8, "oled") == 0 || strcmp (pCmd + 8, "0") == 0 ? 0
-				: strcmp (pCmd + 8, "classic") == 0 || strcmp (pCmd + 8, "1") == 0 ? 1 : -1;
-			if (n < 0) pThis->m_Logger.Write (From, LogWarning, "uistyle=oled|classic");
+				: strcmp (pCmd + 8, "sidecar") == 0 || strcmp (pCmd + 8, "classic") == 0 || strcmp (pCmd + 8, "1") == 0 ? 1 : -1;
+			if (n < 0) pThis->m_Logger.Write (From, LogWarning, "uistyle=oled|sidecar");
 			else
 			{
 				pThis->m_nUiStyle = (unsigned) n;
@@ -1008,7 +1181,7 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 				}
 			}
 		}
-		pThis->m_Logger.Write (From, LogNotice, "display: UI style %s", pThis->m_nUiStyle ? "classic" : "oled");
+		pThis->m_Logger.Write (From, LogNotice, "display: UI style %s", pThis->m_nUiStyle ? "sidecar" : "oled");
 		return TRUE;
 	}
 	if (strncmp (pCmd, "uilook", 6) == 0 && (pCmd[6] == 0 || pCmd[6] == '='))	// UX review L1: the OLED look
@@ -1168,8 +1341,9 @@ void CKernel::LoadDisplayRes (boolean bCard)
 	if (m_nResW) m_Logger.Write (From, LogNotice, "display: res=%ux%u", m_nResW, m_nResH);
 }
 
-// /.rytm/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|classic" lines;
-// cmdline.txt's same keys win
+// /.rytm/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|sidecar" lines
+// (SIDECAR replaced the CLASSIC theme under its id 1, so an older card's "classic" is read as "sidecar" and
+// written back as "sidecar" at the next save); cmdline.txt's same keys win
 static core::fmt::KvKeep s_DisplayKeep;		// display.txt's lines a newer build wrote: written back unchanged
 void CKernel::LoadDisplaySettings (boolean bCard)
 {
@@ -1213,12 +1387,13 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 	m_nSaverMin = Value ("screensaver", 60, 0, 1440);
 	m_nBright = Value ("brightness", 100, 5, 100);
 	m_bTouchHidden = Value ("touchtest", 1, 0, 1) == 0;
-	auto Style = [&] (const char *p) -> int		// "oled" / "classic" (or 0 / 1), -1: neither
+	auto Style = [&] (const char *p) -> int		// "oled" / "sidecar" (older cards: "classic"; or 0 / 1), -1: neither
 	{
 		if (p == 0) return -1;
 		auto End = [] (char c) { return c == 0 || c == '\n' || c == '\r'; };
 		if ((strncmp (p, "oled", 4) == 0 && End (p[4])) || (*p == '0' && End (p[1]))) return 0;
-		if ((strncmp (p, "classic", 7) == 0 && End (p[7])) || (*p == '1' && End (p[1]))) return 1;
+		if ((strncmp (p, "sidecar", 7) == 0 && End (p[7])) || (strncmp (p, "classic", 7) == 0 && End (p[7])) || (*p == '1' && End (p[1])))
+			return 1;
 		return -1;
 	};
 	const char *ps = strstr (Text, "uistyle=");
@@ -1249,7 +1424,7 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 	}
 	if (m_pDisplay != 0) m_pDisplay->SetScreensaver (m_nSaverMin);
 	m_Logger.Write (From, LogNotice, "display: screensaver %u min, brightness %u %%, UI style %s (%s)", m_nSaverMin, m_nBright,
-			m_nUiStyle ? "classic" : "oled", Text[0] ? "/.rytm/display.txt" : "defaults");
+			m_nUiStyle ? "sidecar" : "oled", Text[0] ? "/.rytm/display.txt" : "defaults");
 }
 
 void CKernel::SaveDisplaySettings (void)
@@ -1257,7 +1432,7 @@ void CKernel::SaveDisplaySettings (void)
 	m_bSaveDisplay = FALSE;
 	CString s;
 	s.Format ("screensaver=%u\nbrightness=%u\ntouchtest=%u\nuistyle=%s\nuilook=%s\n", m_nSaverMin, m_nBright, m_bTouchHidden ? 0u : 1u,
-		  m_nUiStyle ? "classic" : "oled", s_nUiLook ? "stage" : "studio");
+		  m_nUiStyle ? "sidecar" : "oled", s_nUiLook ? "stage" : "studio");
 	if (m_bTouchCal)
 	{
 		char b[64];
@@ -1696,6 +1871,13 @@ boolean CKernel::UsbCommand (const char *pCmd)
 // the page is filled (kernel's state, status_pi's core part)
 static sidecar_status_view_t s_StatusView;
 
+// the output's peak since the last stats line, shared with the web's "levels" (peak_fan.h)
+static float StatsPeak (void)
+{
+	g_PeakFan.feed_master (g_Output.TakePeak ());
+	return g_PeakFan.take_master (peakfan::kStats);
+}
+
 void CKernel::LogStats (void)
 {
 	m_pTransport->LogStats (&m_Logger);
@@ -1786,7 +1968,7 @@ void CKernel::LogStats (void)
 		s.nFifoMin, s.nFifoMax, CEngineCores::FifoTarget (), g_Output.Underflows (), g_Output.RestartUnderflows (), g_Output.Streams (), s.nBlocks, s.nMaxBlockUs,
 		c1 / 10, c1 % 10, c2 / 10, c2 % 10, c3 / 10, c3 % 10, s.nMaxPassUs, (const char *) Mach, s.nMidiBytes, s_nMidiInLost, s.nSysEx, s.nNotes, (const char *) Chans,
 		m_Usb.MIDIOutBytes (), m_Usb.MIDIOutMessages (), m_Usb.MIDIOutFailed (),
-		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped (), (unsigned) (g_Output.TakePeak () * 1000),
+		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped (), (unsigned) (StatsPeak () * 1000),
 		nTemp);
 	static unsigned s_nPowerTick;
 	if (++s_nPowerTick % 10 == 0) { mbtrace::Scope Mb (1); ReadPower (FALSE); }	// every 10 s (a mailbox call)
@@ -2037,6 +2219,7 @@ void CKernel::BootStep (unsigned nStep)
 #ifdef SIDECAR_PI5_TESTMODE
 	if (m_nTestSecs != 0) m_Watchdog.Start (15);	// fed through the boot
 #endif
+	if (m_bUpdTrial) m_Watchdog.Start (15);		// the web update's trial: fed through the boot as well
 	if (m_pDisplay != 0) m_pDisplay->SplashStep (nStep);
 }
 
@@ -2056,6 +2239,59 @@ void CKernel::StopAndReboot (const char *pWhy, boolean bTryboot)
 	m_Watchdog.Stop ();
 	reboot ();
 }
+
+#if RASPPI >= 5
+void CKernel::StopAndPowerOff (const char *pWhy)
+{
+	m_Logger.Write (From, LogNotice, "power-off: %s - the audio faded, the card's work drained, then off", pWhy);
+	{
+		char Why[68];
+		core_snprintf (Why, sizeof Why, "a planned power-off: %s", pWhy);
+		crumb::Why (Why);
+	}
+	if (m_pDisplay != 0) m_pDisplay->PowerOff ();		// dark at once: the press was seen
+	CObUsb::FadeOut ();
+	m_Timer.MsDelay (30);					// the 20 ms fade out to the Rytm: no click
+	g_Rec.stop ();						// a take ends: its files closed in the drain
+	m_pTransport->Stop ();
+	if (m_pTransport != &m_Usb) m_Usb.Stop ();
+	if (m_bSaveDisplay) SaveDisplaySettings ();
+	bridge::save_flush (true);				// core 3's idle saves: the settle waits skipped
+	// the drain: the card queue (core 3's posted writes), the recorder's ring and close, until all idle for 100 ms
+	pwrbtn::Drain Drain (m_Timer.GetClockTicks ());
+	rec::Status s;
+	boolean bDone;
+	do
+	{
+		bridge::card_service (8);
+		rec_pi::Poll ();
+		g_Rec.status (&s, false);
+		asm volatile ("dsb sy; sev");			// core 3 out of its wfe: its idle saves run
+		bDone = Drain.Done (s.state == rec::Recorder::kIdle && bridge::save_settled (), m_Timer.GetClockTicks ());
+	}
+	while (!bDone);
+	if (Drain.TimedOut (m_Timer.GetClockTicks ()))
+		m_Logger.Write (From, LogWarning, "power-off: the card's work did not finish in %u s (recorder %d, saves %s): off anyway",
+				pwrbtn::kDrainCapUs / 1000000, s.state, bridge::save_settled () ? "done" : "pending");
+	else
+		m_Logger.Write (From, LogNotice, "power-off: the card's work done in %u ms",
+				(m_Timer.GetClockTicks () - Drain.nStart) / 1000);
+	m_Timer.MsDelay (50);					// the log line out
+	blackbox_pi::Flush ();
+	m_Watchdog.Stop ();
+	poweroff ();
+}
+
+void CKernel::PowerButtonPoll (void)
+{
+	unsigned nNow = m_Timer.GetClockTicks ();
+	if (nNow - m_nButtonAt < pwrbtn::kPollUs) return;
+	m_nButtonAt = nNow;
+	// active low; the 50 ms debounce (Circle's) only once it reads pressed
+	if (m_Button.Poll (!(read32 (ARM_GPIO1_DATA0) & BIT (20)), [] { return is_power_button_pressed () != FALSE; }))
+		StopAndPowerOff ("the power button");
+}
+#endif
 
 #ifdef SIDECAR_PI5_TESTMODE
 void CKernel::UsbTestTick (void)
@@ -2229,15 +2465,18 @@ void CKernel::Run (void)
 				}
 				int nCur = sidecar_ui_page ();
 				static int s_nHeldPg = -1;
-				int nPg = voice_pi::Request (&s_nReqSeen, voice_pi::FollowsTrack (nCur), &s_nTrkSeen);	// (CHOP too: it follows the track as VOICE does)
+				// (CHOP too: it follows the track as VOICE does; SAMPLE EDIT never: it is not in FollowsTrack)
+				int nPg = voice_pi::Request (&s_nReqSeen, voice_pi::FollowsTrack (nCur), &s_nTrkSeen);
+				// a marker of CHOP or SAMPLE EDIT under the finger: the page asked for waits for the release
+				int bDrag = (nCur == 17 && sidecar_chop_dragging ()) || (nCur == seditview_pi::kPage && sidecar_sedit_dragging ());
 				if (nPg >= 0)
 				{
-					if (nCur == 17 && sidecar_chop_dragging ()) { s_nHeldPg = nPg; nPg = -1; }	// a marker under the finger: its release is sent first
+					if (bDrag) { s_nHeldPg = nPg; nPg = -1; }	// a marker under the finger: its release is sent first
 					else s_nHeldPg = -1;
 				}
-				else if (s_nHeldPg >= 0 && !sidecar_chop_dragging ())
+				else if (s_nHeldPg >= 0 && !bDrag)
 				{
-					if (nCur == 17) nPg = s_nHeldPg;
+					if (nCur == 17 || nCur == seditview_pi::kPage) nPg = s_nHeldPg;
 					s_nHeldPg = -1;
 				}
 				if (nPg >= 0 && nPg != nCur) sidecar_ui_show (nPg);
@@ -2359,7 +2598,9 @@ void CKernel::Run (void)
 				{
 					s_nInsAt = nNow;
 					float Pk[8][2];
-					g_Output.TakeVoicePeaks (Pk);	// the OUT route's meters (PRE / POST voices)
+					g_Output.TakeVoicePeaks (Pk);	// the OUT route's meters (PRE / POST voices),
+					g_PeakFan.feed_voices (Pk);	// shared with the web's "levels" (peak_fan.h)
+					g_PeakFan.take_voices (peakfan::kDisplay, Pk);
 					insfx_pi::Fill (&s_InsView, Pk);
 					sidecar_insfx_set (&s_InsView);
 				}
@@ -2375,6 +2616,13 @@ void CKernel::Run (void)
 					insfx_pi::FillMaster (&s_MfxView);
 					sidecar_mfx_set (&s_MfxView);
 				}
+			}
+			{	// 0.5.0: the MORPH page, its view built on core 3 (morph_pi), the newest taken here
+				static sidecar_morph_view_t s_MorphView;
+				static unsigned s_nMorphSeen;
+				morph_pi::Want (sidecar_morph_shown (), sidecar_morph_top ());
+				if (sidecar_morph_shown () && morph_pi::View (&s_MorphView, &s_nMorphSeen))
+					sidecar_morph_set (&s_MorphView);
 			}
 			if (sidecar_wgview_shown ())		// the machine view: ~10 frames a second, redrawn only on a change
 			{
@@ -2412,6 +2660,29 @@ void CKernel::Run (void)
 					sidecar_chop_set (&s_ChopView);
 				}
 			}
+			{					// SAMPLE EDIT: shown while an edit is open (the Rytm's page, the console, the web),
+				static sidecar_sedit_view_t s_SeditView;	// back to the page the display was on when it closes; ~10
+				static unsigned s_nSeditAt;		// frames a second, redrawn only on a change
+				static int s_nSeditBack = -1;		// the page to go back to (-1: not shown for an open edit yet)
+				unsigned nNow = m_Timer.GetClockTicks ();
+				if (nNow - s_nSeditAt >= 100000)
+				{
+					s_nSeditAt = nNow;
+					seditview_pi::Fill (&s_SeditView);
+					int nCur = sidecar_ui_page ();
+					if (s_SeditView.valid && s_nSeditBack < 0 && !(nCur == 17 && sidecar_chop_dragging ()))
+					{					// (a CHOP marker under the finger: after its release)
+						s_nSeditBack = nCur == seditview_pi::kPage ? 0 : nCur;
+						sidecar_ui_show (seditview_pi::kPage);
+					}
+					else if (!s_SeditView.valid && s_nSeditBack >= 0)
+					{
+						if (nCur == seditview_pi::kPage) sidecar_ui_show (s_nSeditBack);	// (left by hand: stays there)
+						s_nSeditBack = -1;
+					}
+					sidecar_sedit_set (&s_SeditView);	// (shown or not: the VOICE key comes back to an open edit)
+				}
+			}
 			m_pDisplay->Update (bPlugAndPlay);	// a redraw at most every 10 ms, dirty areas only
 			if (m_bUiPending && (int) (m_Timer.GetClockTicks () - m_nUiAt) >= 0)
 			{
@@ -2438,9 +2709,16 @@ void CKernel::Run (void)
 		if (m_pSidecar != 0 && m_pSidecar->TakeReboot ()) StopAndReboot ("asked on the USB-C MIDI port (usbreboot=1)");
 		if (g_Guard.FatalWhy () != 0) StopAndReboot (g_Guard.FatalWhy ());
 		if (m_pWifi->TakeReboot ()) StopAndReboot ("the Wi-Fi settings (a join, or a failed one's revert)");
+		if (usbnet_pi::TakeReboot ()) StopAndReboot ("the page's reboot onto USB-C (a computer started its USB-C network late)");
 		if (bridge::take_restart ()) StopAndReboot ("another device's state folder");
 		CSdFiles::TReboot SdReboot = CSdFiles::TakeReboot ();
 		if (SdReboot != CSdFiles::RebootNone) StopAndReboot ("asked on the SD file port", SdReboot == CSdFiles::RebootTry);
+		upd::Reboot UpdReboot = update_pi::TakeReboot ();	// the web page's update (update_pi.h): a trial boot, or "previous"
+		if (UpdReboot != upd::kNone) StopAndReboot ("the web page's update", UpdReboot == upd::kTry);
+#if RASPPI >= 5
+		if (m_bPowerOff) StopAndPowerOff ("asked on the console (poweroff=1)");
+		PowerButtonPoll ();
+#endif
 		if (m_Timer.GetTicks () - m_nLastStats >= HZ || m_Console.TakeStatsNow ())
 		{
 			m_nLastStats = m_Timer.GetTicks ();

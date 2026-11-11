@@ -146,6 +146,8 @@ bool fm_line(const char* l, uint32_t n) {   // dx7_lib.h parse: 32 hex TAB voice
 bool rd_fm(const Bytes& in, const Sniffed& s, char* why, int cap) { return lines(in, s, 344, fm_line, why, cap); }
 bool sn_lfo(const Bytes& in, Sniffed* o) { return sniff_text(in, "lfo", o); }
 bool sn_ins(const Bytes& in, Sniffed* o) { return sniff_text(in, "ins", o); }
+bool sn_scene(const Bytes& in, Sniffed* o) { return sniff_text(in, "scene", o); }
+bool sn_learn(const Bytes& in, Sniffed* o) { return sniff_text(in, "learn", o); }
 bool sn_kits(const Bytes& in, Sniffed* o) { return sniff_text(in, "kits", o); }   // core/bundle/kits.h: kNNN.sks / .prv
 bool rd_kitlines(const Bytes& in, const Sniffed& s, char* why, int cap) {   // lfo.cpp / insert_card.cpp: '#' skipped
   return lines(in, s, 255, printable, why, cap);
@@ -338,12 +340,14 @@ const Format kFormats[] = {
     {"fm", kProject, kText, 1, 1, 1, sn_fm, rd_fm, nullptr, 0, nullptr, "/.rytm/fm/K.txt", 64 * K},
     {"lfo", kProject, kText, 1, 1, 1, sn_lfo, rd_kitlines, nullptr, 0, nullptr, "/.rytm/lfo/K.txt, /.rytm/lfo/K/kNNN.txt", 64 * K},
     {"ins", kProject, kText, 1, 1, 1, sn_ins, rd_kitlines, nullptr, 0, nullptr, "/.rytm/ins/K.txt, /.rytm/ins/K/kNNN.txt", 64 * K},
+    {"scene", kProject, kText, 1, 1, 1, sn_scene, rd_kitlines, nullptr, 0, nullptr, "/.rytm/scene/K.txt, /.rytm/scene/K/kNNN.txt", 64 * K},
     {"kits", kProject, kText, 1, 1, 1, sn_kits, rd_kitlines, nullptr, 0, nullptr, "/.rytm/kits/K/kNNN.sks, /.rytm/kits/K/kNNN.prv", 64 * K},
     {"sqp", kProject, kBinary, 4, 1, 4, sn_sqp, rd_sqp, kSqpChain, 3, mr_sqp, "/.rytm/seq/K/pNNN.sqp", 1 * M},
     {"tracks", kProject, kKeyValue, 1, 1, 1, sn_tracks, rd_kv, nullptr, 0, nullptr, "/.rytm/seq/K/tracks.txt", 64 * K},
     {"song", kProject, kJson, 1, 1, 1, sn_song, rd_song, nullptr, 0, nullptr, "/.rytm/songs/K/take-*.json", 64 * M},
     {"display", kSetting, kKeyValue, 1, 1, 1, sn_display, rd_kv, nullptr, 0, nullptr, "/.rytm/display.txt", 16 * K},
     {"keys", kSetting, kKeyValue, 1, 1, 1, sn_keys, rd_kv, nullptr, 0, nullptr, "/.rytm/keys.txt", 16 * K},
+    {"learn", kSetting, kText, 1, 1, 1, sn_learn, rd_kitlines, nullptr, 0, nullptr, "/.rytm/learn.txt", 16 * K},
     {"fxin", kSetting, kKeyValue, 1, 1, 1, sn_fxin, rd_kv, nullptr, 0, nullptr, "/.rytm/fxin.txt", 16 * K},
     {"sendfx", kSetting, kKeyValue, 1, 1, 1, sn_sendfx, rd_kv, nullptr, 0, nullptr, "/.rytm/sendfx.txt", 16 * K},
     {"wifi", kSetting, kKeyValue, 1, 1, 1, sn_wifi, rd_kv, nullptr, 0, nullptr, "/.rytm/wifi.txt", 16 * K},

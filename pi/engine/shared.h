@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "output.h"
+#include "peak_fan.h"
 #include "records.h"
 #include "spsc.h"
 
@@ -17,6 +18,8 @@ const unsigned kMidiOutBytes = 32768;
 struct TCmd { char text[192]; };   // pool=S:<a path under /Samples> is the longest
 
 extern Output g_Output;
+// The output's peaks for each reader (the display's meters, the stats line, the web's "levels"; peak_fan.h): core 0 only
+extern peakfan::Fan g_PeakFan;
 extern Spsc<uint8_t, 8192> g_MidiIn;
 extern Spsc<uint8_t, kMidiOutBytes> g_MidiOut;
 extern RecordReader<Spsc<uint8_t, kMidiOutBytes>> g_ToHost;	// g_MidiOut's only reader: every consumer takes whole records

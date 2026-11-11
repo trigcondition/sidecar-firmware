@@ -460,6 +460,14 @@ def um():
                   "state": 4096, "cpu": cpu, "ns": 1830 + 900 * i if played else 0, "blocks": 52000 if played else 0,
                   "name": nm, "slots": [1] if nm == "GRAIN" else [2] if nm == "ACID" else [], "fit": True, "why": "",
                   "file": "/Plugins/%s.rmp" % id_.replace(".", "_"), "target": "a64", "fp": 1000 + i, "status": "ok"})
+    # Plugin API 3: a dual machine and a user effect (an effect is never offered for a U slot)
+    for id_, nm, eff in (("rytm.api3_test", "API3 TEST", False), ("fx.pingpong", "PINGPONG", True)):
+        e = {"t": "plugin", "id": id_, "ver": "1.0.0", "size": 4408, "api": 3, "image": 4096, "bss": 0, "state": 48, "cpu": 20,
+             "ns": 0, "blocks": 0, "name": nm, "slots": [], "fit": True, "why": "", "file": "/Plugins/%s.rmp" % id_.replace(".", "_"),
+             "target": "a64", "fp": 3000 + len(a), "status": "ok"}
+        if eff:
+            e["effect"] = True
+        a.append(e)
     fps = {id_: 1000 + i for i, (id_, _, _) in enumerate(names)}
     nms = {id_: nm for id_, nm, _ in names}
     for n in range(1, 6):
@@ -769,8 +777,8 @@ PAIR_SHOW_GAP = 10          # paircode.h kShowGapS (fixed)
 # web.cpp's Open(): the whole open set, and nothing else. Everything else needs the pairing code, so a new endpoint
 # is gated unless someone deliberately adds it here (page_pair.test.mjs reads this list out of web.cpp and checks the
 # two agree, and that nothing else in web.cpp answers an unpaired client).
-PAIR_OPEN = {"/", "/index.html", "/bundle-sw.js", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume",
-             "/pair/show"}
+PAIR_OPEN = {"/", "/index.html", "/classic", "/bundle-sw.js", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume",
+             "/pair/show", "/update/state"}
 NOT_PAIRED = ("not paired: enter the pairing code shown on the Rytm's screen and on the Sidecar's screen")
 _mp = os.environ.get("MOCK_PAIR", "")
 PAIR = {"mode": "off" if _mp == "0" else "fixed" if re.fullmatch(r"\d{8}", _mp) else "on",

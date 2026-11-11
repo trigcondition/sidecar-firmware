@@ -2,7 +2,7 @@
 // area (each cell's meter invalidated only when what it shows changed, so 25 views a second redraw a few strips, not
 // the page), the takes as labels and keys, an overlay for the delete's confirmation. Every mark goes through th_fill /
 // th_text / th_paint_key, so the OLED theme keeps its dots: there the record state is teal and brightness (no red),
-// CLASSIC lights the Rytm's red record LEDs.
+// SIDECAR lights coral record dots.
 #include "sidecar_rec.h"
 #include "sidecar_theme.h"
 #include "sidecar_ui.h"		// the box in use: its word, its voices' order
@@ -27,10 +27,10 @@ static const char *const kGroup[3] = {"RYTM STEMS", "SIDECAR VOICES", "MIX + RET
 static const char *const kGroupC[3] = {"RYTM STEMS", "SIDECAR VOICES", "MIX AND RETURNS"};
 // cell k's channel: column 1 the voices in the box's list order (the Rytm's as kCell has it)
 static int cell (int k) { return k >= ROWS && k < 2 * ROWS ? 13 + sidecar_ui_voice_at (k - ROWS) : kCell[k]; }
-static const char *group (int g, int classic)	// column g's title: the stems named for the box
+static const char *group (int g, int sidecar)	// column g's title: the stems named for the box
 {
 	static char b[32];
-	if (g) return (classic ? kGroupC : kGroup)[g];
+	if (g) return (sidecar ? kGroupC : kGroup)[g];
 	lv_snprintf (b, sizeof b, "%s STEMS", sidecar_ui_box_up ());
 	return b;
 }
@@ -60,7 +60,7 @@ static int ntakes (void);
 static void rec_go (const char *c);
 static unsigned s_nTakesGen = ~0u;
 static uint32_t s_nLastMs;
-static int s_nStatusW = -1, s_nValidWas = -1;		// CLASSIC's status line width; the last view's valid
+static int s_nStatusW = -1, s_nValidWas = -1;		// SIDECAR's status line width; the last view's valid
 static int s_nPlRow = -1, s_nPlSt, s_nPlPx = -1;		// the take playing / paused: its visible row, state, the bar's filled width
 static uint32_t s_nPlAt;				// the progress's last update (<= 10 a second)
 static unsigned s_nClock = ~0u;				// what the clock shows (its redraw only on a change)
@@ -86,7 +86,7 @@ static lv_obj_t *label_w (lv_obj_t *p, int x, int y, int w, const lv_font_t *f, 
 }
 
 // ---- geometry (the 800x480 layouts plus what the screen adds: TH->dx, dy)
-static int W (void) { return oled () ? TH->w - LU (48) : TH->w; }
+static int W (void) { return th_page_w (); }
 static int grid_y (void) { return oled () ? LU (72) : LU (88); }
 static int grid_h (void) { return oled () ? LU (168) + TH->dy : LU (336) + TH->dy; }
 static int pitch (void) { return grid_h () / ROWS; }			// 21 / 28 dots, 42 / 57 px
@@ -164,7 +164,7 @@ static void clock_draw (lv_event_t *e)
 	lv_obj_get_coords (o, &c);
 	int O = oled (), st = s_V.state;
 	int dw = LU (O ? 10 : 20), dh = LU (O ? 18 : 34), t = LU (O ? 2 : 4), gap = LU (O ? 2 : 6), cw = LU (O ? 4 : 10);
-	uint32_t on, off = O ? 0x1C1C1C : 0x1A1C1F;
+	uint32_t on, off = O ? 0x1C1C1C : TH->row_in;
 	if (O) on = st == SRV_REC ? TH->accent_hi : st == SRV_ARMED ? TH->ink : s_V.take[0] ? TH->ink : TH->dim;
 	else on = st == SRV_REC ? TH->bad : st == SRV_ARMED ? TH->warn : TH->win_ink;
 	unsigned s = st == SRV_ARMED ? 0 : s_V.secs, hr = s / 3600 % 10, mn = s / 60 % 60, sc = s % 60;
@@ -223,14 +223,14 @@ static void rec_draw (lv_event_t *e)
 	else
 	{
 		th_paint_key (l, &c, "", 0, f, TH_KEY, 0, pressed, dis, rec || (st == SRV_ARMED && blink) ? LED_REC : 0);
-		ink = dis ? 0x6E7176 : 0xE8E8E8;
-		uint32_t red = 0xFF3B30;
+		ink = dis ? TH->faint : TH->ink;
+		uint32_t red = TH->bad;
 		if (rec)
-			th_fill (l, &c, w / 2 - LU (9), my - LU (9), w / 2 + LU (9), my + LU (9), 0xF0F0F0, LV_OPA_COVER, 2);
+			th_fill (l, &c, w / 2 - LU (9), my - LU (9), w / 2 + LU (9), my + LU (9), TH->ink, LV_OPA_COVER, 3);
 		else
 		{
-			uint32_t r = dis ? 0x5A3030 : st == SRV_ARMED && !blink ? 0x7A2420 : red;
-			if (!dis) disc (l, &c, w / 2, my, mr + 4, th_mix (0x2B2D30, r, 70));	// the glow
+			uint32_t r = dis ? th_mix (TH->win, red, 70) : st == SRV_ARMED && !blink ? th_mix (TH->win, red, 120) : red;
+			if (!dis) disc (l, &c, w / 2, my, mr + 4, th_mix (TH->win, r, 70));	// the glow
 			disc (l, &c, w / 2, my, mr, r);
 		}
 	}
@@ -278,12 +278,12 @@ static void bar (lv_layer_t *l, const lv_area_t *c, int x0, int y, int h, int n,
 			if (O) col = !armed ? (i == hold - 1 ? TH->dim : TH->faint) : db > -6.0f ? TH->accent : db > -18.0f || i == hold - 1 ? TH->ink : TH->dim;
 			else
 			{
-				col = db > -3.0f ? 0xFF4A3D : db > -12.0f ? 0xE8B040 : 0x34C85A;
-				if (!armed) col = th_mix (0x1A1A1A, col, 110);
-				if (i == hold - 1 && i >= lit) col = armed ? 0xF0F0F0 : 0x8A8E94;
+				col = db > -3.0f ? TH->bad : db > -12.0f ? TH->lock : TH->accent;	// lavender, magenta near the top, coral at clip
+				if (!armed) col = th_mix (TH->row_in, col, 110);
+				if (i == hold - 1 && i >= lit) col = armed ? TH->ink : TH->faint;
 			}
 		}
-		else col = O ? 0x262626 : 0x1E2022;
+		else col = O ? 0x262626 : TH->line_step;
 		th_fill (l, c, x0 + i * sp, y, x0 + i * sp + sw - 1, y + h - 1, col, LV_OPA_COVER, 0);
 	}
 }
@@ -313,7 +313,7 @@ static void grid_draw (lv_event_t *e)
 		int only = id != C_ALL && lv_area_is_in (clip, &md, 0);		// the meter alone
 		if (only)
 		{
-			if (!O) th_fill (l, &c, md.x1 - c.x1, md.y1 - c.y1, md.x2 - c.x1, md.y2 - c.y1, 0x08090A, LV_OPA_COVER, 0);
+			if (!O) th_fill (l, &c, md.x1 - c.x1, md.y1 - c.y1, md.x2 - c.x1, md.y2 - c.y1, TH->row_out, LV_OPA_COVER, 0);
 			else if (cs.press && cs.en) th_fill (l, &c, md.x1 - c.x1, md.y1 - c.y1, md.x2 - c.x1, md.y2 - c.y1, DOT_DITHER, LV_OPA_COVER, 0);
 			goto meter;
 		}
@@ -341,13 +341,13 @@ static void grid_draw (lv_event_t *e)
 			lv_area_t a = {c.x1 + x, c.y1 + y + 2, c.x1 + x + cw - 1, c.y1 + y + ph - 3};
 			th_paint_key (l, &a, "", 0, f, TH_KEY, 0, cs.press && cs.en, 0, 0);
 			int ly = y + ph / 2;
-			uint32_t led = cs.armed ? (s_V.state == SRV_REC ? 0xFF3B30 : 0xD83A2E) : 0x4C4E52;
-			if (cs.armed) th_fill (l, &c, x + LU (8), ly - LU (9), x + LU (26), ly + LU (9), th_mix (0x2B2D30, led, 80), LV_OPA_COVER, LV_RADIUS_CIRCLE);
+			uint32_t led = cs.armed ? (s_V.state == SRV_REC ? TH->bad : th_mix (TH->win, TH->bad, 200)) : TH->win_edge;
+			if (cs.armed) th_fill (l, &c, x + LU (8), ly - LU (9), x + LU (26), ly + LU (9), th_mix (TH->win, led, 80), LV_OPA_COVER, LV_RADIUS_CIRCLE);
 			th_fill (l, &c, x + LU (12), ly - LU (5), x + LU (22), ly + LU (5), led, LV_OPA_COVER, LV_RADIUS_CIRCLE);
-			th_text (l, &c, x + LU (32), y + (ph - fh) / 2, x0 - x - LU (40), f, cs.armed ? 0xF0F0F0 : busy () ? 0x6E7176 : 0xB8BBC0,
+			th_text (l, &c, x + LU (32), y + (ph - fh) / 2, x0 - x - LU (40), f, cs.armed ? TH->ink : busy () ? TH->faint : TH->sub,
 				 LV_TEXT_ALIGN_LEFT, name);
-			th_fill (l, &c, x0 - LU (4), y0 - LU (4), clipx + LU (10), y0 + bh + 3, 0x08090A, LV_OPA_COVER, 3);	// the meter's window
-			th_frame (l, &c, x0 - LU (4), y0 - LU (4), clipx + LU (10), y0 + bh + 3, 0x3A3C40, 1, 3);
+			th_fill (l, &c, x0 - LU (4), y0 - LU (4), clipx + LU (10), y0 + bh + 3, TH->row_out, LV_OPA_COVER, 5);	// the meter's window
+			th_frame (l, &c, x0 - LU (4), y0 - LU (4), clipx + LU (10), y0 + bh + 3, TH->win_edge, 1, 5);
 		}
 	meter:;
 		int n = nseg (x0, x1), st = sidecar_rec_stereo (id);
@@ -359,7 +359,7 @@ static void grid_draw (lv_event_t *e)
 		}
 		else bar (l, &c, x0, y0, bh, n, cs.lit[0], cs.hold[0], cs.armed);
 		if (O) th_fill (l, &c, clipx, y0, clipx + 3, y0 + bh - 1, cs.clip ? TH->accent_hi : 0x262626, LV_OPA_COVER, 0);
-		else th_fill (l, &c, clipx, y0, clipx + LU (6), y0 + bh - 1, cs.clip ? 0xFF3B30 : 0x3A2A2A, LV_OPA_COVER, 1);
+		else th_fill (l, &c, clipx, y0, clipx + LU (6), y0 + bh - 1, cs.clip ? TH->bad : th_mix (TH->row_out, TH->bad, 50), LV_OPA_COVER, 2);
 	}
 }
 
@@ -368,7 +368,7 @@ static void cell_inval (int k)
 	lv_area_t c;
 	lv_obj_get_coords (s_Grid, &c);
 	int x = col_x (k / ROWS), y = (k % ROWS) * pitch ();
-	lv_area_t a = {c.x1 + x - 4, c.y1 + y, c.x1 + x + col_w () + 3, c.y1 + y + pitch () + 3};	// (CLASSIC's key shadow)
+	lv_area_t a = {c.x1 + x - 4, c.y1 + y, c.x1 + x + col_w () + 3, c.y1 + y + pitch () + 3};	// (SIDECAR's key edge)
 	lv_obj_invalidate_area (s_Grid, &a);
 }
 static void meter_inval (int k)
@@ -584,7 +584,7 @@ static void hit_draw (lv_event_t *e)
 	else
 	{
 		if (on) th_fill (l, &c, 0, 0, w - 1, h - 1, th_mix (TH->win, TH->accent, 64), LV_OPA_COVER, 4);
-		if (pressed) th_fill (l, &c, 0, 0, w - 1, h - 1, th_mix (TH->win, 0xFFFFFF, 40), LV_OPA_COVER, 4);
+		if (pressed) th_fill (l, &c, 0, 0, w - 1, h - 1, th_mix (TH->win, TH->accent, 40), LV_OPA_COVER, TH->radius);
 		glyph (l, &c, gx, h / 2 - 1, gh, paused, on ? (paused ? TH->win_ink : TH->accent_hi) : TH->win_dim);
 		if (on)
 		{

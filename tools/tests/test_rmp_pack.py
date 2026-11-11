@@ -539,3 +539,31 @@ class Cli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class Api3Flags(unittest.TestCase):
+    """Plugin API 3: the header flags from an RMPA image's rmp3_plugin (rmp_pack.api3_flags), and its refusals."""
+    @staticmethod
+    def image(api, ptr, magic=0x33504D52, size=136, kind=1):
+        img = bytearray(4096)
+        struct.pack_into("<II", img, 0, 0x504D5252, api)
+        struct.pack_into("<Q", img, 64 + 8 * 4, ptr)          # reserved[RMP_P_V3]
+        if ptr:
+            struct.pack_into("<IIII", img, ptr, magic, size, 0, kind)
+        return bytes(img)
+
+    def test_flags(self):
+        self.assertEqual(rmp_pack.api3_flags(self.image(2, 0), 0, 2), 0)                       # plain API 2
+        self.assertEqual(rmp_pack.api3_flags(self.image(2, 512), 0, 2), rmp_pack.RMP_HF_API3)  # dual machine
+        self.assertEqual(rmp_pack.api3_flags(self.image(3, 512, kind=2), 0, 3),
+                         rmp_pack.RMP_HF_API3 | rmp_pack.RMP_HF_EFFECT)                         # API 3 only effect
+        h = open(os.path.join(FMT_DIR, "rmp_format.h")).read()
+        self.assertIn("#define RMP_HF_API3 0x%xu" % rmp_pack.RMP_HF_API3, h)
+        self.assertIn("#define RMP_HF_EFFECT 0x%xu" % rmp_pack.RMP_HF_EFFECT, h)
+        self.assertEqual(rmp_pack.rmp_api("RMP_API_RMPA"), 3)
+
+    def test_refusals(self):
+        for img, api in ((self.image(3, 0), 3), (self.image(2, 4000), 2), (self.image(2, 512, magic=1), 2),
+                         (self.image(2, 512, size=8), 2), (self.image(2, 512, kind=3), 2),
+                         (self.image(2, 512, kind=2), 2)):   # (an effect in a dual table)
+            with self.assertRaises(rmp_pack.PackError):
+                rmp_pack.api3_flags(img, 0, api)

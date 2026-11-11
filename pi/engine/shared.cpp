@@ -2,6 +2,7 @@
 #include "shared.h"
 
 Output g_Output;
+peakfan::Fan g_PeakFan;
 Spsc<uint8_t, 8192> g_MidiIn;
 Spsc<uint8_t, kMidiOutBytes> g_MidiOut;
 RecordReader<Spsc<uint8_t, kMidiOutBytes>> g_ToHost (&g_MidiOut);

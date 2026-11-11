@@ -70,18 +70,19 @@ static void fixture(const std::string& k, const std::string& c) {
   put("/.rytm/lfo/" + k + ".txt", "lfo " + c);
   put("/.rytm/kits/" + k + "/k001.sks", "=lfo\nkits " + c + "\n");
   put("/.rytm/ins/" + k + "/k001.txt", "ins " + c);
+  put("/.rytm/scene/" + k + "/k001.txt", "scene " + c);   // 0.5.0: slot_copy_takes_scenes
   put("/.rytm/seq/" + k + "/tracks.txt", "tracks " + c);
   put("/.rytm/seq/" + k + "/A01.sqp", std::string(70000, 'p') + c);
   put("/.rytm/projects/" + k + "/samples.pool.txt", "pool " + c);
   put("/.rytm/songs/" + k + "/take-001.json", "{\"song\":\"" + c + "\"}");
 }
 static bool rmdir_all(const std::string& k) {   // a fixture's files gone
-  return system(("rm -rf '" + g_card + "/.rytm/lfo/" + k + ".txt' '" + g_card + "/.rytm/kits/" + k + "' '" + g_card + "/.rytm/ins/" + k + "' '" +
+  return system(("rm -rf '" + g_card + "/.rytm/lfo/" + k + ".txt' '" + g_card + "/.rytm/scene/" + k + "' '" + g_card + "/.rytm/kits/" + k + "' '" + g_card + "/.rytm/ins/" + k + "' '" +
                  g_card + "/.rytm/seq/" + k + "' '" + g_card + "/.rytm/projects/" + k + "' '" + g_card + "/.rytm/songs/" + k + "'").c_str()) == 0;
 }
 static bool has_all(const std::string& k, const std::string& c) {
   return slurp("/.rytm/lfo/" + k + ".txt") == "lfo " + c && slurp("/.rytm/ins/" + k + "/k001.txt") == "ins " + c &&
-         slurp("/.rytm/seq/" + k + "/tracks.txt") == "tracks " + c &&
+         slurp("/.rytm/scene/" + k + "/k001.txt") == "scene " + c && slurp("/.rytm/seq/" + k + "/tracks.txt") == "tracks " + c &&
          slurp("/.rytm/seq/" + k + "/A01.sqp") == std::string(70000, 'p') + c &&
          slurp("/.rytm/projects/" + k + "/samples.pool.txt") == "pool " + c &&
          slurp("/.rytm/songs/" + k + "/take-001.json") == "{\"song\":\"" + c + "\"}" &&
@@ -89,7 +90,8 @@ static bool has_all(const std::string& k, const std::string& c) {
 }
 static bool has_none(const std::string& k) {
   return !is_file("/.rytm/lfo/" + k + ".txt") && !is_dir("/.rytm/ins/" + k) && !is_dir("/.rytm/seq/" + k) &&
-         !is_dir("/.rytm/projects/" + k) && !is_dir("/.rytm/songs/" + k) && !is_dir("/.rytm/kits/" + k);
+         !is_dir("/.rytm/scene/" + k) && !is_dir("/.rytm/projects/" + k) && !is_dir("/.rytm/songs/" + k) &&
+         !is_dir("/.rytm/kits/" + k);
 }
 // the trash's entries (their numbers, sorted) and an entry's info.txt line
 static std::vector<int> entries() {
@@ -544,7 +546,7 @@ int main() {
       settle();
       CHECK(!prjslot::journal_line()[0]);
     };
-    auto gone = [](const std::string& k) { CHECK(system(("rm -rf '" + g_card + "/.rytm/lfo/" + k + ".txt' '" + g_card + "/.rytm/ins/" + k + "' '" + g_card + "/.rytm/seq/" + k + "' '" + g_card + "/.rytm/projects/" + k + "' '" + g_card + "/.rytm/songs/" + k + "' '" + g_card + "/.rytm/kits/" + k + "'").c_str()) == 0); };
+    auto gone = [](const std::string& k) { CHECK(system(("rm -rf '" + g_card + "/.rytm/lfo/" + k + ".txt' '" + g_card + "/.rytm/scene/" + k + "' '" + g_card + "/.rytm/ins/" + k + "' '" + g_card + "/.rytm/seq/" + k + "' '" + g_card + "/.rytm/projects/" + k + "' '" + g_card + "/.rytm/songs/" + k + "' '" + g_card + "/.rytm/kits/" + k + "'").c_str()) == 0); };
     auto entry_all = [](int id, const std::string& c) {   // every item of a fixture in trash entry id
       std::string e = entry(id);
       return id && slurp(e + "/lfo!%.txt") == "lfo " + c && slurp(e + "/ins!%/k001.txt") == "ins " + c &&
@@ -940,7 +942,7 @@ int main() {
       settle();
       CHECK(!prjslot::journal_line()[0]);
     };
-    auto gone = [](const std::string& k) { CHECK(system(("rm -rf '" + g_card + "/.rytm/lfo/" + k + ".txt' '" + g_card + "/.rytm/ins/" + k + "' '" + g_card + "/.rytm/seq/" + k + "' '" + g_card + "/.rytm/projects/" + k + "' '" + g_card + "/.rytm/songs/" + k + "' '" + g_card + "/.rytm/kits/" + k + "'").c_str()) == 0); };
+    auto gone = [](const std::string& k) { CHECK(system(("rm -rf '" + g_card + "/.rytm/lfo/" + k + ".txt' '" + g_card + "/.rytm/scene/" + k + "' '" + g_card + "/.rytm/ins/" + k + "' '" + g_card + "/.rytm/seq/" + k + "' '" + g_card + "/.rytm/projects/" + k + "' '" + g_card + "/.rytm/songs/" + k + "' '" + g_card + "/.rytm/kits/" + k + "'").c_str()) == 0); };
     auto entry_all = [](int id, const std::string& c) {
       std::string e = entry(id);
       return id && slurp(e + "/lfo!%.txt") == "lfo " + c && slurp(e + "/ins!%/k001.txt") == "ins " + c &&

@@ -104,9 +104,17 @@ struct MidiConfig {
                                // menu's order]; on by default (the Rytm's)
   uint8_t track_ch[kTracks];   // 1..16
   uint8_t fx_ch, auto_ch;      // 1..16 (auto: 14, learned from the PC the Rytm sends at PLAY)
+  uint8_t perf_ch;             // 0.5.0: the PERF channel 1..16, 0 OFF (15 the Rytm's default; GLOBAL X kGlobalPerfCh)
 };
-void config_default(MidiConfig* c);   // the Rytm's defaults (channels 1..12, FX 13, auto 14), not valid
+// GLOBAL X (0x6D) unpacked payload byte 27 = PERF CHANNEL - 1 (0..15), 0xff = OFF [measured, rytm-emu, OS 1.73 and 1.74:
+// notes scenes050]; byte 11 = AUTO CHANNEL - 1 [inferred: 0x0d with AUTO 14, not varied]
+constexpr int kGlobalPerfCh = 27, kGlobalAutoCh = 11;
+void config_default(MidiConfig* c);   // the Rytm's defaults (channels 1..12, FX 13, auto 14, PERF 15), not valid
 bool parse_global(const uint8_t* u, int n, MidiConfig* c);
+// the MIDI CONFIG as known now: the last GLOBAL dump's (song arming fetches it), else the defaults with the auto channel
+// learned from the PC at PLAY; core/mod/rytm_out.cpp's channels. set_midi_config: a GLOBAL's (tests)
+const MidiConfig& midi_config();
+void set_midi_config(const MidiConfig& c);
 enum : uint32_t { kCfgEncoder = 1, kCfgTrkCh = 2, kCfgNrpn = 4, kCfgPcReceive = 8, kCfgUnknown = 16 };
 // What stands in the way: recording (ENCODER DEST INT, AUTO CH; CC instead of NRPN: a hint only) or replay (PROG CH
 // RECEIVE off). Never changed by the Sidecar: the user sets them on the Rytm (config_explain).

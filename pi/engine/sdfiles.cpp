@@ -2,7 +2,9 @@
 #include "sdfiles.h"
 #include "bridge.h"
 #include "paircode_pi.h"
+#include "usbnet_pi.h"		// the USB-C cable is trusted (docs/usb-network.md)
 #include "lib/library.h"
+#include "webnext_path.h"	// PUT www-next/<path>: the new web app on the card
 
 #include <circle/bcmpropertytags.h>
 #include <circle/logger.h>
@@ -194,7 +196,8 @@ void CSdFiles::Run (void)
 		return;
 	}
 	CLogger::Get ()->Write (From, LogNotice, "the SD card's boot files on TCP port %u (pi/circle/sdboot.py)%s", Port,
-				paircode_pi::Gate ().gated () ? ": a connection must PAIR with the code on the screen first"
+				usbnet_pi::Trusted () ? ": on the USB-C cable (trusted, no pairing)"
+				: paircode_pi::Gate ().gated () ? ": a connection must PAIR with the code on the screen first"
 							      : ": NOT GATED (cmdline paircode=0) - anyone on this network can replace the firmware");
 	for (;;)
 	{
@@ -203,7 +206,9 @@ void CSdFiles::Run (void)
 		m_pConn = Listen.Accept (&IP, &nPort);
 		if (m_pConn == 0) { S->MsSleep (100); continue; }
 		m_nRxPos = m_nRxLen = 0;
-		m_bAuth = !paircode_pi::Gate ().gated ();	// the pairing code: nothing is served until PAIR / AUTH
+		// the pairing code: nothing is served until PAIR / AUTH. On the USB-C network every connection came over the
+		// cable (one stack, usbnet_pi.h): trusted, as with the gate off
+		m_bAuth = !paircode_pi::Gate ().gated () || usbnet_pi::Trusted ();
 		m_nPeer = (u32) IP;				// its rate-limit key (paircode.h: per peer)
 		// One connection at a time, so an idle one held the port - and every install - for good (review M2:
 		// `nc sidecar.local 7310` and walk away). 10 s of silence before PAIR / AUTH ends it, 60 s after.
@@ -321,7 +326,7 @@ void CSdFiles::Reply (const char *pFormat, ...)
 
 void CSdFiles::Serve (void)
 {
-	char Line[160];
+	char Line[200];
 	while (ReadLine (Line, sizeof Line))
 	{
 		// the Rytm's SIDECAR MENU > WEB UI off: the network side refuses every line (as unauthenticated, so
@@ -370,6 +375,17 @@ void CSdFiles::Serve (void)
 			if (!pCrc) { Reply ("ERR PUT <name> <size> <crc32>"); return; }
 			*pSize++ = 0;
 			*pCrc++ = 0;
+			if (strncmp (pArg, "www-next/", 9) == 0)
+			{
+				// the web app (webnext_path.h's rules: the URL /next/<path> and its card path)
+				char Url[140], Card[200];
+				if (pArg[9] == 0 || strlen (pArg + 9) > 120) { Reply ("ERR name"); return; }
+				strcpy (Url, "/next/");
+				strcat (Url, pArg + 9);
+				if (!webnext::path (Url, Card, sizeof Card - 8)) { Reply ("ERR name"); return; }
+				Put (pArg, strtoul (pSize, 0, 10), strtoul (pCrc, 0, 16), Card);
+				continue;
+			}
 			if (!NameOK (pArg)) { Reply ("ERR name"); return; }
 			Put (pArg, strtoul (pSize, 0, 10), strtoul (pCrc, 0, 16));
 		}
@@ -443,13 +459,26 @@ void CSdFiles::Get (const char *pName)
 	f_close (&f);
 }
 
-void CSdFiles::Put (const char *pName, unsigned nSize, u32 nCRC)
+void CSdFiles::Put (const char *pName, unsigned nSize, u32 nCRC, const char *pCard)
 {
-	char PNew[80], P[80], PBak[80], PPrev[80];
-	Path (PNew, pName, ".new");
-	Path (P, pName);
-	Path (PBak, pName, ".bak");
-	Path (PPrev, pName, ".prev");
+	char PNew[208], P[208], PBak[208], PPrev[208];
+	if (pCard != 0)
+	{
+		// a web app file: its folders first (SD:/.rytm/www-next and below; one that exists is fine)
+		strcpy (P, pCard);
+		for (size_t i = sizeof "SD:/.rytm/" - 1; P[i]; i++)
+			if (P[i] == '/') { P[i] = 0; f_mkdir (P); P[i] = '/'; }
+		strcpy (PNew, pCard);
+		strcat (PNew, ".new");
+		PBak[0] = PPrev[0] = 0;
+	}
+	else
+	{
+		Path (PNew, pName, ".new");
+		Path (P, pName);
+		Path (PBak, pName, ".bak");
+		Path (PPrev, pName, ".prev");
+	}
 	CLogger *L = CLogger::Get ();
 	if (nSize > 32 * 1024 * 1024) { Reply ("ERR size"); return; }
 	FIL f;
@@ -487,7 +516,7 @@ void CSdFiles::Put (const char *pName, unsigned nSize, u32 nCRC)
 		return;
 	}
 	const char *pKept = "";
-	if (strcmp (pName, "tryboot.txt") == 0) f_unlink (P);	// sdboot.py writes it fresh: nothing to keep
+	if (strcmp (pName, "tryboot.txt") == 0 || pCard != 0) f_unlink (P);	// written fresh (tryboot.txt, the web app): nothing to keep
 	if (Exists (P))
 	{
 		// the user's own files keep their original once (FatFs: the new name has no drive)
@@ -498,7 +527,7 @@ void CSdFiles::Put (const char *pName, unsigned nSize, u32 nCRC)
 	}
 	r = f_rename (PNew, P + 3);
 	if (r != FR_OK) { Reply ("ERR rename %d (the new file is %s.new)", r, pName); return; }
-	core::lib::touched (P + 3, 0, 0);	// the sample library (a library type only: the boot files are not)
+	if (pCard == 0) core::lib::touched (P + 3, 0, 0);	// the sample library (a library type only: the boot files are not)
 	L->Write (From, LogNotice, "%s: %u bytes, crc %08x, written and checked%s%s%s", pName, nSize, nCRC,
 		  *pKept ? " (the old one: " : "", *pKept ? pName : "", *pKept ? (pKept[1] == 'b' ? ".bak)" : ".prev)") : "");
 	Reply ("OK %u %08x%s%s", nSize, nCRC, *pKept ? " kept " : "", pKept);

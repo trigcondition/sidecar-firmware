@@ -7,6 +7,9 @@
 #include "engine.h"
 #include "md/md.h"   // the built-in MD's cost (poly_json)
 #include "lfo.h"
+#include "mod/mod.h"
+#include "mod/learn.h"
+#include "mod/scene.h"
 #include "device/device.h"
 #include "fx/insert.h"
 #include "fx/master.h"
@@ -20,6 +23,7 @@
 #include "seq/seq.h"
 #include "song/song.h"
 #include "song_pi.h"
+#include "morph_pi.h"   // 0.5.0: the display's MORPH page
 #include "msamp/msamp.h"
 #include "pool/pcache.h"
 #include "pool/stream_budget.h"
@@ -166,12 +170,13 @@ void tick() {
     uint32_t us = core::now_us() - t, w = core::ui::wave_take_us();   // (the overview by its own name: wave_idle's note)
     core::idle_note("remote", us > w ? us - w : 0);
   }
-  timed_tick("lfo", [] { core::lfo::tick(core::now_us()); });        // the Sidecar's LFOs (core/lfo.h): once a millisecond at most
+  timed_tick("mod", [] { core::mod::tick(core::now_us()); });        // the modulation layer (core/mod/mod.h): the LFOs, once a millisecond at most
   timed_tick("device", [] { core::device::tick(core::now_us()); });  // a box's envelopes (core/device/strip.h): the Rytm has none
   timed_tick("poly", [] { core::poly::tick(core::now_ms()); });      // poly FM: a held trig's time, a live chord's window (core/poly.h)
   timed_tick("seq", [] { core::seq::tick(core::now_ms()); });        // the Sidecar sequencer: its LEDs, its 2E (core/seq/seq.h)
   timed_tick("song", [] { core::song::tick(core::now_ms()); });      // SONG RECORD (core/song/song.h)
   timed_tick("songview", [] { song_pi::Tick(); });                   // its view for the display's SONG page
+  timed_tick("morphview", [] { morph_pi::Tick(); });                 // 0.5.0: the display's MORPH page (scenes)
 #if SIDECAR_SEQED
   timed_tick("seqed", [] { seqed_pi::Tick(); });                     // the touch editor's view for the display (docs/TOUCH-EDITOR.md)
   timed_tick("rytmpat", [] { rytmpat_pi::Tick(); });                 // the Rytm pattern view: its dump fetched while the page is open
@@ -179,7 +184,10 @@ void tick() {
   timed_tick("samp", [] { core::samp::tick(); });                    // a written take's instruments listed (core/samp/sampler.h)
   timed_tick("asamp", [] { core::samp::asamp_tick(); });             // the auto-sampler: a Rytm take's notes on time, its rescan
 }
-void seq_block() { core::seq::pre_block(); }
+void seq_block() {
+  core::seq::pre_block();
+  um::pre_block();   // API 3: the block's transport snapshot for the user machines (core/user/um.h)
+}
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2) {
   core::poly::midi(st, d1, d2);           // (and through its note sink the sequencer's recording and step entry)
 }
@@ -194,6 +202,8 @@ int card_service(int n) {
   return k;
 }
 bool card_busy() { return core::cardq::busy(); }
+void save_flush(bool on) { core::idle_flush(on); }
+bool save_settled() { return core::idle_settled(); }
 bool samp_command(const char* p, char* out, int cap) {
   return core::samp::command(p, out, cap) || core::samp::asamp_command(p, out, cap);
 }
@@ -234,7 +244,11 @@ bool poly_command(const char* p, char* out, int cap) {
          core::midim::command(p, out, cap) ||   // MIDI: "midim" (core/midim/midim.h)
          core::arp::command(p, out, cap);       // the arpeggiator: "arp" (core/arp/arp.h)
 }
-void keys_midi(int src, uint8_t st, uint8_t d1, uint8_t d2) { core::keys::midi(src, st, d1, d2); }
+// a USB-A device's (src 0..3) CC a MIDI-learn route has (core/mod/learn.h, ports 1..4): the route's, not the Rytm's
+void keys_midi(int src, uint8_t st, uint8_t d1, uint8_t d2) {
+  if (src >= 0 && src < 4 && core::learn::midi(src + 1, st, d1, d2)) return;
+  core::keys::midi(src, st, d1, d2);
+}
 void keys_source(int src, bool present, const char* name) { core::keys::source(src, present, name); }
 void keys_set_forward(void (*f)(uint8_t, uint8_t, uint8_t)) { core::keys::set_forward(f); }
 void midim_set_out(bool (*f)(int, const uint8_t*, int)) { core::midim::set_out(f); }
@@ -245,9 +259,17 @@ void midim_realtime(uint8_t status) { if (status != 0xF2) core::midim::realtime(
 void asamp_set_midi_out(bool (*f)(int, const uint8_t*, int)) { core::samp::asamp_set_midi_out(f); }
 bool keys_computer_on() { return core::keys::computer_on(); }
 const char* keys_line(char* b, int cap) { return core::keys::line(b, cap); }
-void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2) { core::lfo::midi_in(st, d1, d2); }
+void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2) {
+  core::lfo::midi_in(st, d1, d2);
+  core::learn::midi(0, st, d1, d2);   // the Rytm's own CCs: a MIDI-learn route's (port 0)
+}
+bool learn_command(const char* p, char* out, int cap) { return core::learn::command(p, out, cap); }
 bool lfo_command(const char* p, char* out, int cap) { return core::lfo::command(p, out, cap); }
 int lfo_json(char* out, int cap) { return core::lfo::json(out, cap); }
+bool mod_command(const char* p, char* out, int cap) { return core::mod::command(p, out, cap); }
+int mod_json(char* out, int cap) { return core::mod::json(out, cap); }
+bool scene_command(const char* p, char* out, int cap) { return core::scene::command(p, out, cap); }
+int scene_json(char* out, int cap) { return core::scene::json(out, cap); }
 int poly_json(char* out, int cap) {
   int n = core::seq::poly_json(out, cap);
   if (n > 0 && n + 2 < cap) {
@@ -524,6 +546,8 @@ uint64_t ins_bench(int a, int b, uint32_t* worst_block, uint32_t* hash) {
 const char* ins_bench_name(int t) { return core::ins::type_name(t); }
 uint64_t amp_bench(uint32_t* worst_block) { return core::amp::bench(worst_block); }
 uint64_t mfx_bench(uint32_t* worst_block) { return core::master::bench(worst_block); }
+uint64_t sfxins_bench(int set, uint32_t* worst_block) { return core::master::sfx_bench(set, worst_block); }
+const char* sfxins_bench_name(int set) { return core::master::sfx_bench_name(set); }
 int ins_json(char* out, int cap) {   // "ins":{... "out":[...]}, then "stream":{...} (the OUT route, the streaming budget)
   int n = core::ins::json(out, cap);
   if (n > 0 && n < cap - 2) {

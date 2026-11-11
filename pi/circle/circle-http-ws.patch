@@ -1,0 +1,187 @@
+diff -ru a/include/circle/net/httpdaemon.h b/include/circle/net/httpdaemon.h
+--- a/include/circle/net/httpdaemon.h
++++ b/include/circle/net/httpdaemon.h
+@@ -76,6 +76,18 @@
+ 	// cannot set it, and it is not kept in a browser's history.
+ 	const char *GetRequestAuth (void) const		{ return m_RequestAuth; }
+ 
++	// circle-http-ws.patch: a WebSocket upgrade (RFC 6455; pi/engine/web_ws.cpp, docs/web-ws.md). The request's
++	// Upgrade, Sec-WebSocket-Key and Sec-WebSocket-Version headers ("" if absent or too long).
++	const char *GetRequestUpgrade (void) const	{ return m_RequestUpgrade; }
++	const char *GetRequestWsKey (void) const	{ return m_RequestWsKey; }
++	const char *GetRequestWsVersion (void) const	{ return m_RequestWsVersion; }
++
++	// circle-http-ws.patch: called by the worker for a GET that carries an Upgrade header, after the request was
++	// parsed and before GetContent(). Return TRUE when the connection was taken over: the derived class served it to
++	// its end (in this worker's task) and deleted pSocket. FALSE (the default) leaves pSocket alone and the request
++	// is served as plain HTTP, as before.
++	virtual boolean UpgradeConnection (const char *pPath, CSocket *pSocket)	{ return FALSE; }
++
+ private:
+ 	void Listener (void);			// accepts incoming connections and creates worker task
+ 	void Worker (void);			// processes a connection
+@@ -118,6 +130,9 @@
+ 	char m_RequestOrigin[256+1];
+ 	char m_RequestReferer[256+1];
+ 	char m_RequestAuth[64+1];			// circle-http-auth.patch
++	char m_RequestUpgrade[32+1];			// circle-http-ws.patch
++	char m_RequestWsKey[64+1];
++	char m_RequestWsVersion[8+1];
+ 
+ 	static unsigned s_nInstanceCount;
+ };
+diff -ru a/include/circle/net/netconnection.h b/include/circle/net/netconnection.h
+--- a/include/circle/net/netconnection.h
++++ b/include/circle/net/netconnection.h
+@@ -49,6 +49,9 @@
+ 	int GetProtocol (void) const;
+ 	u16 GetMSS (void) const;
+ 
++	// circle-http-ws.patch: bytes queued to send and not yet acknowledged (TCP; 0 for other protocols)
++	virtual size_t GetBytesQueued (void) const	{ return 0; }
++
+ 	// returns: string representation for current connection state
+ 	virtual const char *GetStateName (void) const;
+ 
+diff -ru a/include/circle/net/socket.h b/include/circle/net/socket.h
+--- a/include/circle/net/socket.h
++++ b/include/circle/net/socket.h
+@@ -138,6 +138,11 @@
+ 	/// \return Pointer to IP address (four bytes, 0-pointer if not connected)
+ 	const u8 *GetForeignIP (void) const;
+ 
++	/// \brief circle-http-ws.patch: bytes queued to send and not yet acknowledged by the peer (TCP)
++	/// \return 0 when not connected. Send() with MSG_DONTWAIT queues without a limit: a caller that must not
++	///	    pile data up for a peer that stopped reading checks this first.
++	size_t GetBytesQueued (void) const;
++
+ 	typedef CNetConnection::TStatus TStatus;
+ 	/// \return Socket status
+ 	TStatus GetStatus (void) const;
+diff -ru a/include/circle/net/tcpconnection.h b/include/circle/net/tcpconnection.h
+--- a/include/circle/net/tcpconnection.h
++++ b/include/circle/net/tcpconnection.h
+@@ -62,6 +62,9 @@
+ class CTCPConnection : public CNetConnection
+ {
+ public:
++	// circle-http-ws.patch: the send queue's bytes (sent but unacknowledged, and unsent)
++	size_t GetBytesQueued (void) const override	{ return m_TxQueue.GetBytesQueued (); }
++
+ 	CTCPConnection (CNetConfig	*pNetConfig,		// active OPEN
+ 			CNetworkLayer	*pNetworkLayer,
+ 			const CIPAddress &rForeignIP,
+diff -ru a/include/circle/net/transportlayer.h b/include/circle/net/transportlayer.h
+--- a/include/circle/net/transportlayer.h
++++ b/include/circle/net/transportlayer.h
+@@ -74,6 +74,7 @@
+ 	const u8 *GetForeignIP (int hConnection) const;		// returns 0 if not connected
+ 	u16 GetOwnPort (int hConnection) const;			// returns 0 if not assigned
+ 	u16 GetMSS (int hConnection) const;
++	size_t GetBytesQueued (int hConnection) const;		// circle-http-ws.patch
+ 
+ 	CNetConnection::TStatus GetStatus (int hConnection) const;
+ 
+diff -ru a/lib/net/httpdaemon.cpp b/lib/net/httpdaemon.cpp
+--- a/lib/net/httpdaemon.cpp
++++ b/lib/net/httpdaemon.cpp
+@@ -57,6 +57,9 @@
+ 	m_RequestOrigin[0] = '\0';
+ 	m_RequestReferer[0] = '\0';
+ 	m_RequestAuth[0] = '\0';
++	m_RequestUpgrade[0] = '\0';			// circle-http-ws.patch
++	m_RequestWsKey[0] = '\0';
++	m_RequestWsVersion[0] = '\0';
+ 
+ 	if (m_nMaxContentSize > 0)
+ 	{
+@@ -190,6 +193,23 @@
+ 		return;
+ 	}
+ 
++	// circle-http-ws.patch: a GET with an Upgrade header goes to the derived class first; TRUE: it took the
++	// connection (served it and deleted the socket), nothing more to do here
++	if (   Status == HTTPOK
++	    && m_RequestMethod == HTTPRequestMethodGet
++	    && m_RequestUpgrade[0] != '\0')
++	{
++		if (UpgradeConnection (m_RequestPath, m_pSocket))
++		{
++			m_pSocket = 0;
++
++			delete [] m_pMultipartBuffer;
++			m_pMultipartBuffer = 0;
++
++			return;
++		}
++	}
++
+ 	// process HTTP request
+ 	unsigned nContentLength = m_nMaxContentSize;
+ 	const char *pContentType = "text/html";
+@@ -312,6 +332,9 @@
+ 	m_RequestOrigin[0] = '\0';
+ 	m_RequestReferer[0] = '\0';
+ 	m_RequestAuth[0] = '\0';
++	m_RequestUpgrade[0] = '\0';			// circle-http-ws.patch
++	m_RequestWsKey[0] = '\0';
++	m_RequestWsVersion[0] = '\0';
+ 
+ 	char Buffer[FRAME_BUFFER_SIZE];
+ 	char Line[HTTP_MAX_REQUEST_LINE+1];
+@@ -563,6 +586,10 @@
+ 	else if (strcasecmp (pToken, "Referer") == 0)	{ pHeader = m_RequestReferer; nHeaderSize = sizeof m_RequestReferer; }
+ 	// circle-http-auth.patch: the pairing code's session token (pi/engine/paircode.h)
+ 	else if (strcasecmp (pToken, "X-Sidecar-Auth") == 0) { pHeader = m_RequestAuth; nHeaderSize = sizeof m_RequestAuth; }
++	// circle-http-ws.patch: a WebSocket upgrade's headers
++	else if (strcasecmp (pToken, "Upgrade") == 0)	{ pHeader = m_RequestUpgrade; nHeaderSize = sizeof m_RequestUpgrade; }
++	else if (strcasecmp (pToken, "Sec-WebSocket-Key") == 0) { pHeader = m_RequestWsKey; nHeaderSize = sizeof m_RequestWsKey; }
++	else if (strcasecmp (pToken, "Sec-WebSocket-Version") == 0) { pHeader = m_RequestWsVersion; nHeaderSize = sizeof m_RequestWsVersion; }
+ 	if (pHeader != 0)
+ 	{
+ 		const char *pValue = pSavePtr != 0 ? pSavePtr : "";
+diff -ru a/lib/net/socket.cpp b/lib/net/socket.cpp
+--- a/lib/net/socket.cpp
++++ b/lib/net/socket.cpp
+@@ -536,6 +536,18 @@
+ 	return m_pTransportLayer->GetOwnPort (m_hConnection);
+ }
+ 
++// circle-http-ws.patch
++size_t CSocket::GetBytesQueued (void) const
++{
++	if (m_hConnection < 0)
++	{
++		return 0;
++	}
++
++	assert (m_pTransportLayer != 0);
++	return m_pTransportLayer->GetBytesQueued (m_hConnection);
++}
++
+ const u8 *CSocket::GetForeignIP (void) const
+ {
+ 	if (m_hConnection < 0)
+diff -ru a/lib/net/transportlayer.cpp b/lib/net/transportlayer.cpp
+--- a/lib/net/transportlayer.cpp
++++ b/lib/net/transportlayer.cpp
+@@ -492,6 +492,19 @@
+ 	return ((CNetConnection *) m_pConnection[hConnection])->GetOwnPort ();
+ }
+ 
++// circle-http-ws.patch: the connection's send queue (0 if there is none)
++size_t CTransportLayer::GetBytesQueued (int hConnection) const
++{
++	assert (hConnection >= 0);
++	if (   hConnection >= (int) m_pConnection.GetCount ()
++	    || m_pConnection[hConnection] == 0)
++	{
++		return 0;
++	}
++
++	return ((CNetConnection *) m_pConnection[hConnection])->GetBytesQueued ();
++}
++
+ u16 CTransportLayer::GetMSS (int hConnection) const
+ {
+ 	assert (hConnection >= 0);

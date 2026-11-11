@@ -39,6 +39,8 @@ const ProjectFile kProjectFiles[] = {
     {"/.rytm/ins/%s.txt", "project/ins.txt", kKindProject, "ins", kOne, false},
     {"/.rytm/lfo/%s", "project/lfo/", kKindProject, "lfo", kDir, false},
     {"/.rytm/ins/%s", "project/ins/", kKindProject, "ins", kDir, false},
+    {"/.rytm/scene/%s.txt", "project/scene.txt", kKindProject, "scene", kOne, false},   // 0.5.0 (core/mod/scene.h)
+    {"/.rytm/scene/%s", "project/scene/", kKindProject, "scene", kDir, false},
     {"/.rytm/kits/%s", "project/kits/", kKindProject, "kits", kDir, false},   // the kits' saved copies (kits.h)
     {"/.rytm/seq/%s", "project/seq/", kKindSeq, "", kDir, false},
     {"/.rytm/songs/%s", "project/songs/", kKindSong, "song", kSongs, false},

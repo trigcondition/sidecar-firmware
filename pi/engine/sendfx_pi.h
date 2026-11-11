@@ -30,6 +30,9 @@ void FromRytm(const int32_t (*stems)[8], unsigned n);    // core 0, IN completio
 const unsigned kVoiceLag = 256;
 void FromVoices(const int16_t (*v)[8], unsigned n, const float (*feed)[8] = nullptr);
 void Render();                                            // core 2, after its block: the queued stems
+// The buses' peaks since the last call, 0..1: B1 / B2 each send FX's own return, B3 the dry bus's input (its chain's
+// output goes into the pairs). The web's level meters (peak_fan.h); core 0 (racy: a meter)
+void TakeBusPeaks(float* pk);
 void AddReturn(int32_t (*out)[12], unsigned n,            // core 0, OUT fill: onto 2/3 and 0/1 (saturating);
                float (*slots)[4] = nullptr);              // slots: each FX's own return as added (left as is when none)
 // The console's sendfx commands (core 3, cores.cpp's Command); the answer logged; `sendfx` adds the stats since the

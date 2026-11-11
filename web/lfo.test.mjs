@@ -48,7 +48,14 @@ assert.equal(lfoParams("V1", 1, "HRM")[1], "P2 HRM");
 assert.equal(lfoParams("V1", 1, "HRM").length, 16);
 assert.deepEqual(lfoParams("FX2", 0, "TIME"), ["P2 TIME", "P3", "P4", "P5"]);
 assert.deepEqual(lfoParams("BD", 0, "F.FRQ"), [], "no Rytm targets (1026)");
-assert.ok(!LFO_TARGETS.includes("BD") && LFO_TARGETS.at(-1) === "O8" && LFO_TARGETS.indexOf("O1") === 22);
+assert.ok(!LFO_TARGETS.includes("BD") && LFO_TARGETS.at(-1) === "X8" && LFO_TARGETS.indexOf("O1") === 22);
+// 0.5.0: the master, the sends, the voice sends after O8 (core/lfo.h kTMaster 30, kTMfx 32, kTSnd 33, kTIsnd 45)
+assert.ok(LFO_TARGETS.indexOf("M1") === 30 && LFO_TARGETS.indexOf("MFX") === 32 && LFO_TARGETS.indexOf("S1") === 33 &&
+          LFO_TARGETS.indexOf("X1") === 45);
+assert.deepEqual(lfoParams("MFX", 0, ""), ["LEV", "MIX1", "MIX2", "MIX3", "MIX4", "B1A", "B1B", "B2A", "B2B", "B3A", "B3B"]);   // 0.5.0: the bus slots' send TYPE MIX
+assert.deepEqual(lfoParams("S12", 1, ""), ["F1", "F2"]);
+assert.deepEqual(lfoParams("X3", 0, ""), ["B1", "B2", "B3"]);
+assert.equal(lfoParams("M2", 0, "").length, 12);
 assert.deepEqual(lfoParams("O3", 1, "PAN"), ["LEV", "PAN", "WID"], "the OUT route's targets (docs/STEREO.md)");
 // ins1112: an INSERT chain's 12 params - both slots, then the POST EQ after them
 assert.equal(lfoParams("I3", 0, "ACUT").length, 12);

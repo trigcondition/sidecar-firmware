@@ -835,6 +835,82 @@ ignored on both sides; spec 2.1). Everything below is answered from `loop()` bet
   silence for the rest. Call `pool_info` about once a block, not per sample (it runs from flash).
 - Test plugin: `plugins/v2_test` (every API-2 feature; `sim/tests/test_rmp.py` V2Test, `sim/rmp_e2e.py` 7..11).
 
+## 12a. Plugin API 3 (the Pi; in development)
+
+`sdk/rmp/rmp_api3.h`; what this engine implements of the proposal and where it differs: docs/plugin-api-3-plan.md.
+A dual package (an API 2 table, `.api = 2u`, with an `rmp3_plugin` in `reserved[RMP_P_V3]`) plays as API 2 on an
+older host and as API 3 here; an API 3 only package (`.api = 3u`) is refused by an older host (effects must be). In
+the engine so far: the transport snapshot in every block, the slot arena (`plugram=` on the Pi), guarded control calls
+(a fault mutes the slot; `um=reload:<slot>`), stereo out on PRE / POST, and user effects in the send FX's UFX1..UFX4
+(`um=fx:<n>:<id>`). Test plugins: `plugins/api3_test` (the probe), `plugins/ufx_pingpong` (the example effect);
+user effects PHASER and BBD and their labels on the Rytm: section 12b.
+API 1 and 2 plugins are unchanged: `core/tests/test_api3_compat.cpp` compares their output with an API 2 host's.
+
+## 12b. User effects: the Rytm's labels, PHASER and BBD
+
+A user effect plays in a send FX slot (`um=fx:<n>:<id>`: UFX`n` is the send FX TYPE 63 + `n`). The send slot has five
+knobs on the Rytm: P1 is ROUTE (PRE / POST, the host's), P2..P5 are the effect's **P1..P4**, handed to `render` in
+`b->p`. So an effect has four knobs; the send level is its mix (the return is wet only), as for the built-in effects.
+The input is mono (the stems x their send levels), the return stereo.
+
+**Labels on the Rytm (0x24 SENDFX LABELS).** When an effect loads, the Sidecar sends the Rytm its knobs' names and value
+names from the package's manifest, as it does for the built-in effects (no Rytm update needed: the mod takes them for
+any TYPE id):
+- a knob `p` 1..4 shows its `short` name (4 characters at most) over P2..P5;
+- a knob with `"look": "list"` and `names` shows the name of the zone its value is in, name `k` of `n` from value
+  `ceil(128 k / n)` (the plugin reads it as `value * n >> 7`), at most 5 characters on the Rytm;
+- **adjacent equal names are one zone**, and **a name ending in `#` shows the knob's number inside its zone**
+  ("FREE 12", as the built-in RINGS shows "MODAL 12"): 8 x `"FREE#"` then 8 note values make a knob whose lower half is
+  continuous and whose upper half picks a note value;
+- a knob whose zones all lack `#` steps one zone per detent on the Rytm (a pure selector);
+- at most 12 zones in all four knobs together (a knob that would pass that keeps none: its number shows instead);
+- the zones need the engine's names cache (`UM_NAMES_CACHE`, on in the Pi build); without it the knobs show their
+  names and numbers only.
+
+### PHASER (plugins/ufx_phaser, `fx.phaser`, MIT)
+
+A stereo phaser for chords and pads: up to eight first-order allpass stages a channel, swept together by a sine LFO,
+with feedback. Because the send's return reaches the Rytm milliseconds after the dry track, the notches cannot come
+from the Rytm's own dry signal: the return is the whole phaser (input and swept copy mixed inside, in the proportion
+that keeps the notches exact at every feedback). On its own it sounds like a phaser; with the track's dry sound also on
+the main mix the notches are shallower (turn the send up, or the track's own level down, for more).
+
+| Knob | Label | Values | What it does |
+|---|---|---|---|
+| P2 | RATE | 0..63 `FREE n`; 64..127 `8BAR` `4BAR` `2BAR` `1BAR` `1/2` `1/4` `1/8` `1/16` | FREE: 0.02 Hz (n 0) .. 0.2 Hz (24) .. 0.9 Hz (40) .. 8 Hz (63), exponential. The note values: one sweep per value at the Rytm's tempo; while the Rytm plays they lock to the song position (the sweep's phase is the song's tick count modulo the note value, snapped on Start or a jump; so a sweep starts with the song's bars, not with each pattern loop) |
+| P3 | DPTH | 0..127 | how far the sweep goes either side of 600 Hz: 0 holds it there, 127 sweeps +-2.5 octaves (about 106 Hz .. 3.4 kHz) |
+| P4 | FDBK | 0..127 | feedback around the stages, 0 .. 0.9: sharper notches and ringing peaks between them; soft-limited, so loud input saturates gently instead of howling |
+| P5 | SPRD | `4ST n` / `6ST n` / `8ST n` (n 0..42; 8ST 0..41) | the stage count (4: two notches, gentle; 6: three; 8: four, the deepest swirl; a change crossfades) and, inside each, the stereo spread: the right channel's sweep runs n/42 of half a cycle behind the left's (0 mono, 21 a quarter cycle, 42 opposite; 41 for 8ST) |
+
+Defaults (the manifest's): RATE 28 (FREE, about 0.3 Hz), DPTH 96, FDBK 40, SPRD 64 (`6ST 21`).
+
+### BBD (plugins/ufx_bbd, `fx.bbd`, MIT)
+
+A bucket-brigade style analog delay (a model of how such pedals behave, not of one circuit): a longer time is a slower
+clock, so the repeats get darker and noisier; a 2:1 / 1:2 compander around the line gates the hiss under quiet repeats
+and lets it breathe with loud ones; the line soft-clips; turning TIME bends the pitch of the repeats as the clock
+glides. Two output taps with their own wobble give width when W/F is up. The line lives in the slot arena (2.5 s
+wanted, 1.1 s at least, for each of its two states: about 1.9 MB a UFX slot). The line keeps its audio when the send
+slot's TYPE moves to another effect: TYPE back to BBD can replay the old repeats for a moment (`um=reload:f<n>` clears it).
+
+| Knob | Label | Values | What it does |
+|---|---|---|---|
+| P2 | TIME | 0..63 `FREE n`; 64..127 `1/16` `1/8T` `1/8` `1/4T` `1/8D` `1/4` `1/4D` `1/2` | FREE: 20 ms (n 0) .. 54 ms (16) .. 146 ms (32) .. 395 ms (48) .. 1 s (63), exponential. The note values at the Rytm's tempo (up to 2.4 s: a 1/2 note at 50 BPM; longer is held at the line's length). The clock filters follow the time: about 10 kHz at 40 ms, 4 kHz at 200 ms, 1.5 kHz at 1 s; the hiss rises with it, 3 dB a doubling of the time (measured under a -23 dBFS tone: -69 dB at 42 ms, -64 dB at 505 ms), and the compander lowers it further under quiet repeats |
+| P3 | FDBK | 0..127 | the repeats, 0 .. 1.08: at noon each repeat is about 5 dB quieter than the last; from about 120 up, with W/F low, the loop runs away and holds itself at about -10 dBFS (the soft clips bound it; turn it down to let it die) |
+| P4 | W/F | 0..127 | wow (0.55 + 0.83 Hz, up to 2.5 ms) and flutter (6.5 Hz, up to 0.25 ms) on the clock, squared (gentle in the lower half); the two outputs wobble a quarter cycle apart, so it also widens the repeats |
+| P5 | TONE | 0..127 | a low-pass on the repeats inside the loop, 400 Hz .. open at 127: lower, and each repeat is darker than the one before |
+
+Defaults: TIME 40 (FREE, about 240 ms), FDBK 56, W/F 24, TONE 80.
+
+**Tests and tools.** `core/tests/test_ufx.cpp` loads both packages (kept built in core/tests/api3_pkgs: `make -C
+plugins/ufx_phaser fixtures`, `make -C plugins/ufx_bbd fixtures`) and plays them through the send FX: the labels, the
+phaser's notches against theory, feedback, spread and tempo sync, the delay's timing, darkening, hiss, feedback decay
+and the bounded runaway, wobble and tone, NaN and denormals. `plugins/ufx_render.py` renders a chord and a drum loop
+through each native build into plugins/build-wav/ for listening (`make -C plugins/ufx_<name> libufx_<name>.dylib`
+first; `--p1..--p4`, `--bpm`). `core/tests/bench/ufx_bench.sh` builds each render with the Pi's flags and costs it with
+the A72 model: PHASER about 1.9 k instructions and 1.5 k model cycles a 12-frame block, BBD 3.4 k and 2.5 k (the send
+FX's budget for one call is 120 us: about 180 k cycles on a Pi 4 at 1.5 GHz).
+
 ## 13. Presets
 
 `/PRESETS/<id>/` on the card: generic presets `<name>.txt` with one `P<n> <value>` line per knob (others ignored; a file

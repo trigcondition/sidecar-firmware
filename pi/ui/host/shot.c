@@ -1,7 +1,7 @@
 // pi/ui/host/shot.c - the Pi screen on the Mac: LVGL renders sidecar_ui into an 800x480 RGB565 buffer (the OLED theme's
 // dots expanded as the Pi's flush expands them: sidecar_dot_expand), with made-up status and touches, written as PPMs.
 // No window, no SDL.
-//   ./shot OUTDIR [WxH]      every page in both themes (WxH: the screen, 800x480, 1024x600 or 1280x720) (OUTDIR/oled-*.ppm, OUTDIR/classic-*.ppm), the controls' commands
+//   ./shot OUTDIR [WxH]      every page in both themes (WxH: the screen, 800x480, 1024x600 or 1280x720) (OUTDIR/oled-*.ppm, OUTDIR/sidecar-*.ppm), the controls' commands
 //                            checked, the SEQ gestures checked against core/seq, the draw costs printed; fails on a miss
 //   ./shot anim OUTDIR [N]   the SEQ piano roll playing in the OLED theme: N frames (default 300) at 20 fps, frame-NNNN.ppm
 #include "lvgl.h"
@@ -12,6 +12,7 @@
 #include "../sidecar_voice.h"
 #include "../sidecar_insfx.h"
 #include "../sidecar_mfx.h"
+#include "../sidecar_morph.h"
 #include "../sidecar_song.h"
 #include "../sidecar_rec.h"
 #include "../sidecar_seqed.h"
@@ -20,6 +21,7 @@
 #include "../sidecar_preset.h"
 #include "../sidecar_scope.h"
 #include "../sidecar_chop.h"
+#include "../sidecar_sedit.h"
 #include "../sidecar_status.h"
 #include "../sidecar_project.h"
 #include <math.h>
@@ -310,6 +312,24 @@ static sidecar_wg_view_t s_Wg;
 static sidecar_voice_view_t s_Vv;
 // the MASTER FX page's view, as insfx_pi.cpp's FillMaster fills it
 static sidecar_mfx_view_t s_Mv;
+// 0.5.0: the MORPH page's made-up scenes (A 1, B 3, scene 3 selected with n locks, the longest names and values)
+static sidecar_morph_view_t s_Mo;
+static void morph_fake (int n, int top)
+{
+	static const char *const kN[] = {"V1:P3", "RYTM:PERF12", "MFX:LEV", "I8:A4", "RYTM:SCN", "X8:B3", "O8:WID", "V8:P16"};
+	static const char *const kV[] = {"64", "127", "100.5", "127.9", "12", "0", "64", "OFF"};
+	memset (&s_Mo, 0, sizeof s_Mo);
+	s_Mo.valid = 1, s_Mo.fader = 9000, s_Mo.a = 0, s_Mo.b = 2, s_Mo.sel = 2, s_Mo.top = (unsigned char) top;
+	for (int k = 0; k < SMO_SCENES; k++) s_Mo.nlocks[k] = (unsigned char) (k == 2 ? n : k == 0 ? 5 : k == 11 ? 64 : 0);
+	for (int i = top; i < n && s_Mo.nrows < SMO_ROWS; i++)
+	{
+		sidecar_morph_row_t *r = &s_Mo.row[s_Mo.nrows++];
+		snprintf (r->name, sizeof r->name, "%s", kN[i % 8]);
+		snprintf (r->value, sizeof r->value, "%s", kV[i % 8]);
+		r->lo = 0, r->hi = i % 8 == 4 ? 12 : 127, r->v = (unsigned char) (i * 13 % 128);
+	}
+	s_Mo.gen = (unsigned) (n * 1000 + top + 1);
+}
 static void mfx_slot (int i, int type, const char *n, const char *next, const char *l0, const char *v0, int send, int amp)
 {
 	sidecar_mfx_slot_t *x = &s_Mv.slot[i];
@@ -851,9 +871,10 @@ static int DX, DY;
 #define OW_HIT_X	(LU (352) + DX - LU (40))						// OLED: the home title bar's REC status
 #define NAV_X		(LU (377) + DX)						// OLED: the navigation column
 #define NAV_Y(i)	((i) * ((LU (240) + DY) / 8) + (LU (240) + DY) / 16 - 1)		// eight keys (UX review N1)
-#define CNAV_X(i)	(LU (300) + (i) * ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8) + ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8 - LU (4)) / 2)	// CLASSIC: the title bar's row
+#define CNAV_X(i)	(TH->nav ? TH->w - TH->nav / 2 : LU (300) + (i) * ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8) + ((LU (800) + DX - LU (12) - LU (300) + LU (4)) / 8 - LU (4)) / 2)	// SIDECAR: the rail, or the header's row (800x480)
+#define CNAV_Y(i)	(TH->nav ? LU (3) + (i) * ((TH->h - LU (6)) / 8) + (TH->h - LU (6)) / 16 : LU (25))
 #define VS(v)		((v) * (LU (240) + DY - LU (41)) / 199)				// OLED: a settings page's y (sidecar_ui.c)
-#define CY(v)		((v) * (LU (358) + DY) / 358)				// CLASSIC: the same
+#define CY(v)		((v) * (LU (358) + DY) / 358)				// SIDECAR: the same
 #define CH		(LU (48) + DY / 15)
 #define WG_KY		(o ? LU (204) + DY + LU (17) : LU (52) + LU (372) + DY + LU (26))		// the machine view's keys (sidecar_wgview.c)
 #define WG_SRC_X	(o ? LU (264) + 3 * DX / 4 + (LU (88) + DX / 4) / 2 : LU (616) + 3 * DX / 4 + (LU (176) + DX / 4) / 2)
@@ -1002,6 +1023,31 @@ static void chop_fake (int mode)
 		v->lazy = 1, v->lazy_n = 3, v->lazy_at[0] = 0, v->lazy_at[1] = 24100, v->lazy_at[2] = 48050, v->lazy_pos = 61000, v->nheads = 0;
 	}
 	if (mode == 2) v->rs_state = SCH_RS_OFFER, v->rs_slice = 3, snprintf (v->rs_row, sizeof v->rs_row, "A012");
+}
+
+// SAMPLE EDIT's view as seditview_pi.cpp fills it: 0 a kick opened from track BD (the region 0.05..1.0 s, an edit to
+// undo, not saved), 1 a stereo pad from the pool (no track: no SAVE + USE; nothing changed), 2 a NORMALISE at 42 %
+static sidecar_sedit_view_t s_Se;
+static void sedit_fake (int mode)
+{
+	sidecar_sedit_view_t *v = &s_Se;
+	unsigned gen = v->gen;
+	memset (v, 0, sizeof *v);
+	v->gen = gen + 1;
+	v->valid = 1, v->st = mode == 2 ? SSE_ST_BUSY : SSE_ST_READY, v->rate = 48000, v->bits = 24, v->fn = mode == 2 ? 1 : 0;
+	v->frames = mode == 1 ? 192000 : 57600, v->ch = mode == 1 ? 2 : 1;
+	snprintf (v->name, sizeof v->name, "%s", mode == 1 ? "PAD WARM C3.wav" : "KICK 808 LONG.wav");
+	v->a = mode == 1 ? 0 : 2400, v->b = mode == 1 ? v->frames : 48000;
+	v->wa = 0, v->wb = v->frames;
+	v->undo = mode != 1, v->dirty = mode != 1, v->has_track = mode != 1, v->track = mode != 1 ? 0 : -1;
+	v->progress = mode == 2 ? 42 : 100, v->playhead = -1, v->ncols = SSE_COLS;
+	for (int i = 0; i < SSE_COLS; i++)
+	{
+		double t = (double) i / SSE_COLS, a;
+		if (mode == 1) a = 0.55 * sin (3.14159 * t) * (0.8 + 0.2 * sin (i * 0.37));	// a pad's swell
+		else a = 0.95 * exp (-t * 4.0) * (0.7 + 0.3 * fabs (sin (i * 0.21)));		// a kick's decay
+		v->hi[i] = (short) (a * 32000), v->lo[i] = (short) (-a * 31000);
+	}
 }
 
 static void theme_run (int style, const char *pre)
@@ -1349,6 +1395,17 @@ static void theme_run (int style, const char *pre)
 		sidecar_ui_show (pg);
 		EXPECT (!sidecar_mfx_shown ());
 	}
+	// 0.5.0: the MORPH page - no locks, a full list, the last rows, the engine not there yet
+	{
+		int pg = sidecar_ui_page ();
+		sidecar_ui_show (20);
+		EXPECT (sidecar_morph_shown () && !sidecar_mfx_shown ());
+		morph_fake (0, 0); sidecar_morph_set (&s_Mo); run (2); shot ("morph-empty");
+		morph_fake (24, 0); sidecar_morph_set (&s_Mo); run (2); shot ("morph-locks");
+		morph_fake (24, 16); s_Mo.edit = 1; s_Mo.gen++; sidecar_morph_set (&s_Mo); run (2); shot ("morph-edit");
+		sidecar_ui_show (pg);
+		EXPECT (!sidecar_morph_shown ());
+	}
 	EXPECT (sidecar_insfx_voice () == 2);
 	{
 		int e = DY / 6, sp = o ? LU (177) + DX / 2 : LU (380) + DX / 2;
@@ -1636,6 +1693,113 @@ static void theme_run (int style, const char *pre)
 		chop_fake (0); sidecar_chop_set (&s_Ch); run (2); shot ("chop-bank-b");
 		chop_fake (-1); sidecar_chop_set (&s_Ch); run (2); shot ("chop-none");
 	}
+	// ---- SAMPLE EDIT (page 21): the edit's waveform with its region; a marker's drag sends the start at the release, a
+	// function key applies, SAVE asks SAVE + USE / SAVE (SAVE + USE only from a track), CLOSE asks before it drops an edit
+	sidecar_ui_show (21);
+	EXPECT (sidecar_sedit_shown () && sidecar_ui_page () == 21 && !sidecar_chop_shown ());
+	sedit_fake (0); sidecar_sedit_set (&s_Se); run (2); shot ("sedit");
+	{
+		int x, y, x1, y1;
+		EXPECT (sidecar_sedit_hit (0, 0, &x, &y));				// the start marker
+		EXPECT (!sidecar_sedit_dragging ());
+		s_Px = sx (x); s_Py = sy (y); s_Down = 1; run (3);
+		for (int i = 1; i <= 5; i++) { s_Px = sx (x + 20 * i); run (1); }
+		EXPECT (sidecar_sedit_dragging ());
+		sedit_fake (0); sidecar_sedit_set (&s_Se); run (2);			// a new view while held: the marker stays under the finger
+		EXPECT (sidecar_sedit_hit (0, 0, &x1, &y1) && x1 > x + 80);
+		shot ("sedit-drag");
+		s_Down = 0; run (3);
+		EXPECT (!sidecar_sedit_dragging ());
+		EXPECT (!strncmp (s_Last, "sedit=start:", 12) && atoi (s_Last + 12) > 2400);	// (sent at the release)
+		{	// the engine refused it (its views keep the old start, the same gen): held a moment, then the engine's again
+			int xs, xe;
+			EXPECT (sidecar_sedit_hit (0, 0, &xs, &y1) && xs > x + 80);
+			sidecar_sedit_set (&s_Se); run (1);
+			EXPECT (sidecar_sedit_hit (0, 0, &x1, &y1) && x1 == xs);
+			for (int i = 0; i < 6; i++) sidecar_sedit_set (&s_Se);
+			run (1);
+			EXPECT (sidecar_sedit_hit (0, 0, &xe, &y1) && xe == x);
+		}
+		EXPECT (sidecar_sedit_hit (0, 1, &x, &y));				// the end marker, to the left
+		drag (x, y, x - 60, y, 4, 0);
+		EXPECT (!strncmp (s_Last, "sedit=end:", 10) && atoi (s_Last + 10) < 48000);
+		s_Se.b = (unsigned) atoi (s_Last + 10); s_Se.gen++;			// taken: the engine's view has it
+		sidecar_sedit_set (&s_Se); run (1);
+		EXPECT (sidecar_sedit_hit (0, 1, &x1, &y1) && x1 < x - 40);
+		sedit_fake (0); sidecar_sedit_set (&s_Se); run (1);			// (the region back to the fake's)
+		{	// a press lost (LVGL's wait-for-release: the press taken away mid-drag): nothing sent, the engine's marker again
+			int xe;
+			EXPECT (sidecar_sedit_hit (0, 1, &x, &y));
+			snprintf (s_Last, sizeof s_Last, "-");
+			s_Px = sx (x); s_Py = sy (y); s_Down = 1; run (3);
+			for (int i = 1; i <= 4; i++) { s_Px = sx (x - 15 * i); run (1); }
+			EXPECT (sidecar_sedit_dragging ());
+			lv_indev_wait_release (lv_indev_get_next (NULL)); run (3);
+			s_Down = 0; run (3);
+			EXPECT (!sidecar_sedit_dragging ());
+			EXPECT_CMD ("-");
+			EXPECT (sidecar_sedit_hit (0, 1, &xe, &y1) && xe == x);
+		}
+		EXPECT (sidecar_sedit_hit (1, SSE_FN_CROP, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=apply:CROP");
+		EXPECT (sidecar_sedit_hit (1, SSE_FN_GAIN_DN, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=apply:GAIN-");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_UNDO, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=undo");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_PLAY, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=preview");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_ZOOM_IN, &x, &y)); tap (x, y);	// half the window, around its middle
+		EXPECT_CMD ("sedit=window:14400:43200");
+		sedit_fake (0); s_Se.wa = 14400, s_Se.wb = 43200; sidecar_sedit_set (&s_Se); run (2);	// (the engine's window followed)
+		EXPECT (sidecar_sedit_hit (2, SSE_K_ZOOM_OUT, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=window:0:57600");
+		EXPECT (sidecar_sedit_hit (4, 50, &x, &y));				// a drag away from the markers pans
+		drag (x, y, x - 100, y, 4, 0);
+		EXPECT (!strncmp (s_Last, "sedit=window:", 13) && atoi (s_Last + 13) > 14400);
+		shot ("sedit-zoom");
+		sedit_fake (0); sidecar_sedit_set (&s_Se); run (2);
+		EXPECT (!sidecar_sedit_hit (3, SSE_D_USE, &x, &y));			// no question yet
+		EXPECT (sidecar_sedit_hit (2, SSE_K_SAVE, &x, &y)); tap (x, y); run (1);
+		shot ("sedit-save");
+		EXPECT (sidecar_sedit_hit (3, SSE_D_USE, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=save:use");
+		EXPECT (!sidecar_sedit_hit (3, SSE_D_USE, &x, &y));			// (answered: gone)
+		EXPECT (sidecar_sedit_hit (2, SSE_K_SAVE, &x, &y)); tap (x, y);
+		EXPECT (sidecar_sedit_hit (3, SSE_D_OK, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=save");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_CLOSE, &x, &y)); tap (x, y);	// dirty: asked first
+		EXPECT (strcmp (s_Last, "sedit=close"));
+		shot ("sedit-discard");
+		EXPECT (sidecar_sedit_hit (3, SSE_D_CANCEL, &x, &y)); tap (x, y);
+		EXPECT (strcmp (s_Last, "sedit=close") && !sidecar_sedit_hit (3, SSE_D_CANCEL, &x, &y));
+		EXPECT (sidecar_sedit_hit (2, SSE_K_CLOSE, &x, &y)); tap (x, y);
+		EXPECT (sidecar_sedit_hit (3, SSE_D_OK, &x, &y)); tap (x, y);
+		EXPECT_CMD ("sedit=close");
+		sedit_fake (1); sidecar_sedit_set (&s_Se); run (2); shot ("sedit-pool");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_SAVE, &x, &y)); tap (x, y); run (1);
+		EXPECT (!sidecar_sedit_hit (3, SSE_D_USE, &x, &y));			// from the pool: no SAVE + USE
+		shot ("sedit-pool-save");
+		EXPECT (sidecar_sedit_hit (3, SSE_D_CANCEL, &x, &y)); tap (x, y);
+		EXPECT (sidecar_sedit_hit (2, SSE_K_CLOSE, &x, &y)); tap (x, y);	// nothing to drop: closed at once
+		EXPECT_CMD ("sedit=close");
+		sedit_fake (2); sidecar_sedit_set (&s_Se); run (2); shot ("sedit-busy");
+		snprintf (s_Last, sizeof s_Last, "-");
+		EXPECT (sidecar_sedit_hit (1, SSE_FN_CROP, &x, &y)); tap (x, y);	// busy: the functions wait
+		EXPECT_CMD ("-");
+		// an edit open: the VOICE key leads back to it from another page; closed: VOICE as ever
+		sidecar_ui_show (8); run (2);
+		EXPECT (!sidecar_sedit_shown ());
+		if (o) tap (NAV_X, NAV_Y (3)); else tap (CNAV_X (3), CNAV_Y (3));
+		EXPECT (sidecar_sedit_shown () && sidecar_ui_page () == 21 && sidecar_ui_nav_lit () == 3);
+		s_Se.valid = 0, s_Se.st = SSE_ST_CLOSED, s_Se.gen++; sidecar_sedit_set (&s_Se); run (2); shot ("sedit-closed");
+		sidecar_ui_show (0); run (2);
+		if (o) tap (NAV_X, NAV_Y (3)); else tap (CNAV_X (3), CNAV_Y (3));
+		EXPECT (!sidecar_sedit_shown () && sidecar_ui_page () == 8);
+		sidecar_ui_show (99);							// out of range: HOME (not the last page)
+		EXPECT (sidecar_ui_page () == 0 && !sidecar_sedit_shown ());
+		sidecar_ui_show (-1);
+		EXPECT (sidecar_ui_page () == 0);
+	}
 	// ---- touch2: SIDECAR STATUS (UP + T10); the home page's engine numbers open it
 	sidecar_ui_show (13);
 	EXPECT (sidecar_status_shown () && sidecar_ui_page () == 13 && !sidecar_scope_shown ());
@@ -1813,7 +1977,7 @@ static void theme_run (int style, const char *pre)
 	else
 	{
 		const int x0 = LU (12) + LU (400) + DX / 2 + LU (12), vw = LU (364) + DX / 2, by = LU (308) + DY / 2, e = DY / 6, lw = LU (380) + DX / 2;
-		tap (CNAV_X (7), LU (25));							// Set (the last page: About)
+		tap (CNAV_X (7), CNAV_Y (7));							// SET (the last page: About)
 #define CTAB(k)	(LU (12) + (LU (776) + DX) * (2 * (k) + 1) / 12)
 		tap (CTAB (0), LU (84));								// tab: Sound
 		tap (LU (100), LU (114) + CY (48) + CH / 2);                 EXPECT_CMD ("notes=0");
@@ -1841,7 +2005,7 @@ static void theme_run (int style, const char *pre)
 		tap (LU (190) + LU (60), LU (114) + CY (98) + CH / 2);                      EXPECT_CMD ("screensaver=0");
 		tap (LU (190) + (LU (570) + DX) * 5 / 8 + LU (4), LU (114) + CY (98) + CH / 2);  EXPECT_CMD ("screensaver=60");
 		(void) by; (void) e; (void) lw;
-		tap (CNAV_X (0), LU (25));							// Home
+		tap (CNAV_X (0), CNAV_Y (0));							// HOME
 		sidecar_ui_show (0); run (3);
 		shot ("hidden");
 		sidecar_ui_show (6); run (3);
@@ -1860,7 +2024,7 @@ static void theme_run (int style, const char *pre)
 		{
 			EXPECT (!strcmp (sidecar_ui_nav_page (k), kPage[k]));
 			EXPECT (!strcmp (sidecar_ui_nav_key (k), kKey[k]));
-			if (o) tap (NAV_X, NAV_Y (k)); else tap (CNAV_X (k), LU (25));
+			if (o) tap (NAV_X, NAV_Y (k)); else tap (CNAV_X (k), CNAV_Y (k));
 			if (kPg[k] >= 0) EXPECT (sidecar_ui_page () == kPg[k]);
 			else EXPECT (sidecar_ui_page () == 1 || sidecar_ui_page () == 2 || sidecar_ui_page () == 3 || sidecar_ui_page () == 6 || sidecar_ui_page () == 16);
 			EXPECT (sidecar_ui_nav_lit () == k);
@@ -1909,9 +2073,36 @@ static void theme_run (int style, const char *pre)
 	// the power warning (power_state.h's short text, red), over the title bar
 	status_init (style);
 	s_St.note = "POWER TOO WEAK: use 15 W supply";	// (power_state.cpp short_warning)
+	sidecar_ui_banner_reopen ();				// (a boot of its own: the other theme's run closed it)
 	sidecar_ui_status (&s_St);
 	sidecar_ui_show (0); run (80); shot ("power");		// (run: past the Rytm's connect animation, which covers the banner)
 	EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), "POWER TOO WEAK"));
+	EXPECT (text_shown (lv_screen_active (), o ? "POWER TOO WEAK" : "power too weak"));	// HOME's Health line says it too
+	// its x closes it for this boot: the same text stays away (the status each second, a rebuild), Health keeps saying it;
+	// another text shows it again with its x
+	{
+		int px, py;
+		EXPECT (sidecar_ui_banner_close (&px, &py));
+		tap (px, py); run (2); shot ("power-closed");
+		EXPECT (sidecar_ui_banner () == 0 && !sidecar_ui_banner_close (0, 0));
+		EXPECT (sidecar_ui_page () == 0);			// the tap reached only the x
+		EXPECT (text_shown (lv_screen_active (), o ? "POWER TOO WEAK" : "power too weak"));
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () == 0);
+		s_St.note = "POWER TOO WEAK: use 27 W adapter";
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), "27 W") && sidecar_ui_banner_close (0, 0));
+		EXPECT (sidecar_ui_banner_close (&px, &py));
+		tap (px, py); run (2);
+		EXPECT (sidecar_ui_banner () == 0);
+		s_St.temp_c = 81, s_St.temp_warn = 1;			// closed: a temperature warning shows (no x: it wants a look)
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), o ? "SOC 81C" : "SoC 81") && !sidecar_ui_banner_close (0, 0));
+		s_St.temp_c = 50, s_St.temp_warn = 0, s_St.note = "POWER TOO WEAK: use 15 W supply";
+		sidecar_ui_banner_reopen ();
+		sidecar_ui_status (&s_St); run (4);
+		EXPECT (sidecar_ui_banner () && strstr (sidecar_ui_banner (), "POWER TOO WEAK"));
+	}
 	// the temperature warning's banner (thermal.h): the same banner; on, off, and under the supply's warning (that wins)
 	status_init (style);
 	run (80);
@@ -2273,7 +2464,7 @@ static void theme_run (int style, const char *pre)
 		sidecar_rytmpat_where ("from the Rytm", 0);
 	}
 
-	// ---- cost: the Mac's microseconds; x 34.1 = a Pi 4 estimate (the old CLASSIC home page: 217 us here, 7.4 ms
+	// ---- cost: the Mac's microseconds; x 34.1 = a Pi 4 estimate (the old CLASSIC theme's home page: 217 us here, 7.4 ms
 	// measured on the Pi 4)
 	s_bQuiet = 1;
 	sidecar_ui_show (0); run (3);
@@ -2339,7 +2530,7 @@ static void theme_run (int style, const char *pre)
 	// a theme switch: the rebuild and its first full draw
 	sidecar_ui_show (0); run (3);
 	t0 = now_us ();
-	sidecar_ui_style (o ? THEME_CLASSIC : THEME_OLED);
+	sidecar_ui_style (o ? THEME_SIDECAR : THEME_OLED);
 	double swb = now_us () - t0, band = 0;
 	for (int i = 0; i < 8; i++)				// the wipe: a band a call (the longest one counts)
 	{
@@ -2356,7 +2547,7 @@ static void theme_run (int style, const char *pre)
 	printf ("cost %s (Mac us -> Pi 4 est. ms, x %.1f): home %.0f (%.1f) | SEQ full %.0f (%.1f), grid %.0f (%.1f), note drag frame %.0f (%.2f), "
 		"play head strip %.1f (%.2f), playing frame %.1f (%.2f) | RYTM full %.0f (%.1f) | switch to %s %.0f (%.1f): the rebuild %.0f (%.1f), the longest band %.0f (%.1f)\n",
 		s_Pre, k, home, home * k / 1000, seq, seq * k / 1000, gr, gr * k / 1000, nt, nt * k / 1000, hd, hd * k / 1000,
-		play, play * k / 1000, ry, ry * k / 1000, o ? "CLASSIC" : "OLED", sw, sw * k / 1000, swb, swb * k / 1000, band, band * k / 1000);
+		play, play * k / 1000, ry, ry * k / 1000, o ? "SIDECAR" : "OLED", sw, sw * k / 1000, swb, swb * k / 1000, band, band * k / 1000);
 	s_bQuiet = 0;
 }
 
@@ -2437,10 +2628,10 @@ static void conn_run (const char *dir)
 	s_bQuiet = 1;
 	for (int st = 0; st < 2; st++)
 	{
-		const char *pre = st ? "classic" : "oled";
-		sidecar_ui_style (st ? THEME_CLASSIC : THEME_OLED);
+		const char *pre = st ? "sidecar" : "oled";
+		sidecar_ui_style (st ? THEME_SIDECAR : THEME_OLED);
 		run (12);
-		status_init (st ? THEME_CLASSIC : THEME_OLED);
+		status_init (st ? THEME_SIDECAR : THEME_OLED);
 		s_St.rytm = 0;
 		sidecar_ui_status (&s_St);
 		sidecar_ui_show (0);
@@ -2489,11 +2680,11 @@ static void a4_run (const char *dir)
 	char p[400];
 	for (int st = 0; st < 2; st++)
 	{
-		const char *th = st ? "classic" : "oled";
+		const char *th = st ? "sidecar" : "oled";
 		snprintf (s_Pre, sizeof s_Pre, "a4-%s", th);
-		sidecar_ui_style (st ? THEME_CLASSIC : THEME_OLED);
+		sidecar_ui_style (st ? THEME_SIDECAR : THEME_OLED);
 		run (12);
-		status_init (st ? THEME_CLASSIC : THEME_OLED);
+		status_init (st ? THEME_SIDECAR : THEME_OLED);
 		DX = TH->dx, DY = TH->dy;
 		s_St.box = "A4";
 		for (int v = 0; v < 8; v++) s_St.voice[v] = kT[v];
@@ -2503,7 +2694,7 @@ static void a4_run (const char *dir)
 		run (8);
 		EXPECT (!strcmp (sidecar_ui_box (), "A4") && !strcmp (sidecar_ui_box_up (), "A4") && sidecar_ui_box_names ());
 		EXPECT (!strcmp (sidecar_ui_voice (1), "T2") && sidecar_ui_voice_at (1) == 1 && sidecar_ui_voice_pos (3) == 3);
-		EXPECT (sidecar_ui_get_style () == (st ? THEME_CLASSIC : THEME_OLED));
+		EXPECT (sidecar_ui_get_style () == (st ? THEME_SIDECAR : THEME_OLED));
 		s_St.rytm = 1;
 		sidecar_ui_status (&s_St);			// the link comes up: the connect splash
 		for (int ms = 0; ms <= 700; ms += 20) { lv_timer_handler (); lv_refr_now (NULL); lv_tick_inc (20); }
@@ -2561,11 +2752,11 @@ int main (int argc, char **argv)
 	lv_indev_set_read_cb (ind, pointer);
 	sidecar_ui_create ();
 	sidecar_ui_set_command (on_command, 0);
-	if (argc > 2 && !strcmp (argv[1], "wganim"))		// ./shot wganim OUTDIR [N] [classic]: the machine view, 15 fps
+	if (argc > 2 && !strcmp (argv[1], "wganim"))		// ./shot wganim OUTDIR [N] [sidecar]: the machine view, 15 fps
 	{
-		int n = argc > 3 ? atoi (argv[3]) : 60, cl = argc > 4 && !strcmp (argv[4], "classic");
+		int n = argc > 3 ? atoi (argv[3]) : 60, cl = argc > 4 && !strcmp (argv[4], "sidecar");
 		s_bQuiet = 1;
-		status_init (cl ? THEME_CLASSIC : THEME_OLED);
+		status_init (cl ? THEME_SIDECAR : THEME_OLED);
 		sidecar_ui_status (&s_St);
 		sidecar_ui_show (7);
 		char p[400];
@@ -2601,7 +2792,7 @@ int main (int argc, char **argv)
 	snprintf (s_Dir, sizeof s_Dir, "%s", argc > 1 ? argv[1] : "obj");
 	th_fit_report = fit_painted;
 	theme_run (THEME_OLED, "oled");
-	theme_run (THEME_CLASSIC, "classic");
+	theme_run (THEME_SIDECAR, "sidecar");
 	theme_run (THEME_OLED, "again");		// back: a second switch rebuilds cleanly (again-*.ppm)
 	if (s_nFit) printf ("shot: %d strings do not fit (TEXT-FIT above)\n", s_nFit);
 	printf (s_nFail ? "shot: %d checks FAILED\n" : "shot: all checks ok (both themes)\n", s_nFail);

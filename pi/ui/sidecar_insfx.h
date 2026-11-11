@@ -17,7 +17,7 @@ extern "C" {
 
 typedef struct
 {
-	int		type;			// 0 OFF .. 8 RINGMOD, 9 AMP, 10 SAT
+	int		type;			// 0 OFF .. 8 RINGMOD, 9 AMP, 10 SAT; a bus also 11..16 CHORUS..HALO
 	char		name[8];		// "FILTER"
 	char		label[4][5];		// "CUT" ..
 	char		val[4][8];		// "1.6K" ..

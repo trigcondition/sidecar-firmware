@@ -1,0 +1,108 @@
+/* web-next/src/styles/tokens.css - the design tokens ("UV night", the owner's B3 palette) and the two themes. Every colour the app uses
+   comes from here; src/styles/contrast.test.ts reads this file and checks the WCAG contrast of the pairs that
+   carry text or controls, so a token change cannot quietly make the app harder to read.
+   Sizes are in rem, so the text-size setting (100 / 125 / 150 %, on <html>) scales the whole app. */
+
+:root,
+:root[data-theme="standard"] {
+  --bg: #08071a;
+  --card: #110f28;
+  --card-texture: radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  --card-texture-size: 5px 5px;
+  --border: #2c2950;           /* decorative only: card edges, rules (never the only sign of a control) */
+  --control-border: #6a64a0;   /* buttons, inputs, pills: 3.5:1 against the card */
+  --control-border-width: 1px;
+  --text: #eeedff;
+  --label: #bdb9e8;            /* small uppercase labels */
+  --accent: #9a97ff;
+  --accent-glow: 0 0 8px rgba(154, 151, 255, 0.55);
+  --warm: #ff7a5c;             /* the second accent (coral): sidechain, warnings */
+  --focus: #ffd166;            /* the focus ring, both themes */
+  --on-accent: #08071a;        /* text on an accent fill */
+  --accent-tint: rgba(154, 151, 255, 0.1);  /* a selected item's fill (with a check mark and a thicker outline) */
+  --warm-tint: rgba(255, 122, 92, 0.16);
+  --warm-border: #5a2a3a;      /* a warm card's edge (decorative) */
+  --tide-bg: #0d0a2a;          /* the header band behind the signal tide */
+  /* the header's soft UV glow (blurred ellipses) and its dashed "docked circles": decoration only (aria-hidden) */
+  --glow-1: #3b2bd1;
+  --glow-2: #c2245a;
+  --glow-3: #4b2fe0;
+  --glow-opacity: 0.4;
+  --cells: #c5c3ff;
+  --cells-opacity: 0.3;
+  --backdrop: rgba(0, 0, 0, 0.7);  /* behind a dialog */
+  /* the logo's dots, centre to rim (Logo.vue grades them by distance; the animated logo drifts each dot between all
+     five); decorative, but kept at 3:1 on the header band so the mark reads at 32 px */
+  --logo-1: #ff7a5c;           /* coral, the centre */
+  --logo-2: #d46cff;           /* magenta, from the header glow */
+  --logo-3: #9a97ff;           /* the accent */
+  --logo-4: #bdb9e8;           /* lavender, the rim */
+  --logo-5: #eeedff;           /* the text white (drift only) */
+
+  --radius-card: 0.875rem;     /* 14px */
+  --radius-control: 0.5625rem; /* 9px */
+  --radius-pill: 999px;
+  --space: 1rem;
+  --target: 2.75rem;           /* 44px: the smallest touch target */
+  --text-min: 0.8125rem;       /* 13px: no text smaller */
+  --label-size: 0.8125rem;
+  --label-tracking: 0.14em;
+
+  --font-ui: "Space Grotesk", system-ui, sans-serif;
+  --font-dot: "Doto", "Space Grotesk", ui-monospace, monospace; /* numbers and titles */
+
+  --tide-dots: var(--accent);
+  --tide-offset: var(--warm);
+  color-scheme: dark;
+}
+
+:root[data-theme="contrast"] {
+  --bg: #000000;
+  --card: #000000;
+  --card-texture: none;
+  --border: #ffffff;
+  --control-border: #ffffff;
+  --control-border-width: 2px;
+  --text: #ffffff;
+  --label: #e6e6e6;
+  --accent: #8fd3ff;
+  --accent-glow: none;
+  --warm: #ffd166;
+  --focus: #ffd166;
+  --on-accent: #000000;
+  --accent-tint: transparent;
+  --warm-tint: transparent;
+  --warm-border: #ffffff;
+  --tide-bg: #000000;
+  --glow-opacity: 0;
+  --cells: #ffffff;
+  --cells-opacity: 0.5;
+  --backdrop: rgba(0, 0, 0, 0.85);
+  --logo-1: #ffffff;           /* high contrast: plain white dots */
+  --logo-2: #ffffff;
+  --logo-3: #ffffff;
+  --logo-4: #ffffff;
+  --logo-5: #ffffff;
+}
+
+/* the text-size setting (usePrefs.ts) */
+:root { font-size: 100%; }
+:root[data-text-size="125"] { font-size: 125%; }
+:root[data-text-size="150"] { font-size: 150%; }
+/* a mouse and keyboard (a laptop, a desktop): the whole app at 87.5 % (14 px a rem), as 100 % felt large there; the
+   text tokens are raised so no text goes under 13 px. A touch screen keeps 16 px and its 44 px targets. The
+   text-size setting scales from here. */
+@media (pointer: fine) {
+  :root { font-size: 87.5%; }
+  :root[data-theme] { --text-min: 0.9286rem; --label-size: 0.9286rem; }
+  :root[data-text-size="125"] { font-size: 109.375%; }
+  :root[data-text-size="150"] { font-size: 131.25%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --accent-glow: none; }
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

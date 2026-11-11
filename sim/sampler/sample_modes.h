@@ -140,7 +140,13 @@ class SampleModes {
     ch_ = ch;
     rate_ = rate > 0 ? rate : 48000.0f;
     playing_ = false;
+    fa_ = -1;
     StopGrains();
+  }
+  // A frame region [a, b) in place of STA..END (forward; the sample editor's), a < 0 off: STA..END. Kept until Set
+  // changes the sample.
+  void SetFrames(int32_t a, int32_t b) {
+    fa_ = a, fb_ = b;
   }
   ~SampleModes() { StopGrains(); }
   const int16_t* pcm() const { return pcm_; }
@@ -330,6 +336,13 @@ class SampleModes {
 
   // STA..END in frames (0..120 as the Rytm's), low to high, and whether END < STA.
   void Region(const float* sp, float* lo, float* hi, bool* rev) const {
+    if (fa_ >= 0) {
+      int32_t b = fb_ < (int32_t)frames_ ? fb_ : (int32_t)frames_;
+      *lo = (float)(fa_ < b ? fa_ : b - 1);
+      *hi = (float)(b - 1);
+      *rev = false;
+      return;
+    }
     float a = Clamp01(sp[4] / 120.0f) * (frames_ - 1), b = Clamp01(sp[5] / 120.0f) * (frames_ - 1);
     *rev = b < a;
     *lo = *rev ? b : a;
@@ -660,6 +673,7 @@ class SampleModes {
 
   const int16_t* pcm_ = nullptr;
   uint32_t frames_ = 0;
+  int32_t fa_ = -1, fb_ = -1;   // SetFrames' region (fa_ < 0: STA..END)
   int ch_ = 1;               // 2: pcm_ interleaved L R
   float* r_ = nullptr;       // Render's right channel while it renders a stereo sample in stereo
   float rate_ = 48000.0f;

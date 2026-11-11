@@ -11,6 +11,7 @@
 #include "sysex.h"
 #include "ui/remote.h"
 #include "lfo.h"
+#include "mod/mod.h"
 #include "fx/insert.h"   // the voices' INSERT chains (CORE_POLY builds)
 #include "simd.h"
 #include "fx/out.h"      // the OUT route (CORE_POLY builds): PRE / POST voices render stereo
@@ -132,9 +133,26 @@ int ram_pin[8][2];      // the sample the voice holds pinned (folder, file; -1 n
 int dsp_mode(const V& x) {
   return x.grain ? (int)rytm::SampleModes::kGrain : rytm::SampleModes::Zone(x.p[11], rytm::SampleModes::kModes);
 }
+#if CORE_MSAMP
+// The sample editor's play buffers (dsps_override), and a preview's region: the control core's, read by the render core
+// between its blocks
+static DspOverride g_ovr[kVoices];
+static bool g_pv_next[kVoices], g_pv_on[kVoices];   // the trig in hand is a preview; the note playing is one
+static uint32_t g_pv_a[kVoices], g_pv_b[kVoices];
+#endif
 // The sample engine's P9..P16 (TUN FIN SMP MOD STA END LOP LEV): the voice's own, or for the GRAIN machine its words
-// with MOD in GRAIN's zone (its P12 is SPRY: the engine's spray)
-static inline const float* sample_params(const V& x, float* t) {
+// with MOD in GRAIN's zone (its P12 is SPRY: the engine's spray); a preview's ONE with no loop (its region: the engine's
+// frames, SampleModes::SetFrames)
+static inline const float* sample_params(int vi, const V& x, float* t) {
+#if CORE_MSAMP
+  if (g_pv_on[vi]) {
+    for (int k = 0; k < 8; ++k) t[k] = x.p[8 + k];
+    t[3] = 0, t[6] = 0;   // MOD ONE, LOP 0
+    return t;
+  }
+#else
+  (void)vi;
+#endif
   if (!x.grain) return x.p + 8;
   for (int k = 0; k < 8; ++k) t[k] = x.p[8 + k];
   t[3] = kGrainModValue;
@@ -390,6 +408,12 @@ void streams_step() {
 CORE_COLD void prepare_stream(int vi) {   // (per report: cold, as when it was inlined into voiceloop's report())
   if (!card_ok) return;
   int slot = pool_slot(v[vi].p[10]), sta = (int)v[vi].p[12];
+#if CORE_MSAMP
+  if (psram && g_ovr[vi].pcm && g_ovr[vi].slot == slot) {   // the sample editor's buffer plays it: no card file opened
+    prep_pending[vi] = false, prep_deferred[vi] = true;
+    return;
+  }
+#endif
   if (slot < 1 || slot > npool || pool[slot - 1].folder < 0) {
     if (prepared[vi][0] != -1) streams[vi].clear();
     prepared[vi][0] = -1;
@@ -453,6 +477,32 @@ CORE_COLD void ram_wait_step() {
 CORE_COLD void trigger_stream(int vi, int note) {
   if (psram) {   // from RAM if the sample is there (rytm::ChoosePath)
     int slot = pool_slot(v[vi].p[10]), mode = dsp_mode(v[vi]);
+#if CORE_MSAMP
+    const bool pv = g_pv_next[vi];
+    g_pv_next[vi] = false;
+    g_pv_on[vi] = false;
+    const DspOverride& o = g_ovr[vi];
+    if (o.pcm && (o.slot == slot || pv)) {   // the sample editor's buffer (a preview: whatever the slot)
+      ram_wait[vi].on = false;
+      streams[vi].stop();
+      trig_pending[vi] = false;
+      if (ram_pin[vi][0] != -1) {   // (none of the sample RAM's held)
+        int of = ram_pin[vi][0], os = ram_pin[vi][1];
+        ram_pin[vi][0] = ram_pin[vi][1] = -1;
+        psram->unpin(of, os);
+      }
+      from_ram[vi] = true;
+      g_pv_on[vi] = pv;
+      trig_note[vi] = note;
+      engines[vi].Set(o.pcm, o.frames, o.rate, o.ch);
+      if (pv) engines[vi].SetFrames((int32_t)g_pv_a[vi], (int32_t)g_pv_b[vi]);
+      else engines[vi].SetFrames(o.fa, o.fb);
+      float gp[8];
+      engines[vi].SetSpray(v[vi].grain ? v[vi].p[11] / 127.0f : 0.25f);
+      engines[vi].Trigger(note, sample_params(vi, v[vi], gp));
+      return;
+    }
+#endif
     int smp, f = ram_key(slot, &smp);
     const int16_t* pcm = nullptr;
     uint32_t frames = 0;
@@ -484,9 +534,10 @@ CORE_COLD void trigger_stream(int vi, int note) {
       }
       trig_note[vi] = note;
       engines[vi].Set(pcm, frames, rate, ch);
+      engines[vi].SetFrames(-1, -1);   // STA..END
       float gp[8];
       engines[vi].SetSpray(v[vi].grain ? v[vi].p[11] / 127.0f : 0.25f);
-      engines[vi].Trigger(note, sample_params(v[vi], gp));
+      engines[vi].Trigger(note, sample_params(vi, v[vi], gp));
       return;
     }
   }
@@ -500,6 +551,37 @@ CORE_COLD void trigger_stream(int vi, int note) {
   trig_note[vi] = note;
   streams[vi].trigger();
 }
+
+#if CORE_MSAMP
+CORE_COLD void dsps_override(int vi, const DspOverride* o) {
+  if (vi < 0 || vi >= kVoices) return;
+  g_ovr[vi] = o ? *o : DspOverride{};
+}
+CORE_COLD bool dsps_reads(const int16_t* lo, const int16_t* hi) {
+  if (!engines) return false;
+  for (int i = 0; i < kVoices; ++i) {
+    const int16_t* p = engines[i].pcm();
+    if (from_ram[i] && engines[i].playing() && p >= lo && p < hi) return true;
+  }
+  return false;
+}
+CORE_COLD void dsps_detach_idle(const int16_t* lo, const int16_t* hi) {
+  if (!engines) return;
+  for (int i = 0; i < kVoices; ++i) {
+    const int16_t* p = engines[i].pcm();
+    if (p >= lo && p < hi && !(from_ram[i] && engines[i].playing())) engines[i].Set(nullptr, 0, 0);
+  }
+}
+CORE_COLD void dsps_preview(int vi, uint32_t a, uint32_t b) {
+  if (!engines || vi < 0 || vi >= kVoices || !v[vi].dsps || !g_ovr[vi].pcm) return;
+  g_pv_next[vi] = true;
+  g_pv_a[vi] = a, g_pv_b[vi] = b;
+  v[vi].live = true;
+  dsps_env_trig(vi);
+  trigger_stream(vi, 60);
+  g_pv_next[vi] = false;
+}
+#endif
 
 // loadstall (0.3.0): a pool slot's file opened by the card core (cardq kOpenReq, by its path), not by the control core
 // (cards.open: /Samples and each folder down to it opened, then the file - 11.5 ms measured on the Pi, a gap in the
@@ -776,7 +858,11 @@ __attribute__((noinline)) CORE_COLD void voice_report(int cmd, const uint8_t* d,
 #if CORE_POLY
   seq::params_in(vi, x.p, np);         // seq-ux: a param the sequencer's step locked keeps its lock (core/seq/seq.h)
 #endif
-  lfo::voice_params(vi, x.p, np, cmd == 0x04);   // the Sidecar's LFOs on top (core/lfo.h)
+  {
+    uint32_t t0 = now_us();
+    lfo::voice_params(vi, x.p, np, cmd == 0x04);   // the Sidecar's LFOs on top (core/lfo.h), the bases into core/mod
+    mod::note_lookup(now_us() - t0);
+  }
   apply(x);
   if (was_fm && !x.fm) fms[vi].Leave(&x.voice, &x.mod);   // PLAITS gets its ROM bank back
 #if CORE_POLY
@@ -864,7 +950,7 @@ __attribute__((noinline)) CORE_COLD void voice_report(int cmd, const uint8_t* d,
   if (x.juno) {   // PAT steps through the project's JUNO list, if any; the
                   // knobs follow the sound's PAT (0x03), not a p-locked one (0x04)
     for (int i = 0; i < 6; ++i) {
-      int r = (int)lfo::base_of(vi, 1 + i, x.p[1 + i]);
+      int r = (int)mod::base_of(vi, 1 + i, x.p[1 + i]);
       juno_rytm[vi][i] = (uint8_t)(r < 0 ? 0 : r > 127 ? 127 : r);
     }
     juno_select(vi, (int)x.p[0], cmd == 0x03 || !was_juno, !was_juno);
@@ -1079,6 +1165,7 @@ uint32_t render_voices(int16_t (*ring)[kVoices], int ring_len, int w, int v0, in
                        int16_t (*ring_r)[kVoices], uint8_t* stm) {
   plaits::Voice::Frame f[kBlock];
   bool stv[kVoices] = {};   // the voice renders a stereo pair this block (OUT PRE / POST)
+  bool ustv[kVoices] = {};  // ... and its user machine wrote R itself (Plugin API 3, out_channels 2)
 #if CORE_POLY
   if (ring_r)
     for (int i = v0; i < v1; ++i) stv[i] = out::stereo(i);
@@ -1108,8 +1195,15 @@ uint32_t render_voices(int16_t (*ring)[kVoices], int ring_len, int w, int v0, in
     }
     if (x.user >= 0) {
       float o[kBlock];
-      if (hooks.user_render) hooks.user_render(i, o);
-      else for (int s = 0; s < kBlock; ++s) o[s] = 0.0f;
+      if (stv[i] && hooks.user_render2) {   // PRE / POST: a stereo plugin's R (API 3), else L = R below
+        float r[kBlock];
+        ustv[i] = hooks.user_render2(i, o, r);
+        if (ustv[i]) simd::clip_rows(ring_r, row, i, r, kBlock);
+      } else if (hooks.user_render) {
+        hooks.user_render(i, o);
+      } else {
+        for (int s = 0; s < kBlock; ++s) o[s] = 0.0f;
+      }
       simd::clip_rows(ring, row, i, o, kBlock);
       continue;
     }
@@ -1174,7 +1268,7 @@ uint32_t render_voices(int16_t (*ring)[kVoices], int ring_len, int w, int v0, in
       if (from_ram[i]) {
         float gp[8];
         if (x.grain) engines[i].SetSpray(x.p[11] / 127.0f);
-        engines[i].Render(sample_params(x, gp), in, kBlock, rr);   // MOD's mode (the GRAIN machine's: GRAIN), from the sample RAM
+        engines[i].Render(sample_params(i, x, gp), in, kBlock, rr);   // MOD's mode (the GRAIN machine's: GRAIN), from the sample RAM
       } else {
         if (psram && dsp_mode(x) == rytm::SampleModes::kLoop) loop = true;   // LOOP not in RAM yet
         streams[i].render(semis, x.p[12] / 120.0f, x.p[13] / 120.0f, loop, x.p[15] / 100.0f, in, kBlock, rr);
@@ -1244,7 +1338,7 @@ uint32_t render_voices(int16_t (*ring)[kVoices], int ring_len, int w, int v0, in
   }
   // a mono machine on PRE / POST: L = R before its stereo chain (the user slots, FM, JUNO, ... wrote L only)
   for (int i = v0; i < v1; ++i)
-    if (stv[i] && !(v[i].live && (v[i].ms || v[i].gr || v[i].wt || v[i].li || v[i].cp || v[i].dsps)))
+    if (stv[i] && !ustv[i] && !(v[i].live && (v[i].ms || v[i].gr || v[i].wt || v[i].li || v[i].cp || v[i].dsps)))
       for (int s = 0; s < kBlock; ++s) ring_r[row[s]][i] = ring[row[s]][i];
 #if CORE_POLY
   for (int i = v0; i < v1; ++i) {   // E0: the sequencer's instances (core/inst.h) after the voice's own sound, before its chain

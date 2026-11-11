@@ -224,6 +224,8 @@ static void fixture() {
   put("/.rytm/lfo/AR PERC.txt", "L1 V1 TIM SIN 40 20\n");
   put("/.rytm/lfo/AR PERC/k001.txt", "L1 V2 TIM TRI 30 10\n");
   put("/.rytm/ins/AR PERC.txt", "V1 A FILTER 80 20 0 0\n");
+  put("/.rytm/scene/AR PERC.txt", "#sidecar scene 1\nAB 1 2\nL 1 V1:P3 6400\n");   // 0.5.0 (core/mod/scene.h)
+  put("/.rytm/scene/AR PERC/k001.txt", "#sidecar scene 1\nAB 1 0\nL 1 V2:P1 1280\n");
   put("/.rytm/ins/AR PERC/k002.txt", "V2 A DRIVE 40 0 0 0\n");
   put("/.rytm/seq/AR PERC/p001.sqp", sqp(3));
   put("/.rytm/seq/AR PERC/p002.sqp", sqp(2));
@@ -366,7 +368,7 @@ int main() {
   for (const char* n : {"project/samples.pool.txt", "project/wavetables.pool.txt", "project/instruments.pool.txt",
                         "project/pool-used.txt", "project/slots.txt", "project/slots.inf", "project/fxslots.txt",
                         "project/juno.txt", "project/fm.txt", "project/lfo.txt", "project/lfo/k001.txt", "project/ins.txt",
-                        "project/ins/k002.txt", "project/seq/p001.sqp", "project/seq/p002.sqp", "project/seq/tracks.txt",
+                        "project/ins/k002.txt", "project/scene.txt", "project/scene/k001.txt", "project/seq/p001.sqp", "project/seq/p002.sqp", "project/seq/tracks.txt",
                         "project/songs/take-001.json", "files/Samples/Drums/kick.wav", "files/Samples/Drums/snare.wav",
                         "files/Samples/Banks/b1.wav", "files/Samples/Abs/d4.wav", "files/GRANULAR/pad.wav",
                         "files/GRANULAR/sub/air.wav", "files/WAVETABLES/saw.wav", "files/MULTISAMPLE/Piano/Piano.sfz",
@@ -479,7 +481,8 @@ int main() {
                         "/GRANULAR/sub/air.wav", "/WAVETABLES/saw.wav", "/MULTISAMPLE/Piano/Piano.sfz", "/MULTISAMPLE/Piano/samples/c4.wav",
                         "/.rytm/projects/AR PERC/samples.pool.txt", "/.rytm/projects/AR PERC/wavetables.pool.txt",
                         "/.rytm/projects/AR PERC/instruments.pool.txt", "/.rytm/projects/AR PERC/pool-used.txt", "/.rytm/seq/AR PERC/p001.sqp",
-                        "/.rytm/lfo/AR PERC/k001.txt", "/.rytm/slots/AR PERC.txt", "/Plugins/sc.test-1.0.0.rmp"})
+                        "/.rytm/lfo/AR PERC/k001.txt", "/.rytm/scene/AR PERC/k001.txt", "/.rytm/scene/AR PERC.txt",
+                        "/.rytm/slots/AR PERC.txt", "/Plugins/sc.test-1.0.0.rmp"})
     a_files[s] = get(s);
   // ================= import onto an empty card (B): every file back, the scanned folders' files under /Samples/Projects
   use_card("B");
@@ -496,7 +499,8 @@ int main() {
   const std::string R = "/Samples/Projects/AR PERC";
   for (const char* s : {"/Samples/Drums/kick.wav", "/Samples/Drums/kick copy.wav", "/Samples/Drums/snare.wav", "/Samples/Banks/b1.wav",
                         "/Samples/Abs/d4.wav", "/Samples/AR_PERC/SMP_001.wav", "/Samples/AR_PERC/SMP_002.wav",
-                        "/.rytm/seq/AR PERC/p001.sqp", "/.rytm/lfo/AR PERC/k001.txt", "/.rytm/slots/AR PERC.txt"})
+                        "/.rytm/seq/AR PERC/p001.sqp", "/.rytm/lfo/AR PERC/k001.txt", "/.rytm/scene/AR PERC/k001.txt",
+                        "/.rytm/scene/AR PERC.txt", "/.rytm/slots/AR PERC.txt"})
     CHECK(get(s) == a_files[s]);
   for (const char* s : {"/GRANULAR/pad.wav", "/GRANULAR/sub/air.wav", "/WAVETABLES/saw.wav", "/MULTISAMPLE/Piano/samples/c4.wav"}) {
     CHECK(!there(s));

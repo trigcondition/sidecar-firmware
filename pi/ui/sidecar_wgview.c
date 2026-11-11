@@ -51,7 +51,7 @@ static void draw_gran (lv_layer_t *l, const lv_area_t *c, int w, int h)
 		if (-v->wmn[i] > pk) pk = -v->wmn[i];
 	}
 	uint32_t wave = c_dim ();
-	int step = o ? 1 : 3;					// CLASSIC: a column every 3 px (the cost a third)
+	int step = o ? 1 : 3;					// SIDECAR: a column every 3 px (the cost a third)
 	int pa = mid, pb = mid;
 	for (int x = 0; v->ncols > 0 && x < w; x += step)
 	{
@@ -140,7 +140,7 @@ static void draw_wt (lv_layer_t *l, const lv_area_t *c, int w, int h)
 }
 
 // MULTISAMPLE: the zones as bars over a keyboard of the instrument's span (whole octaves, at least three), two rows
-// alternating so neighbours read apart, each as tall as its velocity layers; a key sounding lit in the teal (CLASSIC:
+// alternating so neighbours read apart, each as tall as its velocity layers; a key sounding lit in the teal (SIDECAR:
 // the accent) and its zone white; the roots as ticks. The same picture as VOICE's MULTISAMPLE panel, the machine
 // view's size.
 static int ms_black (int k) { int p = k % 12; return p == 1 || p == 3 || p == 6 || p == 8 || p == 10; }
@@ -171,7 +171,7 @@ static void draw_ms (lv_layer_t *l, const lv_area_t *c, int w, int h)
 		int rh = zh / 2 - (o ? 2 : 4), bh = rh * lay / 4 < 3 ? 3 : rh * lay / 4, yb = row ? zh - 1 : zh / 2 - (o ? 2 : 4);
 		int lit = 0;
 		for (int k = v->ms_lo[z]; k <= v->ms_hi[z]; k++) lit |= ms_on (k);
-		uint32_t col = lit ? (o ? TH->ink : 0xF0F0F0) : o ? th_oled_secondary (40 + 22 * lay) : th_mix (TH->win, TH->sub, 160 + 24 * lay);
+		uint32_t col = lit ? (o ? TH->ink : TH->ink) : o ? th_oled_secondary (40 + 22 * lay) : th_mix (TH->win, TH->sub, 160 + 24 * lay);
 		th_fill (l, c, xa, yb - bh + 1, xb < xa ? xa : xb, yb, col, LV_OPA_COVER, 0);
 		int xr = (KX (v->ms_root[z]) + KR (v->ms_root[z])) / 2;
 		th_fill (l, c, xr, yb - rh, xr, yb, lit ? TH->accent : c_dim (), LV_OPA_COVER, 0);
@@ -180,17 +180,17 @@ static void draw_ms (lv_layer_t *l, const lv_area_t *c, int w, int h)
 	for (int k = k0; k <= k1; k++)			// white keys first, their octave's C named
 	{
 		if (ms_black (k)) continue;
-		th_fill (l, c, KX (k), ky, KR (k) - 1, h - 1, ms_on (k) ? TH->accent : o ? 0x848484 : 0xD8D8D8, LV_OPA_COVER, 0);
+		th_fill (l, c, KX (k), ky, KR (k) - 1, h - 1, ms_on (k) ? TH->accent : o ? 0x848484 : 0xD8D6F0, LV_OPA_COVER, 0);
 	}
 	for (int k = (k0 + 11) / 12 * 12; k <= k1; k += 12)	// (after all of them: a name spans two keys)
 	{
 		char t[6];
 		lv_snprintf (t, sizeof t, "C%d", k / 12 - 1);
-		th_text (l, c, KX (k) + 1, h - lv_font_get_line_height (fl) - 1, 4 * (KR (k) - KX (k) + 1), fl, o ? 0x000000 : 0x25272A,
+		th_text (l, c, KX (k) + 1, h - lv_font_get_line_height (fl) - 1, 4 * (KR (k) - KX (k) + 1), fl, o ? 0x000000 : TH->bg,
 			 LV_TEXT_ALIGN_LEFT, t);
 	}
 	for (int k = k0; k <= k1; k++)			// then the black keys over them
-		if (ms_black (k)) th_fill (l, c, KX (k), ky, KR (k), ky + kh * 3 / 5, ms_on (k) ? TH->accent : o ? 0x202020 : 0x2B2D30, LV_OPA_COVER, 0);
+		if (ms_black (k)) th_fill (l, c, KX (k), ky, KR (k), ky + kh * 3 / 5, ms_on (k) ? TH->accent : o ? 0x202020 : TH->bg, LV_OPA_COVER, 0);
 #undef WI
 #undef WX
 #undef KX
@@ -905,7 +905,7 @@ void sidecar_wgview_create (void *parent, int y0)
 	s_V.list = -1, s_V.sel = -1;
 	// 1024x600: the picture and the list take what the screen adds (TH->dx, dy: more rows), the keys get wider
 	const int dx = TH->dx, dy = TH->dy, q = dx / 4;
-	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, o ? TH->w - LU (48) : TH->w, o ? TH->h : LU (428) + dy);
+	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, th_page_w (), o ? TH->h : LU (428) + dy);
 	s_Page = pg;
 	if (o)
 	{

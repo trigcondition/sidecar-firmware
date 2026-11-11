@@ -320,6 +320,7 @@ void CEngineCores::Worker (unsigned nCore)
 		// ones after it render below
 		const int vc = (int) g_Guard.CurrentVoice (nCore);
 		unsigned v = g_Guard.Recover (nCore, bridge::machine_name (vc), bridge::machine_gen (vc));
+		um::render_fault ((int) v);	// (a user machine's slot muted, and the slots sharing its image: core 3)
 		for (unsigned s = 0; s < bridge::kBlock; s++) s_Block[s][v] = s_BlockR[s][v] = 0;
 		u64 nSPSel;
 		asm volatile ("mrs %0, spsel" : "=r" (nSPSel));
@@ -661,6 +662,18 @@ void CEngineCores::Command (const char *p)
 	else if (char Lo[200]; bridge::lfo_command (p, Lo, sizeof Lo))	// lfo, lfo=N:KEY:VALUE: the LFOs (core/lfo.h)
 	{
 		L->Write (From, LogNotice, "%s", Lo);
+	}
+	else if (char Mo[400]; bridge::mod_command (p, Mo, sizeof Mo))	// mod, mod=stats: the modulation layer (core/mod/mod.h)
+	{
+		L->Write (From, LogNotice, "%s", Mo);
+	}
+	else if (char Sc[400]; bridge::scene_command (p, Sc, sizeof Sc))	// scene, scene=...: the morph scenes (core/mod/scene.h)
+	{
+		L->Write (From, LogNotice, "%s", Sc);
+	}
+	else if (static char Le[1600]; bridge::learn_command (p, Le, sizeof Le))	// (32 routes' listing)	// learn, learn=...: MIDI learn (core/mod/learn.h)
+	{
+		L->Write (From, LogNotice, "%s", Le);
 	}
 	else if (sendfx_pi::Command (p))		// sendfx, sendfxout=, sendlvl=, sendknob= (sendfx_pi.h)
 	{

@@ -23,6 +23,8 @@ static const char *const *voice_map (void)
 	s_VoiceMap[8] = "";
 	return s_VoiceMap;
 }
+// a voice slot's TYPE key: the INSERT TYPEs only (the send FX TYPEs, 11..16, are the buses' and the master's: they run on
+// core 2, a voice's chain on its own render core; the bus chains here are text, named by the view)
 static const char *const kTypeName[11] = {"OFF", "FILTER", "CRUSH", "DRIVE", "EQ", "COMP", "DELAY", "TREMOLO", "RINGMOD", "AMP", "SAT"};
 
 static int oled (void) { return TH->id == THEME_OLED; }
@@ -62,7 +64,7 @@ void sidecar_insfx_create (void *parent, int y0)
 	memset (&s_V, 0, sizeof s_V);
 	// 1024x600 (TH->dx, dy): the same rows, wider, the keys and knobs a little taller (e)
 	const int dx = TH->dx, dy = TH->dy, e = dy / 6;
-	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, o ? TH->w - LU (48) : TH->w, o ? TH->h : LU (428) + dy);
+	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, th_page_w (), o ? TH->h : LU (428) + dy);
 	s_Page = pg;
 	if (o)
 	{
@@ -120,7 +122,7 @@ void sidecar_insfx_create (void *parent, int y0)
 			for (int k = 0; k < 4; k++)
 			{
 				int i = s * 4 + k, x = 24 + s * sp + k * kp;
-				s_Knob[i] = th_meter (pg, x, LU (146) + e + e / 2, kp - LU (8), LU (110) + e, 127, TH_METER_KNOB, TH->win_ink);
+				s_Knob[i] = th_meter (pg, x, LU (146) + e + e / 2, kp - LU (8), LU (110) + e, 127, TH_METER_KNOB, TH->accent);
 				s_Val[i] = th_label (pg, x, LU (258) + 2 * e + e / 2, TH->f_small, TH->win_dim, "");
 				lv_obj_set_width (s_Val[i], kp - LU (8));
 				lv_obj_set_style_text_align (s_Val[i], LV_TEXT_ALIGN_CENTER, 0);

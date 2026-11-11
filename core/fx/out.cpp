@@ -6,6 +6,8 @@
 #include <string.h>
 
 #include "fx/out_measure.h"
+#include "fx/send_fx.h"
+#include "mod/target.h"
 #include "platform.h"
 #if CORE_MSAMP
 #include "pool/pcache.h"
@@ -136,7 +138,7 @@ void set_param(int vi, int k, int v) {
   changed();
 }
 int param(int vi, int k) { return vi >= 0 && vi < kVoices && k >= 0 && k <= 3 ? g_knob[vi][k] : 0; }
-void lfo_offset(int vi, int k, int off) {
+void mod_offset(int vi, int k, int off) {
   if (vi < 0 || vi >= kVoices || k < 0 || k > 2) return;
   g_lfo[vi][k] = (int16_t)clampi(off, -127, 127);
   refresh(vi);
@@ -290,6 +292,7 @@ bool command(const char* p, char* o, int cap) {
       return true;
     }
     set_param(vi, k, v);
+    if (k < 3) fx::edited(mod::tid(mod::kOut, vi, k));
   }
   int n = sniprintf(o, cap, "out: ");
   if (n > 0 && n < cap) voice_text(vi, o + n, cap - n);
