@@ -141,7 +141,7 @@ void send_run(int c, int s, const float* p, const float* x, const float* r, floa
     if (r) y1[j] = r[j] + q * (w[j][1] - r[j]);
   }
   // the room left and the fade-out done (this chunk ended dry): the slot holds nothing; taken again, it starts from clean
-  if (want < 0 && ins::engine().slot(c, s).feed1 <= 0.0f) g_run_fx[i] = -1;
+  if (want < 0 && ins::engine().slot(c, s).feed1 <= 0.0f) g_run_fx[i] = -1, g_play[i] = -1;
 }
 
 struct Hook {

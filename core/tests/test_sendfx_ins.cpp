@@ -352,6 +352,26 @@ static void frozen_holder() {
   printf("test_sendfx_ins: a frozen holder lets its room go\n");
 }
 
+// second re-review: a room released and faded out is held by no one: the next taker plays at once (no 10 ms dry wait)
+static void retake_after_release() {
+  ins::reset();
+  ins::set_type(kB1, 0, ins::kMCloud);
+  master::set_mix(master::slot_index(kB1, 0), 127);
+  render3(400, 9, 0.2f);
+  ins::set_type(kB1, 0, ins::kOff);
+  render3(2000, 9, 0.2f);   // 500 ms: B1's fade-out long over
+  ins::set_type(kB3, 0, ins::kMChorus);
+  master::set_mix(master::slot_index(kB3, 0), 127);
+  Run3 o = render3(40, 11);
+  std::vector<double> d, q;
+  vs_dry(o.b3, 11, 0.1f, d, q);
+  int dry = 0;
+  while (dry < (int)d.size() && d[(size_t)dry] <= 1e-7) ++dry;
+  printf("test_sendfx_ins: room taken after its release: dry for %d blocks\n", dry);
+  CHECK(dry <= 1);
+  ins::reset();
+}
+
 // re-review N2: the hand-over to a slot that waited fades from dry to the effect (no level step)
 static void handover_ramp() {
   ins::reset();
@@ -364,8 +384,12 @@ static void handover_ramp() {
   Run3 o = render3(80, 11);
   std::vector<double> d, q;
   vs_dry(o.b3, 11, 0.1f, d, q);
+  // over the hand-over (the first block off dry and the 20 after it; later the chorus' own level moves block to block)
+  size_t h = 0;
+  while (h < d.size() && d[h] <= 1e-7) ++h;
+  CHECK(h > 0 && h + 21 < q.size());
   double step = 0;
-  for (size_t b = 1; b < q.size(); ++b) step = std::max(step, std::fabs(q[b] - q[b - 1]));
+  for (size_t b = h; b <= h + 20; ++b) step = std::max(step, std::fabs(q[b] - q[b - 1]));
   printf("test_sendfx_ins: hand-over: largest block-to-block level step %.3f of the input\n", step);
   CHECK(step < 0.2);
   ins::reset();
@@ -668,6 +692,7 @@ int main() {
   frozen_holder();
 
   handover_ramp();
+  retake_after_release();
   rytm_page();
   lows();
   host_fake_time(false, 0);
