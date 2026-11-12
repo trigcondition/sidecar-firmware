@@ -7,6 +7,8 @@
 #                                    changed since it was made
 #                                    (run_sketch.sh, core/engines/setup_engines.sh: a stale copy built the old FM)
 set -e
+# GNU sed (Linux) wants "sed -i" where BSD sed (macOS) wants "sed -i ''": the scripts are written for the latter
+if sed --version >/dev/null 2>&1; then sed() { if [ "${1:-}" = -i ] && [ -z "${2+x}" -o -z "${2:-}" ]; then shift 2; command sed -i "$@"; else command sed "$@"; fi; }; fi
 D=$(cd "$(dirname "$0")" && pwd)
 L=$D/libraries/Plaits
 SHIM=$D/../sim/plaits/shim/plaits/user_data.h

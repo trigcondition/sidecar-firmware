@@ -8,6 +8,8 @@
 #   ./setup_plaits.sh [PLAITS_LIB]     default: <repo>/teensy/libraries/Plaits, else the main
 #                                      checkout's (a worktree has no git-ignored copy)
 set -euo pipefail
+# GNU sed (Linux) wants "sed -i" where BSD sed (macOS) wants "sed -i ''": the scripts are written for the latter
+if sed --version >/dev/null 2>&1; then sed() { if [ "${1:-}" = -i ] && [ -z "${2+x}" -o -z "${2:-}" ]; then shift 2; command sed -i "$@"; else command sed "$@"; fi; }; fi
 D=$(cd "$(dirname "$0")" && pwd)
 REPO=$(git -C "$D" rev-parse --show-toplevel)
 SRC=${1:-$REPO/teensy/libraries/Plaits}
