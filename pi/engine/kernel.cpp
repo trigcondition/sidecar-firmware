@@ -232,7 +232,11 @@ static void *BootAlloc (size_t nBytes, const char *pWhat)
 	return p;
 }
 
-static void CrumbPanic (void) { crumb::Why ("a panic (the log's last line says which)"); }
+static void CrumbPanic (void)
+{
+	crumb::Why ("a panic (the log's last line says which)");
+	blackbox_pi::PanicFlush ();		// the panic's line onto the card (the RAM is not kept on the Pi 4's rpiboot path)
+}
 static u32 s_nPmRsts;			// PM_RSTS as this boot found it (crumb.h's report)
 
 // The previous boot's breadcrumb on the card, /.rytm/prevboot.txt: the report's lines, then its whole log tail. Once,

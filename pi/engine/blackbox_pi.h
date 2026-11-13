@@ -6,6 +6,7 @@
 namespace blackbox_pi {
 void Poll (void);			// core 0's loop: starts 5 s into the boot, then writes when due (blackbox.h)
 void Flush (void);			// a planned reboot (StopAndReboot): the last lines out first
+void PanicFlush (void);			// a panic (kernel.cpp CrumbPanic): Flush, if it is safe here (core 0, no write under way)
 #ifdef SIDECAR_PI5_TESTMODE
 void TestLog (bool bMounted);		// testsecs= (kernel.cpp): the new lines into /usbtest.log, if that file exists; bMounted: testcard=1, the card is the engine's (blackbox_pi.cpp)
 #endif
