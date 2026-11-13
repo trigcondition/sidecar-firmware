@@ -214,6 +214,20 @@ int main(int argc, char** argv) {
     CHECK(slurp("/.rytm/fxslots/P9.txt") == body);
   }
   {
+    // R1: a file that opens but whose read fails is not a missing one either: slots empty, logged, never written over
+    std::string body = "0abc PING\tfx.pingpong 1.0.0\n\n\n\n";
+    put("/.rytm/fxslots/P8.txt", body);
+    int l0 = logged("fxslots/P8.txt");
+    host_fail_read("/.rytm/fxslots/P8.txt", 0, true);
+    goto_project("P8");
+    CHECK(ufx(0, RMP_SLOT_EMPTY, "") && ufx(1, RMP_SLOT_EMPTY, "") && ufx(2, RMP_SLOT_EMPTY, "") && ufx(3, RMP_SLOT_EMPTY, ""));
+    CHECK(logged("fxslots/P8.txt") > l0);
+    cmd("um=fx:1:fx.pingpong");   // in memory only
+    CHECK(ufx(0, RMP_SLOT_READY, "fx.pingpong"));
+    host_fail_read("/.rytm/fxslots/P8.txt", 0, false);
+    CHECK(slurp("/.rytm/fxslots/P8.txt") == body);
+  }
+  {
     // L: a long foreign line and a file over 512 bytes survive a change byte for byte; over the hard cap: refused, logged
     std::string lines[12];
     lines[0] = std::string(150, 'x');   // (no tab: not an effect's line)

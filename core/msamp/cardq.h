@@ -60,7 +60,7 @@ constexpr uint32_t kCopyMax = 65536;     // kCopyReq: bytes a request copies at 
 // (a DirRec's index); got 1 opened, 0 not. f's fileSize() is known then (no card access to read it).
 // kSmallReq (2026-10-31, um's slot map): a small file read whole: fmt::recover(path) (a power cut between write_atomic's
 // renames), path opened, read into buf[0..len), closed; got the bytes read, -1 not there, -2 there (or the card could not
-// tell) but not opened.
+// tell) but not opened or not read.
 // kAppendReq (2026-10-31, core/song/song.cpp's journal and take files): buf[0..len) written to path, opened, written and
 // closed in the request: off 0: its folders made, created or truncated; 1: appended; 2: its folders made, appended; got len, the bytes
 // written of a part, kAppendUnsure (all written, the close failed) or -1 (none).
