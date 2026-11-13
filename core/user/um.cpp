@@ -2287,26 +2287,35 @@ const char* kind_wrong(int s, const rmp3_plugin* p3) {
 // ---- API 3's user effects: the states, the stop, core 2's render
 // An effect's two states (send FX 1 and 2), set up by the control core before core 2 may run them: zeroed, voice_init,
 // voice_attach (place SEND, voice -1, instance 0 / 1, arena parts 0 / 1). False: a fault (BAD, the job ended).
-bool fx_states(int s) {
+// (one state k of effect s; fault: false, with the fault's address in *pcout)
+bool fx_state_init(int s, int k, uint64_t* pcout) {
   int u = s - kSlots;
   const V3& x = g_v3[s];
   const rmp_plugin* p = x.p;
+  void* st = g_fxst[u][k];
+  memset(st, 0, g_slot[s].state_bytes);
+  for (int j = 0; j < 16; ++j) g_fx_p[u][k][j] = -1.0f;   // (the first block: every knob changed)
+  for (int q = 0; q < 3; ++q) g_fx_ev[u][k][q] = g_xp_evn[q];   // (no old edges)
+  uint64_t pc = 0;
+  uint32_t us = 0;
+  rmp3_voice v;
+  v.shared = x.shared, v.shared_bytes = x.shared_bytes;
+  v.arena = x.voice_bytes && (uint32_t)k < x.states ? x.voices + (size_t)k * x.voice_bytes : nullptr;
+  v.arena_bytes = v.arena ? x.voice_bytes : 0;
+  v.slot = 64 + u, v.voice = -1, v.instance = k, v.place = RMP3_AT_SEND;
+  if (guarded([&] {
+        if (p->voice_init) p->voice_init(st);
+        if (x.p3->voice_attach) x.p3->voice_attach(st, &v);
+      }, &pc, &us)) {
+    *pcout = pc;
+    return false;
+  }
+  return true;
+}
+bool fx_states(int s) {
   for (int k = 0; k < 2; ++k) {
-    void* st = g_fxst[u][k];
-    memset(st, 0, g_slot[s].state_bytes);
-    for (int j = 0; j < 16; ++j) g_fx_p[u][k][j] = -1.0f;   // (the first block: every knob changed)
-    for (int q = 0; q < 3; ++q) g_fx_ev[u][k][q] = g_xp_evn[q];   // (no old edges)
     uint64_t pc = 0;
-    uint32_t us = 0;
-    rmp3_voice v;
-    v.shared = x.shared, v.shared_bytes = x.shared_bytes;
-    v.arena = x.voice_bytes && (uint32_t)k < x.states ? x.voices + (size_t)k * x.voice_bytes : nullptr;
-    v.arena_bytes = v.arena ? x.voice_bytes : 0;
-    v.slot = 64 + u, v.voice = -1, v.instance = k, v.place = RMP3_AT_SEND;
-    if (guarded([&] {
-          if (p->voice_init) p->voice_init(st);
-          if (x.p3->voice_attach) x.p3->voice_attach(st, &v);
-        }, &pc, &us)) {
+    if (!fx_state_init(s, k, &pc)) {
       char w[64], at[32];
       fault_where(s, pc, at, sizeof at);
       sniprintf(w, sizeof w, "crashed in voice_init / voice_attach at %s", at);
@@ -2315,6 +2324,52 @@ bool fx_states(int s) {
     }
   }
   return true;
+}
+// A user TYPE that came from another TYPE starts a fresh state (plan item 12). Core 2 (the send FX, which never makes a
+// control call) asks by fx_fresh_req and plays nothing in that slot till fx_fresh_done; the control core (fx_fresh_pass,
+// each idle pass) zeroes that state's arena part (in kZeroStep pieces, as the load does), then does what the load does
+// to a state: zero, voice_init, voice_attach, guarded. Core 2 does not render a state it is waiting for.
+uint32_t g_fx_req[kUfx][2], g_fx_ack[kUfx][2];   // requests made by core 2 / answered by the control core
+uint32_t g_fx_zoff[kUfx][2];                     // the control core's progress zeroing the arena part
+void fx_fresh_req(int u, int sl) {
+  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return;
+  __atomic_add_fetch(&g_fx_req[u][sl], 1u, __ATOMIC_SEQ_CST);
+}
+bool fx_fresh_done(int u, int sl) {
+  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return true;
+  return __atomic_load_n(&g_fx_ack[u][sl], __ATOMIC_SEQ_CST) == __atomic_load_n(&g_fx_req[u][sl], __ATOMIC_SEQ_CST);
+}
+bool fx_fresh_pass() {
+  for (int u = 0; u < kUfx; ++u)
+    for (int sl = 0; sl < 2; ++sl) {
+      uint32_t r = __atomic_load_n(&g_fx_req[u][sl], __ATOMIC_SEQ_CST);
+      if (r == g_fx_ack[u][sl]) continue;
+      const int s = kSlots + u;
+      const V3& x = g_v3[s];
+      // not live (muted, stopped, being loaded: the load makes the states anew), or core 2 left in it: nothing to do
+      if (!__atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) || muted(s) || g_fx_dead[u] || g_slot[s].st != RMP_SLOT_READY) {
+        g_fx_zoff[u][sl] = 0;
+        __atomic_store_n(&g_fx_ack[u][sl], r, __ATOMIC_SEQ_CST);
+        continue;
+      }
+      uint8_t* ar = x.voice_bytes && (uint32_t)sl < x.states ? x.voices + (size_t)sl * x.voice_bytes : nullptr;
+      if (ar && g_fx_zoff[u][sl] < x.voice_bytes) {
+        uint32_t n = x.voice_bytes - g_fx_zoff[u][sl];
+        if (n > kZeroStep) n = kZeroStep;
+        memset(ar + g_fx_zoff[u][sl], 0, n);
+        g_fx_zoff[u][sl] += n;
+        return true;   // (the next pass goes on)
+      }
+      g_fx_zoff[u][sl] = 0;
+      uint64_t pc = 0;
+      if (!fx_state_init(s, sl, &pc)) {
+        g_fx_fault[u] = pc ? pc : 1;
+        __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);   // (fx_faults words the why)
+      }
+      __atomic_store_n(&g_fx_ack[u][sl], r, __ATOMIC_SEQ_CST);
+      return true;
+    }
+  return false;
 }
 // UFX u READY: the TYPE list's name and the kits' tag (send_fx.h), the name first, the tag released last
 void fx_named(int u) {
@@ -3247,6 +3302,8 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_render2 = on_render2;
   core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)
   core::fx::user_run = fx_run;
+  core::fx::user_fresh_req = fx_fresh_req;
+  core::fx::user_fresh_done = fx_fresh_done;
   core::fx::user_labels = fx_labels;
   core::fx::user_loaded = [](int u) { return u >= 0 && u < kUfx && g_slot[kSlots + u].st == RMP_SLOT_READY && g_fxmap[u].id[0] != 0; };
   core::hooks.slot_ask = on_ask;
@@ -3316,6 +3373,7 @@ bool idle() {
   } else did = scan_wait();
   { UMT("um.notes"); notes_overdue(); }
   fx_faults();
+  if (fx_fresh_pass()) did = true;
   { UMT("um.upool"); if (upool_pass()) did = true; }
   if (g_pre_again && (int32_t)(core::now_ms() - g_pre_again_ms) >= 0 && !core::fmt::pending(g_pre_path)) {   // a preset written: the lists again
     g_pre_again = false;

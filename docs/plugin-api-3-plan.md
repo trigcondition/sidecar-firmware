@@ -125,7 +125,7 @@ that goes away (unloaded, muted) fades in again when it comes back. A rescan fol
 with a bounded wait (5 ms): an effect that never returns is left behind (its memory never reused) and core 3 goes on,
 so its own watchdog sees core 2 stuck and the board restarts, as for a hung voice.
 
-Not yet: the INSERT, bus and master positions (part 8), a fresh state on a TYPE change back to the same effect.
+Not yet: the INSERT, bus and master positions (part 8). (A fresh state on a TYPE change to the effect: built, item 12.)
 
 Tests: core/tests/test_api3.cpp (the probe plugin plugins/api3_test in six variants, kept built in
 core/tests/api3_pkgs), core/tests/test_api3_compat.cpp (below), tools/tests/test_rmp_api.c,
@@ -191,6 +191,14 @@ Each: what the page says, what the engine does, why. Listed for the owner.
     UFX empty, the file never written over (as the slot map). A project with no file keeps what is loaded until
     `um=fx` changes a slot (which writes its file). A line without a tab (a hand-made or bundled `<tag> <name>`)
     assigns nothing and is kept as it is. Core/tests/test_ufx_persist.cpp restarts the program on the same card.
-12. **An effect's state is not fresh on a TYPE change back.** The page says a TYPE change starts a fresh state.
-    `voice_init` is a control call and the send FX's TYPE changes on core 2; a fresh state needs a request from core 2
-    to core 3 and a fade that waits for it. For now an effect keeps its state (a delay's tail can come back).
+12. **An effect's state is fresh on a TYPE change to it.** A send slot's TYPE that changes to a user effect
+    (UFX1..UFX4) from anything else starts that slot's state of the effect as after `voice_init`: a delay's old tail
+    does not come back. `voice_init` is a control call and the send FX's TYPE changes on core 2, so core 2 asks and the
+    control core does it: when the TYPE fade has run out and the new TYPE is taken, core 2 counts a request for
+    (effect, send slot) and plays nothing in that slot (the return stays faded out, the effect is not rendered); the
+    control core, in its idle pass, zeroes that state's arena part in 256 KB pieces, zeroes the state and calls
+    `voice_init` and `voice_attach` guarded (as the load does), then answers; core 2 then fades the return in as it
+    does for any TYPE. Counters only, no lock or allocation on core 2. A TYPE that does not change (a knob turn, a kit
+    reload with the same TYPE) keeps the state. A fault in that `voice_init` mutes the effect (as a fault in a render).
+    The wait is the control core's latency (an idle pass, a few ms); not served at all if the effect is not loaded or
+    muted (then the TYPE plays nothing anyway). The Teensy and the Mac builds without `um` have no hooks: no wait.

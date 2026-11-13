@@ -357,6 +357,7 @@ int main() {
         for (int k = 0; k < fx::kStems; ++k) st[j][k] = 0.0f;
         if (i + j == kAt) st[j][0] = 1.0f;
       }
+      um::idle();   // (the control core: the effect's fresh state, asked for when the TYPE came)
       sfx->Process(st, 12, o, fx::control);
       for (int j = 0; j < 12; ++j) L[i + j] = o[j][0], R[i + j] = o[j][1];
     }
@@ -378,6 +379,64 @@ int main() {
     float r2 = peak(R, kAt + 2 * d - 500, kAt + 2 * d + 500, &at2);
     CHECK(r2 > 0.2f * l1 && std::abs(at2 - (kAt + 2 * d)) <= 2);   // the feedback's echo on the right
     printf("test_api3: PINGPONG echoes L %.3f at +%d, R %.3f at +%d\n", l1, at - kAt, r2, at2 - kAt);
+  }
+  // a TYPE change away and back starts the effect's state fresh (a request to the control core; the return stays
+  // faded out until it is done); a knob turn, a TYPE that stays, keeps the state
+  {
+    auto sfx = std::make_unique<fx::SendFx>(48000.0f);
+    memset((void*)&fx::control, 0, sizeof fx::control);
+    fx::control.send[0][0] = 127;
+    fx::control.knob[0][0] = fx::kFirstUser;
+    fx::control.knob[0][2] = 36, fx::control.knob[0][3] = 64, fx::control.knob[0][4] = 127, fx::control.knob[0][5] = 127;
+    long frame = 0;
+    std::vector<float> L;
+    // n frames; an impulse on BD's stem at the absolute frame `imp` (or -1); control calls served every block from
+    // frame `serve` on (the control core's latency)
+    auto run = [&](int n, long imp, long serve) {
+      float st[12][fx::kStems], o[12][2];
+      for (int i = 0; i < n; i += 12, frame += 12) {
+        for (int j = 0; j < 12; ++j) {
+          for (int k = 0; k < fx::kStems; ++k) st[j][k] = 0.0f;
+          if (frame + j == imp) st[j][0] = 1.0f;
+        }
+        if (frame >= serve) um::idle();
+        sfx->Process(st, 12, o, fx::control);
+        L.push_back(o[0][0]), L.push_back(o[1][0]);
+        for (int j = 2; j < 12; ++j) L.push_back(o[j][0]);
+      }
+    };
+    auto peak = [&](long a, long b) {
+      float m = 0.0f;
+      for (long i = a; i < b && i < (long)L.size(); ++i) m = std::max(m, std::fabs(L[i]));
+      return m;
+    };
+    float ticks, tick_us;
+    lfo::clock_now(&ticks, &tick_us);
+    const int d = (int)lroundf(12.0f * tick_us * 0.048f);
+    // same TYPE, a knob turned in between: the state is kept, the echo comes at its time
+    run(3000, 1200, 0);
+    fx::control.knob[0][3] = 80;   // FDBK turned
+    run(d + 3000, -1, 0);
+    CHECK(peak(1200 + d - 100, 1200 + d + 100) > 0.2f);
+    // away and back: UFX1 -> CHORUS -> UFX1
+    sfx = std::make_unique<fx::SendFx>(48000.0f);
+    L.clear(), frame = 0;
+    fx::control.knob[0][3] = 64;
+    run(3000, 1200, 0);
+    fx::control.knob[0][0] = fx::kChorus;
+    run(2400, -1, 0);
+    const long back = frame;
+    fx::control.knob[0][0] = fx::kFirstUser;
+    run(1200, -1, back + 1200);   // the control core serves it 1200 frames late: nothing plays meanwhile
+    CHECK(peak(back, back + 1200) == 0.0f);
+    run(d + 6000, back + 1200 + 3000, 0);
+    // the old echo (it would come ~7300 frames after the return) is gone; the new impulse's echo comes on time
+    CHECK(peak(back + 1200 + 1000, back + 1200 + 3000 + d - 200) < 1e-4f);
+    CHECK(peak(back + 1200 + 3000 + d - 100, back + 1200 + 3000 + d + 100) > 0.2f);
+    float step = 0.0f;
+    for (size_t i = back + 1; i < L.size(); ++i) step = std::max(step, std::fabs(L[i] - L[i - 1]));
+    CHECK(step < 0.6f);   // (the echo's own onset; no click from the return)
+    printf("test_api3: UFX fresh on a TYPE change: ok\n");
   }
   // a reassign stops it on core 2 first; empty: MISSING again
   cmd("um=fx:1:-");
