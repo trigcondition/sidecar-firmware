@@ -72,6 +72,7 @@ static CORE_COLD void slots_parse(uint32_t n) {
       if (c != '\r' && k < (int)sizeof b - 1) b[k++] = c;
     }
     b[k] = 0;
+    if (char* tab = strchr(b, '\t')) *tab = 0;   // (um.cpp adds "\t<id> <version>" to the line: the name ends at the tab)
     int t = 0, i = 0;
     for (; i < 4 && hexv(b[i]) >= 0; ++i) t = t << 4 | hexv(b[i]);
     if (i != 4 || b[4] != ' ' || (t & 0x3FFF) == 0) continue;

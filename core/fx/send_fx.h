@@ -22,7 +22,8 @@
 // 64..67 the user-FX slots UFX1..UFX4, as the user machines' U1..U5: each project's slot map on the Sidecar card
 // (/.rytm/fxslots/<project>.txt) says which user effect a slot holds (fingerprint + name), and the kit stores the
 // effect's 14-bit tag (0x20 track 13), so a kit moved to a project or card where the slot holds another effect is
-// detected: that FX silent and MISSING (!NAME). No user-effect plugins exist yet: a user slot is at best MISSING.
+// detected: that FX silent and MISSING (!NAME). core/user/um.cpp writes the file (a tab and the package's id and version
+// after the line's name) and puts the effects back from it on a project load.
 #pragma once
 #include <math.h>
 #include <stdint.h>

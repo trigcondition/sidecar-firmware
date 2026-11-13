@@ -94,7 +94,7 @@ int g_nnames = 0;
 #if CORE_MSAMP
 // 7z (2026-10-31): a project's map and notes are read by the card core (map_step, from idle()): until both are here
 // g_map and its file names stay the old project's and everything goes on as if the project had changed a moment later.
-enum : uint8_t { kMrIdle, kMrMap, kMrNotes };
+enum : uint8_t { kMrIdle, kMrMap, kMrNotes, kMrFx };
 uint8_t g_mr = kMrIdle;           // the read under way
 bool g_mr_again = false;          // a newer project meanwhile: read again when its request ends
 #endif
@@ -156,6 +156,13 @@ uint32_t g_late_n[kAll];         // late control calls since the load (every plu
 // the effects: which package each UFX plays (um=fx:<n>:<id>; in memory), its two states (send FX 1 and 2: in its
 // arena block), live while core 2 may run it (published after both states are set up), busy while core 2 runs it
 rmp_slot_entry g_fxmap[kUfx];
+// the effects' file (/.rytm/fxslots/<project>.txt; send_fx_card.cpp reads its "<tag> <name>" for the kits): a line a
+// UFX, as read or written - "<tag> <name>\t<id> <a.b.c>" when um put the effect there. A line this build did not write
+// (no tab) is kept as it is when the file is written again.
+char g_fx_file[64] = "";
+char g_fx_txt[kUfx][64];
+bool g_fx_locked = false;   // the file is there but a line did not parse: never written over (as g_map_locked)
+void fx_stop(int u);
 uint8_t* g_fxst[kUfx][2];
 volatile uint8_t g_fx_live[kUfx], g_fx_busy[kUfx];
 volatile uint64_t g_fx_fault[kUfx];   // core 2's fault address (the control core words the why)
@@ -1533,6 +1540,10 @@ void map_file(char* out, int cap) {
   core::pool_file(fn, sizeof fn);   // "/.rytm/pools/<name>.txt"
   sniprintf(out, cap, "/.rytm/slots/%s", fn + 13);
 }
+// The effects' file's name from the map's
+void fx_file(char* d, const char* map, int cap) {
+  sniprintf(d, cap, "/.rytm/fxslots/%s", map + 13);   // ("/.rytm/slots/" is 13 characters)
+}
 // The notes' name from the map's
 void notes_file(char* d, const char* map, int cap) {
   copy(d, map, cap);
@@ -1551,18 +1562,62 @@ void map_take(const char* b, int n, const char* nb, int k) {
   if (g_notes_locked) core::log("um: %s is not a notes file this build reads - kept as it is (not written)", g_notes_file);
   g_fresh = rmp_resolve_open(&g_map, &g_notes, n >= 0, notes);
 }
+// The effects' file as read (b[0..n); n -1: missing or unreadable): each line a UFX. A project with no file keeps what is
+// loaded, as before (nothing is written until um changes a slot). A line with an effect ("...\t<id> <a.b.c>", the
+// slot map's fields) that does not parse: the file is locked, every slot empty, the file never written over.
+// An effect not installed is not looked at here: its slot goes MISSING when it loads, the file as it was.
+void fx_take(const char* b, int n) {
+  g_fx_locked = false;
+  if (n < 0) return;
+  rmp_slot_entry ne[kUfx];
+  char txt[kUfx][64];
+  memset(ne, 0, sizeof ne);
+  memset(txt, 0, sizeof txt);
+  int at = 0;
+  for (int u = 0; u < kUfx && at < n; ++u) {
+    int k = 0;
+    while (at < n && b[at] != '\n') {
+      if (b[at] != '\r' && k < (int)sizeof txt[u] - 1) txt[u][k++] = b[at];
+      ++at;
+    }
+    ++at;
+    const char* tab = strrchr(txt[u], '\t');
+    if (!tab) continue;   // (an empty line, or one that only names the kit's tag)
+    char l[80];
+    rmp_slot_map m;
+    sniprintf(l, sizeof l, "U1 %s\n", tab + 1);
+    if (!rmp_slots_parse(l, (uint32_t)strlen(l), &m)) {
+      g_fx_locked = true;
+      memset(ne, 0, sizeof ne);
+      break;
+    }
+    ne[u] = m.slot[0];
+  }
+  if (g_fx_locked) {
+    memset(txt, 0, sizeof txt);
+    core::log("um: %s is not a user-effect file this build reads (a newer Sidecar's, or damaged) - every UFX empty, the "
+              "file kept as it is (not written)", g_fx_file);
+  }
+  for (int u = 0; u < kUfx; ++u) {
+    memcpy(g_fx_txt[u], txt[u], sizeof g_fx_txt[u]);
+    if (!strcmp(ne[u].id, g_fxmap[u].id) && ne[u].version == g_fxmap[u].version) continue;
+    fx_stop(u);   // (core 2 out of it before its assignment changes)
+    g_fxmap[u] = ne[u];
+    __atomic_store_n(&core::fx::user[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
+  }
+}
 #if CORE_MSAMP
 cardq::Req g_mrq;
-char g_mr_map[64], g_mr_notes[64];   // the files read (g_map_file, g_notes_file once both are here)
-char g_mr_b[2][512];
-int g_mr_n[2];
+char g_mr_map[64], g_mr_notes[64], g_mr_fx[64];   // the files read (g_map_file, g_notes_file, g_fx_file once all are here)
+char g_mr_b[3][512];
+int g_mr_n[3];
 // The map's read, a request a file (kSmallReq: recover, open, read, close): the map, the notes, then both taken at once.
 // A save of the file still on its way lands first (a project left and come back to at once). The request's own step:
 // a newer project meanwhile (g_mr_again) reads again from the map.
 void map_step() {
   while (g_mr) {
-    int w = g_mr == kMrMap ? 0 : 1;
-    const char* path = w ? g_mr_notes : g_mr_map;
+    int w = g_mr == kMrMap ? 0 : g_mr == kMrNotes ? 1 : 2;
+    const char* path = w == 2 ? g_mr_fx : w ? g_mr_notes : g_mr_map;
     if (g_mrq.state == cardq::kFree && core::fmt::pending(path)) return;
     if (!core::card_ok) g_mr_n[w] = -1;
     else if (!cardq::async(&g_mrq, cardq::kSmallReq, nullptr, path, 0, (uint8_t*)g_mr_b[w], sizeof g_mr_b[w])) return;
@@ -1570,13 +1625,15 @@ void map_step() {
     if (g_mr_again) {
       g_mr_again = false;
       g_mr = kMrMap;
-    } else if (!w) {
-      g_mr = kMrNotes;
+    } else if (w < 2) {
+      g_mr = w ? kMrFx : kMrNotes;
     } else {
       g_mr = kMrIdle;
       copy(g_map_file, g_mr_map, sizeof g_map_file);
       copy(g_notes_file, g_mr_notes, sizeof g_notes_file);
+      copy(g_fx_file, g_mr_fx, sizeof g_fx_file);
       map_take(g_mr_b[0], g_mr_n[0], g_mr_b[1], g_mr_n[1]);
+      fx_take(g_mr_b[2], g_mr_n[2]);
       core::log("um: project %s, map %s%s", core::project, g_map_file, g_fresh ? " (none: fresh)" : "");
     }
   }
@@ -1584,6 +1641,7 @@ void map_step() {
 void map_read() {   // (no card core, as at boot: done here; with one from idle())
   map_file(g_mr_map, sizeof g_mr_map);
   notes_file(g_mr_notes, g_mr_map, sizeof g_mr_notes);
+  fx_file(g_mr_fx, g_mr_map, sizeof g_mr_fx);
   if (g_mr) g_mr_again = true;
   else g_mr = kMrMap;
   if (!cardq::worker()) map_step();
@@ -1600,12 +1658,16 @@ int read_small(const char* path, char* b, int cap) {
 void map_read() {
   map_file(g_map_file, sizeof g_map_file);
   notes_file(g_notes_file, g_map_file, sizeof g_notes_file);
-  char b[512], nb[512];
+  fx_file(g_fx_file, g_map_file, sizeof g_fx_file);
+  char b[512], nb[512], fb[512];
   core::fmt::recover(g_map_file);     // 0.3.0: a cut between write_atomic's renames - the previous map back (fmt.h)
   core::fmt::recover(g_notes_file);
+  core::fmt::recover(g_fx_file);
   int n = read_small(g_map_file, b, sizeof b);
   int k = read_small(g_notes_file, nb, sizeof nb);
+  int f = read_small(g_fx_file, fb, sizeof fb);
   map_take(b, n, nb, k);
+  fx_take(fb, f);
   core::log("um: project %s, map %s%s", core::project, g_map_file, g_fresh ? " (none: fresh)" : "");
 }
 #endif
@@ -1635,6 +1697,17 @@ bool map_save() {   // the map (what an older build reads), then the notes
   if (ok && !g_notes_locked && !write_whole(g_notes_file, nt, n)) core::log("um: %s not written", g_notes_file);
   g_fresh = false;
   return ok;
+}
+// The effects' file written whole from the lines (an atomic write, as the map's). Not over a file that did not parse.
+bool fx_save() {
+  if (g_fx_locked) {
+    core::log("um: %s not written: it did not parse (the effects change in memory only)", g_fx_file);
+    return false;
+  }
+  char txt[kUfx * 64 + 8];
+  uint32_t n = 0;
+  for (int u = 0; u < kUfx; ++u) n += (uint32_t)sniprintf(txt + n, sizeof txt - n, "%s\n", g_fx_txt[u]);
+  return write_whole(g_fx_file, txt, n);
 }
 void note_log(int s, const char* what) {
   const rmp_slot_note& e = g_notes.slot[s];
@@ -3091,12 +3164,14 @@ void rekey(const char* key) {
   if (g_mr) {   // a read under way: of the name just moved; g_map_file stays g_map's until it ends
     sniprintf(g_mr_map, sizeof g_mr_map, "/.rytm/slots/%s.txt", key);
     notes_file(g_mr_notes, g_mr_map, sizeof g_mr_notes);
+    fx_file(g_mr_fx, g_mr_map, sizeof g_mr_fx);
     g_mr_again = true;
     return;
   }
 #endif
   sniprintf(g_map_file, sizeof g_map_file, "/.rytm/slots/%s.txt", key);
   notes_file(g_notes_file, g_map_file, sizeof g_notes_file);
+  fx_file(g_fx_file, g_map_file, sizeof g_fx_file);
 }
 
 void begin(const Exec* e, const char* d) {
@@ -3434,6 +3509,21 @@ bool command(const char* c, char* out, int cap) {
     }
     __atomic_store_n(&core::fx::user[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
     g_need |= 1u << (kSlots + u);
+    g_fx_txt[u][0] = 0;
+    if (m.id[0]) {   // the project's file: the kit's tag and name, then the package as the slot map names it
+      rmp_slot_map one;
+      memset(&one, 0, sizeof one);
+      one.slot[0] = m;
+      char f[64], nm[11];
+      rmp_slots_format(&one, f, sizeof f);   // "U1 <id> <a.b.c>\n"
+      for (char* c = f; *c; ++c)
+        if (*c == '\n') *c = 0;
+      copy(nm, g_pkg[find_pkg(id)].desc.name, sizeof nm);
+      for (char* c = nm; *c; ++c)
+        if ((uint8_t)*c < 0x20) *c = '_';
+      sniprintf(g_fx_txt[u], sizeof g_fx_txt[u], "%04x %s\t%s", (unsigned)core::fx::fx_tag(nm), nm, f + 3);
+    }
+    if (!fx_save()) core::log("um: %s not written (UFX%d changes until the next project load)", g_fx_file, u + 1);
     sniprintf(out, cap, "UFX%d: %s", u + 1, m.id[0] ? m.id : "empty");
     return true;
   }

@@ -464,7 +464,7 @@ int main() {
   CHECK(opens() - o0 == ran(cardq::kCloseReq) - c0);
   CHECK(fs.remove("/PRESETS/rytm.scanb") && fs.remove("/PRESETS"));
 
-  // ---- the map's read: the old project's until both files are here, a request each, none of it on the control core
+  // ---- the map's read: the old project's until all three files are here, a request each, none of it on the control core
   uint32_t m0 = ran(cardq::kSmallReq);
   c3 = host_card_us(3);
   to_project("UMQ");
@@ -474,7 +474,7 @@ int main() {
   CHECK(cardq::pending() == 1 && !strcmp(um::slot_view(0).id, "rytm.scanb"));
   CHECK(logged("um: project UMQ, map /.rytm/slots/UMQ.txt (none: fresh)") == 0);
   idle_all();
-  CHECK(ran(cardq::kSmallReq) == m0 + 2);
+  CHECK(ran(cardq::kSmallReq) == m0 + 3);   // (the map, the notes, the effects' file)
   CHECK(logged("um: project UMQ, map /.rytm/slots/UMQ.txt (none: fresh)") == 1);
   CHECK(!um::slot_view(0).id[0]);
   // the map's write: posted, written on the card core
