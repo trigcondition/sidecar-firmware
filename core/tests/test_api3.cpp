@@ -437,6 +437,30 @@ int main() {
     for (size_t i = back + 1; i < L.size(); ++i) step = std::max(step, std::fabs(L[i] - L[i - 1]));
     CHECK(step < 0.6f);   // (the echo's own onset; no click from the return)
     printf("test_api3: UFX fresh on a TYPE change: ok\n");
+    // a request the control core leaves waiting more than 250 ms is logged, once, from the control core (its pass), with
+    // the slot and the effect; a request served at once (above) is not
+    CHECK(logged("fresh state waited") == 0);
+    fx::control.knob[0][0] = fx::kChorus;
+    run(2400, -1, 0);
+    fx::control.knob[0][0] = fx::kFirstUser;
+    run(2400, -1, 1L << 40);   // (not served)
+    CHECK(logged("fresh state waited") == 0);
+    g_t += 100000;
+    host_fake_time(true, g_t);
+    run(240, -1, 1L << 40);
+    CHECK(logged("fresh state waited") == 0);   // 100 ms: not yet
+    g_t += 200000;
+    host_fake_time(true, g_t);
+    run(240, -1, 1L << 40);
+    CHECK(logged("fresh state waited") == 0);   // (nothing logs from the audio path)
+    run(2400, -1, 0);   // the control core's pass
+    CHECK(logged("fresh state waited") == 1);
+    bool named = false;
+    for (auto& l : g_log) named = named || (l.find("fresh state waited") != std::string::npos && l.find("UFX1") != std::string::npos &&
+                                            l.find("fx.pingpong") != std::string::npos);
+    CHECK(named);
+    run(2400, -1, 0);
+    CHECK(logged("fresh state waited") == 1);   // once a request
   }
   // a reassign stops it on core 2 first; empty: MISSING again
   cmd("um=fx:1:-");

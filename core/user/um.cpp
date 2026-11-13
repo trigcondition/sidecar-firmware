@@ -161,6 +161,10 @@ rmp_slot_entry g_fxmap[kUfx];
 // (no tab) is kept as it is when the file is written again.
 char g_fx_file[64] = "";
 char g_fx_txt[kUfx][64];
+constexpr uint32_t kFxRaw = 4096;   // the effects' file kept whole up to this (a line this build did not write is kept as it was)
+char g_fx_raw[kFxRaw];              // ... as read or last written; g_fx_raw_n its length
+uint32_t g_fx_raw_n = 0;
+bool g_fx_big = false;              // the file is over kFxRaw: never written
 bool g_fx_locked = false;   // the file is there but a line did not parse: never written over (as g_map_locked)
 void fx_stop(int u);
 uint8_t* g_fxst[kUfx][2];
@@ -1564,19 +1568,35 @@ void map_take(const char* b, int n, const char* nb, int k) {
   if (g_notes_locked) core::log("um: %s is not a notes file this build reads - kept as it is (not written)", g_notes_file);
   g_fresh = rmp_resolve_open(&g_map, &g_notes, n >= 0, notes);
 }
-// The effects' file as read (b[0..n); n -1: missing or unreadable): each line a UFX. A project with no file keeps what is
-// loaded, as before (nothing is written until um changes a slot). A line with an effect ("...\t<id> <a.b.c>", the
-// slot map's fields) that does not parse: the file is locked, every slot empty, the file never written over.
-// An effect not installed is not looked at here: its slot goes MISSING when it loads, the file as it was.
+// The effects' file as read (b[0..n); n -1: missing, -2: there but not read): each line a UFX. A project with no file keeps
+// what is loaded, as before (nothing is written until um changes a slot). A line with an effect ("...\t<id> <a.b.c>", the
+// slot map's fields) that does not parse, or a file that is there and could not be read (a card error): the file is
+// locked, every slot empty, the file never written over. The whole text is kept (g_fx_raw) so that the lines this build
+// does not own are written back as they were (fx_save); a file over kFxRaw bytes is read for its first lines and never
+// written. An effect not installed is not looked at here: its slot goes MISSING when it loads, the file as it was.
 void fx_take(const char* b, int n) {
   g_fx_locked = false;
-  if (n < 0) return;
+  g_fx_big = false;
+  g_fx_raw_n = 0;
+  if (n == -1) return;
+  const bool unread = n < 0;
+  if (unread) n = 0;
+  if (n > (int)kFxRaw) {
+    g_fx_big = true;
+    n = (int)kFxRaw;
+    core::log("um: %s is over %u bytes - read, kept as it is (not written: the effects change in memory only)", g_fx_file,
+              (unsigned)kFxRaw);
+  } else {
+    memcpy(g_fx_raw, b, (size_t)n);
+    g_fx_raw_n = (uint32_t)n;
+  }
+  if (unread) g_fx_locked = true;
   rmp_slot_entry ne[kUfx];
   char txt[kUfx][64];
   memset(ne, 0, sizeof ne);
   memset(txt, 0, sizeof txt);
   int at = 0;
-  for (int u = 0; u < kUfx && at < n; ++u) {
+  for (int u = 0; u < kUfx && at < n && !unread; ++u) {
     int k = 0;
     while (at < n && b[at] != '\n') {
       if (b[at] != '\r' && k < (int)sizeof txt[u] - 1) txt[u][k++] = b[at];
@@ -1597,8 +1617,11 @@ void fx_take(const char* b, int n) {
   }
   if (g_fx_locked) {
     memset(txt, 0, sizeof txt);
-    core::log("um: %s is not a user-effect file this build reads (a newer Sidecar's, or damaged) - every UFX empty, the "
-              "file kept as it is (not written)", g_fx_file);
+    if (unread)
+      core::log("um: %s is there but could not be read - every UFX empty, the file kept as it is (not written)", g_fx_file);
+    else
+      core::log("um: %s is not a user-effect file this build reads (a newer Sidecar's, or damaged) - every UFX empty, the "
+                "file kept as it is (not written)", g_fx_file);
   }
   for (int u = 0; u < kUfx; ++u) {
     memcpy(g_fx_txt[u], txt[u], sizeof g_fx_txt[u]);
@@ -1611,7 +1634,8 @@ void fx_take(const char* b, int n) {
 #if CORE_MSAMP
 cardq::Req g_mrq;
 char g_mr_map[64], g_mr_notes[64], g_mr_fx[64];   // the files read (g_map_file, g_notes_file, g_fx_file once all are here)
-char g_mr_b[3][512];
+char g_mr_b[2][512];
+char g_mr_fxb[kFxRaw + 1];   // (one byte more: a file over kFxRaw shows)
 int g_mr_n[3];
 // The map's read, a request a file (kSmallReq: recover, open, read, close): the map, the notes, then both taken at once.
 // A save of the file still on its way lands first (a project left and come back to at once). The request's own step:
@@ -1622,7 +1646,8 @@ void map_step() {
     const char* path = w == 2 ? g_mr_fx : w ? g_mr_notes : g_mr_map;
     if (g_mrq.state == cardq::kFree && core::fmt::pending(path)) return;
     if (!core::card_ok) g_mr_n[w] = -1;
-    else if (!cardq::async(&g_mrq, cardq::kSmallReq, nullptr, path, 0, (uint8_t*)g_mr_b[w], sizeof g_mr_b[w])) return;
+    else if (!cardq::async(&g_mrq, cardq::kSmallReq, nullptr, path, 0, w == 2 ? (uint8_t*)g_mr_fxb : (uint8_t*)g_mr_b[w],
+                           w == 2 ? (uint32_t)sizeof g_mr_fxb : (uint32_t)sizeof g_mr_b[w])) return;
     else g_mr_n[w] = g_mrq.got;
     if (g_mr_again) {
       g_mr_again = false;
@@ -1635,7 +1660,7 @@ void map_step() {
       copy(g_notes_file, g_mr_notes, sizeof g_notes_file);
       copy(g_fx_file, g_mr_fx, sizeof g_fx_file);
       map_take(g_mr_b[0], g_mr_n[0], g_mr_b[1], g_mr_n[1]);
-      fx_take(g_mr_b[2], g_mr_n[2]);
+      fx_take(g_mr_fxb, g_mr_n[2]);
       core::log("um: project %s, map %s%s", core::project, g_map_file, g_fresh ? " (none: fresh)" : "");
     }
   }
@@ -1700,16 +1725,50 @@ bool map_save() {   // the map (what an older build reads), then the notes
   g_fresh = false;
   return ok;
 }
-// The effects' file written whole from the lines (an atomic write, as the map's). Not over a file that did not parse.
-bool fx_save() {
+// The effects' file written whole (an atomic write, as the map's): the text as read, UFX u's line (the changed one)
+// replaced and the lines a file with fewer had not yet written from the loaded ones; every other byte is as it was, a
+// line this build does not own (a long one, one past the fourth) too. Not over a file that did not parse, could not be
+// read or is over kFxRaw, and never cut: a result over kFxRaw is refused.
+bool fx_save(int u) {
   if (g_fx_locked) {
-    core::log("um: %s not written: it did not parse (the effects change in memory only)", g_fx_file);
+    core::log("um: %s not written: it did not parse or could not be read (the effects change in memory only)", g_fx_file);
     return false;
   }
-  char txt[kUfx * 64 + 8];
-  uint32_t n = 0;
-  for (int u = 0; u < kUfx; ++u) n += (uint32_t)sniprintf(txt + n, sizeof txt - n, "%s\n", g_fx_txt[u]);
-  return write_whole(g_fx_file, txt, n);
+  if (g_fx_big) {
+    core::log("um: %s not written: it is over %u bytes (the effects change in memory only)", g_fx_file, (unsigned)kFxRaw);
+    return false;
+  }
+  static char out[kFxRaw + kUfx * 66];
+  uint32_t o = 0, at = 0;
+  for (int i = 0; i < kUfx; ++i) {
+    if (i != u && at < g_fx_raw_n) {   // the line as it is
+      uint32_t e = at;
+      while (e < g_fx_raw_n && g_fx_raw[e] != '\n') ++e;
+      bool nl = e < g_fx_raw_n;
+      memcpy(out + o, g_fx_raw + at, e - at);
+      o += e - at;
+      if (nl || i + 1 < kUfx) out[o++] = '\n';
+      at = e + 1;
+    } else {   // the changed line, or one the file did not have
+      if (at < g_fx_raw_n) {
+        while (at < g_fx_raw_n && g_fx_raw[at] != '\n') ++at;
+        ++at;
+      }
+      o += (uint32_t)sniprintf(out + o, sizeof out - o, "%s\n", g_fx_txt[i]);
+    }
+  }
+  if (at < g_fx_raw_n) {   // the lines after the fourth
+    memcpy(out + o, g_fx_raw + at, g_fx_raw_n - at);
+    o += g_fx_raw_n - at;
+  }
+  if (o > kFxRaw) {
+    core::log("um: %s not written: the change would make it over %u bytes (the effects change in memory only)", g_fx_file,
+              (unsigned)kFxRaw);
+    return false;
+  }
+  memcpy(g_fx_raw, out, o);
+  g_fx_raw_n = o;
+  return write_whole(g_fx_file, out, o);
 }
 void note_log(int s, const char* what) {
   const rmp_slot_note& e = g_notes.slot[s];
@@ -2331,8 +2390,12 @@ bool fx_states(int s) {
 // to a state: zero, voice_init, voice_attach, guarded. Core 2 does not render a state it is waiting for.
 uint32_t g_fx_req[kUfx][2], g_fx_ack[kUfx][2];   // requests made by core 2 / answered by the control core
 uint32_t g_fx_zoff[kUfx][2];                     // the control core's progress zeroing the arena part
+uint32_t g_fx_req_us[kUfx][2];                   // when core 2 made the latest request (only read for the log below)
+uint32_t g_fx_waitlog[kUfx][2];                  // the request the control core logged as waiting long (once each)
+constexpr uint32_t kFxFreshLogUs = 250000;       // a request that waits longer than this is logged
 void fx_fresh_req(int u, int sl) {
   if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return;
+  __atomic_store_n(&g_fx_req_us[u][sl], core::now_us(), __ATOMIC_RELAXED);   // (a counter read; the log is the control core's)
   __atomic_add_fetch(&g_fx_req[u][sl], 1u, __ATOMIC_SEQ_CST);
 }
 bool fx_fresh_done(int u, int sl) {
@@ -2345,6 +2408,12 @@ bool fx_fresh_pass() {
       uint32_t r = __atomic_load_n(&g_fx_req[u][sl], __ATOMIC_SEQ_CST);
       if (r == g_fx_ack[u][sl]) continue;
       const int s = kSlots + u;
+      const uint32_t waited = core::now_us() - __atomic_load_n(&g_fx_req_us[u][sl], __ATOMIC_RELAXED);
+      if (waited > kFxFreshLogUs && g_fx_waitlog[u][sl] != r) {   // (a request the slot has been silent for: once)
+        g_fx_waitlog[u][sl] = r;
+        core::log("um: UFX%d send %d: fresh state waited %u ms for the control core (%s; silent till then)", u + 1, sl + 1,
+                  (unsigned)(waited / 1000), g_fxmap[u].id[0] ? g_fxmap[u].id : "-");
+      }
       const V3& x = g_v3[s];
       // not live (muted, stopped, being loaded: the load makes the states anew), or core 2 left in it: nothing to do
       if (!__atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) || muted(s) || g_fx_dead[u] || g_slot[s].st != RMP_SLOT_READY) {
@@ -3550,7 +3619,8 @@ void held_run() {   // the map is here
   g_nheld_cmd = 0;
 }
 bool map_cmd(const char* c) {   // a command that changes the map
-  return !strncmp(c, "um=assign:", 10) || !strncmp(c, "um=clear:", 9) || !strcmp(c, "um=empty") || !strncmp(c, "um=put:", 7);
+  return !strncmp(c, "um=assign:", 10) || !strncmp(c, "um=clear:", 9) || !strcmp(c, "um=empty") || !strncmp(c, "um=put:", 7) ||
+         !strncmp(c, "um=fx:", 6);   // (um=fx: the project's file, which is the new project's till its read ends)
 }
 }  // namespace
 #endif
@@ -3607,7 +3677,7 @@ bool command(const char* c, char* out, int cap) {
         if ((uint8_t)*c < 0x20) *c = '_';
       sniprintf(g_fx_txt[u], sizeof g_fx_txt[u], "%04x %s\t%s", (unsigned)core::fx::fx_tag(nm), nm, f + 3);
     }
-    if (!fx_save()) core::log("um: %s not written (UFX%d changes until the next project load)", g_fx_file, u + 1);
+    if (!fx_save(u)) core::log("um: %s not written (UFX%d changes until the next project load)", g_fx_file, u + 1);
     sniprintf(out, cap, "UFX%d: %s", u + 1, m.id[0] ? m.id : "empty");
     return true;
   }

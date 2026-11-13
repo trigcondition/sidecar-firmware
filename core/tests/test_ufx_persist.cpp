@@ -10,6 +10,7 @@
 // The packages are the probe effects in tests/api3_pkgs (arm64 Mac only, as test_api3).
 #include <sys/stat.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,7 +18,10 @@
 #include <vector>
 
 #include "check.h"
+#include "core_port.h"
 #include "engine.h"
+#include "fmt/fmt.h"
+#include "msamp/cardq.h"
 #include "hooks.h"
 #include "host_link.h"
 #include "rmp_slots.h"
@@ -54,9 +58,24 @@ static void idle_all() {
   }
   CHECK(!"um::idle never settled");
 }
+// the same with a card core (cardq worker): its requests are served here, between the control core's passes
+static void idle_srv() {
+  int quiet = 0;
+  for (int i = 0; i < 200000; ++i) {
+    bool did = false;
+    while (cardq::service()) did = true;
+    fmt::post_step();
+    if (um::idle() || cardq::pending() || fmt::post_busy()) did = true;
+    if (did) quiet = 0;
+    else if (++quiet > 8) return;
+  }
+  CHECK(!"um::idle (with a card core) never settled");
+}
+static std::string g_cout;
 static void cmd(const std::string& c) {
   char o[200];
   CHECK(um::command(c.c_str(), o, sizeof o));
+  g_cout = o;
   idle_all();
 }
 static void goto_project(const char* p) {
@@ -151,6 +170,85 @@ int main(int argc, char** argv) {
   put("/.rytm/fxslots/P4.txt", "0abc X\tbad id!! zzz\n");
   goto_project("P1");   // back in this run: the file's
   CHECK(ufx(0, RMP_SLOT_READY, "fx.pingpong") && ufx(1, RMP_SLOT_EMPTY, "") && ufx(2, RMP_SLOT_READY, "fx.api3_fx"));
+  CHECK(slurp("/.rytm/fxslots/P1.txt") == p1);
+  // ---- fix round 1 (review of fix/ufx-persist)
+  {
+    // M1: um=fx while the project's map is being read is held, and applies to the NEW project after its read
+    for (const char* p : {"P5", "P6", "P7", "P8", "P9"}) CHECK(fs.mkdir((std::string("/.rytm/projects/") + p).c_str()));
+    put("/.rytm/fxslots/P6.txt", "\n0abc API\tfx.api3_fx 1.0.0\n\n\n");   // P6 has UFX2 only
+    std::string old = slurp("/.rytm/fxslots/P1.txt");
+    cardq::reset();
+    cardq::set_worker(true);
+    snprintf(core::project, sizeof core::project, "P6");   // (pool.cpp's switch_to, the user machines' part: its hook)
+    hooks.project_changed();
+    um::idle();   // the read is under way (its first request posted, not served)
+    char o[200];
+    CHECK(um::command("um=fx:4:fx.api3_fx", o, sizeof o));
+    CHECK(strstr(o, "after the project's map is read"));
+    idle_srv();
+    cardq::set_worker(false);
+    CHECK(!strcmp(core::project, "P6"));
+    CHECK(ufx(0, RMP_SLOT_EMPTY, "") && ufx(1, RMP_SLOT_READY, "fx.api3_fx") && ufx(2, RMP_SLOT_EMPTY, "") && ufx(3, RMP_SLOT_READY, "fx.api3_fx"));
+    std::string p6 = slurp("/.rytm/fxslots/P6.txt");
+    CHECK(p6 != "<none>" && p6.find("\tfx.api3_fx 1.0.0\n") != std::string::npos);
+    CHECK(std::count(p6.begin(), p6.end(), '\n') == 4 && p6.find("\n\n\n\n") == std::string::npos);   // UFX2 and UFX4 both there
+    CHECK(slurp("/.rytm/fxslots/P1.txt") == old);   // the old project's file untouched
+    goto_project("P1");
+    CHECK(slurp("/.rytm/fxslots/P1.txt") == old);
+    CHECK(ufx(3, RMP_SLOT_EMPTY, ""));
+    goto_project("P6");
+    CHECK(ufx(3, RMP_SLOT_READY, "fx.api3_fx"));
+  }
+  {
+    // M2: a file that is there but cannot be read is not a missing one: the slots empty, logged, never written over
+    std::string body = "0abc PING\tfx.pingpong 1.0.0\n\n\n\n";
+    put("/.rytm/fxslots/P9.txt", body);
+    int l0 = logged("fxslots/P9.txt");
+    host_fail_open("/.rytm/fxslots/P9.txt", true);
+    goto_project("P9");   // (P6's UFX4 would be inherited if the file were taken for missing)
+    CHECK(ufx(0, RMP_SLOT_EMPTY, "") && ufx(1, RMP_SLOT_EMPTY, "") && ufx(2, RMP_SLOT_EMPTY, "") && ufx(3, RMP_SLOT_EMPTY, ""));
+    CHECK(logged("fxslots/P9.txt") > l0);
+    cmd("um=fx:1:fx.pingpong");   // in memory only
+    CHECK(ufx(0, RMP_SLOT_READY, "fx.pingpong"));
+    host_fail_open("/.rytm/fxslots/P9.txt", false);
+    CHECK(slurp("/.rytm/fxslots/P9.txt") == body);
+  }
+  {
+    // L: a long foreign line and a file over 512 bytes survive a change byte for byte; over the hard cap: refused, logged
+    std::string lines[12];
+    lines[0] = std::string(150, 'x');   // (no tab: not an effect's line)
+    lines[1] = "0abc API\tfx.api3_fx 1.0.0";
+    for (int i = 4; i < 12; ++i) lines[i] = "foreign line " + std::to_string(i) + " " + std::string(90, 'a' + i);
+    std::string whole;
+    for (int i = 0; i < 12; ++i) whole += lines[i] + (i < 11 ? "\n" : "");   // (no newline at the end)
+    CHECK(whole.size() > 512);
+    put("/.rytm/fxslots/P7.txt", whole);
+    goto_project("P7");
+    CHECK(ufx(1, RMP_SLOT_READY, "fx.api3_fx"));
+    cmd("um=fx:3:fx.pingpong");
+    CHECK(ufx(2, RMP_SLOT_READY, "fx.pingpong"));
+    std::string now = slurp("/.rytm/fxslots/P7.txt"), a, b;
+    auto cut = [](const std::string& t, std::string* rest) {   // the text without its third line
+      size_t p = 0;
+      for (int i = 0; i < 2; ++i) p = t.find('\n', p) + 1;
+      size_t e = t.find('\n', p);
+      *rest = t.substr(0, p) + t.substr(e + 1);
+      return t.substr(p, e - p);
+    };
+    std::string line3 = cut(now, &a);
+    cut(whole, &b);
+    CHECK(line3.find("\tfx.pingpong 1.0.0") != std::string::npos);
+    CHECK(a == b);   // every other byte as it was
+    std::string huge = "\n\n\n\n" + std::string(5000, 'y');
+    put("/.rytm/fxslots/P8.txt", huge);
+    int l0 = logged("fxslots/P8.txt");
+    goto_project("P8");
+    cmd("um=fx:1:fx.pingpong");
+    CHECK(ufx(0, RMP_SLOT_READY, "fx.pingpong"));   // (in memory)
+    CHECK(slurp("/.rytm/fxslots/P8.txt") == huge);
+    CHECK(logged("fxslots/P8.txt") > l0);
+  }
+  goto_project("P1");
   CHECK(slurp("/.rytm/fxslots/P1.txt") == p1);
   put("/.rytm/project", "P1");
   std::string self = std::string("\"") + argv[0] + "\" restart \"" + tmpl + "\"";

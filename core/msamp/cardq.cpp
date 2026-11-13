@@ -138,7 +138,7 @@ void run(Req* r) {
   } else if (r->kind == kSmallReq) {
     fmt::recover(r->path);
     File f;
-    r->got = f.open(r->path, core::kRead) ? f.read(r->buf, r->len) : -1;
+    r->got = f.open(r->path, core::kRead) ? f.read(r->buf, r->len) : Fs().lookup(r->path) == 0 ? -1 : -2;
     f.close();
   } else if (r->kind == kAppendReq) {
     if (r->off != 1) {
