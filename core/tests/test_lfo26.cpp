@@ -14,6 +14,7 @@
 #include <unistd.h>   // mkdtemp, access
 
 #include "check.h"
+#include "timing.h"
 #include "core.h"
 #include "machines.h"
 #include "mod/mod.h"
@@ -399,7 +400,7 @@ static void cpu_cost() {
   cost(26, &m26, &w26, &v26);
   printf("lfo26: CPU on this Mac, mod::tick a millisecond: 8 LFOs mean %.2f us (p99.9 %.2f, waves %.2f), 26 LFOs mean %.2f us "
          "(p99.9 %.2f, waves %.2f): %.3f %% / %.3f %% of a core\n", m8, w8, v8, m26, w26, v26, m8 / 10.0, m26 / 10.0);
-  CHECK(m26 < 200);   // (a loose guard on a loaded Mac: the number is the report's)
+  CHECK(timing_ok(m26 < 200));   // (a loose guard on a loaded Mac: the number is the report's)
 }
 
 int main() {

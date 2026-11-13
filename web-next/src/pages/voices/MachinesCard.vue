@@ -1,10 +1,13 @@
 <!-- Voices › user machines (core/user/um.h; the old page's User machines tab): the project's slots U1..U5 (assign a
-     package that fits, clear), the packages on the card, rescan. Upload and delete go through Library › Files. -->
+     package that fits, clear), the user effects UFX1..UFX4 (Plugin API 3: pick an installed effect, or none; the
+     console's um=fx, as the Rytm's USER SLOTS page), the packages on the card, rescan. Upload and delete go through
+     Library › Files. -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import Card from "../../ui/Card.vue";
 import { useSidecar } from "../../lib/useSidecar";
 import { confirmAsk } from "../../lib/confirm";
+import { effectChoices, machineChoices, ufxAvailable, ufxCommand, ufxSlots } from "../../lib/ufx";
 
 interface Row { t: string; [k: string]: any }
 const { api, cmd, paired } = useSidecar();
@@ -26,6 +29,10 @@ onMounted(() => {
 });
 onUnmounted(() => timer && clearInterval(timer));
 const plugins = computed(() => rows.value.filter((r) => r.t === "plugin"));
+const machines = computed(() => machineChoices(rows.value)); // (the effects are not machines: UFX1..UFX4 below)
+const hasUfx = computed(() => ufxAvailable(rows.value)); // a build without user effects: no section
+const effects = computed(() => effectChoices(rows.value));
+const ufx = computed(() => ufxSlots(rows.value));
 const slots = computed(() => rows.value.filter((r) => r.t === "slot"));
 const info = computed(() => rows.value.find((r) => r.t === "plugins"));
 const SRC: Record<string, string> = { saved: "saved", sounds: "from the sounds", inherited: "inherited", imported: "imported", empty: "empty", none: "not set" };
@@ -37,6 +44,10 @@ async function run(c: string) {
   } catch (e) {
     err.value = (e as Error).message;
   }
+}
+function setUfx(n: number, id: string) {
+  const c = ufxCommand(n, id);
+  if (c) run(c);
 }
 async function clear(n: number) {
   if (await confirmAsk({ title: `Clear U${n}`, body: `U${n} plays nothing until a machine is assigned again.`, yes: "Clear" })) run(`um=clear:${n}`);
@@ -58,11 +69,30 @@ async function clear(n: number) {
           <label :for="`u${s.slot}`" class="visually-hidden">U{{ s.slot }} machine</label>
           <select :id="`u${s.slot}`" :value="s.id" @change="run(`um=assign:${s.slot}:${($event.target as HTMLSelectElement).value}`)">
             <option value="" disabled>Assign…</option>
-            <option v-for="p in plugins" :key="p.id" :value="p.id" :disabled="!p.fit">{{ p.name }} {{ p.ver }}{{ p.fit ? "" : ` (does not fit: ${p.why})` }}</option>
+            <option v-for="p in machines" :key="p.id" :value="p.id" :disabled="!p.fit">{{ p.name }} {{ p.ver }}{{ p.fit ? "" : ` (does not fit: ${p.why})` }}</option>
           </select>
           <button type="button" :disabled="!s.id" @click="clear(s.slot)">Clear</button>
         </li>
       </ul>
+      <template v-if="hasUfx">
+        <h3 class="sub">Effects (send FX user slots)</h3>
+        <ul class="slots">
+          <li v-for="s in ufx" :key="s.n">
+            <span class="num id">UFX{{ s.n }}</span>
+            <span>
+              <b>{{ s.name || "—" }}</b>
+              <span class="small"> · {{ s.missing ? "⚠ missing: not on the card" : s.muted ? `muted${s.why ? `: ${s.why}` : ""}` : s.state === "READY" ? "ready" : s.state === "EMPTY" ? "empty" : s.state.toLowerCase() }}</span>
+            </span>
+            <label :for="`ufx${s.n}`" class="visually-hidden">UFX{{ s.n }} effect</label>
+            <select :id="`ufx${s.n}`" :value="s.id" @change="setUfx(s.n, ($event.target as HTMLSelectElement).value)">
+              <option value="">None</option>
+              <option v-if="s.id && !effects.some((e) => e.id === s.id)" :value="s.id" disabled>{{ s.name }} (not installed)</option>
+              <option v-for="e in effects" :key="e.id" :value="e.id">{{ e.name }} {{ e.ver }}</option>
+            </select>
+          </li>
+        </ul>
+        <p v-if="!effects.length" class="small">No effects on the card (Library › Files, /Plugins).</p>
+      </template>
       <details>
         <summary>Packages on the card ({{ plugins.length }})</summary>
         <ul class="pk">
@@ -80,6 +110,7 @@ async function clear(n: number) {
 .slots li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0.375rem 0.625rem; }
 .slots li > span:nth-child(2) { flex: 1 1 10rem; }
 .id { font-size: 1.125rem; }
+.sub { font-size: 1rem; margin: 0.75rem 0 0.375rem; }
 .pk { margin: 0.5rem 0 0; padding-left: 1.25rem; }
 button { align-self: flex-start; }
 </style>

@@ -116,6 +116,7 @@ struct Run {
       }
       if (tick_every && (since += 12) >= tick_every) since -= tick_every, clock_ticks(1, 20833);
       um::pre_block();   // the block's transport snapshot (the platform's audio loop does this)
+      um::idle();   // the control core: the effect's fresh state when its TYPE came
       sfx->Process(st, 12, o, fx::control, m);
       for (int j = 0; j < 12; ++j) (*L)[i + j] = m[j][0] + o[j][0], (*R)[i + j] = m[j][1] + o[j][1];
     }

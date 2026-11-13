@@ -22,7 +22,8 @@
 // 64..67 the user-FX slots UFX1..UFX4, as the user machines' U1..U5: each project's slot map on the Sidecar card
 // (/.rytm/fxslots/<project>.txt) says which user effect a slot holds (fingerprint + name), and the kit stores the
 // effect's 14-bit tag (0x20 track 13), so a kit moved to a project or card where the slot holds another effect is
-// detected: that FX silent and MISSING (!NAME). No user-effect plugins exist yet: a user slot is at best MISSING.
+// detected: that FX silent and MISSING (!NAME). core/user/um.cpp writes the file (a tab and the package's id and version
+// after the line's name) and puts the effects back from it on a project load.
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -153,6 +154,11 @@ extern void (*bus_insert)(int slot, float (*y)[2], int n);
 // (mono), its wet stereo return added into y; k the slot's knobs (k[2..5] = the effect's P1..P4). Null: none (MISSING).
 extern bool (*user_ready)(int u);
 extern void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k);
+// A user TYPE that comes from another TYPE starts a fresh state: core 2 asks (user_fresh_req(u, slot), once) and the
+// control core re-inits that slot's state (voice_init, as at load); user_fresh_done(u, slot) is true when it has.
+// The return stays faded out meanwhile. Null (the Teensy, the Mac without um): no wait.
+extern void (*user_fresh_req)(int u, int slot);
+extern bool (*user_fresh_done)(int u, int slot);
 inline bool user_plays(int t) { return t >= kFirstUser && t < kFirstUser + 4 && user_ready && user_ready(t - kFirstUser); }
 // The TYPE list (0x21) changed under the Rytm: a user effect slot was assigned, emptied, loaded again, muted or
 // remapped (core/user/um.cpp). The host link sends the list, the labels and the states again (sendfx_step,
@@ -634,6 +640,11 @@ class SendFx {
       bool same;
       int t = Step(s, want, n, c, &same);
       if (!plays(t) && !user_plays(t)) continue;   // off, an effect this build lacks, or waiting for its clear: silence
+      if (fresh_wait_[s]) {   // a user effect's fresh state is being made on the control core: silent, faded out, till done
+        if (t < kFirstUser) fresh_wait_[s] = false;
+        else if (user_fresh_done && !user_fresh_done(t - kFirstUser, s)) continue;
+        else fresh_wait_[s] = false;
+      }
 #if RYTM_SENDFX_LARGE
       if (t == kStutter) {   // the insert: only its fade here, the DSP once below
         for (int i = 0; i < n; ++i) {
@@ -786,11 +797,17 @@ class SendFx {
     *same = want == cur_[s] && want_zone == zone_[s] && !kill_[s];
     if (!*same && fade_[s] <= 0) {
       kill_[s] = false;   // faded out (or silent): the left effect to be cleared, the new from clean
+      const int prev = cur_[s];
+      fresh_wait_[s] = false;
       if (plays(cur_[s]) && !small_type(cur_[s])) dirty_[s] |= Bit(cur_[s]);
       cur_[s] = kOff;
       if (!plays(want) || !(dirty_[s] & Bit(want))) {   // else: waits
         cur_[s] = want, zone_[s] = (int8_t)want_zone;
         if (small_type(want)) Enter(s, want);   // from clean, in the shared block
+        if (want >= kFirstUser && prev != want && user_fresh_req && s < 2) {   // a user effect from another TYPE: a fresh state
+          user_fresh_req(want - kFirstUser, s);
+          fresh_wait_[s] = true;
+        }
       }
       *same = want == cur_[s] && want_zone == zone_[s];
     }
@@ -928,6 +945,7 @@ class SendFx {
   static constexpr float kPanStep = 1.0f / kPanFrames;
   float sr_, a_, peak_ = 0.0f;
   uint32_t faults_ = 0;
+  bool fresh_wait_[kSlots] = {false, false};   // a user effect's fresh state requested, not yet done
 };
 
 }  // namespace fx

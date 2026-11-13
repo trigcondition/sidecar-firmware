@@ -94,7 +94,7 @@ int g_nnames = 0;
 #if CORE_MSAMP
 // 7z (2026-10-31): a project's map and notes are read by the card core (map_step, from idle()): until both are here
 // g_map and its file names stay the old project's and everything goes on as if the project had changed a moment later.
-enum : uint8_t { kMrIdle, kMrMap, kMrNotes };
+enum : uint8_t { kMrIdle, kMrMap, kMrNotes, kMrFx };
 uint8_t g_mr = kMrIdle;           // the read under way
 bool g_mr_again = false;          // a newer project meanwhile: read again when its request ends
 #endif
@@ -156,6 +156,17 @@ uint32_t g_late_n[kAll];         // late control calls since the load (every plu
 // the effects: which package each UFX plays (um=fx:<n>:<id>; in memory), its two states (send FX 1 and 2: in its
 // arena block), live while core 2 may run it (published after both states are set up), busy while core 2 runs it
 rmp_slot_entry g_fxmap[kUfx];
+// the effects' file (/.rytm/fxslots/<project>.txt; send_fx_card.cpp reads its "<tag> <name>" for the kits): a line a
+// UFX, as read or written - "<tag> <name>\t<id> <a.b.c>" when um put the effect there. A line this build did not write
+// (no tab) is kept as it is when the file is written again.
+char g_fx_file[64] = "";
+char g_fx_txt[kUfx][64];
+constexpr uint32_t kFxRaw = 4096;   // the effects' file kept whole up to this (a line this build did not write is kept as it was)
+char g_fx_raw[kFxRaw];              // ... as read or last written; g_fx_raw_n its length
+uint32_t g_fx_raw_n = 0;
+bool g_fx_big = false;              // the file is over kFxRaw: never written
+bool g_fx_locked = false;   // the file is there but a line did not parse: never written over (as g_map_locked)
+void fx_stop(int u);
 uint8_t* g_fxst[kUfx][2];
 volatile uint8_t g_fx_live[kUfx], g_fx_busy[kUfx];
 volatile uint64_t g_fx_fault[kUfx];   // core 2's fault address (the control core words the why)
@@ -307,6 +318,8 @@ int8_t g_ans[kSlots];              // a 1E waiting for its answer: its op, -1 no
 uint32_t g_ans_t[kSlots];
 uint8_t g_inst[kStore];            // the Rytm's installed list: g_pkg indices of the loadable packages
 int g_ninst = 0;
+uint8_t g_einst[kStore];           // the installed effects (API 3, UFX1..UFX4): g_pkg indices, the newest version of each id
+int g_neff = 0;
 uint32_t g_list_print = 0;
 bool g_list_owed = false;          // the Rytm asked for the list while the first scan ran: sent when it ends
 
@@ -1533,6 +1546,10 @@ void map_file(char* out, int cap) {
   core::pool_file(fn, sizeof fn);   // "/.rytm/pools/<name>.txt"
   sniprintf(out, cap, "/.rytm/slots/%s", fn + 13);
 }
+// The effects' file's name from the map's
+void fx_file(char* d, const char* map, int cap) {
+  sniprintf(d, cap, "/.rytm/fxslots/%s", map + 13);   // ("/.rytm/slots/" is 13 characters)
+}
 // The notes' name from the map's
 void notes_file(char* d, const char* map, int cap) {
   copy(d, map, cap);
@@ -1551,32 +1568,99 @@ void map_take(const char* b, int n, const char* nb, int k) {
   if (g_notes_locked) core::log("um: %s is not a notes file this build reads - kept as it is (not written)", g_notes_file);
   g_fresh = rmp_resolve_open(&g_map, &g_notes, n >= 0, notes);
 }
+// The effects' file as read (b[0..n); n -1: missing, -2: there but not read): each line a UFX. A project with no file keeps
+// what is loaded, as before (nothing is written until um changes a slot). A line with an effect ("...\t<id> <a.b.c>", the
+// slot map's fields) that does not parse, or a file that is there and could not be read (a card error): the file is
+// locked, every slot empty, the file never written over. The whole text is kept (g_fx_raw) so that the lines this build
+// does not own are written back as they were (fx_save); a file over kFxRaw bytes is read for its first lines and never
+// written. An effect not installed is not looked at here: its slot goes MISSING when it loads, the file as it was.
+void fx_take(const char* b, int n) {
+  g_fx_locked = false;
+  g_fx_big = false;
+  g_fx_raw_n = 0;
+  if (n == -1) return;
+  const bool unread = n < 0;
+  if (unread) n = 0;
+  if (n > (int)kFxRaw) {
+    g_fx_big = true;
+    n = (int)kFxRaw;
+    core::log("um: %s is over %u bytes - read, kept as it is (not written: the effects change in memory only)", g_fx_file,
+              (unsigned)kFxRaw);
+  } else {
+    memcpy(g_fx_raw, b, (size_t)n);
+    g_fx_raw_n = (uint32_t)n;
+  }
+  if (unread) g_fx_locked = true;
+  rmp_slot_entry ne[kUfx];
+  char txt[kUfx][64];
+  memset(ne, 0, sizeof ne);
+  memset(txt, 0, sizeof txt);
+  int at = 0;
+  for (int u = 0; u < kUfx && at < n && !unread; ++u) {
+    int k = 0;
+    while (at < n && b[at] != '\n') {
+      if (b[at] != '\r' && k < (int)sizeof txt[u] - 1) txt[u][k++] = b[at];
+      ++at;
+    }
+    ++at;
+    const char* tab = strrchr(txt[u], '\t');
+    if (!tab) continue;   // (an empty line, or one that only names the kit's tag)
+    char l[80];
+    rmp_slot_map m;
+    sniprintf(l, sizeof l, "U1 %s\n", tab + 1);
+    if (!rmp_slots_parse(l, (uint32_t)strlen(l), &m)) {
+      g_fx_locked = true;
+      memset(ne, 0, sizeof ne);
+      break;
+    }
+    ne[u] = m.slot[0];
+  }
+  if (g_fx_locked) {
+    memset(txt, 0, sizeof txt);
+    if (unread)
+      core::log("um: %s is there but could not be read - every UFX empty, the file kept as it is (not written)", g_fx_file);
+    else
+      core::log("um: %s is not a user-effect file this build reads (a newer Sidecar's, or damaged) - every UFX empty, the "
+                "file kept as it is (not written)", g_fx_file);
+  }
+  for (int u = 0; u < kUfx; ++u) {
+    memcpy(g_fx_txt[u], txt[u], sizeof g_fx_txt[u]);
+    if (!strcmp(ne[u].id, g_fxmap[u].id) && ne[u].version == g_fxmap[u].version) continue;
+    fx_stop(u);   // (core 2 out of it before its assignment changes)
+    g_fxmap[u] = ne[u];
+    __atomic_store_n(&core::fx::user[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
+  }
+}
 #if CORE_MSAMP
 cardq::Req g_mrq;
-char g_mr_map[64], g_mr_notes[64];   // the files read (g_map_file, g_notes_file once both are here)
+char g_mr_map[64], g_mr_notes[64], g_mr_fx[64];   // the files read (g_map_file, g_notes_file, g_fx_file once all are here)
 char g_mr_b[2][512];
-int g_mr_n[2];
+char g_mr_fxb[kFxRaw + 1];   // (one byte more: a file over kFxRaw shows)
+int g_mr_n[3];
 // The map's read, a request a file (kSmallReq: recover, open, read, close): the map, the notes, then both taken at once.
 // A save of the file still on its way lands first (a project left and come back to at once). The request's own step:
 // a newer project meanwhile (g_mr_again) reads again from the map.
 void map_step() {
   while (g_mr) {
-    int w = g_mr == kMrMap ? 0 : 1;
-    const char* path = w ? g_mr_notes : g_mr_map;
+    int w = g_mr == kMrMap ? 0 : g_mr == kMrNotes ? 1 : 2;
+    const char* path = w == 2 ? g_mr_fx : w ? g_mr_notes : g_mr_map;
     if (g_mrq.state == cardq::kFree && core::fmt::pending(path)) return;
     if (!core::card_ok) g_mr_n[w] = -1;
-    else if (!cardq::async(&g_mrq, cardq::kSmallReq, nullptr, path, 0, (uint8_t*)g_mr_b[w], sizeof g_mr_b[w])) return;
+    else if (!cardq::async(&g_mrq, cardq::kSmallReq, nullptr, path, 0, w == 2 ? (uint8_t*)g_mr_fxb : (uint8_t*)g_mr_b[w],
+                           w == 2 ? (uint32_t)sizeof g_mr_fxb : (uint32_t)sizeof g_mr_b[w])) return;
     else g_mr_n[w] = g_mrq.got;
     if (g_mr_again) {
       g_mr_again = false;
       g_mr = kMrMap;
-    } else if (!w) {
-      g_mr = kMrNotes;
+    } else if (w < 2) {
+      g_mr = w ? kMrFx : kMrNotes;
     } else {
       g_mr = kMrIdle;
       copy(g_map_file, g_mr_map, sizeof g_map_file);
       copy(g_notes_file, g_mr_notes, sizeof g_notes_file);
+      copy(g_fx_file, g_mr_fx, sizeof g_fx_file);
       map_take(g_mr_b[0], g_mr_n[0], g_mr_b[1], g_mr_n[1]);
+      fx_take(g_mr_fxb, g_mr_n[2]);
       core::log("um: project %s, map %s%s", core::project, g_map_file, g_fresh ? " (none: fresh)" : "");
     }
   }
@@ -1584,6 +1668,7 @@ void map_step() {
 void map_read() {   // (no card core, as at boot: done here; with one from idle())
   map_file(g_mr_map, sizeof g_mr_map);
   notes_file(g_mr_notes, g_mr_map, sizeof g_mr_notes);
+  fx_file(g_mr_fx, g_mr_map, sizeof g_mr_fx);
   if (g_mr) g_mr_again = true;
   else g_mr = kMrMap;
   if (!cardq::worker()) map_step();
@@ -1600,12 +1685,16 @@ int read_small(const char* path, char* b, int cap) {
 void map_read() {
   map_file(g_map_file, sizeof g_map_file);
   notes_file(g_notes_file, g_map_file, sizeof g_notes_file);
-  char b[512], nb[512];
+  fx_file(g_fx_file, g_map_file, sizeof g_fx_file);
+  char b[512], nb[512], fb[512];
   core::fmt::recover(g_map_file);     // 0.3.0: a cut between write_atomic's renames - the previous map back (fmt.h)
   core::fmt::recover(g_notes_file);
+  core::fmt::recover(g_fx_file);
   int n = read_small(g_map_file, b, sizeof b);
   int k = read_small(g_notes_file, nb, sizeof nb);
+  int f = read_small(g_fx_file, fb, sizeof fb);
   map_take(b, n, nb, k);
+  fx_take(fb, f);
   core::log("um: project %s, map %s%s", core::project, g_map_file, g_fresh ? " (none: fresh)" : "");
 }
 #endif
@@ -1635,6 +1724,51 @@ bool map_save() {   // the map (what an older build reads), then the notes
   if (ok && !g_notes_locked && !write_whole(g_notes_file, nt, n)) core::log("um: %s not written", g_notes_file);
   g_fresh = false;
   return ok;
+}
+// The effects' file written whole (an atomic write, as the map's): the text as read, UFX u's line (the changed one)
+// replaced and the lines a file with fewer had not yet written from the loaded ones; every other byte is as it was, a
+// line this build does not own (a long one, one past the fourth) too. Not over a file that did not parse, could not be
+// read or is over kFxRaw, and never cut: a result over kFxRaw is refused.
+bool fx_save(int u) {
+  if (g_fx_locked) {
+    core::log("um: %s not written: it did not parse or could not be read (the effects change in memory only)", g_fx_file);
+    return false;
+  }
+  if (g_fx_big) {
+    core::log("um: %s not written: it is over %u bytes (the effects change in memory only)", g_fx_file, (unsigned)kFxRaw);
+    return false;
+  }
+  static char out[kFxRaw + kUfx * 66];
+  uint32_t o = 0, at = 0;
+  for (int i = 0; i < kUfx; ++i) {
+    if (i != u && at < g_fx_raw_n) {   // the line as it is
+      uint32_t e = at;
+      while (e < g_fx_raw_n && g_fx_raw[e] != '\n') ++e;
+      bool nl = e < g_fx_raw_n;
+      memcpy(out + o, g_fx_raw + at, e - at);
+      o += e - at;
+      if (nl || i + 1 < kUfx) out[o++] = '\n';
+      at = e + 1;
+    } else {   // the changed line, or one the file did not have
+      if (at < g_fx_raw_n) {
+        while (at < g_fx_raw_n && g_fx_raw[at] != '\n') ++at;
+        ++at;
+      }
+      o += (uint32_t)sniprintf(out + o, sizeof out - o, "%s\n", g_fx_txt[i]);
+    }
+  }
+  if (at < g_fx_raw_n) {   // the lines after the fourth
+    memcpy(out + o, g_fx_raw + at, g_fx_raw_n - at);
+    o += g_fx_raw_n - at;
+  }
+  if (o > kFxRaw) {
+    core::log("um: %s not written: the change would make it over %u bytes (the effects change in memory only)", g_fx_file,
+              (unsigned)kFxRaw);
+    return false;
+  }
+  memcpy(g_fx_raw, out, o);
+  g_fx_raw_n = o;
+  return write_whole(g_fx_file, out, o);
 }
 void note_log(int s, const char* what) {
   const rmp_slot_note& e = g_notes.slot[s];
@@ -1697,11 +1831,13 @@ void project_reload() {
 // ---- the scan of the card's packages
 void list_build() {   // the Rytm's list and the unique names, from g_pkg
   g_ninst = 0;
+  g_neff = 0;
   for (int i = 0; i < g_npkg; ++i) {
     Pkg& e = g_pkg[i];
     memset(e.name, 0, sizeof e.name);
     memcpy(e.name, e.desc.name, 10);
     e.renamed = false;
+    if (e.ok && !e.older && (e.hflags & RMP_HF_EFFECT) && g_neff < kStore) g_einst[g_neff++] = (uint8_t)i;   // (the USER SLOTS page's UFX rows)
     if (!e.ok || e.older || (e.hflags & RMP_HF_EFFECT)) continue;   // (an older version, an effect: not in the Rytm's list)
     char base[11];
     memcpy(base, e.name, sizeof base);
@@ -2210,26 +2346,35 @@ const char* kind_wrong(int s, const rmp3_plugin* p3) {
 // ---- API 3's user effects: the states, the stop, core 2's render
 // An effect's two states (send FX 1 and 2), set up by the control core before core 2 may run them: zeroed, voice_init,
 // voice_attach (place SEND, voice -1, instance 0 / 1, arena parts 0 / 1). False: a fault (BAD, the job ended).
-bool fx_states(int s) {
+// (one state k of effect s; fault: false, with the fault's address in *pcout)
+bool fx_state_init(int s, int k, uint64_t* pcout) {
   int u = s - kSlots;
   const V3& x = g_v3[s];
   const rmp_plugin* p = x.p;
+  void* st = g_fxst[u][k];
+  memset(st, 0, g_slot[s].state_bytes);
+  for (int j = 0; j < 16; ++j) g_fx_p[u][k][j] = -1.0f;   // (the first block: every knob changed)
+  for (int q = 0; q < 3; ++q) g_fx_ev[u][k][q] = g_xp_evn[q];   // (no old edges)
+  uint64_t pc = 0;
+  uint32_t us = 0;
+  rmp3_voice v;
+  v.shared = x.shared, v.shared_bytes = x.shared_bytes;
+  v.arena = x.voice_bytes && (uint32_t)k < x.states ? x.voices + (size_t)k * x.voice_bytes : nullptr;
+  v.arena_bytes = v.arena ? x.voice_bytes : 0;
+  v.slot = 64 + u, v.voice = -1, v.instance = k, v.place = RMP3_AT_SEND;
+  if (guarded([&] {
+        if (p->voice_init) p->voice_init(st);
+        if (x.p3->voice_attach) x.p3->voice_attach(st, &v);
+      }, &pc, &us)) {
+    *pcout = pc;
+    return false;
+  }
+  return true;
+}
+bool fx_states(int s) {
   for (int k = 0; k < 2; ++k) {
-    void* st = g_fxst[u][k];
-    memset(st, 0, g_slot[s].state_bytes);
-    for (int j = 0; j < 16; ++j) g_fx_p[u][k][j] = -1.0f;   // (the first block: every knob changed)
-    for (int q = 0; q < 3; ++q) g_fx_ev[u][k][q] = g_xp_evn[q];   // (no old edges)
     uint64_t pc = 0;
-    uint32_t us = 0;
-    rmp3_voice v;
-    v.shared = x.shared, v.shared_bytes = x.shared_bytes;
-    v.arena = x.voice_bytes && (uint32_t)k < x.states ? x.voices + (size_t)k * x.voice_bytes : nullptr;
-    v.arena_bytes = v.arena ? x.voice_bytes : 0;
-    v.slot = 64 + u, v.voice = -1, v.instance = k, v.place = RMP3_AT_SEND;
-    if (guarded([&] {
-          if (p->voice_init) p->voice_init(st);
-          if (x.p3->voice_attach) x.p3->voice_attach(st, &v);
-        }, &pc, &us)) {
+    if (!fx_state_init(s, k, &pc)) {
       char w[64], at[32];
       fault_where(s, pc, at, sizeof at);
       sniprintf(w, sizeof w, "crashed in voice_init / voice_attach at %s", at);
@@ -2238,6 +2383,62 @@ bool fx_states(int s) {
     }
   }
   return true;
+}
+// A user TYPE that came from another TYPE starts a fresh state (plan item 12). Core 2 (the send FX, which never makes a
+// control call) asks by fx_fresh_req and plays nothing in that slot till fx_fresh_done; the control core (fx_fresh_pass,
+// each idle pass) zeroes that state's arena part (in kZeroStep pieces, as the load does), then does what the load does
+// to a state: zero, voice_init, voice_attach, guarded. Core 2 does not render a state it is waiting for.
+uint32_t g_fx_req[kUfx][2], g_fx_ack[kUfx][2];   // requests made by core 2 / answered by the control core
+uint32_t g_fx_zoff[kUfx][2];                     // the control core's progress zeroing the arena part
+uint32_t g_fx_req_us[kUfx][2];                   // when core 2 made the latest request (only read for the log below)
+uint32_t g_fx_waitlog[kUfx][2];                  // the request the control core logged as waiting long (once each)
+constexpr uint32_t kFxFreshLogUs = 250000;       // a request that waits longer than this is logged
+void fx_fresh_req(int u, int sl) {
+  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return;
+  __atomic_store_n(&g_fx_req_us[u][sl], core::now_us(), __ATOMIC_RELAXED);   // (a counter read; the log is the control core's)
+  __atomic_add_fetch(&g_fx_req[u][sl], 1u, __ATOMIC_SEQ_CST);
+}
+bool fx_fresh_done(int u, int sl) {
+  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return true;
+  return __atomic_load_n(&g_fx_ack[u][sl], __ATOMIC_SEQ_CST) == __atomic_load_n(&g_fx_req[u][sl], __ATOMIC_SEQ_CST);
+}
+bool fx_fresh_pass() {
+  for (int u = 0; u < kUfx; ++u)
+    for (int sl = 0; sl < 2; ++sl) {
+      uint32_t r = __atomic_load_n(&g_fx_req[u][sl], __ATOMIC_SEQ_CST);
+      if (r == g_fx_ack[u][sl]) continue;
+      const int s = kSlots + u;
+      const uint32_t waited = core::now_us() - __atomic_load_n(&g_fx_req_us[u][sl], __ATOMIC_RELAXED);
+      if (waited > kFxFreshLogUs && g_fx_waitlog[u][sl] != r) {   // (a request the slot has been silent for: once)
+        g_fx_waitlog[u][sl] = r;
+        core::log("um: UFX%d send %d: fresh state waited %u ms for the control core (%s; silent till then)", u + 1, sl + 1,
+                  (unsigned)(waited / 1000), g_fxmap[u].id[0] ? g_fxmap[u].id : "-");
+      }
+      const V3& x = g_v3[s];
+      // not live (muted, stopped, being loaded: the load makes the states anew), or core 2 left in it: nothing to do
+      if (!__atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) || muted(s) || g_fx_dead[u] || g_slot[s].st != RMP_SLOT_READY) {
+        g_fx_zoff[u][sl] = 0;
+        __atomic_store_n(&g_fx_ack[u][sl], r, __ATOMIC_SEQ_CST);
+        continue;
+      }
+      uint8_t* ar = x.voice_bytes && (uint32_t)sl < x.states ? x.voices + (size_t)sl * x.voice_bytes : nullptr;
+      if (ar && g_fx_zoff[u][sl] < x.voice_bytes) {
+        uint32_t n = x.voice_bytes - g_fx_zoff[u][sl];
+        if (n > kZeroStep) n = kZeroStep;
+        memset(ar + g_fx_zoff[u][sl], 0, n);
+        g_fx_zoff[u][sl] += n;
+        return true;   // (the next pass goes on)
+      }
+      g_fx_zoff[u][sl] = 0;
+      uint64_t pc = 0;
+      if (!fx_state_init(s, sl, &pc)) {
+        g_fx_fault[u] = pc ? pc : 1;
+        __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);   // (fx_faults words the why)
+      }
+      __atomic_store_n(&g_fx_ack[u][sl], r, __ATOMIC_SEQ_CST);
+      return true;
+    }
+  return false;
 }
 // UFX u READY: the TYPE list's name and the kits' tag (send_fx.h), the name first, the tag released last
 void fx_named(int u) {
@@ -2923,10 +3124,17 @@ struct Js {
 // loading, else the reason ("!ROOM NPPR")
 void slot_shown(int s, char* out, int cap) {
   rmp_desc d;
-  const rmp_desc* p = slot_desc(s, &d);
+  const rmp_desc* p = nullptr;
+  if (s < kSlots) p = slot_desc(s, &d);
+  else if (entry_of(s).id[0]) {   // a user effect: its package's description, else what the id says (slot_desc is the machines')
+    const int k = find_slot(s);
+    if (k >= 0) d = g_pkg[k].desc, memcpy(d.name, g_pkg[k].name, sizeof g_pkg[k].name);
+    else rmp_desc_from_id(entry_of(s).id, &d);
+    p = &d;
+  }
   rmp_slot_state st = g_slot[s].st;
   const char* nm = p ? p->name : "";
-  if (!g_map.slot[s].id[0]) copy(out, "---", cap);
+  if (!entry_of(s).id[0]) copy(out, "---", cap);
   else if (st == RMP_SLOT_READY) copy(out, nm, cap);
   else if (st == RMP_SLOT_LOADING) sniprintf(out, cap, "%.8s...", nm);
   else {
@@ -3046,6 +3254,7 @@ void publish() {
   j.put(","); j.num("listed", (uint32_t)g_ninst); j.put(","); j.num("gen", g_meta.store_gen);
   j.put(",\"dir\":"); j.str(g_dir);
   j.put(",\"scanning\":"); j.put(g_scan ? "true" : "false");
+  j.put(","); j.num("ufx_slots", (uint32_t)kUfx);   // API 3: this build has the user effects UFX1..UFX4 (the web page's Effects card)
   j.put("},");
   sniprintf(t, sizeof t, "{\"t\":\"mem\",\"k\":\"code\",\"size\":%u,\"used\":%u},", (unsigned)(ex ? ex->total : 0),
             (unsigned)g_arena_used);
@@ -3082,7 +3291,21 @@ const char* ui_slot(int s, char* name, int cap) {
   slot_shown(s, name, cap);
   return g_map.slot[s].id;
 }
-const core::ui::RemoteSlots kUiSlots = {ui_machines, ui_machine, ui_slot, command};
+// The effects: the installed list (API 3 effect packages), and UFX u (0..3) as the display shows it
+int ui_effects() { return g_neff; }
+bool ui_effect(int i, char* name, int cap, const char** id) {
+  if (i < 0 || i >= g_neff) return false;
+  const Pkg& e = g_pkg[g_einst[i]];
+  copy(name, e.name, cap);
+  *id = e.id;
+  return true;
+}
+const char* ui_ufx(int u, char* name, int cap) {
+  if (u < 0 || u >= kUfx) { copy(name, "", cap); return ""; }
+  slot_shown(kSlots + u, name, cap);
+  return g_fxmap[u].id;
+}
+const core::ui::RemoteSlots kUiSlots = {ui_machines, ui_machine, ui_slot, command, ui_effects, ui_effect, ui_ufx};
 
 }  // namespace
 
@@ -3091,12 +3314,14 @@ void rekey(const char* key) {
   if (g_mr) {   // a read under way: of the name just moved; g_map_file stays g_map's until it ends
     sniprintf(g_mr_map, sizeof g_mr_map, "/.rytm/slots/%s.txt", key);
     notes_file(g_mr_notes, g_mr_map, sizeof g_mr_notes);
+    fx_file(g_mr_fx, g_mr_map, sizeof g_mr_fx);
     g_mr_again = true;
     return;
   }
 #endif
   sniprintf(g_map_file, sizeof g_map_file, "/.rytm/slots/%s.txt", key);
   notes_file(g_notes_file, g_map_file, sizeof g_notes_file);
+  fx_file(g_fx_file, g_map_file, sizeof g_fx_file);
 }
 
 void begin(const Exec* e, const char* d) {
@@ -3146,6 +3371,8 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_render2 = on_render2;
   core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)
   core::fx::user_run = fx_run;
+  core::fx::user_fresh_req = fx_fresh_req;
+  core::fx::user_fresh_done = fx_fresh_done;
   core::fx::user_labels = fx_labels;
   core::fx::user_loaded = [](int u) { return u >= 0 && u < kUfx && g_slot[kSlots + u].st == RMP_SLOT_READY && g_fxmap[u].id[0] != 0; };
   core::hooks.slot_ask = on_ask;
@@ -3215,6 +3442,7 @@ bool idle() {
   } else did = scan_wait();
   { UMT("um.notes"); notes_overdue(); }
   fx_faults();
+  if (fx_fresh_pass()) did = true;
   { UMT("um.upool"); if (upool_pass()) did = true; }
   if (g_pre_again && (int32_t)(core::now_ms() - g_pre_again_ms) >= 0 && !core::fmt::pending(g_pre_path)) {   // a preset written: the lists again
     g_pre_again = false;
@@ -3391,7 +3619,8 @@ void held_run() {   // the map is here
   g_nheld_cmd = 0;
 }
 bool map_cmd(const char* c) {   // a command that changes the map
-  return !strncmp(c, "um=assign:", 10) || !strncmp(c, "um=clear:", 9) || !strcmp(c, "um=empty") || !strncmp(c, "um=put:", 7);
+  return !strncmp(c, "um=assign:", 10) || !strncmp(c, "um=clear:", 9) || !strcmp(c, "um=empty") || !strncmp(c, "um=put:", 7) ||
+         !strncmp(c, "um=fx:", 6);   // (um=fx: the project's file, which is the new project's till its read ends)
 }
 }  // namespace
 #endif
@@ -3434,6 +3663,21 @@ bool command(const char* c, char* out, int cap) {
     }
     __atomic_store_n(&core::fx::user[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
     g_need |= 1u << (kSlots + u);
+    g_fx_txt[u][0] = 0;
+    if (m.id[0]) {   // the project's file: the kit's tag and name, then the package as the slot map names it
+      rmp_slot_map one;
+      memset(&one, 0, sizeof one);
+      one.slot[0] = m;
+      char f[64], nm[11];
+      rmp_slots_format(&one, f, sizeof f);   // "U1 <id> <a.b.c>\n"
+      for (char* c = f; *c; ++c)
+        if (*c == '\n') *c = 0;
+      copy(nm, g_pkg[find_pkg(id)].desc.name, sizeof nm);
+      for (char* c = nm; *c; ++c)
+        if ((uint8_t)*c < 0x20) *c = '_';
+      sniprintf(g_fx_txt[u], sizeof g_fx_txt[u], "%04x %s\t%s", (unsigned)core::fx::fx_tag(nm), nm, f + 3);
+    }
+    if (!fx_save(u)) core::log("um: %s not written (UFX%d changes until the next project load)", g_fx_file, u + 1);
     sniprintf(out, cap, "UFX%d: %s", u + 1, m.id[0] ? m.id : "empty");
     return true;
   }

@@ -88,8 +88,8 @@ level clip runs per channel. Not yet: poly instances of a stereo plugin render m
 
 One ABI for machines and effects: an effect is an API 3 only package (`api 3`, `RMP3_KIND_EFFECT`); the same loader,
 checks, arena and guard as a machine. The load targets UFX1..UFX4 sit next to U1..U5 in core/user/um.cpp (indices 5..8,
-never in the Rytm's slot protocol). `um=fx:<n>:<id>` puts an installed effect in UFX`n` (in memory, the TYPE list's
-name and tag in `fx::user[]`); `um=fx:<n>:-` empties it, `um=reload:f<n>` loads it again. A machine slot refuses an
+never in the Rytm's slot protocol). `um=fx:<n>:<id>` puts an installed effect in UFX`n` (kept per project, item 11; the TYPE list's
+name and tag in `fx::user[]`); `um=fx:<n>:-` empties it, `um=reload:f<n>` loads it again. Two pickers send the same command: the USER SLOTS page on the Rytm's screen (rows UFX1..UFX4 after U1..U5, knob B through the installed effects, `---` first, YES = `um=fx`; docs/user-machines-pi.md) and the Effects section of the web page's Voices › User machines card (an effect per slot, or None; the host's `/um` JSON says `ufx_slots` and marks effect packages `effect`). A machine slot refuses an
 effect and an effect slot a machine (BAD, in words). An effect gets two states, send FX 1 and send FX 2, set up on the
 control core before core 2 may run them (`voice_init`, `voice_attach` with place `RMP3_AT_SEND`, voice -1, instance
 0 / 1, an arena part each).
@@ -125,8 +125,7 @@ that goes away (unloaded, muted) fades in again when it comes back. A rescan fol
 with a bounded wait (5 ms): an effect that never returns is left behind (its memory never reused) and core 3 goes on,
 so its own watchdog sees core 2 stuck and the board restarts, as for a hung voice.
 
-Not yet: the INSERT, bus and master positions (part 8), the slot map file for UFX (`/.rytm/fxslots/` holds tag and
-name only; um's assignment is in memory), a fresh state on a TYPE change back to the same effect.
+Not yet: the INSERT, bus and master positions (part 8). (A fresh state on a TYPE change to the effect: built, item 12.)
 
 Tests: core/tests/test_api3.cpp (the probe plugin plugins/api3_test in six variants, kept built in
 core/tests/api3_pkgs), core/tests/test_api3_compat.cpp (below), tools/tests/test_rmp_api.c,
@@ -181,9 +180,25 @@ Each: what the page says, what the engine does, why. Listed for the owner.
     modulation. A send-slot effect runs on core 2, where no control call can reach it, so its knobs come in the
     block (the send slot's P2..P5 as P1..P4) and `params` is not called there. The host does not offer `BLOCK_P` to
     machines yet (they still get `params`). This is the page's own design for modulation, used for one more reason.
-11. **UFX assignments are in memory** (`um=fx`), not yet in `/.rytm/fxslots/<project>.txt`: that file names an effect
-    by tag and name only, and the Rytm's kit stores the tag; resolving a tag to an installed package (as U1..U5's
-    fingerprints are) is the next step, with the web page.
-12. **An effect's state is not fresh on a TYPE change back.** The page says a TYPE change starts a fresh state.
-    `voice_init` is a control call and the send FX's TYPE changes on core 2; a fresh state needs a request from core 2
-    to core 3 and a fade that waits for it. For now an effect keeps its state (a delay's tail can come back).
+11. **UFX assignments are kept per project** in `/.rytm/fxslots/<project>.txt` (the file the send FX already reads for
+    the kits' tags): a line a UFX, `<tag 4 hex> <name>` as before, and for an assignment of `um=fx` the package
+    after a tab: `<tag> <name>\t<id> <a.b.c>` (the slot map's id and version fields, the same exact-version-then-newest
+    resolution as U1..U5). Not in `/.rytm/slots/<project>.txt`: an older build fails that whole map on a line it does
+    not know, and would lose U1..U5. `um=fx` (set or empty) writes the file at once, atomically (as the slot map);
+    it is read where the slot map is read (boot, a project change) and follows a rename or SAVE AS (`um::rekey`). A
+    package that is not installed: the slot MISSING (logged), the file as it is, so the assignment returns when the
+    package is installed; a later change of another slot keeps that line. A line that does not parse: logged, every
+    UFX empty, the file never written over (as the slot map). A project with no file keeps what is loaded until
+    `um=fx` changes a slot (which writes its file). A line without a tab (a hand-made or bundled `<tag> <name>`)
+    assigns nothing and is kept as it is. Core/tests/test_ufx_persist.cpp restarts the program on the same card.
+12. **An effect's state is fresh on a TYPE change to it.** A send slot's TYPE that changes to a user effect
+    (UFX1..UFX4) from anything else starts that slot's state of the effect as after `voice_init`: a delay's old tail
+    does not come back. `voice_init` is a control call and the send FX's TYPE changes on core 2, so core 2 asks and the
+    control core does it: when the TYPE fade has run out and the new TYPE is taken, core 2 counts a request for
+    (effect, send slot) and plays nothing in that slot (the return stays faded out, the effect is not rendered); the
+    control core, in its idle pass, zeroes that state's arena part in 256 KB pieces, zeroes the state and calls
+    `voice_init` and `voice_attach` guarded (as the load does), then answers; core 2 then fades the return in as it
+    does for any TYPE. Counters only, no lock or allocation on core 2. A TYPE that does not change (a knob turn, a kit
+    reload with the same TYPE) keeps the state. A fault in that `voice_init` mutes the effect (as a fault in a render).
+    The wait is the control core's latency (an idle pass, a few ms); not served at all if the effect is not loaded or
+    muted (then the TYPE plays nothing anyway). The Teensy and the Mac builds without `um` have no hooks: no wait.

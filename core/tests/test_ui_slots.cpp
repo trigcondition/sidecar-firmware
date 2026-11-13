@@ -109,6 +109,8 @@ struct Model {
   std::vector<std::pair<std::string, std::string>> list;   // name, id
   std::string slot[5];                                     // the map's id
   std::vector<std::string> cmds;
+  std::vector<std::pair<std::string, std::string>> eff;    // the installed effects: name, id
+  std::string ufx[4];                                      // UFX1..UFX4's id
 };
 static Model M;
 static const RemoteSlots kModel = {
@@ -144,6 +146,38 @@ static const RemoteSlots kModel = {
         return true;
       }
       return false;
+    }};
+
+// The same platform with user effects (UFX1..UFX4): the three hooks added at the end
+static const RemoteSlots kModelFx = {
+    kModel.machines,
+    kModel.machine,
+    kModel.slot,
+    [](const char* c, char* o, int cap) {
+      if (!strncmp(c, "um=fx:", 6)) {
+        const int u = c[6] - '1';
+        M.cmds.emplace_back(c);
+        M.ufx[u] = strcmp(c + 8, "-") ? c + 8 : "";
+        snprintf(o, (size_t)cap, "UFX%d: %s", u + 1, M.ufx[u].empty() ? "empty" : M.ufx[u].c_str());
+        return true;
+      }
+      return kModel.command(c, o, cap);
+    },
+    [] { return (int)M.eff.size(); },
+    [](int i, char* name, int cap, const char** id) {
+      if (i < 0 || i >= (int)M.eff.size()) return false;
+      snprintf(name, (size_t)cap, "%s", M.eff[(size_t)i].first.c_str());
+      *id = M.eff[(size_t)i].second.c_str();
+      return true;
+    },
+    [](int u, char* name, int cap) -> const char* {
+      const std::string& id = M.ufx[u];
+      std::string nm = "---";
+      for (auto& e : M.eff)
+        if (e.second == id) nm = e.first;
+      if (!id.empty() && nm == "---") nm = "!" + id.substr(id.rfind('.') + 1);
+      snprintf(name, (size_t)cap, "%s", nm.c_str());
+      return M.ufx[u].c_str();
     }};
 
 static void open_page() {
@@ -311,6 +345,113 @@ static void test_model() {
   M = Model();
 }
 
+// ---- 1b. the model with user effects: UFX1..UFX4 after U1..U5, the list scrolling
+static void test_model_fx() {
+  M = Model();
+  M.list = {{"NUSAW", "rytm.nusaw"}, {"VOX", "rytm.vox"}};
+  M.eff = {{"PHASER", "fx.phaser"}, {"BBD", "fx.bbd"}};
+  M.slot[0] = "rytm.vox";
+  M.ufx[1] = "fx.bbd";
+  remote_slots(&kModelFx);
+  open_page();
+  CHECK(ring_to_slots(40) >= 3);
+  // U1..U5 first, as without effects: the window shows rows 0..4
+  CHECK(shown("U1") && shown("U5") && !shown("UFX1") && shown("VOX") && shown("B: MACHINE  YES: SET"));
+  png("slots_fx_1_top.png");
+  // U1..U5 behave as before: knob B lists machines, YES is um=assign
+  turn(1, 1);
+  CHECK(slots_page_pick() == 2 && shown("VOX?"));   // (U1 plays VOX, entry 2: a step on is the end of the machines)
+  turn(1, -1);
+  CHECK(slots_page_pick() == 1 && shown("NUSAW?"));
+  key(kYes);
+  CHECK(M.cmds.size() == 1 && M.cmds[0] == "um=assign:1:rytm.nusaw" && M.slot[0] == "rytm.nusaw");
+  M.cmds.clear();
+  g_t += 2100, wait_ms(2100);   // ("U1 = NUSAW" gone)
+  tick();
+  // DOWN to UFX1 (row 5): the window scrolls, the selected row is always there
+  for (int i = 0; i < 4; ++i) key(kDown);
+  CHECK(slots_page_row() == 4 && shown("U5") && shown("U1"));
+  key(kDown);
+  CHECK(slots_page_row() == 5 && shown("UFX1") && shown("U5") && !shown("U1"));
+  png("slots_fx_2_ufx1.png");
+  CHECK(shown("---") && shown("B: EFFECT  YES: SET"));
+  for (int i = 0; i < 3; ++i) key(kDown);
+  CHECK(slots_page_row() == 8 && shown("UFX4") && shown("UFX2") && shown("BBD") && !shown("U4"));
+  for (int i = 0; i < 6; ++i) key(kDown);
+  CHECK(slots_page_row() == 8);   // clamped at UFX4
+  turn(0, -1);
+  CHECK(slots_page_row() == 7 && shown("UFX4") == true);
+  for (int i = 0; i < 7; ++i) key(kUp);
+  CHECK(slots_page_row() == 0 && shown("U1") && !shown("UFX1"));   // back at the top: U1 visible
+  for (int i = 0; i < 5; ++i) turn(0, 1);   // knob A also scrolls
+  CHECK(slots_page_row() == 5 && shown("UFX1"));
+  // knob B on UFX1: effects with "---" first, from what it plays (empty)
+  turn(1, 1);
+  CHECK(slots_page_pick() == 1 && shown("PHASER?") && shown("YES: SET UFX1  NO: KEEP"));
+  png("slots_fx_3_pick.png");
+  turn(1, 1);
+  CHECK(slots_page_pick() == 2 && shown("BBD?"));
+  turn(1, 5);
+  CHECK(slots_page_pick() == 2);   // clamped at the last effect (the machines are not in this list)
+  turn(1, -1);
+  CHECK(slots_page_pick() == 1);
+  key(kNo);
+  CHECK(slots_page_pick() == -1 && M.cmds.empty() && shown("KEPT"));
+  turn(1, 1);
+  key(kYes);   // YES: the console's um=fx
+  CHECK(M.cmds.size() == 1 && M.cmds[0] == "um=fx:1:fx.phaser" && M.ufx[0] == "fx.phaser" && slots_page_pick() == -1);
+  CHECK(shown("UFX1 = PHASER"));
+  tick();
+  CHECK(shown("PHASER"));
+  // "---" + YES empties it
+  turn(1, -1);
+  CHECK(slots_page_pick() == 0 && shown("---?") && shown("YES: CLEAR UFX1  NO: KEEP"));
+  key(kYes);
+  CHECK(M.cmds.size() == 2 && M.cmds[1] == "um=fx:1:-" && M.ufx[0].empty() && shown("UFX1 CLEARED"));
+  // a pick does not survive a row change
+  turn(1, 1);
+  key(kDown);
+  CHECK(slots_page_row() == 6 && slots_page_pick() == -1);
+  // UFX2 plays BBD: its row says so; the knob steps on from it
+  CHECK(shown("BBD"));
+  turn(1, -1);   // from BBD (entry 2): one back is PHASER
+  CHECK(slots_page_pick() == 1 && shown("PHASER?"));
+  key(kYes);
+  CHECK(M.cmds.size() == 3 && M.cmds[2] == "um=fx:2:fx.phaser");
+  // a missing effect: "!NAME" as the box shows it
+  M.ufx[2] = "fx.gone";
+  key(kDown);
+  tick();
+  CHECK(slots_page_row() == 7 && shown("!gone"));
+  // an empty effect list says so; "---" still clears
+  M.eff.clear();
+  g_t += 2100, wait_ms(2100);
+  tick();
+  CHECK(shown("NO EFFECTS IN /PLUGINS"));
+  key(kYes);
+  CHECK(M.cmds.size() == 3 && shown("NO EFFECTS IN /PLUGINS"));
+  turn(1, 1);
+  CHECK(slots_page_pick() == 0);
+  key(kYes);
+  CHECK(M.cmds.size() == 4 && M.cmds[3] == "um=fx:3:-" && M.ufx[2].empty());
+  // the machines rows do not see the effects (and the other way round)
+  M.eff = {{"PHASER", "fx.phaser"}};
+  for (int i = 0; i < 9; ++i) key(kUp);
+  turn(1, 1);
+  CHECK(slots_page_row() == 0 && shown("VOX?"));
+  key(kNo);
+  // a platform without effects: the rows stop at U5
+  remote_slots(&kModel);
+  open_page();
+  CHECK(ring_to_slots(40) >= 3);
+  for (int i = 0; i < 12; ++i) key(kDown);
+  CHECK(slots_page_row() == 4 && !shown("UFX1") && shown("U5"));
+  printf("ui slots with effects: UFX1..UFX4 after U1..U5, knob B through the effects, YES um=fx, scrolling keeps the row\n");
+  remote_slots(nullptr);
+  remote_reset();
+  M = Model();
+}
+
 #if defined(__aarch64__)
 // ---- 2. the real user machines (a package as test_um_scan.cpp's, smaller)
 static std::string package(const char* id) {
@@ -387,7 +528,7 @@ static bool same(const um::SlotView& a, const um::SlotView& b) {
 }
 // The page sets slot s (0..4) to installed entry e (-1: cleared) with knob B and YES: from the slot's own entry
 static void page_set(int s, int e) {
-  for (int i = 0; i < 6; ++i) key(kUp);
+  for (int i = 0; i < 10; ++i) key(kUp);
   for (int i = 0; i < s; ++i) key(kDown);
   CHECK(slots_page_row() == s);
   turn(1, -40);   // to "---"
@@ -518,6 +659,80 @@ static void test_um(bool a4) {
   device::reset();
   remote_reset();
 }
+
+// ---- 3. the real user effects (Plugin API 3 packages of tests/api3_pkgs): UFX1..UFX4 on the page are the console's um=fx
+static std::string file_of(const char* path) {
+  FILE* f = fopen(path, "rb");
+  CHECK(f);
+  std::string b;
+  char t[4096];
+  size_t n;
+  while ((n = fread(t, 1, sizeof t, f)) > 0) b.append(t, n);
+  fclose(f);
+  return b;
+}
+static void test_um_fx() {
+  char o[200];
+  hooks.to_rytm = ::out;
+  device::reset();
+  const int machines0 = um::installed();
+  put("/Plugins/ufx_pingpong.rmp", file_of("tests/api3_pkgs/ufx_pingpong.a64.rmp"));
+  put("/Plugins/api3_fx.rmp", file_of("tests/api3_pkgs/api3_fx.a64.rmp"));
+  CHECK(um::command("um=rescan", o, sizeof o));
+  idle_all();
+  CHECK(um::installed() == machines0);   // (effects are not machines)
+  const RemoteSlots* h = remote_slots();
+  CHECK(h && h->effects && h->effect && h->ufx && h->effects() == 2);
+  char nm0[16], nm1[16], un[16];
+  const char *id0 = nullptr, *id1 = nullptr;
+  CHECK(h->effect(0, nm0, sizeof nm0, &id0) && h->effect(1, nm1, sizeof nm1, &id1) && !h->effect(2, un, sizeof un, &id1));
+  h->effect(1, nm1, sizeof nm1, &id1);
+  std::string e0 = id0, e1 = id1;
+  CHECK(e0 != e1 && !strncmp(e0.c_str(), "fx.", 3) && !strncmp(e1.c_str(), "fx.", 3));
+  CHECK(!strcmp(h->ufx(0, un, sizeof un), "") && !strcmp(un, "---"));
+  // the page: UFX1 = effect 0, UFX2 = effect 1 (through knob B and YES)
+  open_page();
+  CHECK(ring_to_slots(40) >= 3);
+  page_set(5, 0);
+  idle_all();
+  tick();
+  CHECK(um::slot_view(5).state == RMP_SLOT_READY && e0 == um::slot_view(5).id);
+  CHECK(shown("UFX1") && shown(("UFX1 = " + std::string(nm0)).c_str()));
+  png("slots_fx_rytm_set.png");
+  const std::string f1 = file_of(host_path("/.rytm/fxslots/USL.txt").c_str());   // the console's file
+  CHECK(f1.find("\t" + e0 + " 1.0.0\n") != std::string::npos);
+  // UFX2 by the console: the same state as UFX1 by the page, the same kind of line in the file
+  CHECK(um::command(("um=fx:2:" + e0).c_str(), o, sizeof o));
+  idle_all();
+  CHECK(same(um::slot_view(5), um::slot_view(6)));
+  page_set(7, 1);
+  idle_all();
+  CHECK(um::slot_view(7).state == RMP_SLOT_READY && e1 == um::slot_view(7).id);
+  const std::string f2 = file_of(host_path("/.rytm/fxslots/USL.txt").c_str());
+  CHECK(f2.find("\t" + e1 + " 1.0.0\n") != std::string::npos && f2.find("\t" + e0 + " 1.0.0\n") != std::string::npos);
+  // the row says what the box shows elsewhere
+  tick();
+  CHECK(h->ufx(0, un, sizeof un) == e0 && !strcmp(un, nm0));
+  // "---" + YES empties UFX1 (the file's line goes)
+  page_set(5, -1);
+  idle_all();
+  CHECK(um::slot_view(5).state == RMP_SLOT_EMPTY && um::slot_view(6).state == RMP_SLOT_READY);
+  const std::string f3 = file_of(host_path("/.rytm/fxslots/USL.txt").c_str());
+  CHECK(f3 != f2 && f3.find("\t" + e1 + " 1.0.0\n") != std::string::npos);
+  // the status JSON: this build has the user effects
+  um::publish_now();
+  static char js[65536];
+  CHECK(um::json_copy(js, sizeof js) > 0 && strstr(js, "\"ufx_slots\":4"));
+  // the effect packages do not change U1..U5's list; clean up
+  remove(host_path("/Plugins/ufx_pingpong.rmp").c_str()), remove(host_path("/Plugins/api3_fx.rmp").c_str());
+  CHECK(um::command("um=fx:2:-", o, sizeof o) && um::command("um=fx:3:-", o, sizeof o));
+  CHECK(um::command("um=rescan", o, sizeof o));
+  idle_all();
+  CHECK(h->effects() == 0);
+  printf("ui slots, the real user effects: the page's um=fx / empty are the console's (state, the project's fxslots file)\n");
+  device::reset();
+  remote_reset();
+}
 #endif
 
 int main() {
@@ -526,12 +741,14 @@ int main() {
   char tmpl[] = "/tmp/core-uislots-XXXXXX";
   CHECK(mkdtemp(tmpl));
   host_set_card(tmpl);
-  for (const char* d : {"/Samples", "/Plugins", "/.rytm", "/.rytm/slots", "/.a4", "/.a4/slots"})
+  for (const char* d : {"/Samples", "/Plugins", "/.rytm", "/.rytm/slots", "/.rytm/fxslots", "/.a4", "/.a4/slots"})
     CHECK(!mkdir(host_path(d).c_str(), 0755));
   engine_begin();
   test_model();
+  test_model_fx();
 #if defined(__aarch64__)
   test_um(false);
+  test_um_fx();
   test_um(true);
 #else
   printf("ui slots: the real user machines not run (AArch64 packages: arm64 only)\n");

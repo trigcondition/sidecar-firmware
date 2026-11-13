@@ -100,6 +100,8 @@ bool (*user_ready)(int u) = nullptr;
 volatile bool list_dirty = false;
 bool (*user_loaded)(int u) = nullptr;
 const KnobLabels* (*user_labels)(int u) = nullptr;
+void (*user_fresh_req)(int u, int slot) = nullptr;
+bool (*user_fresh_done)(int u, int slot) = nullptr;
 void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k) = nullptr;
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 static inline uint8_t send(int t, int s, uint8_t v) { return send_filter ? send_filter(t, s, v) : v; }

@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "check.h"
+#include "timing.h"
 #include "core.h"
 #include "fx/amp.h"
 #include "fx/insert.h"
@@ -597,7 +598,7 @@ int main() {
     double pct = best / 1e6 * 100.0;
     printf("CPU: LIVE IN %.3f %% of a Mac core per voice (1 s of audio in %.0f us); Pi 4 est. x 4.4: %.2f %%\n", pct, best,
            pct * 4.4);
-    CHECK(pct < 1.0);
+    CHECK(timing_ok(pct < 1.0));
   }
 
   livein::reset();

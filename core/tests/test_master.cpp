@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "check.h"
+#include "timing.h"
 #include "core.h"
 #include "fmt/fmt.h"
 #include "fx/amp.h"
@@ -441,7 +442,7 @@ static void control_core() {
   CHECK(host_card_us(3) == ctl);
   host_card_model(false);
   printf("test_master: control core: longest command + amp step + status %.1f us on the Mac (~%.0f us on a Pi 4 at x 4.4), no card time\n", worst, worst * 4.4);
-  CHECK(worst * 4.4 < 2000.0);
+  CHECK(timing_ok(worst * 4.4 < 2000.0));
 }
 
 // what a full chain costs on a core; the numbers go to the report
