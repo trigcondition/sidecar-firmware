@@ -81,6 +81,8 @@ export function createDevice({ scenario = "" } = {}) {
     lfo: { n: 26, pt: 1, kit: 1, full: 0, trk: 0, l: Array.from({ length: 26 }, (_, i) => ({ tgt: ["V2", "I1"][i] ?? "OFF", par: i === 1 ? 8 : 3, pn: i === 1 ? "EQ HPF" : "P4", np: i === 1 ? 12 : 16, wav: i === 1 ? 7 : 0, rate: i === 1 ? 8 : 60, rn: "", sync: i === 1 ? 1 : 0, trig: 0, dep: i < 2 ? 40 : 0, base: 64, des: "403" + "503".repeat(3) + "6f1".repeat(4) + "302".repeat(8), ph: 0 })) },
     // user machines (pi/engine/tests/mock_web.py's sketch of /um)
     plugins: [["sc.grain", "GRAIN", 400], ["sc.acid", "ACID", 120], ["sc.metal", "METAL", 90], ["sc.wobble", "WOBBLE", 200]],
+    effects: [["fx.phaser", "PHASER"], ["fx.bbd", "BBD"]],   // user effects (Plugin API 3) for UFX1..UFX4
+    ufx: {},                                                  // UFX n -> effect id
     slots: { 1: { id: "sc.grain", src: "sounds" }, 2: { id: "sc.acid", src: "saved" }, 3: { id: "", src: "none", unknown: true, want_name: "WOBB" }, 4: { id: "sc.metal", src: "inherited" }, 5: { id: "", src: "empty" } },
     lists: {
       juno: { total: 3, list: [{ slot: 0, name: "Brass", used: true, found: true }, { slot: 1, name: "Strings", used: true, found: true }, { slot: 2, name: "Gone pad", used: true, found: false }] },
@@ -235,6 +237,8 @@ export function createDevice({ scenario = "" } = {}) {
     else if ((m = /^lfo=(\d+):(par|wav|sync|trig|rate|dep):(-?\d+)$/.exec(c)) && +m[1] >= 1 && +m[1] <= 26) d.lfo.l[+m[1] - 1][m[2]] = +m[3];
     else if ((m = /^um=assign:([1-5]):(\S+)$/.exec(c)) && d.plugins.some((p) => p[0] === m[2])) d.slots[+m[1]] = { id: m[2], src: "saved" };
     else if ((m = /^um=clear:([1-5])$/.exec(c))) d.slots[+m[1]] = { id: "", src: "empty" };
+    else if ((m = /^um=fx:([1-4]):-$/.exec(c))) delete d.ufx[+m[1]];
+    else if ((m = /^um=fx:([1-4]):(\S+)$/.exec(c)) && d.effects.some((e) => e[0] === m[2])) d.ufx[+m[1]] = m[2];
     else if ((m = /^(juno|fm)=(ren|del|swap|save):(\d+)(?::(.*))?$/.exec(c))) d.listCmd(m[1], m[2], +m[3], m[4]);
     else if (/^(out=V\d:|mfx=)/i.test(c)) d.mixer(c);
   };
@@ -385,7 +389,9 @@ export function createDevice({ scenario = "" } = {}) {
       const s = d.slots[n], p = d.plugins.find((x) => x[0] === s.id);
       a.push({ t: "slot", slot: n, id: s.id, ver: s.id ? "1.0.0" : "", state: p ? "READY" : s.id || s.unknown ? "MISSING" : "EMPTY", name: p ? p[1] : s.want_name ?? "", src: s.src, unknown: !!s.unknown, want_name: s.want_name ?? "", presets: p ? 2 : 0 });
     }
-    a.push({ t: "plugins", n: d.plugins.length, project: "SHARED SET", dir: "/Plugins", scanning: false });
+    d.effects.forEach(([id, name], i) => a.push({ t: "plugin", id, ver: "1.0.0", size: 4000 + i * 4000, name, cpu: 40, fit: true, why: "", file: `/Plugins/${id.replace(".", "_")}.rmp`, slots: [], status: "ok", effect: true }));
+    for (const [n, id] of Object.entries(d.ufx)) a.push({ t: "ufx", ufx: +n, id, state: "READY", muted: false, why: "" });
+    a.push({ t: "plugins", n: d.plugins.length + d.effects.length, project: "SHARED SET", dir: "/Plugins", scanning: false, ufx_slots: 4 });
     a.push({ t: "mem", k: "code", size: 8 << 20, used: 60000 }, { t: "mem", k: "state", size: 1 << 20, used: 65536 });
     return a;
   };
