@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "check.h"
+#include "timing.h"
 #include "pool_util.h"
 #include "pool/pcache.h"
 #include "lib/library.h"
@@ -364,8 +365,8 @@ int main() {
     if (!g_capture) CHECK(g_card3 == 0);   // no card time on the control core
     // a read step converts kConvFrames at most: ~5 us here, the Pi 4 ~34x slower (a loose bound: a first touch of
     // fresh memory can take longer on the Mac)
-    if (!g_capture) CHECK(g_phase_max[4] < 100);
-    if (!g_capture) CHECK(g_phase_max[5] < 100);   // (the placing of the samples, a step each)
+    if (!g_capture) CHECK(timing_ok(g_phase_max[4] < 100));
+    if (!g_capture) CHECK(timing_ok(g_phase_max[5] < 100));   // (the placing of the samples, a step each)
     if (!g_capture) CHECK(host_card_us(0) > c0);
     printf("test_msamp_load: seed %d: %u steps, the longest %.1f us, mean %.2f us (Mac; by phase idle %d sfz %d header %d "
            "open %d read %d); control core card time %llu us\n", kRef[i].seed, g_steps, g_max_step_us, g_sum_step_us / g_steps,

@@ -16,6 +16,7 @@
 #include <unistd.h>   // mkdtemp
 
 #include "check.h"
+#include "timing.h"
 #include "core.h"
 #include "device/device.h"
 #include "bundle/rename.h"
@@ -626,7 +627,7 @@ static void r2_cost() {
     }
   }
   printf("rytm params R2: rp_tick worst %.1f us on this Mac (128 live entries, 100 offsets changing every ms)\n", worst);
-  CHECK(worst < 500);
+  CHECK(timing_ok(worst < 500));
 }
 static void card_core_turn() {
   host_card_core(0);

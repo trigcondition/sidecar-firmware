@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "check.h"
+#include "timing.h"
 #include "chop/chop.h"
 #include "fmt/fmt.h"
 #include "fx/insert.h"
@@ -1112,7 +1113,7 @@ static void test_render_core() {
   double pct8 = best / 1e6 * 100.0, pct1 = pct8 / 8;
   printf("test_chop: CPU: 8 slice players (MORPH on) %.3f %% of a Mac core, %.3f %% a player; Pi 4 est. x 4.4: %.2f %% / "
          "%.2f %%\n", pct8, pct1, pct8 * 4.4, pct1 * 4.4);
-  CHECK(pct8 < 3.0);
+  CHECK(timing_ok(pct8 < 3.0));
   for (int k = 0; k < 8; ++k) chop::live_off(vi, poly::kSeqCh, k);
   chop::silence(vi);
   render(vi, 960);
