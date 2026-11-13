@@ -1128,6 +1128,38 @@ int main() {
     cmd("fill=open:0");
     cmd("fill=undo");
     CHECK(!strcmp(ui::fill_page_view().note, "UNDO EXPIRED (PATTERN)"));
+    // owner 2026-11-13 (hardware: UNDO EXPIRED right after a fill): a Rytm hello and its resync to the SAME pattern
+    // (forget_pattern, then 2D 02) is no pattern change: the undo works
+    writer_reset(r);
+    sw(20);
+    cmd("fill=open:0");
+    cmd("fill=yes");
+    pump(400);
+    rytm_dump::forget_pattern();
+    sw(20);
+    cmd("fill=undo");
+    pump(400);
+    CHECK(!strcmp(ui::fill_page_view().note, "UNDONE"));
+    // away and back to the same pattern: the undo still works (its content check guards a changed track)
+    cmd("fill=yes");
+    pump(400);
+    sw(21);
+    sw(20);
+    cmd("fill=undo");
+    pump(400);
+    CHECK(!strcmp(ui::fill_page_view().note, "UNDONE"));
+    {   // owner 2026-11-13: the Rytm's "Received PATTERN" popup covers the note while it would time out: a job's result
+        // note stays on the footer until the next key
+      static ui::Canvas c;
+      uint32_t t = now_ms();
+      ui::kFillPage.draw(c, 0, 1, t);
+      CHECK(!strcmp(c.txt[ui::kSlotFoot].s, "UNDONE"));
+      ui::kFillPage.draw(c, 0, 1, t + 20000);
+      CHECK(!strcmp(c.txt[ui::kSlotFoot].s, "UNDONE"));
+      CHECK(ui::kFillPage.key(0x43));   // DOWN: any key
+      ui::kFillPage.draw(c, 0, 1, t + 40000);
+      CHECK(strcmp(c.txt[ui::kSlotFoot].s, "UNDONE") != 0);
+    }
     // a project load (the Rytm's 10, the same pattern number): expired
     writer_reset(r);
     cmd("fill=open:0");
