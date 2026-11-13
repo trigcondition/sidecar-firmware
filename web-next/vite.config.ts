@@ -35,5 +35,14 @@ export default defineConfig({
       ),
     },
   },
-  build: { target: "es2020", assetsInlineLimit: 0, sourcemap: false },
+  // One JS file and one CSS file, the fonts inside the CSS: the Pi serves 4 connections at once and answers more with a
+  // 503 (pi/engine/web.h MaxWorkers). Split chunks made a page's first visit a burst of files a browser doesn't retry;
+  // Safari asked for them all at once, so Voices, Mix and the other pages stayed blank (a user, 2026-11-13).
+  build: {
+    target: "es2020",
+    assetsInlineLimit: (file: string) => (file.endsWith(".woff2") ? true : undefined),
+    cssCodeSplit: false,
+    sourcemap: false,
+    rollupOptions: { output: { inlineDynamicImports: true } },
+  },
 });
