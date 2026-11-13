@@ -204,6 +204,15 @@ core library, because `teensy/setup_core_lib.sh` leaves `core/user/` out.
   - NO drops a pick; with none, NO goes back to SIDECAR as on every page. A pick is also dropped when the row changes
     or the page is left.
   - With an empty `/Plugins` the bottom bar says `NO MACHINES IN /PLUGINS`; a slot can still be cleared.
+  - **UFX1..UFX4** (Plugin API 3's user effects) are rows 6..9, after U1..U5, where the platform has them (the same
+    hooks: `RemoteSlots::effects`, `effect`, `ufx`). A row shows the effect its send FX slot plays as the box shows
+    it elsewhere (`---` empty, `!NAME` missing, `NAME...` loading). Knob B picks from the installed *effects* (not
+    the machines), `---` first; YES sends `um=fx:<n>:<id>` / `um=fx:<n>:-`, the console's call, so the project's
+    `/.rytm/fxslots/<project>.txt` is written as for the console (`UFX1 = PHASER`, `UFX1 CLEARED` in the bottom bar;
+    `NO EFFECTS IN /PLUGINS` with none installed). Five rows are in view at a time: the list scrolls so the
+    selected row is always visible. U1..U5 behave as above.
+  - The web page has the same picker: Voices › User machines, section Effects (the `/um` JSON's `ufx_slots` says
+    the build has the slots; effect packages are the `plugin` rows with `effect: true`).
   - The page shows only where the platform has the user machines (`um::begin` installs its hooks,
     `core::ui::remote_slots`): the Pi and the Mac's core lib, not the Teensy.
 

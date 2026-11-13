@@ -89,7 +89,7 @@ level clip runs per channel. Not yet: poly instances of a stereo plugin render m
 One ABI for machines and effects: an effect is an API 3 only package (`api 3`, `RMP3_KIND_EFFECT`); the same loader,
 checks, arena and guard as a machine. The load targets UFX1..UFX4 sit next to U1..U5 in core/user/um.cpp (indices 5..8,
 never in the Rytm's slot protocol). `um=fx:<n>:<id>` puts an installed effect in UFX`n` (kept per project, item 11; the TYPE list's
-name and tag in `fx::user[]`); `um=fx:<n>:-` empties it, `um=reload:f<n>` loads it again. A machine slot refuses an
+name and tag in `fx::user[]`); `um=fx:<n>:-` empties it, `um=reload:f<n>` loads it again. Two pickers send the same command: the USER SLOTS page on the Rytm's screen (rows UFX1..UFX4 after U1..U5, knob B through the installed effects, `---` first, YES = `um=fx`; docs/user-machines-pi.md) and the Effects section of the web page's Voices › User machines card (an effect per slot, or None; the host's `/um` JSON says `ufx_slots` and marks effect packages `effect`). A machine slot refuses an
 effect and an effect slot a machine (BAD, in words). An effect gets two states, send FX 1 and send FX 2, set up on the
 control core before core 2 may run them (`voice_init`, `voice_attach` with place `RMP3_AT_SEND`, voice -1, instance
 0 / 1, an arena part each).

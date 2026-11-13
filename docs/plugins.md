@@ -848,7 +848,7 @@ API 1 and 2 plugins are unchanged: `core/tests/test_api3_compat.cpp` compares th
 
 ## 12b. User effects: the Rytm's labels, PHASER and BBD
 
-A user effect plays in a send FX slot (`um=fx:<n>:<id>`: UFX`n` is the send FX TYPE 63 + `n`). The send slot has five
+A user effect plays in a send FX slot (`um=fx:<n>:<id>`: UFX`n` is the send FX TYPE 63 + `n`). It is put there from the Rytm's own screen (the USER SLOTS page: rows UFX1..UFX4 after U1..U5, knob B picks an installed effect, YES applies), from the web page (Voices › User machines, Effects) or with the console command; all three are the same `um=fx` and the assignment is kept per project. The send slot has five
 knobs on the Rytm: P1 is ROUTE (PRE / POST, the host's), P2..P5 are the effect's **P1..P4**, handed to `render` in
 `b->p`. So an effect has four knobs; the send level is its mix (the return is wet only), as for the built-in effects.
 The input is mono (the stems x their send levels), the return stereo.

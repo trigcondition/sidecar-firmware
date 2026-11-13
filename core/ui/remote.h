@@ -136,6 +136,12 @@ struct RemoteSlots {
   const char* (*slot)(int s, char* name, int cap);
   // a console command (um::command: "um=assign:<1..5>:<id>", "um=clear:<1..5>"), the web page's own path; false: not one
   bool (*command)(const char* c, char* out, int cap);
+  // ---- Plugin API 3's user effects (UFX1..UFX4); all three null on a platform without them (no UFX rows). Added at the end.
+  int (*effects)();    // the installed effects (loadable API 3 effect packages, the newest version of each id)
+  bool (*effect)(int i, char* name, int cap, const char** id);   // entry i: as machine(); false: none
+  // UFX u (0..3) as the box shows it into name ("---" empty, "!NAME" missing / bad, "NAME..." loading); returns the id
+  // the slot names ("" empty). The change is the console's "um=fx:<1..4>:<id|->" through command.
+  const char* (*ufx)(int u, char* name, int cap);
 };
 void remote_slots(const RemoteSlots* h);
 const RemoteSlots* remote_slots();

@@ -292,8 +292,9 @@ static void fixture() {
 
 // Plugin API 3 (2026-11) added the READY slots' "muted", "late", "api", "arena", the JSON's "plugpool" and the begin
 // line's arena pool: the old scan's values were 0xa68a7eb6 / 0xb8835fb2, and these are the same JSON and log with only
-// those added (compared field by field when they changed)
-static const uint32_t kGolden = 0x219acb4d;      // fnv(json + list + enums) of the old scan
+// those added (compared field by field when they changed). 2026-11 (the UFX picker): the "plugins" row's "ufx_slots":4
+// (the web page's Effects section) moved it to 0x1a04e040; nothing else changed (the log's hash is the same).
+static const uint32_t kGolden = 0x1a04e040;      // fnv(json + list + enums) of the old scan
 static const uint32_t kGoldenLog = 0x0f5d3fc0;   // fnv(its um log lines)
 
 int main() {

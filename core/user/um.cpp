@@ -314,6 +314,8 @@ int8_t g_ans[kSlots];              // a 1E waiting for its answer: its op, -1 no
 uint32_t g_ans_t[kSlots];
 uint8_t g_inst[kStore];            // the Rytm's installed list: g_pkg indices of the loadable packages
 int g_ninst = 0;
+uint8_t g_einst[kStore];           // the installed effects (API 3, UFX1..UFX4): g_pkg indices, the newest version of each id
+int g_neff = 0;
 uint32_t g_list_print = 0;
 bool g_list_owed = false;          // the Rytm asked for the list while the first scan ran: sent when it ends
 
@@ -1770,11 +1772,13 @@ void project_reload() {
 // ---- the scan of the card's packages
 void list_build() {   // the Rytm's list and the unique names, from g_pkg
   g_ninst = 0;
+  g_neff = 0;
   for (int i = 0; i < g_npkg; ++i) {
     Pkg& e = g_pkg[i];
     memset(e.name, 0, sizeof e.name);
     memcpy(e.name, e.desc.name, 10);
     e.renamed = false;
+    if (e.ok && !e.older && (e.hflags & RMP_HF_EFFECT) && g_neff < kStore) g_einst[g_neff++] = (uint8_t)i;   // (the USER SLOTS page's UFX rows)
     if (!e.ok || e.older || (e.hflags & RMP_HF_EFFECT)) continue;   // (an older version, an effect: not in the Rytm's list)
     char base[11];
     memcpy(base, e.name, sizeof base);
@@ -2996,10 +3000,17 @@ struct Js {
 // loading, else the reason ("!ROOM NPPR")
 void slot_shown(int s, char* out, int cap) {
   rmp_desc d;
-  const rmp_desc* p = slot_desc(s, &d);
+  const rmp_desc* p = nullptr;
+  if (s < kSlots) p = slot_desc(s, &d);
+  else if (entry_of(s).id[0]) {   // a user effect: its package's description, else what the id says (slot_desc is the machines')
+    const int k = find_slot(s);
+    if (k >= 0) d = g_pkg[k].desc, memcpy(d.name, g_pkg[k].name, sizeof g_pkg[k].name);
+    else rmp_desc_from_id(entry_of(s).id, &d);
+    p = &d;
+  }
   rmp_slot_state st = g_slot[s].st;
   const char* nm = p ? p->name : "";
-  if (!g_map.slot[s].id[0]) copy(out, "---", cap);
+  if (!entry_of(s).id[0]) copy(out, "---", cap);
   else if (st == RMP_SLOT_READY) copy(out, nm, cap);
   else if (st == RMP_SLOT_LOADING) sniprintf(out, cap, "%.8s...", nm);
   else {
@@ -3119,6 +3130,7 @@ void publish() {
   j.put(","); j.num("listed", (uint32_t)g_ninst); j.put(","); j.num("gen", g_meta.store_gen);
   j.put(",\"dir\":"); j.str(g_dir);
   j.put(",\"scanning\":"); j.put(g_scan ? "true" : "false");
+  j.put(","); j.num("ufx_slots", (uint32_t)kUfx);   // API 3: this build has the user effects UFX1..UFX4 (the web page's Effects card)
   j.put("},");
   sniprintf(t, sizeof t, "{\"t\":\"mem\",\"k\":\"code\",\"size\":%u,\"used\":%u},", (unsigned)(ex ? ex->total : 0),
             (unsigned)g_arena_used);
@@ -3155,7 +3167,21 @@ const char* ui_slot(int s, char* name, int cap) {
   slot_shown(s, name, cap);
   return g_map.slot[s].id;
 }
-const core::ui::RemoteSlots kUiSlots = {ui_machines, ui_machine, ui_slot, command};
+// The effects: the installed list (API 3 effect packages), and UFX u (0..3) as the display shows it
+int ui_effects() { return g_neff; }
+bool ui_effect(int i, char* name, int cap, const char** id) {
+  if (i < 0 || i >= g_neff) return false;
+  const Pkg& e = g_pkg[g_einst[i]];
+  copy(name, e.name, cap);
+  *id = e.id;
+  return true;
+}
+const char* ui_ufx(int u, char* name, int cap) {
+  if (u < 0 || u >= kUfx) { copy(name, "", cap); return ""; }
+  slot_shown(kSlots + u, name, cap);
+  return g_fxmap[u].id;
+}
+const core::ui::RemoteSlots kUiSlots = {ui_machines, ui_machine, ui_slot, command, ui_effects, ui_effect, ui_ufx};
 
 }  // namespace
 

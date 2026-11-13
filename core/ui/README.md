@@ -157,7 +157,7 @@ Which installed user machine each slot U1..U5 plays, on the box's own screen: fo
 stays the Rytm's last) and a row of the SIDECAR MENU. Rows U1..U5 with each slot's machine as the box shows it; UP / DOWN or A the row, B a
 machine from the installed list (`---` first: clear) one entry a detent (`list_turn`), shown with a `?`; YES sends
 `um=assign:<slot>:<id>` / `um=clear:<slot>` through `RemoteSlots::command` (`um::command`, the web page's and the
-console's path), NO drops a pick (with none: SIDECAR). The platform's hooks (`remote.h RemoteSlots`) come from
+console's path), NO drops a pick (with none: SIDECAR). Where the platform has the user effects (the three effects hooks of `RemoteSlots`) rows UFX1..UFX4 follow U1..U5, B picks from the installed effects and YES sends `um=fx:<n>:<id|->`; five rows show at a time and the list scrolls to keep the selected row in view. The platform's hooks (`remote.h RemoteSlots`) come from
 `um::begin`; without them (the Teensy) the page is not shown. docs/user-machines-pi.md has the details;
 `core/tests/test_ui_slots.cpp` the tests (a platform model, then the real user machines on the Rytm and the A4's
 profile) and `build/rui_pages/slots_*.png`.
