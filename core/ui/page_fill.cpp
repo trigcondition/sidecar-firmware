@@ -64,13 +64,14 @@ struct FillPage {
   char note[28] = "";
   bool note_new = false;
   uint32_t note_ms = 0;
+  bool note_stick = false;        // a job's result: on the footer until the next key (the Rytm's popup may cover it)
   // the job under way and what it leaves
   uint8_t job = kJobNone;
   uint32_t jobs_seen = 0;
   int filled = 0;                 // the trigs the job wrote
   lf::Saved pending, undo;        // the target as it was before the job's patch; the undo a done job leaves
   lf::Saved pafter, after;        // the target as the patch left it: the undo refuses once it changed (CHANGED SINCE)
-  uint32_t undo_switch = 0;       // the pattern count at the job's read (patwrite::read_switch): a change ends the undo
+  int undo_pattern = -1;          // the pattern the job read (patwrite::read_pattern): another active pattern ends the undo
   uint32_t jproject = 0, undo_project = 0;   // core::project_gen() at the job's start: a project load ends it too
   // the job's own copy of what it writes (the page may change while the job runs)
   ft::Def jd;
@@ -113,7 +114,9 @@ CORE_COLD int patch_clear(uint8_t* rec, void*) {
 CORE_COLD int patch_undo(uint8_t* rec, void*) {
   // N1 (re-review): the read may have restarted on another pattern (a switch before its answer) or after a project load:
   // bound to the fill's own pattern and project, not to the content alone (a copy of the pattern holds the same)
-  if (patwrite::read_switch() != P.undo_switch || project_gen() != P.undo_project) return lf::kChanged;
+  // (owner 2026-11-13: by the pattern's number, not the switch count: a Rytm hello's resync to the same pattern counted
+  // as a switch and expired the undo right after a fill; the content check below guards a changed track)
+  if (patwrite::read_pattern() != P.undo_pattern || project_gen() != P.undo_project) return lf::kChanged;
   lf::Saved now;   // M2 (fix round): the target edited since the fill (on the Rytm, by a take): not put back over that
   lf::save(rec, P.undo.track, P.undo.g, &now);
   if (!lf::equal(now, P.after)) return lf::kChanged;
@@ -127,6 +130,7 @@ CORE_COLD void poll() {
   P.jobs_seen = patwrite::jobs();
   const uint8_t job = P.job;
   P.job = kJobNone;
+  P.note_stick = true;
   char b[28];
   if (patwrite::state() != patwrite::kDone) {
     int w = patwrite::why();
@@ -140,7 +144,7 @@ CORE_COLD void poll() {
     return;
   }
   if (!patwrite::changed()) { note(job == kJobFill ? "NO CHANGE" : "NOTHING TO CLEAR"); return; }
-  P.undo = P.pending, P.after = P.pafter, P.undo_switch = patwrite::read_switch(), P.undo_project = P.jproject;
+  P.undo = P.pending, P.after = P.pafter, P.undo_pattern = patwrite::read_pattern(), P.undo_project = P.jproject;
   sniprintf(b, sizeof b, "%s %d: FN+NO UNDO", job == kJobFill ? "FILLED" : "CLEARED", P.filled);
   note(b);
 #if CORE_MSAMP
@@ -160,7 +164,8 @@ CORE_COLD bool begin(uint8_t job) {
   if (P.track < 0) { note("SELECT A TRACK FIRST"); return false; }
   if (job == kJobUndo) {
     if (!P.undo.valid) { note("NOTHING TO UNDO"); return false; }
-    if (rytm_dump::switch_count() != P.undo_switch) { P.undo = lf::Saved(); note("UNDO EXPIRED (PATTERN)"); return false; }
+    int ap = rytm_dump::active_pattern();
+    if (ap >= 0 && ap != P.undo_pattern) { P.undo = lf::Saved(); note("UNDO EXPIRED (PATTERN)"); return false; }
     if (project_gen() != P.undo_project) { P.undo = lf::Saved(); note("UNDO EXPIRED (PROJECT)"); return false; }
   } else if (!def()) {
     return false;
@@ -255,7 +260,7 @@ CORE_COLD void fill_draw(Canvas& c, int page, int npages, uint32_t ms) {
   fit_name(line, sizeof line, *d, P.to[P.cur], 19);
   sniprintf(full, sizeof full, "TO   %s", line);
   c.put_text(kSlotFree + 9, kRSmall, 2, kRowY + 5 * kRowH, full);
-  if (P.note_new || (P.note_ms && ms - P.note_ms < kNoteMs) || P.job) footer(c, P.note);
+  if (P.note_new || P.note_stick || (P.note_ms && ms - P.note_ms < kNoteMs) || P.job) footer(c, P.note);
   else footer(c, P.func ? "YES: CLEAR  NO: UNDO" : "YES: FILL  FN: CLR/UNDO");
   if (P.note_new) P.note_new = false, P.note_ms = ms | 1;
 }
@@ -304,6 +309,7 @@ CORE_COLD void close_page() {
 }
 
 CORE_COLD bool fill_key(int code) {
+  P.note_stick = false;
   poll();
   if (code == kFunc) { P.func = true; return true; }
   if (code == kUp) { P.up = true; return true; }
@@ -343,7 +349,7 @@ CORE_COLD void fill_page_open(int track) {
     P.o.seed = (uint16_t)((u >> 8) % 1000);   // a fresh seed each open (owner)
     load_targets();
   }
-  P.on = true, P.func = false, P.up = false;
+  P.on = true, P.func = false, P.up = false, P.note_stick = false;   // (an old result not shown again)
   remote_show_page("FILL");
 }
 CORE_COLD void fill_page_reset() {

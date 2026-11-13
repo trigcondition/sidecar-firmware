@@ -71,6 +71,7 @@ int patch_result();                // the patch's own number (kWhyPatch)
 bool changed();                    // the last done job wrote something (the patch changed the record)
 uint32_t jobs();                   // finished jobs (done or failed): a page's "seen" counter
 uint32_t read_switch();            // rytm_dump::switch_count() when the last job's read was taken (its pattern)
+int read_pattern();                // the pattern the last job read (-1: none)
 const uint8_t* before();           // the last job's record as read (13101 B; null: none)
 void set_play_ok(bool on);         // E4: writes while playing allowed
 bool play_ok();

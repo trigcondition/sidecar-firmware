@@ -239,6 +239,7 @@ CORE_COLD int patch_result() { return J.presult; }
 CORE_COLD bool changed() { return J.changed; }
 CORE_COLD uint32_t jobs() { return J.jobs; }
 CORE_COLD uint32_t read_switch() { return J.read_switch; }
+CORE_COLD int read_pattern() { return J.have_before ? J.pat : -1; }
 CORE_COLD const uint8_t* before() { return J.have_before ? g_before : nullptr; }
 CORE_COLD void set_play_ok(bool on) { J.play_ok = on; }
 CORE_COLD bool play_ok() { return J.play_ok; }
