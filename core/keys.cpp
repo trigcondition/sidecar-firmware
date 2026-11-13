@@ -297,6 +297,7 @@ CORE_COLD void forward_note(uint8_t st, uint8_t d1, uint8_t d2) { if (fwd_fn) fw
 CORE_COLD bool computer_on() { return mac_on; }
 
 CORE_COLD int auto_channel() { return auto_ch; }
+CORE_COLD const char* source_name(int src) { return src >= 0 && src < kSrcs && srcs[src].present ? srcs[src].name : ""; }
 CORE_COLD int selected() {
   int t = ui::remote_src_track();
   if (t >= 0 && t < 12) return t;

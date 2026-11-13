@@ -111,7 +111,7 @@ void value_text(int k, int v, char* b, int cap);
 void set_route(int vi, int r);
 void set_param(int vi, int k, int v);        // k 0 LEV, 1 PAN, 2 WID, 3 DEC
 int param(int vi, int k);                    // the knob
-void lfo_offset(int vi, int k, int off);     // the LFOs' targets O1..O8 (k 0..2: LEV PAN WID), -127..127
+void mod_offset(int vi, int k, int off);     // core/mod kOut (O1..O8, k 0..2: LEV PAN WID; the LFOs), -127..127
 void set_mutes(uint16_t mask);               // the Rytm's 12 tracks muted (seq: 2D 01 05 / CC 94)
 void trig_track(int vi, int track);          // the track that triggered voice vi (the Sidecar sequencer's), -1 unknown
 bool any_stereo();                           // a voice is routed PRE or POST

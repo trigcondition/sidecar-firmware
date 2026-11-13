@@ -150,10 +150,10 @@ function refusal(text) {
 // implementations of it agree. This fails if anyone widens the open set without saying so here.
 test("the open set is exactly these, in web.cpp and in the mock", () => {
   assert.deepEqual([...OPEN].sort(),
-    ["/", "/bundle-sw.js", "/health", "/index.html", "/log", "/pair", "/pair/resume", "/pair/show", "/pair/status",
-     "/status"],
-    "web.cpp's Open(): the page and its service worker, the health view, /status (open by the user's decision, " +
-    "2026-10-26), the log, and pairing itself");
+    ["/", "/bundle-sw.js", "/classic", "/health", "/index.html", "/log", "/pair", "/pair/resume", "/pair/show",
+     "/pair/status", "/status", "/update/state"],
+    "web.cpp's Open(): the page (and the classic page) and its service worker, the health view, /status (open by the " +
+    "user's decision, 2026-10-26), the web update's state (read-only, as /status), the log, and pairing itself");
   const mockOpen = [...MOCK_PY.slice(MOCK_PY.indexOf("PAIR_OPEN = {"), MOCK_PY.indexOf("}", MOCK_PY.indexOf("PAIR_OPEN = {")))
     .matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(mockOpen.sort(), [...OPEN].sort(), "mock_web.py mirrors web.cpp's open set");
@@ -188,7 +188,13 @@ function cmdRefusal(body) {
   const i = body.indexOf("if (!FromPage", c);
   const j = body.indexOf("return HTTPBadRequest;", i);
   assert.ok(i > c && j > i && j < body.indexOf("m_pConsole->Command (Cmd)", c), "the refusal comes before the console");
-  return body.slice(i, j);
+  const r = body.slice(i, j);
+  // the list itself lives in web_cmd.h since /ws shares it (docs/web-ws.md): /cmd must call it with the body flag
+  // and the gadget's OS-update state, and the conditions are read from there
+  if (!r.includes("webcmd::refused")) return r;
+  assert.match(r, /webcmd::refused \(Cmd, bForm, pSidecar != 0 && pSidecar->OsUpdate \(\)\)/);
+  const h = readFileSync(join(HERE, "..", "web_cmd.h"), "utf8");
+  return r + h.slice(h.indexOf("inline const char *refused"), h.indexOf("return 0;", h.indexOf("inline const char *refused")));
 }
 
 // usbmidi=os: (and its older name osupdate=) lets OS upgrades through the USB-C MIDI port (usbmidi_os.h), so /cmd
@@ -201,7 +207,7 @@ test("/cmd refuses usbmidi= and osupdate=", () => {
   assert.match(r, /strncmp \(Cmd, "osupdate=", 9\) == 0/);
   assert.doesNotMatch(r, /bForm && strncmp \(Cmd, "usbmidi="/, "refused from the body too, not only the URL");
   // while usbmidi=os: is on, link=tcp:<address> too (the review's L6): the computer's MIDI to any host
-  assert.match(r, /strncmp \(Cmd, "link=tcp:", 9\) == 0 && pSidecar != 0 && pSidecar->OsUpdate \(\)/);
+  assert.match(r, /strncmp \(Cmd, "link=tcp:", 9\) == 0 && (pSidecar != 0 && pSidecar->OsUpdate \(\)|bOsUpdate)/);
   const gadget = readFileSync(join(HERE, "..", "sidecar_gadget.cpp"), "utf8");
   assert.match(gadget, /strncmp \(p, "usbmidi=", 8\) == 0 \|\| strncmp \(p, "osupdate=", 9\) == 0/);
 });
@@ -642,7 +648,9 @@ test("the page asks for the code on the Rytm only when it is really unpaired", (
 test("WEB UI off on the Rytm: the web page and port 7310 refuse, the serial :sdf does not", () => {
   const web = readFileSync(join(HERE, "..", "web.cpp"), "utf8");
   const get = web.slice(web.indexOf("THTTPStatus CWebServer::GetContent"));
-  const off = get.indexOf("if (!paircode_pi::WebOn ())"), gate = get.indexOf("if (!Open (pPath) && !paircode_pi::Gate ().check");
+  // (the USB-C cable's trust, docs/usb-network.md, is part of the gate's line: WEB UI off refuses on the cable too)
+  const off = get.indexOf("if (!paircode_pi::WebOn ())"),
+    gate = get.indexOf("if (!Open (pPath) && !(usbnet_pi::Trusted () && GetRequestAuth ()[0]) && !paircode_pi::Gate ().check");
   assert.ok(off > 0 && gate > off, "the WEB UI check comes before anything else answers");
   assert.match(get.slice(off, gate), /return HTTPOK;/);
   assert.match(get.slice(off, gate), /kWebOff/);

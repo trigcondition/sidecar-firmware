@@ -17,6 +17,8 @@
 #include "../fx/insert.h"
 #include "../host/core_port.h"
 #include "../lfo.h"
+#include "../mod/scene.h"
+#include "../mod/xypad.h"
 #include "../msamp/cardq.h"
 #include "../store/store.h"
 
@@ -63,7 +65,7 @@ static void pass() {
 static void settle() {   // the store filled, the kit reports handled, every write landed
   for (int i = 0; i < 20000 && core::project_loading(); ++i) pass();
   for (int i = 0; i < 400; ++i) pass();
-  for (int i = 0; i < 4000 && (core::fmt::post_busy() || core::lfo::dirty() || core::ins::settings_dirty(nullptr)); ++i)
+  for (int i = 0; i < 4000 && (core::fmt::post_busy() || core::lfo::dirty() || core::ins::settings_dirty(nullptr) || core::scene::dirty() || core::xypad::dirty()); ++i)
     pass();
   CHECK(!core::fmt::post_busy());
 }
@@ -258,11 +260,57 @@ int main() {
   uint32_t ka = kits::stats().kept_aside;
   k4c(kits::kReload, 1, 0);   // done again
   settle();
-  CHECK(kits::stats().kept_aside == ka + 1);
+  CHECK(kits::stats().kept_aside == ka + 3);   // the LFO's, and (0.5.0) the scenes' and the XY pad's (none: #none on both sides)
   CHECK(has("/.rytm/kits/KN/k001.prv", " 22 ") && !has("/.rytm/kits/KN/k001.prv", " 21 ") &&
         has("/.rytm/kits/KN/k001.prv", "SEND V1 42"));
   CHECK(depth() == 21 && has("/.rytm/ins/KN/k001.txt", "SEND V1 41"));
   printf("kits: a reload done again after a cut: .prv keeps the LFO the first one kept aside (22), not the half state\n");
+
+  // ---- 0.5.0 save_reload_kit_restores_scenes: kit 20's scenes go into its record (=scene) and come back on RELOAD
+  {
+    core::mod::Tid t;
+    const std::string K = core::project, sks = "/.rytm/kits/" + K + "/k020.sks", prv = "/.rytm/kits/" + K + "/k020.prv",
+                      wf = "/.rytm/scene/" + K + "/k020.txt";
+    CHECK(core::mod::parse("V1:P3", &t));
+    kit(19);
+    settle();
+    CHECK(core::scene::kit() == 19 && core::scene::lock(0, t, 6400));
+    k4c(kits::kSave, 20, 20);
+    settle();
+    CHECK(has(sks, "=scene\n") && has(sks, "L 1 V1:P3 6400"));
+    CHECK(core::scene::lock(0, t, 7000));
+    settle();
+    CHECK(has(wf, "L 1 V1:P3 7000"));
+    k4c(kits::kReload, 20, 20);
+    settle();
+    CHECK(core::scene::state().s[0].n == 1 && core::scene::state().s[0].l[0].v == 6400);
+    CHECK(has(prv, "L 1 V1:P3 7000"));   // the working copy kept aside
+    printf("kits: SAVE / RELOAD KIT keep a kit's scenes\n");
+  }
+
+  // ---- 0.5.0 save_reload_kit_restores_xy: kit 21's XY pad setup goes into its record (=xy) and comes back on RELOAD
+  {
+    core::mod::Tid t;
+    const std::string K = core::project, sks = "/.rytm/kits/" + K + "/k021.sks", prv = "/.rytm/kits/" + K + "/k021.prv",
+                      wf = "/.rytm/xy/" + K + "/k021.txt";
+    CHECK(core::mod::parse("RYTM:PERF2", &t));
+    kit(20);
+    settle();
+    CHECK(core::xypad::kit() == 20 && core::xypad::set(0, 0, t, 60));
+    settle();
+    k4c(kits::kSave, 21, 21);
+    settle();
+    CHECK(has(sks, "=xy\n") && has(sks, "X 1 RYTM:PERF2 60"));
+    CHECK(core::xypad::set(0, 0, t, -70));
+    settle();
+    CHECK(has(wf, "X 1 RYTM:PERF2 -70"));
+    k4c(kits::kReload, 21, 21);
+    settle();
+    CHECK(core::xypad::cfg().s[0][0].t == t && core::xypad::cfg().s[0][0].depth == 60);
+    CHECK(has(prv, "X 1 RYTM:PERF2 -70"));   // the working copy kept aside
+    printf("kits: SAVE / RELOAD KIT keep a kit's XY pad setup\n");
+  }
+
 
   cardq::set_worker(false);
   cardq::reset();

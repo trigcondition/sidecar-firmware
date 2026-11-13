@@ -63,9 +63,16 @@ void pool_save();
 void pool_load();
 #if CORE_MSAMP
 void pool_sync(bool force = false, bool send = true);   // DSP SAMPLE's slots = the SAMPLES pool's banks (pool.cpp), when it changed
+// sedit-050: a WAV written after boot under /Samples made known to the card index (its row resolves, plays, draws).
+// 1 added; 0 nothing to do (outside /Samples, no card); -1 not added (the index's table full, the folder unknown): the
+// row plays after the next boot; -2 not added, the file name too long for the index (kName): the row never plays
+int pool_card_add(const char* path, int ch, int bits, uint32_t rate, uint32_t frames, uint32_t data_offset);
 #endif
 void project_save();
 void set_project(const uint8_t* d, int len);   // 10's name bytes (up to F7)
+// 0.5.0 FILL (core/ui/page_fill.cpp): counts the Rytm's project loads (every 10, every slot switch): an undo made
+// before one is gone (the working pattern may be another project's now, under the same pattern number)
+uint32_t project_gen();
 void project_switch(const char* name);         // the switch a 10 asked for once core/bundle/rename.h has its answer
 void project_switch_named(const char* key, const char* name, bool reload);   // core/bundle/prjslot.h's switch
 void project_load();

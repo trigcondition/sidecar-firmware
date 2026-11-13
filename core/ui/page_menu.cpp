@@ -9,6 +9,7 @@
 // WEB UI from MENU (where the platform has one: remote_webui, the Pi): the web page and network installs ON / OFF, the
 //        pairing code (a headless Sidecar's only screen is the Rytm's), NEW CODE (the devices stay paired), FORGET
 //        DEVICES (YES twice). The gate itself is not offered here: cmdline.txt paircode=0 stays the dev card's bypass.
+// MIDI from MENU (CORE_POLY): the keyboards' route and the other MIDI settings (page_midi.cpp).
 // USB-C from MENU (where the platform has one: remote_usb, the Pi): what USB-C is to the computer, one mode at a time -
 //        CLASS COMPLIANT (the Sidecar's audio + MIDI device) or OVERBRIDGE (the box itself, passed through: its requests
 //        unfiltered, so an OS update from the computer can reach it; docs/usb-mirror.md). UP / DOWN or knob A pick a
@@ -39,8 +40,17 @@ struct Entry {
 // tests hold the list to that rule (test_ui)
 UI_ROM const Entry kEntries[] = {
     {"POLY CONFIG", "POLY"}, {"ARP", "ARP"},         {"SAMPLE", "SAMPLE"},   {"AUTO SAMPLE", "AUTO"}, {"SONG", "SONG"},     {"REC", "REC"},
-    {"SCOPE", "SCOPE"},      {"LFO", "LFO"},         {"PROJECT", "PROJECT"},  {"STATUS", "SIDECAR"}, {"SYSTEM", "SYSTEM"},
-    {"USER SLOTS", "USER SLOTS"}, {"USB-C", "USB-C"},   {"WEB UI", "WEB UI"}, {"KEYS (ALL COMBOS)", nullptr},
+    {"SCOPE", "SCOPE"},      {"LFO", "LFO"},         {"MORPH", "MORPH"},
+#if CORE_POLY && CORE_MSAMP
+    {"SAMPLE EDIT", "SAMPLE EDIT"},   // the selected track's sample (page_sedit.cpp), or the edit open
+#endif
+    {"PROJECT", "PROJECT"},  {"STATUS", "SIDECAR"}, {"SYSTEM", "SYSTEM"},
+    {"USER SLOTS", "USER SLOTS"},
+#if CORE_POLY
+    {"FILL", "FILL"},   // 0.5.0: p-locks on the selected track's trigs (page_fill.cpp); UP + RIGHT with the 0.5.0 0026
+    {"MIDI", "MIDI"},   // 0.5.0: the keyboards' route, auto channel, computer notes, MIDI learn (page_midi.cpp)
+#endif
+    {"USB-C", "USB-C"},   {"WEB UI", "WEB UI"}, {"KEYS (ALL COMBOS)", nullptr},
 };
 constexpr int kAll = sizeof kEntries / sizeof kEntries[0];
 // The rows this box has: all on the Rytm
@@ -123,6 +133,9 @@ CORE_COLD bool available(const Entry& e) {   // its page is in the list now (or 
   if (!e.page || !strcmp(e.page, "SIDECAR") || !strcmp(e.page, "SYSTEM")) return true;
   if (!strcmp(e.page, "WEB UI")) return remote_webui() != nullptr;
   if (!strcmp(e.page, "USB-C")) return remote_usb() != nullptr;
+  if (!strcmp(e.page, "MIDI")) return true;   // (off the ring: in the list only while shown)
+  if (!strcmp(e.page, "FILL")) return true;
+  if (!strcmp(e.page, "SAMPLE EDIT")) return extra_for_box(e.page);   // (it opens the editor: shown from then on)
   for (int k = 0; k < extra_pages(); ++k) {
     const ExtraPage& x = extra_page(k);
     if (!strcmp(x.title, e.page)) return extra_for_box(x.title) && (!x.shown || x.shown());
@@ -242,6 +255,22 @@ CORE_COLD bool menu_key(int code) {
     M.menu_on = false;
 #if CORE_POLY
     if (e.page && !strcmp(e.page, "POLY")) poly_page_open(-1, false);   // rui1048: the selected track's
+#endif
+#if CORE_POLY && CORE_MSAMP
+    if (e.page && !strcmp(e.page, "SAMPLE EDIT")) {
+      sedit_page_open(-1, -1);
+      return true;
+    }
+#endif
+#if CORE_POLY
+    if (e.page && !strcmp(e.page, "MIDI")) {
+      midi_page_open();
+      return true;
+    }
+    if (e.page && !strcmp(e.page, "FILL")) {
+      fill_page_open(-1);
+      return true;
+    }
 #endif
     if (!e.page) M.keys_on = true, M.map = false, M.ktop = 0, remote_show_page("KEYS");
     else if (!strcmp(e.page, "WEB UI")) M.web_on = true, M.wcur = 0, M.wconfirm = false, remote_show_page("WEB UI");
@@ -436,13 +465,13 @@ CORE_COLD bool usb_shown() { return M.usb_on && remote_usb() != nullptr; }
 
 // updown044: all four use UP / DOWN (their rows, KEYS its scroll)
 UI_ROM const ExtraPage kUsbPage = {"USB-C", usb_shown, usb_draw, usb_enc, usb_key, 0x01, false, nullptr, nullptr,
-                                   nullptr, true, true};
+                                   nullptr, true, nullptr, nullptr, true};
 UI_ROM const ExtraPage kWebUiPage = {"WEB UI", web_shown, web_draw, web_enc, web_key, 0x01, false, nullptr, nullptr,
-                                     nullptr, true, true};
+                                     nullptr, true, nullptr, nullptr, true};
 UI_ROM const ExtraPage kMenuPage = {"MENU", menu_shown, menu_draw, menu_enc, menu_key, 0x01, false, nullptr, nullptr,
-                                    nullptr, true, true};
+                                    nullptr, true, nullptr, nullptr, true};
 UI_ROM const ExtraPage kKeysPage = {"KEYS", keys_shown, keys_draw, keys_enc, keys_key, 0x01, false, nullptr, nullptr,
-                                    keys_leds, true, true};
+                                    keys_leds, true, nullptr, nullptr, true};
 
 CORE_COLD int menu_rows() { return kAll; }
 CORE_COLD const char* menu_row_page(int i) { return i >= 0 && i < kAll ? kEntries[i].page : nullptr; }

@@ -6,6 +6,11 @@
 #include <circle/util.h>
 #include <circle/koptions.h>
 #include <circle/timer.h>
+#include <circle/bcmpropertytags.h>
+#include <circle/usb/dwhci.h>
+#include <circle/usb/dwhciregister.h>
+#include "ep_stop.h"
+#include <assert.h>
 
 #include "ob_block.h"
 #include "ob_usb.h"
@@ -18,7 +23,7 @@ CSidecarGadget *CSidecarGadget::s_pThis = 0;
 
 // ---- descriptors -----------------------------------------------------------------------------------------------
 
-enum { StrManufacturer = 1, StrProduct, StrSerial, StrAudio, StrMIDI, StrOutCh = 16, StrInCh = 32 };
+using namespace sidecar_desc;			// the string indexes (StrManufacturer ..., StrNet, StrNetMac)
 static const char *const OutNames[12] =
 	{"MAIN L", "MAIN R", "MAIN FX L", "MAIN FX R", "BD", "SD", "RS", "BT", "LT", "MT", "CH", "CY"};
 static const char *const InNames[20] =
@@ -33,64 +38,16 @@ static TUSBDeviceDescriptor s_Device =
 	0x0300, StrManufacturer, StrProduct, StrSerial, 1
 };
 
-static u8 s_Config[400];
-static unsigned s_nConfig, s_nOffOut, s_nOffFb, s_nOffIn, s_nOffMIDIOut, s_nOffMIDIIn;
-
-static void Put (const u8 *p, unsigned n)	{ memcpy (s_Config + s_nConfig, p, n); s_nConfig += n; }
-#define D(...)	do { const u8 d_[] = {__VA_ARGS__}; Put (d_, sizeof d_); } while (0)
 #define U16(v)	(u8) ((v) & 0xFF), (u8) (((v) >> 8) & 0xFF)
 #define U32(v)	(u8) ((v) & 0xFF), (u8) (((v) >> 8) & 0xFF), (u8) (((v) >> 16) & 0xFF), (u8) (((v) >> 24) & 0xFF)
 
-// UAC2 (Audio Device Class 2.0 4.7-4.10, the Teensy T1 layout): interfaces 0 AC, 1 AS OUT (EP 0x01, feedback 0x82),
-// 2 AS IN (EP 0x83); one internal fixed 48 kHz clock 0x10; IT 0x01 (USB) -> OT 0x02, IT 0x03 -> OT 0x04 (USB); raw
-// channels (bmChannelConfig 0) named by strings. USB MIDI 1.0: interfaces 3 AC, 4 MS (bulk 0x04 / 0x85), one cable.
-static void BuildConfig (unsigned nIn, unsigned nOut, unsigned nMaxIn, unsigned nMaxOut)
+// the configuration: sidecar_desc.h (UAC2 + MIDI as in 0.4.2; the USB-C network's CDC-NCM function after them while it
+// is in the device). With it the device says bcdDevice 3.10: Windows keeps a device's drivers per VID/PID/revision
+void CSidecarGadget::BuildDescriptor (void)
 {
-	const unsigned Clock = 0x10, AcCs = 9 + 8 + 17 + 12 + 17 + 12, MsCs = 7 + 6 + 6 + 9 + 9 + 9 + 5 + 9 + 5;
-	s_nConfig = 0;
-	D (9, DESCRIPTOR_CONFIGURATION, 0, 0, 5, 1, 0, 0x80, 250);
-	D (8, 11, 0, 3, 0x01, 0x00, 0x20, StrAudio);
-	D (9, DESCRIPTOR_INTERFACE, 0, 0, 0, 0x01, 0x01, 0x20, 0);
-	D (9, 0x24, 0x01, U16 (0x0200), 0x08, U16 (AcCs), 0x00);
-	D (8, 0x24, 0x0A, Clock, 0x01, 0x05, 0, 0);
-	D (17, 0x24, 0x02, 0x01, U16 (0x0101), 0, Clock, (u8) nOut, U32 (0), StrOutCh, U16 (0), 0);
-	D (12, 0x24, 0x03, 0x02, U16 (0x0301), 0, 0x01, Clock, U16 (0), 0);
-	D (17, 0x24, 0x02, 0x03, U16 (0x0201), 0, Clock, (u8) nIn, U32 (0), StrInCh, U16 (0), 0);
-	D (12, 0x24, 0x03, 0x04, U16 (0x0101), 0, 0x03, Clock, U16 (0), 0);
-	D (9, DESCRIPTOR_INTERFACE, 1, 0, 0, 0x01, 0x02, 0x20, 0);
-	D (9, DESCRIPTOR_INTERFACE, 1, 1, 2, 0x01, 0x02, 0x20, 0);
-	D (16, 0x24, 0x01, 0x01, 0x00, 0x01, U32 (1), (u8) nOut, U32 (0), StrOutCh);
-	D (6, 0x24, 0x02, 0x01, 3, 24);
-	s_nOffOut = s_nConfig;
-	D (7, DESCRIPTOR_ENDPOINT, 0x01, 0x05, U16 (nMaxOut), 2);
-	D (8, 0x25, 0x01, 0, 0, 0, 0, 0);
-	s_nOffFb = s_nConfig;
-	D (7, DESCRIPTOR_ENDPOINT, 0x82, 0x11, U16 (4), 4);
-	D (9, DESCRIPTOR_INTERFACE, 2, 0, 0, 0x01, 0x02, 0x20, 0);
-	D (9, DESCRIPTOR_INTERFACE, 2, 1, 1, 0x01, 0x02, 0x20, 0);
-	D (16, 0x24, 0x01, 0x04, 0x00, 0x01, U32 (1), (u8) nIn, U32 (0), StrInCh);
-	D (6, 0x24, 0x02, 0x01, 3, 24);
-	s_nOffIn = s_nConfig;
-	D (7, DESCRIPTOR_ENDPOINT, 0x83, 0x05, U16 (nMaxIn), 2);
-	D (8, 0x25, 0x01, 0, 0, 0, 0, 0);
-	// MIDI
-	D (8, 11, 3, 2, 0x01, 0x03, 0x00, StrMIDI);
-	D (9, DESCRIPTOR_INTERFACE, 3, 0, 0, 0x01, 0x01, 0x00, 0);
-	D (9, 0x24, 0x01, U16 (0x0100), U16 (9), 1, 4);
-	D (9, DESCRIPTOR_INTERFACE, 4, 0, 2, 0x01, 0x03, 0x00, 0);
-	D (7, 0x24, 0x01, U16 (0x0100), U16 (MsCs));
-	D (6, 0x24, 0x02, 0x01, 1, StrMIDI);		// IN jack, embedded (from the computer)
-	D (6, 0x24, 0x02, 0x02, 2, 0);			// IN jack, external
-	D (9, 0x24, 0x03, 0x01, 3, 1, 2, 1, StrMIDI);	// OUT jack, embedded (to the computer), from jack 2
-	D (9, 0x24, 0x03, 0x02, 4, 1, 1, 1, 0);		// OUT jack, external, from jack 1
-	s_nOffMIDIOut = s_nConfig;
-	D (9, DESCRIPTOR_ENDPOINT, 0x04, 0x02, U16 (512), 0, 0, 0);
-	D (5, 0x25, 0x01, 1, 1);
-	s_nOffMIDIIn = s_nConfig;
-	D (9, DESCRIPTOR_ENDPOINT, 0x85, 0x02, U16 (512), 0, 0, 0);
-	D (5, 0x25, 0x01, 1, 3);
-	s_Config[2] = s_nConfig & 0xFF;
-	s_Config[3] = s_nConfig >> 8;
+	m_nConfig = sidecar_desc::build (m_Config, sizeof m_Config, ChIn, ChOut, MaxIn, MaxOut, m_bNet, &m_Desc);
+	assert (m_nConfig != 0);
+	s_Device.bcdDevice = m_bNet ? 0x0310 : 0x0300;
 }
 
 const void *CSidecarGadget::String (const char *p, size_t *pLength)
@@ -142,8 +99,8 @@ const void *CSidecarGadget::GetDescriptor (u16 wValue, u16 wIndex, size_t *pLeng
 		return &s_Device;
 	case DESCRIPTOR_CONFIGURATION:
 		if (i) break;
-		*pLength = s_nConfig;
-		return s_Config;
+		*pLength = m_nConfig;
+		return m_Config;
 	case DESCRIPTOR_STRING:
 		if (i == 0)
 		{
@@ -154,7 +111,8 @@ const void *CSidecarGadget::GetDescriptor (u16 wValue, u16 wIndex, size_t *pLeng
 		// "Sidecar | Expander (Pi)" (the Teensy: "Sidecar | Expander (Mini)"): CoreAudio and CoreMIDI name the device by it, so the
 		// test tools pick it by its exact name (teensy/uac2/coreaudio_pick.py, UAC2_NAME)
 		if (i == StrManufacturer) return String ("Sidecar", pLength);
-		if (i == StrProduct || i == StrAudio || i == StrMIDI) return String (SIDECAR_NAME, pLength);
+		if (i == StrProduct || i == StrAudio || i == StrMIDI || (i == StrNet && m_bNet)) return String (SIDECAR_NAME, pLength);
+		if (i == StrNetMac && m_bNet) return String (m_NetHostMacText, pLength);	// the computer's end of the cable
 #if RASPPI >= 5
 		if (i == StrSerial) return String ("PI5", pLength);
 #else
@@ -286,13 +244,134 @@ void CSidecarMIDIEP::Resume (void)
 	if (m_bActive) BeginTransfer (TransferDataOut, m_Buffer, BufSize);
 }
 
+// ---- the USB-C network's endpoints (CDC-NCM, docs/usb-network.md) ----------------------------------------------
+
+CNcmEP::CNcmEP (const TUSBEndpointDescriptor *pDesc, CSidecarGadget *pGadget, TRole Role)
+:	CDWUSBGadgetEndpoint (pDesc, pGadget), m_pSidecar (pGadget), m_Role (Role),
+	m_bActive (FALSE), m_bBusy (FALSE), m_bHeld (FALSE), m_bResuming (FALSE), m_nEP (pDesc->bEndpointAddress & 0x0F)
+{
+}
+
+// a new configuration: the data interface at alt 0 (no SET_INTERFACE follows a reset); a resume without a reset: the
+// link as it was, its transfers started again
+void CNcmEP::OnActivate (void)
+{
+	m_pSidecar->NetTrace (CSidecarGadget::TrActivate, m_nEP | (m_Role << 8), m_bResuming);
+	m_Wake.activated ();
+	m_bActive = TRUE;
+	m_bBusy = FALSE;
+	m_bHeld = FALSE;
+	if (!m_bResuming)
+	{
+		m_pSidecar->m_uchNetAlt = 0;
+		m_pSidecar->m_bNetUp = FALSE;
+		m_pSidecar->m_nNotify = 0;
+		m_pSidecar->m_NcmCtl.reset ();
+		return;
+	}
+	if (m_Role == RoleOut) ArmOut ();
+	else Kick ();
+}
+
+void CNcmEP::OnDeactivate (void)
+{
+	m_pSidecar->NetTrace (CSidecarGadget::TrDeactivate, m_nEP | (m_Role << 8), IsTransferActive ());
+	m_bActive = FALSE;
+	m_bBusy = FALSE;
+	m_bHeld = FALSE;
+	Stop ();
+}
+
+// what is armed stopped and waited for (ep_stop.h): CancelTransfer alone panics ("EP7 disabled") once the core has
+// disabled an armed bulk endpoint, as at a link change, a bus suspend and NetDetach
+void CNcmEP::Stop (void)
+{
+	if (!IsTransferActive ()) return;
+	m_pSidecar->NetTrace (CSidecarGadget::TrStop, m_nEP | (m_Role << 8));
+	ep_stop::stop (*this, m_nEP, m_Role != RoleOut);
+}
+
+void CNcmEP::OnResume (void)
+{
+	m_bResuming = TRUE;
+	m_Wake.wake (*this);
+	m_bResuming = FALSE;
+}
+
+void CNcmEP::Kick (void)
+{
+	if (!m_bActive || m_bBusy || m_Role == RoleOut) return;
+	unsigned n;
+	if (m_Role == RoleIn) n = m_pSidecar->m_bNetUp ? m_pSidecar->NetForHost (m_Buffer) : 0;
+	else n = m_pSidecar->NetNotification (m_Buffer);
+	if (n == 0) return;
+	m_pSidecar->NetTrace (CSidecarGadget::TrInArm, m_nEP | (m_Role << 8), n);
+	m_bBusy = TRUE;
+	BeginTransfer (TransferDataIn, m_Buffer, n);
+}
+
+void CNcmEP::ArmOut (void)
+{
+	const u32 nWhy = (!m_bActive ? 1 : 0) | (m_bBusy ? 2 : 0) | (m_bHeld ? 4 : 0) | (m_Role != RoleOut ? 8 : 0)
+			 | (!m_pSidecar->m_bNetUp ? 16 : 0) | (!m_pSidecar->m_bNetAttached ? 32 : 0);
+	m_pSidecar->NetTrace (CSidecarGadget::TrArmOut, m_nEP, nWhy);	// 0: armed, else why not
+	if (nWhy) return;
+	m_bBusy = TRUE;
+	BeginTransfer (TransferDataOut, m_Buffer, ncm::kNtbOutMax);
+}
+
+void CNcmEP::Halt (void)
+{
+	Stop ();
+	m_bBusy = FALSE;
+	m_bHeld = FALSE;
+	// SET_INTERFACE resets the host's data toggle: ours goes back to DATA0 too (the endpoint is disabled now)
+	if (m_Role == RoleNotify) return;
+	CDWHCIRegister Ctrl (m_Role == RoleIn ? DWHCI_DEV_IN_EP_CTRL (m_nEP) : DWHCI_DEV_OUT_EP_CTRL (m_nEP));
+	Ctrl.Read ();
+	Ctrl.And (~(DWHCI_DEV_EP_CTRL_EP_ENABLE | DWHCI_DEV_EP_CTRL_EP_DISABLE | DWHCI_DEV_EP_CTRL_CLEAR_NAK));	// (nothing armed)
+	Ctrl.Or (DWHCI_DEV_EP_CTRL_SETDPID_D0);
+	Ctrl.Write ();
+}
+
+void CNcmEP::Resume (void)
+{
+	if (!m_bHeld) return;
+	m_pSidecar->NetTrace (CSidecarGadget::TrResume, m_pSidecar->m_NetRx.free ());
+	m_bHeld = FALSE;
+	ArmOut ();
+}
+
+void CNcmEP::OnTransferComplete (boolean bIn, size_t nLength)
+{
+	m_bBusy = FALSE;
+	m_pSidecar->NetTrace (bIn ? CSidecarGadget::TrInDone : CSidecarGadget::TrOutDone, m_nEP | (m_Role << 8), nLength);
+	if (m_Role == RoleOut)
+	{
+		m_pSidecar->NetFromHost (m_Buffer, nLength);
+		// the reader (the network task) is behind: the computer's next block waits (NAKed) instead of being dropped
+		// (one block holds at most kOutMaxDatagrams, GET_NTB_PARAMETERS)
+		if (m_pSidecar->m_NetRx.free () < ncm::kOutMaxDatagrams)
+		{
+			m_bHeld = TRUE;
+			m_pSidecar->m_NetStats.nRxHeld++;
+			m_pSidecar->NetTrace (CSidecarGadget::TrHold, m_pSidecar->m_NetRx.free ());
+		}
+		else ArmOut ();
+		return;
+	}
+	if (m_Role == RoleIn) m_pSidecar->m_NetStats.nTxBlocks++;
+	Kick ();
+}
+
 // ---- the gadget ------------------------------------------------------------------------------------------------
 
 static const unsigned TonePeriod[18] = {480, 400, 320, 300, 240, 200, 192, 160, 150, 128, 120, 100, 96, 80, 75, 64, 60, 50};
 
 CSidecarGadget::CSidecarGadget (CInterruptSystem *pInterrupt)
 :	CDWUSBGadget (pInterrupt, HighSpeed),
-	m_pIso {0, 0, 0, 0}, m_pMIDIOut (0), m_pMIDIIn (0),
+	m_pIso {0, 0, 0, 0}, m_pMIDIOut (0), m_pMIDIIn (0), m_pNetNotify (0), m_pNetIn (0), m_pNetOut (0), m_nConfig (0),
+	m_bNetWanted (FALSE), m_bNet (FALSE), m_bNetUp (FALSE), m_bNetAttached (TRUE), m_bNetLate (FALSE), m_bNetLateLogged (FALSE), m_bNetRxFlush (FALSE), m_uchNetAlt (0), m_nNotify (0), m_nNtbSeq (0),
 	m_uchOutAlt (0), m_uchInAlt (0), m_bMac (TRUE), m_bTest (FALSE), m_bFake (FALSE), m_bRytmMIDI (FALSE),
 	m_bMirror (FALSE), m_bMirUsed (FALSE),
 	m_bUsbReboot (FALSE),
@@ -356,7 +435,26 @@ CSidecarGadget::CSidecarGadget (CInterruptSystem *pInterrupt)
 	asm volatile ("mrs %0, cntfrq_el0" : "=r" (m_nCntFrq));
 	asm volatile ("mrs %0, cntpct_el0" : "=r" (m_nT0));
 	s_Device.idVendor = USB_GADGET_VENDOR_ID;
-	BuildConfig (ChIn, ChOut, MaxIn, MaxOut);
+	// the USB-C network (usbnet_cfg.h): in the device unless usbnet=off; an OVERBRIDGE boot drops it again in Start
+	m_bNetWanted = m_bNet = usbnet::parse_onoff (CKernelOptions::Get ()->GetAppOptionString ("usbnet"), true);
+#ifndef CIRCLE_GADGET_MIRROR
+	m_bNetWanted = m_bNet = FALSE;			// EP 7 IN + OUT on one number needs circle-gadget-mirror.patch
+#endif
+	m_NcmCtl.reset ();
+	memset (&m_NetStats, 0, sizeof m_NetStats);
+	memset (&m_NetLast, 0, sizeof m_NetLast);
+	m_nNetLogSecs = 0;
+	{
+		// the cable's two MACs from the board's serial number: stable per board, locally administered
+		u64 nSerial = 0;
+		CBcmPropertyTags Tags;
+		TPropertyTagSerial Serial;
+		if (Tags.GetTag (PROPTAG_GET_BOARD_SERIAL, &Serial, sizeof Serial))
+			nSerial = (u64) Serial.Serial[1] << 32 | Serial.Serial[0];
+		usbnet::macs (nSerial, m_NetPiMac, m_NetHostMac);
+		usbnet::mac_text (m_NetHostMac, m_NetHostMacText);
+	}
+	BuildDescriptor ();
 	for (unsigned c = 0; c < 20; c++)
 	{
 		m_nPhase[c] = 0;
@@ -377,6 +475,13 @@ boolean CSidecarGadget::Start (void)
 		CLogger::Get ()->Write (From, LogWarning, "usb=mirror (usbmidi=os:%s): the box's vendor requests and async channel "
 					"are relayed unfiltered; the OS-update filter covers MIDI only", OsUpdateName ());
 #endif
+	// the USB-C network only in CLASS COMPLIANT: an OVERBRIDGE boot shows the box itself soon (docs/usb-network.md); a later
+	// switch keeps what this boot built
+	if (m_bMirror && m_bNet)
+	{
+		m_bNet = FALSE;
+		BuildDescriptor ();
+	}
 	return Initialize ();				// usb=mirror too: the Sidecar device until the box has been read
 }
 
@@ -455,12 +560,18 @@ void CSidecarGadget::AddEndpoints (void)
 #ifdef CIRCLE_GADGET_MIRROR
 	if (m_bShowMirror) { MirrorAddEndpoints (); return; }
 #endif
-	m_pIso[EPOut] = new CSidecarIsoEP ((const TUSBEndpointDescriptor *) &s_Config[s_nOffOut], this, CSidecarIsoEP::RoleOut);
-	m_pIso[EPFeedback] = new CSidecarIsoEP ((const TUSBEndpointDescriptor *) &s_Config[s_nOffFb], this,
+	m_pIso[EPOut] = new CSidecarIsoEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.out], this, CSidecarIsoEP::RoleOut);
+	m_pIso[EPFeedback] = new CSidecarIsoEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.fb], this,
 					       CSidecarIsoEP::RoleFeedback);
-	m_pIso[EPIn] = new CSidecarIsoEP ((const TUSBEndpointDescriptor *) &s_Config[s_nOffIn], this, CSidecarIsoEP::RoleIn);
-	m_pMIDIOut = new CSidecarMIDIEP ((const TUSBEndpointDescriptor *) &s_Config[s_nOffMIDIOut], this);
-	m_pMIDIIn = new CSidecarMIDIEP ((const TUSBEndpointDescriptor *) &s_Config[s_nOffMIDIIn], this);
+	m_pIso[EPIn] = new CSidecarIsoEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.in], this, CSidecarIsoEP::RoleIn);
+	m_pMIDIOut = new CSidecarMIDIEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.midi_out], this);
+	m_pMIDIIn = new CSidecarMIDIEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.midi_in], this);
+	if (m_bNet)
+	{
+		m_pNetNotify = new CNcmEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.net.notify], this, CNcmEP::RoleNotify);
+		m_pNetIn = new CNcmEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.net.in], this, CNcmEP::RoleIn);
+		m_pNetOut = new CNcmEP ((const TUSBEndpointDescriptor *) &m_Config[m_Desc.net.out], this, CNcmEP::RoleOut);
+	}
 }
 
 void CSidecarGadget::OnSuspend (void)
@@ -469,11 +580,17 @@ void CSidecarGadget::OnSuspend (void)
 	// masked first: the xHCI IRQ reaches the endpoints through them (FromRytmMIDI, MirrorAudioIn)
 	CSidecarIsoEP *pIso[4];
 	CSidecarMIDIEP *pMIDIOut, *pMIDIIn;
+	CNcmEP *pNet[3];
 #ifdef CIRCLE_GADGET_MIRROR
 	CMirrorEP *pMir[mirror::kMaxEps];
 #endif
 	EnterCritical ();
 	HostUp (FALSE);
+	m_bNetUp = FALSE;				// the network's link goes with the configuration
+	m_uchNetAlt = 0;
+	m_nNotify = 0;
+	pNet[0] = m_pNetNotify; pNet[1] = m_pNetIn; pNet[2] = m_pNetOut;
+	m_pNetNotify = m_pNetIn = m_pNetOut = 0;
 	for (unsigned i = 0; i < 4; i++) { pIso[i] = m_pIso[i]; m_pIso[i] = 0; }
 	pMIDIOut = m_pMIDIOut;
 	pMIDIIn = m_pMIDIIn;
@@ -485,6 +602,7 @@ void CSidecarGadget::OnSuspend (void)
 	for (unsigned i = 1; i < 4; i++) delete pIso[i];
 	delete pMIDIOut;
 	delete pMIDIIn;
+	for (unsigned k = 0; k < 3; k++) delete pNet[k];
 #ifdef CIRCLE_GADGET_MIRROR
 	for (unsigned k = 0; k < mirror::kMaxEps; k++) delete pMir[k];
 #endif
@@ -495,6 +613,17 @@ int CSidecarGadget::OnClassOrVendorRequest (const TSetupData *pSetup, u8 *pData)
 #ifdef CIRCLE_GADGET_MIRROR
 	if (m_bShowMirror) return -1;			// every one was deferred (OnControlRequest); this is a leftover: STALL
 #endif
+	// the USB-C network's requests (ncm_ntb.h): class, to the communication interface. A host-to-device one comes here
+	// after its status stage (Circle's EP0), so a refused value cannot STALL any more: it is left unchanged
+	if (m_bNet && (pSetup->bmRequestType & 0x7F) == 0x21 && (pSetup->wIndex & 0xFF) == sidecar_desc::kNetIface)
+	{
+		const boolean bIn = (pSetup->bmRequestType & REQUEST_IN) != 0;
+		int n = m_NcmCtl.request (pSetup->bmRequestType, pSetup->bRequest, pSetup->wValue, pSetup->wLength,
+					  bIn ? 0 : pData, bIn ? pData : 0);
+		if (n < 0) m_NetStats.nBadReq++;
+		else m_NetStats.nReq++;
+		return n;
+	}
 	if (!(pSetup->bmRequestType & REQUEST_IN)) return 0;		// SET CUR: one fixed rate, accepted
 	unsigned n = 0;
 	if ((pSetup->wIndex & 0xFF) == 0 && (pSetup->wIndex >> 8) == 0x10)
@@ -524,11 +653,18 @@ void CSidecarGadget::OutReset (void)
 
 boolean CSidecarGadget::OnSetInterface (u8 uchInterface, u8 uchAlt)
 {
+	if (m_bNet) NetTrace (TrSetIntf, uchInterface, uchAlt);
 #ifdef CIRCLE_GADGET_MIRROR
 	if (m_bShowMirror) return MirrorSetInterface (uchInterface, uchAlt);
 #endif
 	if (uchInterface == 0 || uchInterface == 3 || uchInterface == 4) return uchAlt == 0;
+	if (m_bNet && uchInterface == sidecar_desc::kNetIface) return uchAlt == 0;
 	if (uchAlt > 1) return FALSE;
+	if (m_bNet && uchInterface == sidecar_desc::kNetIface + 1)
+	{
+		NetSetAlt (uchAlt);
+		return TRUE;
+	}
 	if (uchInterface == 1)
 	{
 		m_uchOutAlt = uchAlt;
@@ -564,6 +700,8 @@ int CSidecarGadget::OnGetInterface (u8 uchInterface)
 #endif
 	if (uchInterface == 1) return m_uchOutAlt;
 	if (uchInterface == 2) return m_uchInAlt;
+	if (m_bNet && uchInterface == sidecar_desc::kNetIface + 1) return m_uchNetAlt;
+	if (m_bNet && uchInterface == sidecar_desc::kNetIface) return 0;
 	return uchInterface <= 4 ? 0 : -1;
 }
 
@@ -995,6 +1133,14 @@ void CSidecarGadget::Poll (void)
 	if (m_bMirUsed) MirrorPoll ();
 #endif
 	UpdatePlugAndPlay ();
+	NetTraceDump ();
+	if (m_bNetLate && !m_bNetLateLogged)
+	{
+		m_bNetLateLogged = TRUE;
+		CLogger::Get ()->Write (From, LogWarning, "usbnet: a computer started its USB-C network after the boot chose "
+					"Wi-Fi or Ethernet (a Mac locked at first connection?): reboot the Sidecar to use it "
+					"(cmdline net=usb forces it)");
+	}
 	if (m_Gate.Quiet (m_ToRytmPath.Filter ().OsMessages (), CTimer::GetClockTicks ()))	// an aborted upgrade's sender stopped
 	{
 		UpdateOsPass (FALSE, 0);		// the pass on again: from a new start (ApplyGate)
@@ -1061,8 +1207,248 @@ boolean CSidecarGadget::Command (const char *p)
 	return TRUE;
 }
 
+// ---- the USB-C network: the gadget's side ------------------------------------------------------------------------
+
+// SET_INTERFACE on the data interface (gadget IRQ): alt 1 the computer's driver took the link, alt 0 it let it go. Either
+// way the NTB parameters go back to their defaults (NCM 1.0 7.2) and what was queued is dropped
+void CSidecarGadget::NetSetAlt (u8 uchAlt)
+{
+	if (m_pNetIn) m_pNetIn->Halt ();
+	if (m_pNetOut) m_pNetOut->Halt ();
+	m_uchNetAlt = uchAlt;
+	m_bNetUp = uchAlt != 0;
+	if (!uchAlt) m_NcmCtl.reset ();		// NCM 1.0 7.2: at alt 0 (a size set before alt 1 is kept)
+	m_nNtbSeq = 0;
+	m_NetTx.drain ();				// this side reads it
+	m_bNetRxFlush = TRUE;				// the network task reads that one: it drops it (NetReceive)
+	if (!uchAlt)
+	{
+		m_nNotify = 0;
+		return;
+	}
+	m_NetStats.nUps++;
+	if (!m_bNetAttached) m_bNetLate = TRUE;		// told "not connected" below; Poll logs it once
+	m_nNotify = 2;					// the speed, then "connected"
+	if (m_pNetNotify) m_pNetNotify->Kick ();
+	if (m_pNetOut) m_pNetOut->ArmOut ();
+	if (m_pNetIn) m_pNetIn->Kick ();
+}
+
+unsigned CSidecarGadget::NetNotification (u8 *pBuffer)
+{
+	if (m_nNotify == 2)
+	{
+		m_nNotify = 1;
+		return ncm::notify_speed (pBuffer, sidecar_desc::kNetIface, 480000000);	// high speed
+	}
+	if (m_nNotify == 1)
+	{
+		m_nNotify = 0;
+		return ncm::notify_connection (pBuffer, sidecar_desc::kNetIface, m_bNetUp && m_bNetAttached);
+	}
+	return 0;
+}
+
+// an OUT block (gadget IRQ): its datagrams into the reader's queue; a malformed block is dropped whole, counted
+void CSidecarGadget::NetFromHost (const u8 *pBlock, size_t nLength)
+{
+	m_NetStats.nRxBlocks++;
+	ncm::ParseStats St;
+	ncm::Parse r = ncm::parse16 (pBlock, nLength, ncm::kOutMaxDatagrams,
+		[this] (const u8 *pFrame, unsigned nFrame)
+		{
+			if (m_NetRx.push (pFrame, nFrame)) m_NetStats.nRxFrames++;
+			else m_NetStats.nRxDrop++;
+		}, &St);
+	if (r != ncm::kOk) m_NetStats.nRxRefused++;
+	m_NetStats.nRxBad += St.bad;
+	NetTrace (TrOutDone, 0x100 | r, St.datagrams | St.bad << 16);	// (ep 0: the parse) result, datagrams, bad
+}
+
+// the next IN block (gadget IRQ, or IRQs masked): as many queued frames as fit the size the computer asked for
+unsigned CSidecarGadget::NetForHost (u8 *pBuffer)
+{
+	if (m_NetTx.used () == 0) return 0;
+	size_t nCap = m_NcmCtl.ntb_in_size ();
+	if (nCap > ncm::kNtbInMax) nCap = ncm::kNtbInMax;
+	m_NtbBuild.begin (pBuffer, nCap, m_nNtbSeq++);
+	const u8 *p;
+	unsigned n;
+	while (m_NetTx.peek (&p, &n))
+	{
+		if (!m_NtbBuild.add (p, n))
+		{
+			if (m_NtbBuild.count () != 0) break;	// the next block
+			m_NetTx.release ();			// fits no block (cannot happen: 1514 < 2048): dropped
+			continue;
+		}
+		m_NetTx.release ();
+		m_NetStats.nTxFrames++;
+	}
+	return m_NtbBuild.count () ? m_NtbBuild.finish () : 0;
+}
+
+// one Ethernet frame to the computer (the network task)
+boolean CSidecarGadget::NetSend (const void *pFrame, unsigned nLength)
+{
+	if (!m_bNetUp)
+	{
+		m_NetStats.nTxDown++;
+		return FALSE;
+	}
+	if (!m_NetTx.push ((const u8 *) pFrame, nLength)) return FALSE;
+	EnterCritical ();
+	if (m_pNetIn) m_pNetIn->Kick ();
+	LeaveCritical ();
+	return TRUE;
+}
+
+// one Ethernet frame from the computer (the network task); a held OUT endpoint is armed again once there is room
+boolean CSidecarGadget::NetReceive (void *pBuffer, unsigned *pLength)
+{
+	if (m_bNetRxFlush)
+	{
+		m_bNetRxFlush = FALSE;
+		m_NetRx.drain ();
+	}
+	const u8 *p;
+	unsigned n;
+	const boolean bGot = m_NetRx.peek (&p, &n);
+	if (bGot)
+	{
+		memcpy (pBuffer, p, n);
+		*pLength = n;
+		m_NetRx.release ();
+		m_nNetRecv++;
+	}
+	// a held OUT endpoint is armed again whenever there is room, also after a drain or with the queue empty
+	if (m_NetRx.free () >= ncm::kOutMaxDatagrams)
+	{
+		EnterCritical ();
+		if (m_pNetOut && m_pNetOut->Held ()) m_pNetOut->Resume ();
+		LeaveCritical ();
+	}
+	return bGot;
+}
+
+// M4: a frame goes only while the link is up, the stack is on USB-C and the bus is not suspended (the IN endpoint is
+// deactivated then): otherwise the net device drops it, so nothing piles up while the computer sleeps
+boolean CSidecarGadget::NetLive (void)
+{
+	EnterCritical ();
+	boolean b = m_bNetUp && m_bNetAttached && m_pNetIn != 0 && m_pNetIn->Active ();
+	LeaveCritical ();
+	return b;
+}
+
+// the boot chose Wi-Fi or Ethernet: the function stays in the device (removing it would replug USB-C), but the
+// computer is told the cable is not connected and nothing it sends is taken
+void CSidecarGadget::NetDetach (void)
+{
+	EnterCritical ();
+	NetTrace (TrDetach, m_bNetUp);
+	m_bNetAttached = FALSE;
+	if (m_pNetOut) m_pNetOut->Halt ();
+	m_NetTx.drain ();
+	m_bNetRxFlush = TRUE;
+	if (m_bNetUp)
+	{
+		m_nNotify = 1;				// "not connected"
+		if (m_pNetNotify) m_pNetNotify->Kick ();
+	}
+	LeaveCritical ();
+}
+
+// the frame number of the last start-of-frame (DSTS bits 8..21): it moves while a computer drives the bus
+unsigned CSidecarGadget::BusFrame (void) const
+{
+	return (CDWHCIRegister (DWHCI_DEV_STS).Read () >> 8) & 0x3FFF;
+}
+
+void CSidecarGadget::NetLogStats (CLogger *pLogger)
+{
+	if (!m_bNet) return;
+	EnterCritical ();
+	TNetStats s = m_NetStats;
+	LeaveCritical ();
+	const boolean bWrong = s.nRxBad != m_NetLast.nRxBad || s.nRxRefused != m_NetLast.nRxRefused
+			       || s.nRxDrop != m_NetLast.nRxDrop || s.nBadReq != m_NetLast.nBadReq || s.nUps != m_NetLast.nUps;
+	const boolean bTime = m_bNetUp && ++m_nNetLogSecs >= 10;
+	if (!bWrong && !bTime) return;
+	m_nNetLogSecs = 0;
+	m_NetLast = s;
+	pLogger->Write (From, LogNotice,
+		"usbnet %s (ups %u) | from computer %u blocks %u frames bad %u refused %u drop %u held %u | "
+		"to computer %u blocks %u frames down %u | ntb in %u | req %u bad %u",
+		m_bNetUp ? "up" : "down", s.nUps, s.nRxBlocks, s.nRxFrames, s.nRxBad, s.nRxRefused, s.nRxDrop, s.nRxHeld,
+		s.nTxBlocks, s.nTxFrames, s.nTxDown, m_NcmCtl.ntb_in_size (), s.nReq, s.nBadReq);
+}
+
+void CSidecarGadget::NetTrace (u8 uchCode, u32 a, u32 b)
+{
+	if (m_nNetTraced >= kNetTraceMax) return;
+	m_nNetTraced++;
+	const unsigned h = m_nNetTraceHead;
+	if (h - m_nNetTraceTail >= NetTraceSize) { m_nNetTraceLost++; return; }
+	TNetEvent &e = m_NetTrace[h % NetTraceSize];
+	e.nUs = CTimer::GetClockTicks ();
+	e.uchCode = uchCode;
+	e.a = a;
+	e.b = b;
+	__atomic_store_n (&m_nNetTraceHead, h + 1, __ATOMIC_RELEASE);
+}
+
+// core 0's loop: the events so far, then (for 60 s after the first SET_INTERFACE of the network) a line a second with
+// the network endpoints' registers and counters. Each line flushed as it goes: what came last before a hang is in the log
+void CSidecarGadget::NetTraceDump (void)
+{
+	static const char *const Names[] = {"?", "set_interface", "arm_out", "out_done", "in_arm", "in_done", "stop",
+					    "activate", "deactivate", "hold", "detach", "resume"};
+	if (!m_bNet) return;
+	for (;;)
+	{
+		EnterCritical ();
+		const unsigned h = __atomic_load_n (&m_nNetTraceHead, __ATOMIC_ACQUIRE);
+		boolean bAny = m_nNetTraceTail != h;
+		TNetEvent e = m_NetTrace[m_nNetTraceTail % NetTraceSize];
+		unsigned nLost = m_nNetTraceLost;
+		m_nNetTraceLost = 0;
+		if (bAny) m_nNetTraceTail++;
+		LeaveCritical ();
+		if (nLost) CLogger::Get ()->Write (From, LogNotice, "usbnet trace: %u events lost (ring full)", nLost);
+		if (!bAny) break;
+		if (m_nNetTraceT0 == 0 && e.uchCode == TrSetIntf) m_nNetTraceT0 = e.nUs ? e.nUs : 1;
+		CLogger::Get ()->Write (From, LogNotice, "usbnet trace %u us: %s 0x%X 0x%X", e.nUs,
+					e.uchCode < sizeof Names / sizeof Names[0] ? Names[e.uchCode] : "?", e.a, e.b);
+	}
+	if (m_nNetTraceT0 == 0) return;
+	const u32 nNow = CTimer::GetClockTicks ();
+	if (nNow - m_nNetTraceT0 > 60000000u || nNow - m_nNetTraceLastSec < 1000000u) return;
+	m_nNetTraceLastSec = nNow;
+	EnterCritical ();
+	TNetStats st = m_NetStats;
+	const unsigned nRecv = m_nNetRecv, nRxUsed = m_NetRx.used (), nTxUsed = m_NetTx.used ();
+	const boolean bUp = m_bNetUp, bAtt = m_bNetAttached;
+	const boolean bOutBusy = m_pNetOut != 0 && m_pNetOut->IsBusy (), bOutAct = m_pNetOut != 0 && m_pNetOut->Active ();
+	const boolean bInBusy = m_pNetIn != 0 && m_pNetIn->IsBusy ();
+	LeaveCritical ();
+	const unsigned nOut = sidecar_desc::kEpNetOut & 0x0F, nIn = sidecar_desc::kEpNetIn & 0x0F;
+	CLogger::Get ()->Write (From, LogNotice,
+		"usbnet regs %u ms: up %u att %u out act %u busy %u in busy %u | DOEPCTL %08X DOEPINT %08X DOEPTSIZ %08X DOEPDMA %08X | "
+		"DIEPCTL %08X DIEPINT %08X DIEPTSIZ %08X | GINTSTS %08X GINTMSK %08X DCTL %08X DAINTMSK %08X | rx blocks %u frames %u "
+		"recv %u ring %u | tx frames %u blocks %u ring %u", (nNow - m_nNetTraceT0) / 1000, bUp, bAtt, bOutAct, bOutBusy, bInBusy,
+		CDWHCIRegister (DWHCI_DEV_OUT_EP_CTRL (nOut)).Read (), CDWHCIRegister (DWHCI_DEV_OUT_EP_INT (nOut)).Read (),
+		CDWHCIRegister (DWHCI_DEV_OUT_EP_XFER_SIZ (nOut)).Read (), CDWHCIRegister (DWHCI_DEV_OUT_EP_DMA_ADDR (nOut)).Read (),
+		CDWHCIRegister (DWHCI_DEV_IN_EP_CTRL (nIn)).Read (), CDWHCIRegister (DWHCI_DEV_IN_EP_INT (nIn)).Read (),
+		CDWHCIRegister (DWHCI_DEV_IN_EP_XFER_SIZ (nIn)).Read (), CDWHCIRegister (DWHCI_CORE_INT_STAT).Read (),
+		CDWHCIRegister (DWHCI_CORE_INT_MASK).Read (), CDWHCIRegister (DWHCI_DEV_CTRL).Read (),
+		CDWHCIRegister (DWHCI_DEV_ALL_EPS_INT_MASK).Read (), st.nRxBlocks, st.nRxFrames, nRecv, nRxUsed, st.nTxFrames,
+		st.nTxBlocks, nTxUsed);
+}
+
 void CSidecarGadget::LogStats (CLogger *pLogger)
 {
+	NetLogStats (pLogger);
 #ifdef CIRCLE_GADGET_MIRROR
 	if (m_bShowMirror) { MirrorLogStats (pLogger); return; }
 #endif

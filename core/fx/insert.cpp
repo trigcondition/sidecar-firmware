@@ -8,6 +8,7 @@
 #include "fx/master.h"
 #include "fx/out.h"
 #include "fx/send_fx.h"
+#include "mod/target.h"
 #include "platform.h"
 
 namespace core {
@@ -54,7 +55,13 @@ int16_t g_lfo[kChains][kSlots][kParams];
 // ins1112, the POST EQ: the knobs as set (0..127, the UI's units) and the LFOs' offsets. No step locks: the lock
 // param space is exactly full at kLockParams = 32 (seq.h), so the post EQ takes LFOs and the knob, not p-locks.
 uint8_t g_eq[kChains][kEqParams];
+// sfx-basewidth: the WIDTH last set through set_eq_bw (eq_bw keeps it while it still gives the LPF). 127 is "none": it
+// reads the same as no memory. Any other write of the HPF / LPF, and a clear, forgets it, so a kit's HPF / LPF always
+// read as the same WIDTH whatever came before (it is not stored: the kit file keeps the PEQ line only).
+uint8_t g_bw_width[kChains];
 int16_t g_eq_lfo[kChains][kEqParams];
+uint8_t g_send_knob[kVoices][kBuses];   // the sends as set (control.send: as they play, + g_send_off)
+int16_t g_send_off[kVoices][kBuses];    // core/mod kIsnd's offsets
 const Labels kEqLabels = {"POST EQ", {"HPF", "LPF", "LOW", "HIGH"}, {0, 0, 64, 64}};
 Stats g_stats;
 bool g_dirty = false;
@@ -91,6 +98,7 @@ void refresh(int c, int s, int k) {
 }
 bool valid(int c, int s, int k = 0) { return c >= 0 && c < kChains && s >= 0 && s < kSlots && k >= 0 && k < kParams; }
 bool eq_valid(int c, int k) { return c >= 0 && c < kChains && k >= 0 && k < kEqParams; }
+void send_refresh(int vi, int b) { control.send[vi][b] = (uint8_t)clampi(g_send_knob[vi][b] + g_send_off[vi][b], 0, 127); }
 void eq_refresh(int c, int k) {
   control.peq[c][k] = (int8_t)eq_store(k, clampi((int)g_eq[c][k] + g_eq_lfo[c][k], 0, 127));
 }
@@ -140,8 +148,9 @@ void clear_settings() {
     }
   for (int c = 0; c < kChains; ++c)
     for (int k = 0; k < kEqParams; ++k) g_eq[c][k] = kEqFlat(k), eq_refresh(c, k);   // ins1112
+  for (int c = 0; c < kChains; ++c) g_bw_width[c] = 127;   // sfx-basewidth: no WIDTH remembered
   for (int v = 0; v < kVoices; ++v)
-    for (int b = 0; b < kBuses; ++b) control.send[v][b] = 0;
+    for (int b = 0; b < kBuses; ++b) g_send_knob[v][b] = 0, send_refresh(v, b);
   control.route3 = 0;
   master::clear();
 }
@@ -289,8 +298,8 @@ void slot_value_text(int c, int s, int k, int v, char* b, int cap) {
 void set_type(int c, int s, int t, bool keep) {
   if (!valid(c, s) || t < 0 || t >= kAllTypes) return;
   if (t == kAmp && c >= kVoices && c < kM0) return;   // AMP: the voice chains and the master (amp.h)
-  if (t >= kTypes && c < kM0) return;                 // a send TYPE: the master's chains only
-  if (c >= kM0 && !master::accept(c, s, t)) return;   // no room for another send TYPE
+  if (t >= kTypes && c < kBus0) return;               // a send TYPE: the buses' and the master's chains (core 2's) only
+  if (c >= kBus0 && !master::accept(c, s, t)) return;   // no room for another send TYPE (master.h kFxSlots)
   if (control.type[c][s] == t && keep) return;
   control.type[c][s] = (uint8_t)t;
   if (!keep)
@@ -308,10 +317,18 @@ void set_param(int c, int s, int k, int v) {
 }
 void set_send(int vi, int b, int v) {
   if (vi < 0 || vi >= kVoices || b < 0 || b >= kBuses) return;
-  control.send[vi][b] = (uint8_t)clampi(v, 0, 127);
+  g_send_knob[vi][b] = (uint8_t)clampi(v, 0, 127);
+  send_refresh(vi, b);
   ++g_stats.sets;
   changed();
 }
+void send_offset(int vi, int b, int off) {
+  if (vi < 0 || vi >= kVoices || b < 0 || b >= kBuses) return;
+  g_send_off[vi][b] = (int16_t)clampi(off, -127, 127);
+  send_refresh(vi, b);
+  ++g_stats.lfo_sets;
+}
+int send_knob(int vi, int b) { return vi >= 0 && vi < kVoices && b >= 0 && b < kBuses ? g_send_knob[vi][b] : 0; }
 void set_route3(int post) {
   control.route3 = post ? 1 : 0;
   changed();
@@ -319,16 +336,34 @@ void set_route3(int post) {
 int param(int c, int s, int k) { return valid(c, s, k) ? g_knob[c][s][k] : 0; }
 // ---- ins1112, the POST EQ (end of the chain, after both slots)
 const Labels& eq_labels() { return kEqLabels; }
-void set_eq(int c, int k, int v) {
-  if (!eq_valid(c, k)) return;
+static void eq_write(int c, int k, int v) {
   g_eq[c][k] = (uint8_t)clampi(v, 0, 127);
   eq_refresh(c, k);
   ++g_stats.sets;
   changed();
 }
+void set_eq(int c, int k, int v) {
+  if (!eq_valid(c, k)) return;
+  if (k < 2) g_bw_width[c] = 127;   // the HPF / LPF set as themselves: WIDTH is what they give
+  eq_write(c, k, v);
+}
 int eq_param(int c, int k) { return eq_valid(c, k) ? g_eq[c][k] : 0; }
+static int bw_lpf(int base, int width) { return base + width >= 127 ? 0 : 127 - base - width; }
+void set_eq_bw(int c, int base, int width) {
+  if (!eq_valid(c, 0)) return;
+  base = clampi(base, 0, 127), width = clampi(width, 0, 127);
+  eq_write(c, 0, base);
+  eq_write(c, 1, bw_lpf(base, width));
+  g_bw_width[c] = (uint8_t)width;
+}
+void eq_bw(int c, int* base, int* width) {
+  int b = eq_param(c, 0), l = eq_param(c, 1);
+  *base = b;
+  if (eq_valid(c, 0) && bw_lpf(b, g_bw_width[c]) == l) *width = g_bw_width[c];
+  else *width = l ? clampi(127 - b - l, 0, 127) : 127;
+}
 int eq_playing(int c, int k) { return eq_valid(c, k) ? eq_knob(k, control.peq[c][k]) : 0; }
-void eq_lfo_offset(int c, int k, int off) {
+void eq_mod_offset(int c, int k, int off) {
   if (!eq_valid(c, k)) return;
   g_eq_lfo[c][k] = (int16_t)clampi(off, -127, 127);
   eq_refresh(c, k);
@@ -366,7 +401,7 @@ void lock(int vi, int s, int k, int v) {
   ++g_stats.locks;
 }
 int locked(int c, int s, int k) { return c >= 0 && c < kVoices && valid(c, s, k) ? g_lock[c][s][k] : -1; }
-void lfo_offset(int c, int s, int k, int off) {
+void mod_offset(int c, int s, int k, int off) {
   if (!valid(c, s, k)) return;
   g_lfo[c][s][k] = (int16_t)clampi(off, -127, 127);
   refresh(c, s, k);
@@ -447,12 +482,14 @@ bool bus3_on() {
          g_engine.Active(kBus0 + 2, control);
 }
 
-void bus3(const float* in, int n, float (*pre)[2], float (*post)[2]) {
+void bus3(const float* in, int n, float (*pre)[2], float (*post)[2], float* mono) {
   if (!g_engine.Active(kBus0 + 2, control)) return;
   float y[128][2];
   if (n > 128) n = 128;
   for (int i = 0; i < n; ++i) y[i][0] = y[i][1] = in[i];
   g_engine.ProcessStereo(kBus0 + 2, y, n, control);
+  if (mono)
+    for (int i = 0; i < n; ++i) mono[i] = 0.5f * (y[i][0] + y[i][1]);
   bool p = control.route3 != 0;
   float (*d)[2] = p ? post : pre;
   const float l = p ? fx::kLimitMain : fx::kLimitFx;
@@ -509,14 +546,14 @@ bool command(const char* p, char* o, int cap) {
     int n = sniprintf(o, cap, "ins:");
     for (int c = 0; c < kChains && n < cap; ++c) {
       int a = control.type[c][0], b = control.type[c][1];
-      bool send = c < kVoices && (control.send[c][0] || control.send[c][1] || control.send[c][2]);
+      bool send = c < kVoices && (control.send[c][0] || control.send[c][1] || control.send[c][2]);   // as it plays (a knob 0 + an offset is heard)
       if (!a && !b && !send && !eq_on(c)) continue;
       int k = sniprintf(o + n, cap - n, CORE_STR(" %s %s/%s%s"), kChainNames[c], kLabels[a].name, kLabels[b].name,
                         eq_on(c) ? "/EQ" : "");
       if (k < 0 || k >= cap - n) break;
       n += k;
       if (send) {
-        k = sniprintf(o + n, cap - n, CORE_STR(" send %d/%d/%d"), control.send[c][0], control.send[c][1], control.send[c][2]);
+        k = sniprintf(o + n, cap - n, CORE_STR(" send %d/%d/%d"), g_send_knob[c][0], g_send_knob[c][1], g_send_knob[c][2]);
         if (k < 0 || k >= cap - n) break;
         n += k;
       }
@@ -542,8 +579,8 @@ bool command(const char* p, char* o, int cap) {
   field(q, val, sizeof val);
   int c = chain_from_name(a);
   static const char kHelp[] =
-      "ins=C:S:type:T|p1..p4:V|off (C V1..V8 B1..B3, S A|B), ins=C:eq:hpf|lpf|low|high:V|off, ins=Vn:send:B:V (B 1..3), "
-      "ins=b3:route:pre|post, ins=reset";
+      "ins=C:S:type:T|p1..p4:V|off (C V1..V8 B1..B3, S A|B), ins=Bn:S:mix:V (a send TYPE's), ins=C:eq:hpf|lpf|low|high|base|width:V|off, "
+      "ins=Vn:send:B:V (B 1..3), ins=b3:route:pre|post, ins=reset";
   if (c < 0) {
     sniprintf(o, cap, "%s", kHelp);
     return true;
@@ -554,8 +591,8 @@ bool command(const char* p, char* o, int cap) {
       sniprintf(o, cap, "%s", kHelp);
       return true;
     }
-    set_send(c, bus, v);
-    sniprintf(o, cap, CORE_STR("ins: %s send %d/%d/%d"), kChainNames[c], control.send[c][0], control.send[c][1], control.send[c][2]);
+    set_send(c, bus, v), fx::edited(mod::tid(mod::kIsnd, c, bus));
+    sniprintf(o, cap, CORE_STR("ins: %s send %d/%d/%d"), kChainNames[c], g_send_knob[c][0], g_send_knob[c][1], g_send_knob[c][2]);
     return true;
   }
   if (same_ci(b, "route") && c == kBus0 + 2) {
@@ -563,10 +600,20 @@ bool command(const char* p, char* o, int cap) {
     sniprintf(o, cap, CORE_STR("ins: B3 returns %s"), control.route3 ? "POST (0/1)" : "PRE (2/3)");
     return true;
   }
-  if (same_ci(b, "eq")) {   // ins1112: ins=V3:eq:hpf:40, ins=b1:eq:lpf:90, ins=V3:eq:off
+  if (same_ci(b, "eq")) {   // ins1112: ins=V3:eq:hpf:40, ins=b1:eq:lpf:90, ins=V3:eq:off; 0.5.0 ins=b1:eq:base:40, :width:90
     static const char* const kK[kEqParams] = {"hpf", "lpf", "low", "high"};
     if (same_ci(key, "off")) {
       for (int k = 0; k < kEqParams; ++k) set_eq(c, k, kEqFlat(k));
+    } else if (same_ci(key, "base") || same_ci(key, "width")) {   // sfx-basewidth: HPF and LPF as BASE / WIDTH
+      int v = num(val), bs, w;
+      if (v < 0) {
+        sniprintf(o, cap, "%s", kHelp);
+        return true;
+      }
+      eq_bw(c, &bs, &w);
+      if (same_ci(key, "base")) bs = v;
+      else w = v;
+      set_eq_bw(c, bs, w), fx::edited(mod::tid(mod::kIns, c, 8)), fx::edited(mod::tid(mod::kIns, c, 9));
     } else {
       int k = -1;
       for (int j = 0; j < kEqParams; ++j)
@@ -576,13 +623,15 @@ bool command(const char* p, char* o, int cap) {
         sniprintf(o, cap, "%s", kHelp);
         return true;
       }
-      set_eq(c, k, v);
+      set_eq(c, k, v), fx::edited(mod::tid(mod::kIns, c, 8 + k));
     }
     const Labels& L = eq_labels();
     char v4[kEqParams][8];
     for (int k = 0; k < kEqParams; ++k) eq_value_text(k, eq_param(c, k), v4[k], sizeof v4[k]);
-    sniprintf(o, cap, CORE_STR("ins: %s POST EQ %s %s %s %s %s %s %s %s"), kChainNames[c], L.label[0], v4[0], L.label[1],
-              v4[1], L.label[2], v4[2], L.label[3], v4[3]);
+    int bs, w;
+    eq_bw(c, &bs, &w);
+    sniprintf(o, cap, CORE_STR("ins: %s POST EQ %s %s %s %s %s %s %s %s (BASE %d WIDTH %d)"), kChainNames[c], L.label[0],
+              v4[0], L.label[1], v4[1], L.label[2], v4[2], L.label[3], v4[3], bs, w);
     return true;
   }
   int s = same_ci(b, "A") || same_ci(b, "1") ? 0 : same_ci(b, "B") || same_ci(b, "2") ? 1 : -1;
@@ -595,25 +644,35 @@ bool command(const char* p, char* o, int cap) {
   } else if (same_ci(key, "type")) {
     int t = type_from_name(val);
     if (t < 0) {
-      sniprintf(o, cap, CORE_STR("ins: no type \"%s\" (OFF FILTER CRUSH DRIVE EQ COMP DELAY TREMOLO RINGMOD AMP SAT)"), val);
+      sniprintf(o, cap, CORE_STR("ins: no type \"%s\" (OFF FILTER CRUSH DRIVE EQ COMP DELAY TREMOLO RINGMOD AMP SAT; buses: CHORUS COMB SPACE RINGS CLOUD HALO)"), val);
       return true;
     }
     if (t == kAmp && c >= kVoices && c < kM0) {
       sniprintf(o, cap, "ins: AMP is for the voice chains (V1..V8) and the master, not the buses");
       return true;
     }
-    if (t >= kTypes && c < kM0) {
-      sniprintf(o, cap, "ins: %s is for the master chain (mfx=)", kLabels[t].name);
+    if (t >= kTypes && c < kBus0) {
+      sniprintf(o, cap, "ins: %s is for the buses (B1..B3) and the master (mfx=), not a voice", kLabels[t].name);
       return true;
     }
     set_type(c, s, t);
+    if (control.type[c][s] != t) {   // the send TYPEs' room is full (master.h kFxSlots)
+      int n = sniprintf(o, cap, CORE_STR("ins: %s %c: "), kChainNames[c], 'A' + s);
+      master::full_text(t, o + n, cap - n);
+      return true;
+    }
   } else if ((key[0] == 'p' || key[0] == 'P') && key[1] >= '1' && key[1] <= '4' && !key[2]) {
     int v = num(val);
     if (v < 0) {
       sniprintf(o, cap, "%s", kHelp);
       return true;
     }
-    set_param(c, s, key[1] - '1', v);
+    set_param(c, s, key[1] - '1', v), fx::edited(mod::tid(mod::kIns, c, s * 4 + key[1] - '1'));
+  } else if (same_ci(key, "mix") && master::slot_index(c, s) >= 0 && master::send_type(control.type[c][s]) && num(val) >= 0) {
+    // a bus's or the master's slot holding a send TYPE (else the help: no MIX to set); the master's an edit as mfx=S:mix:
+    const int i = master::slot_index(c, s);
+    master::set_mix(i, num(val));
+    if (i < master::kSlots) fx::edited(mod::tid(mod::kMfx, 0, 1 + i));
   } else {
     sniprintf(o, cap, "%s", kHelp);
     return true;
@@ -621,8 +680,9 @@ bool command(const char* p, char* o, int cap) {
   int t = control.type[c][s];
   char v4[4][8];
   for (int k = 0; k < kParams; ++k) slot_value_text(c, s, k, g_knob[c][s][k], v4[k], sizeof v4[k]);
-  sniprintf(o, cap, CORE_STR("ins: %s %c %s %s %s %s %s %s %s %s %s"), kChainNames[c], 'A' + s, kLabels[t].name,
-            kLabels[t].label[0], v4[0], kLabels[t].label[1], v4[1], kLabels[t].label[2], v4[2], kLabels[t].label[3], v4[3]);
+  int n = sniprintf(o, cap, CORE_STR("ins: %s %c %s %s %s %s %s %s %s %s %s"), kChainNames[c], 'A' + s, kLabels[t].name,
+                    kLabels[t].label[0], v4[0], kLabels[t].label[1], v4[1], kLabels[t].label[2], v4[2], kLabels[t].label[3], v4[3]);
+  if (master::send_type(t) && n > 0 && n < cap) sniprintf(o + n, cap - n, CORE_STR(" mix %d"), master::control.mix[master::slot_index(c, s)]);
   return true;
 }
 
@@ -634,9 +694,24 @@ int json(char* o, int cap) {
     n += k;
     for (int s = 0; s < kSlots; ++s) {
       int t = control.type[c][s];
-      k = sniprintf(o + n, cap - n, CORE_STR("%s{\"t\":\"%s\",\"p\":[%d,%d,%d,%d],\"l\":[%d,%d,%d,%d]}"), s ? "," : "",
+      k = sniprintf(o + n, cap - n, CORE_STR("%s{\"t\":\"%s\",\"p\":[%d,%d,%d,%d],\"l\":[%d,%d,%d,%d]"), s ? "," : "",
                     kLabels[t].name, g_knob[c][s][0], g_knob[c][s][1], g_knob[c][s][2], g_knob[c][s][3],
                     control.play[c][s][0], control.play[c][s][1], control.play[c][s][2], control.play[c][s][3]);
+      if (k < 0 || k >= cap - n) return cap;
+      n += k;
+      if (master::send_type(t)) {   // 0.5.0: a bus's send TYPE: its MIX
+        k = sniprintf(o + n, cap - n, CORE_STR(",\"mix\":%d"), master::control.mix[master::slot_index(c, s)]);
+        if (k < 0 || k >= cap - n) return cap;
+        n += k;
+      }
+      if (t) {   // the TYPE's knobs' names (a send TYPE's since 0.5.0; every TYPE's since 2026-11: the web names P1..P4)
+        const Labels& L = kLabels[t];
+        k = sniprintf(o + n, cap - n, CORE_STR(",\"n4\":[\"%s\",\"%s\",\"%s\",\"%s\"]"), L.label[0], L.label[1], L.label[2],
+                      L.label[3]);
+        if (k < 0 || k >= cap - n) return cap;
+        n += k;
+      }
+      k = sniprintf(o + n, cap - n, "}");
       if (k < 0 || k >= cap - n) return cap;
       n += k;
     }
@@ -646,8 +721,12 @@ int json(char* o, int cap) {
     if (k < 0 || k >= cap - n) return cap;
     n += k;
     if (c < kVoices)
-      k = sniprintf(o + n, cap - n, CORE_STR(",\"send\":[%d,%d,%d]}"), control.send[c][0], control.send[c][1], control.send[c][2]);
-    else
+      k = sniprintf(o + n, cap - n, CORE_STR(",\"send\":[%d,%d,%d]}"), g_send_knob[c][0], g_send_knob[c][1], g_send_knob[c][2]);
+    else if (c < kBus0 + 2) {   // sfx-basewidth: the send FX return filter as BASE / WIDTH (the same two knobs as HPF / LPF)
+      int bs, w;
+      eq_bw(c, &bs, &w);
+      k = sniprintf(o + n, cap - n, CORE_STR(",\"bw\":[%d,%d]}"), bs, w);
+    } else
       k = sniprintf(o + n, cap - n, "}");
     if (k < 0 || k >= cap - n) return cap;
     n += k;
@@ -679,7 +758,7 @@ void reset() {
   for (int c = 0; c < kChains; ++c)
     for (int k = 0; k < kEqParams; ++k) g_eq_lfo[c][k] = 0, eq_refresh(c, k);   // ins1112
   for (int v = 0; v < kVoices; ++v)
-    for (int b = 0; b < kBuses; ++b) g_send_g[v][b] = 0.0f;
+    for (int b = 0; b < kBuses; ++b) g_send_g[v][b] = 0.0f, g_send_off[v][b] = 0, send_refresh(v, b);
   g_engine.Reset();
   amp::reset();
   master::reset();

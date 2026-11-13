@@ -2,7 +2,7 @@
 // Ethernet. Circle's mDNS daemon answers sidecar.local and publishes an _http._tcp service; Circle's HTTP daemon
 // serves one page (www/index.html, built in), /status (JSON), /log?since=N (the console log's tail from a ring
 // buffer), POST /cmd (c=<command>: the serial console's parser, CConsole::Command), /um (the user machines' JSON),
-// /lists (the pool and JUNO / FM lists' JSON, core/user/lists.h), /fs/* (fsweb.h) and /wifi/* (wifi.h: status, scan,
+// /lists (the pool and JUNO / FM lists' JSON, core/user/lists.h), /ws (a WebSocket: web_ws.h, docs/web-ws.md), /fs/* (fsweb.h) and /wifi/* (wifi.h: status, scan,
 // and the POSTs join, forget, power, accepted from this page only: wifi_conf.h's same_origin) and /pair* (paircode.h:
 // the pairing code). Everything that changes something needs the pairing code as well (paircode.h's Gate; /status and
 // /log never do). Everything runs as Circle
@@ -20,6 +20,8 @@
 #include <circle/spinlock.h>
 #include <circle/string.h>
 #include <circle/types.h>
+
+#include "ws_session.h"
 
 class CConsole;
 
@@ -58,6 +60,12 @@ public:
 				unsigned *pLength, const char **ppContentType) override;
 	void WriteAccessLog (const CIPAddress &rRemoteIP, THTTPRequestMethod Method, const char *pURI,
 			     THTTPStatus Status, unsigned nContentLength) override {}	// quiet: the page polls
+	// GET /ws with an Upgrade header: the WebSocket (web_ws.h, docs/web-ws.md; pi/circle/circle-http-ws.patch calls it)
+	boolean UpgradeConnection (const char *pPath, CSocket *pSocket) override;
+	static const unsigned MaxWs = 4;	// WebSocket connections at once (each holds its worker task; not in MaxWorkers). A page
+						// refused one falls back to polling /status (no levels): 2 was too few for a phone, a
+						// laptop and a second tab
+	static unsigned WsOpen (void)		{ return s_nWs; }
 
 	static unsigned Requests (void)		{ return s_nRequests; }
 	static unsigned MaxUs (void)		{ return s_nMaxUs; }	// the longest GetContent, in us
@@ -85,6 +93,17 @@ private:
 	boolean m_bServed;			// GetContent ran (FALSE at the end: closed without a request)
 	u32 m_nPeer;				// the client's IPv4 address: the pairing code's rate-limit key (paircode.h)
 	static unsigned s_nRequests, s_nMaxUs, s_nCommands;
+	static unsigned s_nWs, s_nWsTotal, s_nWsRefused;	// /ws: open now, since the boot, refused (web_ws.h)
+	void StatusJson (CString *pOut);	// what /status answers (and /ws's status topic)
+	static bool WsToken (void *pParam, const char *pToken);
+	static size_t WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size_t nMax);	// the /ws topics' payloads
+	static const char *WsCommand (void *pParam, const char *pCmd);
+	static bool WsStrip (void *pParam, const char *pName);		// the spectrum topic's strip (spectrum_pi.h)
+	void WsRefuse (const char *pStatus, const char *pWhy);
+	CSocket *m_pSocketForWs = 0;
+	unsigned m_nWsSlot = 0;			// which of the MaxWs connections (its own share of the peaks, peak_fan.h)
+	u64 m_nWsLogAt = 0;			// the "log" topic: the log position sent up to
+	boolean m_bWsLogStarted = FALSE;		// the socket being upgraded (UpgradeConnection; Circle keeps its own private)
 	static unsigned s_nUnpaired;		// requests refused by the pairing code's gate (paircode.h)
 };
 

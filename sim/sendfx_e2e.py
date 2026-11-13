@@ -134,8 +134,11 @@ class Run:
         return [(e["f"], e["show"]) for e in self.log if "show" in e]
 
     def tx(self, cmd):
-        return [(e["f"], bytes.fromhex(e["tx"][1]) if isinstance(e["tx"][1], str) else e["tx"][1])
-                for e in self.log if "tx" in e and e["tx"][0] == cmd]
+        out = [(e["f"], bytes.fromhex(e["tx"][1]) if isinstance(e["tx"][1], str) else e["tx"][1])
+               for e in self.log if "tx" in e and e["tx"][0] == cmd]
+        if cmd == P.SENDFX_STATE:   # (sfx-basewidth: a 22 with ver 2 is BASE / WIDTH, not a STATE)
+            out = [(f, m) for f, m in out if not m or m[0] != P.SENDFX_BW_VER]
+        return out
 
     def rx(self, cmd):
         return [(e["f"], e["rx"][1]) for e in self.log if "rx" in e and e["rx"][0] == cmd]

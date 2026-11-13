@@ -1,0 +1,6 @@
+#sidecar xy 1
+H 1
+X 1 RYTM:PERF1 100
+X 4 I3:A2 -25
+Y 2 MORPH -50
+Y 3 V8:P16 7

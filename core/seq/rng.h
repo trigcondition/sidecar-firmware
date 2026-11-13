@@ -21,7 +21,8 @@ namespace seq {
 // build, so a purpose is never renumbered (new ones are appended).
 enum : uint8_t { kRngProb = 1, kRngNote = 2, kRngJump = 3, kRngDir = 4, kRngMutate = 5, kRngHuman = 6, kRngMorph = 7,
                  kRngLock = 8, kRngArp = 9, kRngFx = 10,     // seqtop: V1's lock chances, M4's RND arp, H1's FX column
-                 kRngShuffle = 11, kRngNbr = 12 };            // CHOP (core/chop): SHUFFLE's order, NEIGHBOUR CHANCE
+                 kRngShuffle = 11, kRngNbr = 12,              // CHOP (core/chop): SHUFFLE's order, NEIGHBOUR CHANCE
+                 kRngFill = 13 };                             // FILL (core/seq/lockfill.h): RND, SHUF
 
 inline uint64_t rng_mix(uint64_t z) {   // splitmix64's finaliser: every input bit moves every output bit
   z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;

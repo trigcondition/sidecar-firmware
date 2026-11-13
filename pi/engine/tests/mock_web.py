@@ -84,23 +84,51 @@ def rec_dir(vol):
     return os.path.join(ROOT, "Recordings") if vol == "SD" else os.path.join(ROOT, vol, "Recordings")
 
 
-# the LFOs (core/lfo.cpp command / json, the Pi's eight): the settings kept, /status "lfo" as the engine's
+# the LFOs (core/lfo.cpp command / json, the Pi's 26 - 0.5.0 LFO FINAL: two a track, T1A..T12B FXA FXB; the owner's test:
+# no LFO on a Rytm target): the settings kept, /status "lfo" as the engine's
 LFO_TG = ["OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2"]
+LFO_N = 26
+# the voices' param names as /status "pns" gives them ("-" unused): V1 plays SAMPLER (P9..P16 only), the rest name all 16
+_SMP = ["-"] * 8 + ["TUNE", "FINE", "SMP", "PLAY", "STRT", "END", "LOOP", "LEV"]
+VOICE_PNS = [_SMP] + [[f"K{k + 1}" for k in range(16)] for _ in range(7)]
+
+
+def lfo_landing(t):   # a new target's param (core/lfo.cpp voice_landing): a voice's P2 when named, else its first named
+    i = LFO_TG.index(t)
+    if not 0 < i < 9:
+        return 0
+    names = VOICE_PNS[i - 1]
+    named = [k for k, n in enumerate(names) if n != "-"]
+    return 1 if 1 in named or not named else named[0]
 LFO_TRI = "".join(f"{(-64 + k * 16 if k < 8 else 64 - (k - 8) * 16) + 64 if k != 8 else 127:02x}1" for k in range(16))
-LFOS = [dict(tgt="OFF", par=0, wav=0, rate=64, sync=0, trig=0, dep=32, base=64, des=LFO_TRI) for _ in range(8)]
+LFOS = [dict(tgt="OFF", par=0, wav=0, rate=64, sync=0, trig=0, dep=32, base=64, des=LFO_TRI) for _ in range(LFO_N)]
+
+
+def lfo_index(n):   # "5", "T3A", "fxb" -> 0..25 (core/lfo.cpp lfo_index), None
+    m = re.match(r"(?:(\d+)|[Tt](\d+)([AaBb])|[Ff][Xx]([AaBb]))$", n)
+    if not m:
+        return None
+    if m.group(1):
+        i = int(m.group(1)) - 1
+    elif m.group(2):
+        i = (int(m.group(2)) - 1) * 2 + "AB".index(m.group(3).upper()) if 1 <= int(m.group(2)) <= 12 else -1
+    else:
+        i = 24 + "AB".index(m.group(4).upper())
+    return i if 0 <= i < LFO_N else None
 
 
 def lfo_cmd(c):
-    m = re.match(r"lfo=(\d):(\w+)(?::(.*))?$", c)
-    o = LFOS[int(m.group(1)) - 1] if m and 1 <= int(m.group(1)) <= 8 else None
-    if not o:
+    m = re.match(r"lfo=(\w+?):(\w+)(?::(.*))?$", c)
+    i = lfo_index(m.group(1)) if m else None
+    if i is None:
         return
+    o = LFOS[i]
     k, v = m.group(2), m.group(3) or ""
     if k == "off":
         o["tgt"] = "OFF"
-    elif k == "tgt" and v.upper() in LFO_TG:
+    elif k == "tgt" and v.upper() in LFO_TG:   # (no Rytm target: not in the list)
         if o["tgt"] != v.upper():
-            o["par"] = 1 if LFO_TG.index(v.upper()) < 9 else 0
+            o["par"] = lfo_landing(v.upper())
         o["tgt"] = v.upper()
     elif k == "sync" and v in ("0", "1"):
         if int(v) != o["sync"]:
@@ -121,8 +149,16 @@ def lfo_status():
     def np_(t):
         i = LFO_TG.index(t)
         return 0 if not i else 16 if i < 9 else 4
-    return {"n": 8, "l": [dict(o, pn=f"P{o['par'] + 1}", np=np_(o["tgt"]), rn="",
-                                       ph=int(time.time() * 1000 / (4 + i)) % 1000) for i, o in enumerate(LFOS)]}
+    def pns(t):
+        i = LFO_TG.index(t)
+        return VOICE_PNS[i - 1] if 0 < i < 9 else None
+
+    def pn(o):
+        p = pns(o["tgt"])
+        return p[o["par"] & 15] if p else f"P{o['par'] + 1}"
+    return {"n": LFO_N, "pt": 1, "kit": 1, "full": 0, "trk": 0,
+            "l": [dict(o, pn=pn(o), np=np_(o["tgt"]), rn="", ph=int(time.time() * 1000 / (4 + i)) % 1000,
+                       **({"pns": pns(o["tgt"])} if pns(o["tgt"]) else {})) for i, o in enumerate(LFOS)]}
 
 
 def page():
@@ -460,6 +496,14 @@ def um():
                   "state": 4096, "cpu": cpu, "ns": 1830 + 900 * i if played else 0, "blocks": 52000 if played else 0,
                   "name": nm, "slots": [1] if nm == "GRAIN" else [2] if nm == "ACID" else [], "fit": True, "why": "",
                   "file": "/Plugins/%s.rmp" % id_.replace(".", "_"), "target": "a64", "fp": 1000 + i, "status": "ok"})
+    # Plugin API 3: a dual machine and a user effect (an effect is never offered for a U slot)
+    for id_, nm, eff in (("rytm.api3_test", "API3 TEST", False), ("fx.pingpong", "PINGPONG", True)):
+        e = {"t": "plugin", "id": id_, "ver": "1.0.0", "size": 4408, "api": 3, "image": 4096, "bss": 0, "state": 48, "cpu": 20,
+             "ns": 0, "blocks": 0, "name": nm, "slots": [], "fit": True, "why": "", "file": "/Plugins/%s.rmp" % id_.replace(".", "_"),
+             "target": "a64", "fp": 3000 + len(a), "status": "ok"}
+        if eff:
+            e["effect"] = True
+        a.append(e)
     fps = {id_: 1000 + i for i, (id_, _, _) in enumerate(names)}
     nms = {id_: nm for id_, nm, _ in names}
     for n in range(1, 6):
@@ -769,8 +813,8 @@ PAIR_SHOW_GAP = 10          # paircode.h kShowGapS (fixed)
 # web.cpp's Open(): the whole open set, and nothing else. Everything else needs the pairing code, so a new endpoint
 # is gated unless someone deliberately adds it here (page_pair.test.mjs reads this list out of web.cpp and checks the
 # two agree, and that nothing else in web.cpp answers an unpaired client).
-PAIR_OPEN = {"/", "/index.html", "/bundle-sw.js", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume",
-             "/pair/show"}
+PAIR_OPEN = {"/", "/index.html", "/classic", "/bundle-sw.js", "/health", "/status", "/log", "/pair", "/pair/status", "/pair/resume",
+             "/pair/show", "/update/state"}
 NOT_PAIRED = ("not paired: enter the pairing code shown on the Rytm's screen and on the Sidecar's screen")
 _mp = os.environ.get("MOCK_PAIR", "")
 PAIR = {"mode": "off" if _mp == "0" else "fixed" if re.fullmatch(r"\d{8}", _mp) else "on",

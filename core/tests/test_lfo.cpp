@@ -13,6 +13,9 @@
 #include "check.h"
 #include "core.h"
 #include "fmt/fmt.h"
+#include "fx/insert.h"
+#include "fx/master.h"
+#include "mod/mod.h"
 #include "msamp/cardq.h"
 #include "store/store.h"
 #include "ui/extra.h"
@@ -161,7 +164,7 @@ static void unreadable_default_does_not_lock_the_kit(const std::string& card) {
   set(1, "tgt:v6"), set(1, "dep:21");
   at(g_us + 1100000);
   for (int i = 0; i < 8; ++i) idle_save();
-  CHECK(rd_file(f10).find("1 V6 ") != std::string::npos && rd_file(pf) == p0);   // saved: its own file, not the default
+  CHECK(rd_file(f10).find(" V6 ") != std::string::npos && rd_file(pf) == p0);   // saved: its own file, not the default
   host_fail_open("/.rytm/lfo/STO.txt", false);
   host_fail_open("/.rytm/lfo/STO/k006.txt", true);
   CHECK(fill_store());
@@ -177,8 +180,120 @@ static void unreadable_default_does_not_lock_the_kit(const std::string& card) {
   printf("lfo: an unreadable default does not lock a kit without its own file; an unreadable own file does\n");
 }
 
+// 0.5.0 (owner): a bus slot's send TYPE MIX as an LFO target, MFX's params 5..10 (B1A B1B B2A B2B B3A B3B) after LEV and
+// the master's MIX1..4; no lock space (an LFO and core/mod target only). It moves what plays, never the knob; the line
+// round-trips in the kit's file; an older line (MFX 0..4) loads as it was
+static void lfo_on_bus_mix(const std::string& card) {
+  lfo::reset();
+  ins::reset();
+  const int b3a = master::slot_index(ins::kBus0 + 2, 0);
+  ins::set_type(ins::kBus0 + 2, 0, ins::kMCloud), master::set_mix(b3a, 64);
+  const int mfx = lfo::target_from_name("MFX");
+  char pn[8];
+  CHECK(lfo::params_of(mfx) == 11 && !strcmp(lfo::param_name(mfx, 9, pn, sizeof pn), "B3A") &&
+        !strcmp(lfo::param_name(mfx, 5, pn, sizeof pn), "B1A") && !strcmp(lfo::param_name(mfx, 4, pn, sizeof pn), "MIX4"));
+  mod::Tid t = 0;
+  char nm[16];
+  CHECK(mod::parse("MFX:B3A", &t) && t == mod::tid(mod::kMfx, 0, 1 + b3a) && !strcmp(mod::name(t, nm, sizeof nm), "MFX:B3A"));
+  set(1, "tgt:MFX"), set(1, "par:9"), set(1, "wav:4"), set(1, "rate:127"), set(1, "dep:20");
+  int lo = 999, hi = -1;
+  for (int i = 0; i < 400; ++i) {
+    run_ms(1);
+    const int m = master::played_mix(b3a);
+    lo = m < lo ? m : lo, hi = m > hi ? m : hi;
+  }
+  printf("lfo: MFX:B3A (bus 3 A's MIX) %d..%d\n", lo, hi);
+  CHECK(lo <= 49 && hi >= 79 && master::control.mix[b3a] == 64);
+  // the kit's file: saved with the bus MIX target, read back; an older line beside it as it was
+  lfo::kit_changed(11);
+  set(1, "tgt:MFX"), set(1, "par:9"), set(1, "dep:20");
+  set(2, "tgt:MFX"), set(2, "par:2"), set(2, "dep:-5");
+#if CORE_POLY
+  {   // 0.5.0 owner test: no LFO on the Rytm - the console refuses RT / RFX for every LFO
+    char o[160];
+    CHECK(lfo::command("lfo=3:tgt:RT3", o, sizeof o) == false || strstr(o, "cannot"));
+    CHECK(lfo::command("lfo=5:tgt:RFX", o, sizeof o) == false || strstr(o, "cannot"));
+    CHECK(lfo::get(2).target == 0 && lfo::get(4).target == 0);
+  }
+#endif
+  at(g_us + 1100000);
+  for (int i = 0; i < 8; ++i) idle_save();
+  const std::string f12 = card + "/.rytm/lfo/STO/k012.txt";
+  char nA[8], nB[8], nC[8], nD[8];
+  lfo::lfo_name(0, nA, sizeof nA), lfo::lfo_name(1, nB, sizeof nB);
+  CHECK(rd_file(f12).find(std::string(nA) + " MFX 9 ") != std::string::npos && rd_file(f12).find(std::string(nB) + " MFX 2 ") != std::string::npos);
+#if CORE_POLY
+  lfo::lfo_name(2, nC, sizeof nC), lfo::lfo_name(4, nD, sizeof nD);
+  CHECK(rd_file(f12).find(std::string(nC) + " OFF ") != std::string::npos && rd_file(f12).find(std::string(nD) + " OFF ") != std::string::npos);
+  CHECK(rd_file(f12).find(" RT3 ") == std::string::npos && rd_file(f12).find(" RFX ") == std::string::npos);
+  wr_file(card + "/.rytm/lfo/STO/k013.txt", "# Sidecar LFOs\n1 MFX 3 4 127 0 0 12 0\n2 MFX 10 4 127 0 0 -8 0\n3 RFX 9 4 127 0 0 12 0\n");
+#else
+  wr_file(card + "/.rytm/lfo/STO/k013.txt", "# Sidecar LFOs\n1 MFX 3 4 127 0 0 12 0\n2 MFX 10 4 127 0 0 -8 0\n");
+#endif
+  CHECK(fill_store());
+  lfo::kit_changed(5), lfo::kit_changed(11);
+  CHECK(lfo::get(0).target == mfx && lfo::get(0).param == 9 && lfo::get(1).param == 2 && lfo::get(1).depth == -5);
+#if CORE_POLY
+  CHECK(lfo::get(2).target == 0 && lfo::get(4).target == 0);
+#endif
+  lfo::kit_changed(12);   // (an old file: numbered lines; old LFO n is track n's A: 0.5.0's 26)
+  const int o1 = lfo::kPerTrack ? 0 : 0, o2 = lfo::kPerTrack ? 2 : 1, o3 = lfo::kPerTrack ? 4 : 2;
+  CHECK(lfo::get(o1).target == mfx && lfo::get(o1).param == 3 && lfo::get(o2).param == 10 && lfo::get(o2).depth == -8);
+#if CORE_POLY
+  CHECK(lfo::get(o3).target == 0);   // an old line on the Rytm (RFX 9): loads OFF (0.5.0 owner test), the rest read
+#endif
+  for (int i = 1; i <= lfo::kLfos; ++i) set(i, "off");
+  run_ms(3);
+  CHECK(master::played_mix(b3a) == 64);
+  lfo::reset();
+  ins::reset();
+  printf("lfo: a bus slot's MIX as a target (MFX:B1A..B3B), saved and read back\n");
+}
+
 static bool near(float a, float b, float e = 0.02f) { return fabsf(a - b) <= e; }
 static bool near_ph(float a, float b, float e) { float d = fabsf(a - b); return d <= e || 1.0f - d <= e; }   // on the circle
+
+// 0.5.0 (plan-050 Task 14): the master's chains and LEV / MIX, a track's sends, a voice's sends as LFO targets - each
+// moves what plays, never the knob the files and pages keep; the old targets keep their numbers and names
+static void lfo_on_master_lev_and_send() {
+  lfo::reset();
+  ins::reset();
+  master::set_lev(100);
+  fx::set_send_base(0, 0, 40);
+  ins::set_send(1, 1, 30);
+  ins::set_param(ins::kM0, 0, 0, 60);
+  set(1, "tgt:MFX"), set(1, "par:0"), set(1, "wav:4"), set(1, "rate:127"), set(1, "dep:30");
+  set(2, "tgt:S1"), set(2, "par:0"), set(2, "wav:4"), set(2, "rate:127"), set(2, "dep:20");
+  set(3, "tgt:X2"), set(3, "par:1"), set(3, "wav:4"), set(3, "rate:127"), set(3, "dep:20");
+  set(4, "tgt:M1"), set(4, "par:0"), set(4, "wav:4"), set(4, "rate:127"), set(4, "dep:20");
+  int lev_lo = 999, lev_hi = -1, s_lo = 999, s_hi = -1, x_lo = 999, x_hi = -1, m_lo = 999, m_hi = -1;
+  for (int i = 0; i < 400; ++i) {
+    run_ms(1);
+    int l = master::played_lev(), s = fx::control.send[0][0], x = ins::control.send[1][1], m = ins::control.play[ins::kM0][0][0];
+    lev_lo = l < lev_lo ? l : lev_lo, lev_hi = l > lev_hi ? l : lev_hi;
+    s_lo = s < s_lo ? s : s_lo, s_hi = s > s_hi ? s : s_hi;
+    x_lo = x < x_lo ? x : x_lo, x_hi = x > x_hi ? x : x_hi;
+    m_lo = m < m_lo ? m : m_lo, m_hi = m > m_hi ? m : m_hi;
+  }
+  printf("lfo: MFX:LEV %d..%d, S1:F1 %d..%d, X2:B2 %d..%d, M1:A1 %d..%d\n", lev_lo, lev_hi, s_lo, s_hi, x_lo, x_hi, m_lo, m_hi);
+  CHECK(lev_lo <= 75 && lev_hi >= 125 && master::control.lev == 100);
+  CHECK(s_lo <= 25 && s_hi >= 55 && mod::send_base(0, 0) == 40);
+  CHECK(x_lo <= 15 && x_hi >= 45 && ins::send_knob(1, 1) == 30);
+  CHECK(m_lo <= 45 && m_hi >= 75 && ins::param(ins::kM0, 0, 0) == 60);
+  char pn[8];
+  CHECK(!strcmp(lfo::param_name(lfo::target_from_name("MFX"), 2, pn, sizeof pn), "MIX2"));
+  CHECK(!strcmp(lfo::param_name(lfo::target_from_name("S12"), 1, pn, sizeof pn), "F2"));
+  CHECK(!strcmp(lfo::param_name(lfo::target_from_name("X8"), 2, pn, sizeof pn), "B3"));
+  CHECK(lfo::target_from_name("O8") == 29 && lfo::target_from_name("M1") == 30 && lfo::target_from_name("X8") == 52 &&
+        lfo::params_of(lfo::target_from_name("M2")) == 12 && lfo::kTargets == 66);
+  for (int i = 1; i <= 4; ++i) set(i, "off");
+  run_ms(3);
+  CHECK(master::played_lev() == 100 && fx::control.send[0][0] == 40 && ins::control.send[1][1] == 30 &&
+        ins::control.play[ins::kM0][0][0] == 60);
+  lfo::reset();
+  ins::reset();
+  printf("lfo: the master, a track's sends and a voice's sends as LFO targets\n");
+}
 
 int main() {
   char tmpl[] = "/tmp/core_lfo_XXXXXX";
@@ -352,7 +467,7 @@ int main() {
   {
     char o[128];
     CHECK(lfo::command("lfo=1:tgt:bd", o, sizeof o) && strstr(o, "cannot") && lfo::get(0).target == 0);
-    CHECK(lfo::target_from_name("BD") < 0 && lfo::target_from_name("FX") < 0 && lfo::kTargets == lfo::kTFx + 2 + 11 + 8);   // fx-ins: I1..I8 B1..B3; O1..O8 (the OUT route)
+    CHECK(lfo::target_from_name("BD") < 0 && lfo::target_from_name("FX") < 0 && lfo::kTargets == lfo::kTFx + 2 + 11 + 8 + 2 + 1 + 12 + 8 + 13);   // fx-ins: I1..I8 B1..B3; O1..O8 (the OUT route); 0.5.0 M1 M2 MFX S1..S12 X1..X8, RT1..RT12 RFX
   }
   set(1, "tgt:fx1"), set(1, "par:0"), set(1, "rate:100"), set(1, "trig:1");
   run_ms(150);
@@ -363,19 +478,19 @@ int main() {
   for (auto& m : g_out) CHECK(!(m.size() == 3 && (m[0] & 0xF0) == 0xB0));   // never a CC
 
   // ---- the console, the design hex, the JSON, the per-project file (saved a second after the change, reloaded)
-  char o[2048];
+  char o[16384];
   set(2, "tgt:v3"), set(2, "par:4"), set(2, "wav:7"), set(2, "pre:steps"), set(2, "st:5:-20:2"), set(2, "dep:-12");
   CHECK(lfo::get(1).step[5] == -20 && lfo::get(1).shape[5] == lfo::kSmooth && lfo::get(1).wave == lfo::kDesign);
   CHECK(lfo::command("lfo=2:des:000111222333444555666777888999aaabbbcccdddeeefff", o, sizeof o) && !strstr(o, "cannot"));
   CHECK(lfo::get(1).step[0] == -64 && lfo::get(1).shape[0] == 0 && lfo::get(1).step[1] == 17 - 64 &&
         lfo::get(1).shape[1] == 1 && lfo::get(1).step[15] == 63);
-  CHECK(lfo::command("lfo=9:dep:1", o, sizeof o) && strstr(o, "lfo=N"));
+  CHECK(lfo::command("lfo=27:dep:1", o, sizeof o) && strstr(o, "lfo=N"));   // (0.5.0: 26, T1A..FXB)
   CHECK(lfo::command("lfo=1:wat:1", o, sizeof o) && strstr(o, "cannot"));
   CHECK(!lfo::command("lfox", o, sizeof o));
   int n = lfo::json(o, sizeof o);
   CHECK(n > 0 && n < (int)sizeof o && strstr(o, "\"tgt\":\"V3\"") && strstr(o, "\"tgt\":\"FX1\""));
   printf("lfo: json %d B for %d LFOs\n", n, lfo::kLfos);
-  CHECK(lfo::command("lfo", o, sizeof o) && strstr(o, "L1 FX1"));
+  CHECK(lfo::command("lfo", o, sizeof o) && strstr(o, "T1A FX1"));
   {
     uint8_t m[] = {0xF0, 0x7D, 0x52, 0x54, 0x10, 'L', 'F', 'O', 0xF7};
     engine_sysex(m, (int)sizeof m);   // a project: its (empty) LFOs, ours unsaved -> lost? no: saved first
@@ -460,13 +575,16 @@ int main() {
   kit_change_reads_ram_only(tmpl);
   edit_then_switch_back(tmpl);
   unreadable_default_does_not_lock_the_kit(tmpl);
+  lfo_on_bus_mix(tmpl);
 
   // ---- the page through the remote host: LEFT x 3 from SIDECAR (SCOPE, then the LFO page: no REC here), its mask
   lfo::reset();
   static int mask_encs = -1;
   static uint32_t mask_trigs = 0;
   static int closes = 0;   // ux1027: 3A 0 0 (the host asks the page closed)
+  static std::string texts;   // the 3D text items sent, '|' between
   hooks.to_rytm = [](const uint8_t* d, int len) {
+    if (len > 13 && d[4] == 0x3D) texts += std::string((const char*)d + 12, (size_t)(len - 13)) + "|";
     if (len >= 9 && d[4] == 0x3A && d[7] == 0) ++closes;
     if (len >= 10 && d[4] == 0x37) {
       mask_encs = d[6] | d[7] << 7;
@@ -501,6 +619,21 @@ int main() {
   rytm(0x32, 4, 64 + 7, 0);    // E +7: DESIGN
   for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
   CHECK(lfo::get(0).target == lfo::kTVoice && lfo::get(0).depth == 36 && lfo::get(0).wave == lfo::kDesign);
+  // LFO DEPTH's texts carry the sign by hand (the Pi's printf has no %+d: it printed "%+d"): +36, then -4, then 36 again
+  texts = "|";
+  rytm(0x32, 3, 64 + 1, 0);   // D +1, -1: touched (its footer), 36 again
+  for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
+  rytm(0x32, 3, 64 - 1, 0);
+  for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
+  CHECK(lfo::get(0).depth == 36);
+  CHECK(texts.find("|+36|") != std::string::npos && texts.find("|T1 A DEPTH:+36|") != std::string::npos);
+  texts = "|";
+  rytm(0x32, 3, 64 - 40, 0);
+  for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
+  CHECK(lfo::get(0).depth == -4 && texts.find("|-4|") != std::string::npos && texts.find("|T1 A DEPTH:-4|") != std::string::npos);
+  rytm(0x32, 3, 64 + 40, 0);
+  for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
+  CHECK(lfo::get(0).depth == 36);
   key(0x44);   // YES: the design view takes T1..T16 and A..D
   CHECK(mask_encs == 0x0F && mask_trigs == 0xFFFF);
   key(0x04);   // T5: step 5
@@ -569,6 +702,7 @@ int main() {
   rytm(0x30, 1, 1, 0);
   for (int i = 0; i < 10; ++i) ui::remote_tick(ms += 10);
   CHECK(closes == 1);
+  lfo_on_master_lev_and_send();
   printf("test_lfo: PASS\n");
   return 0;
 }

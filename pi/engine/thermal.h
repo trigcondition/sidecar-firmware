@@ -57,6 +57,10 @@ inline bool popup_due (Popup &p, const State &s, Event e, unsigned shown)
 	return true;
 }
 
+// True while the Rytm's popup is still owed: another popup source (the web update's, each second) stays quiet then, as
+// each popup it draws would count as the thermal one "shown" (the remote UI's count is shared)
+inline bool popup_owed (const Popup &p) { return p.owed; }
+
 // The ARM clock the heat lowered (MHz), 0: not lowered. Lowered: the clock read back (kernel FollowClock) well below the
 // clock the setting asks for (cpuclock::asked_mhz: 2400 at a Pi 5's default; a lower setting is not "lowered"), with the SoC near Circle's limit (it raises the clock
 // again 3 C below; a failed reading, 0, is not hot).

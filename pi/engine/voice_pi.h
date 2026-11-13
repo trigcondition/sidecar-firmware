@@ -11,8 +11,9 @@
 namespace voice_pi {
 
 // ~10 times a second while the VOICE page shows: o from the newest data; pat the newest decoded Rytm pattern (null
-// none), its number. o->gen changes only when something to draw changed.
-void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern);
+// none), its number. o->gen changes only when something to draw changed. scope false (the web's "voices" topic): no
+// scope and level (the input tap is the display's: reading it here would steal its entries and peaks).
+void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern, bool scope = true);
 // A HOME tile's track (0..11) shown on VOICE instead of the Rytm's selected track, until the Rytm selects another one
 // (-1: follow the Rytm). Core 0 (the display's command, voicepick=T).
 void Pick(int track);
@@ -20,10 +21,14 @@ void Pick(int track);
 // 4 VOICE (the machine view for a GRANULAR / WAVETABLE track, else VOICE), 5 SET, 6 INSERT FX (fx-ins: 9), 8 REC (11,
 // sidecar_rec.h), 9 SCOPE (12, sidecar_scope.h), 10 SIDECAR STATUS (13, sidecar_status.h); 7 none (SAMPLE / AUTO: the
 // Rytm's own screen, core/ui/remote.cpp). Also while on VOICE / the machine view (`voice_mode`): a track change on
-// the Rytm, or a machine change of the selected track, moves between the two as the track's machine needs.
+// the Rytm, or a machine change of the selected track, moves between the two as the track's machine needs (never to
+// SAMPLE EDIT: only the VOICE request, UP + T4, leads back to an open edit).
 int Request(uint32_t* seen, bool voice_mode, uint32_t* track_seen);
-// The page VOICE means for the selected track now: 7 the machine view, 8 VOICE, 17 CHOP
+// The page VOICE means for the selected track now: 7 the machine view, 8 VOICE, 17 CHOP; 21 SAMPLE EDIT while an edit
+// is open (VoiceTarget)
 int VoicePage();
+// VOICE's page `page` for the track, or SAMPLE EDIT (21) while an edit is open: VOICE leads back to the edit
+inline int VoiceTarget(int page, bool edit_open) { return edit_open ? 21 : page; }
 // The page for a track's machine byte (remote_track_machine: -1 unknown, 0x7F analog): 7 GRANULAR / WAVETABLE, 17 CHOP,
 // else 8.
 inline int PageForMachine(int vb) {

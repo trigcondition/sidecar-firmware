@@ -48,7 +48,7 @@ void Fill(sidecar_insfx_view_t* o, const float (*peaks)[2]) {
     }
   }
   for (int i = 0; i < kVoices; ++i)
-    for (int b = 0; b < kBuses; ++b) v.send[i][b] = control.send[i][b];
+    for (int b = 0; b < kBuses; ++b) v.send[i][b] = (uint8_t)send_knob(i, b);
   for (int k = 0; k < 2; ++k) {
     const char* n = core::fx::type_name(core::fx::control.knob[k][0], k);
     strncpy(v.bus_fx[k], n ? n : "?", sizeof v.bus_fx[k] - 1);

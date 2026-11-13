@@ -43,6 +43,10 @@ public:
 	static boolean Streaming (void)		{ return s_pThis != 0 && s_pThis->m_bStreaming; }
 	static void SetActive (boolean bActive);	// FALSE: silence out, MIDI in dropped (the TCP link is the host)
 	static boolean Active (void)		{ return s_bActive; }
+#if RASPPI >= 5
+	static void FadeOut (void)		{ s_nFadeLeft = FadeFrames; s_bFading = TRUE; }	// the power-off: OUT to silence in 20 ms, then silent
+	static const unsigned FadeFrames = 960;
+#endif
 
 	static void WidenIn (const u8 *pIn, u8 *pWide, unsigned nCh);	// an 8-channel IN block as the 12-channel layout
 	// main loop, after UpdatePlugAndPlay: a box Configure refused below high speed is enumerated again on its root
@@ -126,6 +130,10 @@ public:
 
 	static CObUsb *s_pThis;
 	static volatile boolean s_bActive;
+#if RASPPI >= 5
+	static volatile boolean s_bFading;
+	static volatile unsigned s_nFadeLeft;
+#endif
 
 private:
 	boolean ScanDescriptors (void);			// log everything, locate alt 3 endpoints

@@ -31,9 +31,16 @@
 #include "power_state.h"
 #include "thermal.h"
 #include "cpuclock.h"
+#if RASPPI >= 5
+#include "fan.h"
+#endif
 #include "usb_mode.h"
 #include "touch_cal.h"		// pi/ui: the touch calibration (touchcal=)
 #include "sidecar_ui.h"
+#if RASPPI >= 5
+#include "pwrbtn.h"		// the power button (docs/pi5.md "Power button")
+#endif
+#include "usbnet_cfg.h"		// the USB-C network's keys and the boot's choice (docs/usb-network.md)
 
 class CWifi;				// wifi.h: Wi-Fi (off by default)
 class CSidecarDisplay;			// pi/ui/sidecar_display.h: the HDMI display (docs/pi-display.md)
@@ -60,6 +67,7 @@ private:
 	static void ToHost (const u8 *pData, int nLength);	// the engine's SysEx for the host (control core)
 	void SelfCheck (void);
 	void LogBench (void);
+	void BenchChains (void);
 	void SetSelfTest (boolean bOn, const char *pWhy);
 	void LogStats (void);
 	void LoadClock (boolean bCard);				// cpumhz= (display.txt, cmdline): at boot, before the bench
@@ -70,6 +78,11 @@ private:
 	void ApplyBudget (unsigned nMHz, boolean bLog);		// the voice guard's budget for that clock (voicebudget= scaled by it)
 	void LogClockRescale (void);				// the boot bench's voices a core, rescaled to the clock now (not re-measured)
 	void ThermalStep (unsigned nTempC);			// the temperature warning (thermal.h): once a second, from LogStats
+	void UpdateNoticeStep (void);				// the web update's notice on the Rytm's screen (a popup each second)
+#if RASPPI >= 5
+	void LoadFan (boolean bCard);				// fan= (display.txt, cmdline): at boot, the pin started and set at once
+	void FanStep (unsigned nTempC, const char *pWhy);	// the fan's level (fan.h) from a reading, the pin set on a change
+#endif
 	void ReadPower (boolean bLog);				// the supply (power_state.h): at boot, every 10 s, logged on a change and once a minute
 	void PushUi (void);					// the display's state, read back from the engine (docs/pi-display.md)
 	// the USB-C mode (usb_mode.h, docs/usb-mirror.md "The setting"): the mode chosen from display.txt / cmdline, run on the
@@ -82,6 +95,8 @@ private:
 	void StopAndReboot (const char *pWhy, boolean bTryboot = FALSE);
 	void BootStep (unsigned nStep);			// the boot screen's bar (1..CSidecarDisplay::SplashSteps)	// bTryboot: the firmware reads tryboot.txt once
 	void UseLink (const char *pSpec);			// usb | tcp | tcp:IP:PORT
+	// net=auto at boot (usbnet_pi.h): a computer on USB-C whose network driver starts in time gets the network
+	boolean UsbNetProbe (const usbnet::Options &rOpt, unsigned nGadgetT0, const char **ppWhy);
 	static void WebStatus (CString *pOut, void *pParam);
 	static void WebHealth (CString *pOut, void *pParam);	// GET /health: the open one (paircode.h's open set)	// the web page's /status (web.h)
 
@@ -127,6 +142,16 @@ private:
 	// when it was set, then after each CCPUThrottle::Update and once a second: FollowClock), and the voice budget for it; capped: below the full clock, so Circle's Update does not run (it
 	// would raise the clock again when the SoC is cool)
 	unsigned		m_nClockSetting = 1500;
+#if RASPPI >= 5
+	// the fan header (fan.h, fan_pi.h): the mode (fan= in display.txt, cmdline wins; the console's fan=), where it came
+	// from (0 default, 1 card, 2 cmdline, 3 console), the level and the pin. m_FanStored is the card's (display.txt):
+	// only the console changes it, so a cmdline fan= is never written to the card and never drops the card's value
+	fan::Mode		m_FanMode = fan::kAuto;
+	fan::Mode		m_FanStored = fan::kAuto;
+	unsigned		m_nFanFrom = 0;
+	fan::State		m_Fan;
+	boolean			m_bFanPin = FALSE;
+#endif
 	// the USB-C mode (usb_mode.h): usbmode= in display.txt if there (m_bUsbStored), else cmdline usb=; m_UsbMode the one
 	// chosen (it runs if m_nUsbModes has it, else CLASS COMPLIANT), m_nUsbModes what this unit can show
 	boolean			m_bUsbStored = FALSE;
@@ -156,12 +181,13 @@ private:
 	volatile boolean	m_bTouchHidden;		// touchtest=0: the home page's touch test is hidden
 	boolean			m_bTouchCal;		// touchcal=X0,X1,Y0,Y1,SWAP (pi/ui/touch_cal.h): the 4-point calibration
 	touch_cal_t		m_TouchCal;
-	unsigned		m_nUiStyle;		// uistyle=oled|classic: the display's theme (sidecar_theme.h), 0 OLED
+	unsigned		m_nUiStyle;		// uistyle=oled|sidecar ("classic" read as 1): the theme (sidecar_theme.h), 0 OLED
 	volatile boolean	m_bSaveDisplay;		// written by core 0's loop (tmp + rename)
 	unsigned		m_nResW, m_nResH;	// res=800x480|1024x600|1280x720 (display.txt / cmdline): the UI's size, 0: automatic
 	unsigned		m_nResFileW, m_nResFileH;	// display.txt's res= alone (kept when the file is written)
 	void LoadDisplayRes (boolean bCard);
 	void LoadDisplaySettings (boolean bCard);
+	boolean			m_bUpdTrial = FALSE;	// updtrial=1: the web update's trial boot (update_pi.h): the watchdog from the start
 #ifdef SIDECAR_PI5_TESTMODE
 	unsigned		m_nTestSecs = 0;	// testsecs= (docs/pi5.md "Engine test mode"): 0 off
 	boolean			m_bTestCard = FALSE;	// testcard=1 with testsecs=: the card in use, Sidecar's folders only (card_guard.h)
@@ -169,6 +195,13 @@ private:
 #endif
 	void SaveDisplaySettings (void);
 	CWifi			*m_pWifi;		// wifi.h: always made (its console commands), the chip only with wifi=1|scan
+#if RASPPI >= 5
+	void StopAndPowerOff (const char *pWhy);	// the audio faded, the card's work drained (3 s at most), then PSCI off
+	void PowerButtonPoll (void);			// core 0's loop: the button read every 20 ms
+	volatile boolean	m_bPowerOff = FALSE;	// poweroff=1 (any task on core 0): the loop powers off
+	unsigned		m_nButtonAt = 0;
+	pwrbtn::Button		m_Button;
+#endif
 };
 
 #endif

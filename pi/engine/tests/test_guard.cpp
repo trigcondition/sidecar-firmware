@@ -7,11 +7,51 @@
 #include <initializer_list>
 
 #include "check.h"
+#define CGUARD_HOST_JMP 1   // (the host's setjmp for the guarded calls' jump: see guard.h)
 #include "guard.h"
 
 static const char kJuno[] = "JUNO", kFm[] = "FM";   // the machine keys (bridge::machine_name's static names)
 
+// Plugin API 3's guarded calls (ControlCallOn): the exception's way back stood in for by what ResumeControl does after
+// Throw's eret (NoteControlFault, then a longjmp into the core's buffer)
+static CGuard* g_pg;
+static unsigned g_core;
+static void ok_call(void* p) { ++*(int*)p; }
+static void fault_call(void* p) {
+  ++*(int*)p;
+  CHECK(g_pg->ControlArmed(g_core));
+  g_pg->NoteControlFault(g_core, 0x4000 + g_core);
+  GUARD_LONGJMP(g_pg->ControlJumpBuffer(g_core));
+}
+static void nested_call(void* p) {   // a guarded call inside one: runs unguarded, the outer guard stays
+  u64 pc = 0;
+  CHECK(g_pg->ControlCallOn(g_core, ok_call, p, &pc) == 0 && g_pg->ControlArmed(g_core));
+}
+static void control_calls() {
+  static CGuard g;
+  g_pg = &g;
+  for (unsigned c : {2u, 3u}) {
+    g_core = c;
+    u64 pc = 0;
+    int n = 0;
+    CHECK(g.ControlCallOn(c, ok_call, &n, &pc) == 0 && n == 1 && !g.ControlArmed(c) && pc == 0);
+    for (int k = 0; k < 3; ++k) {   // a fault, again and again: back each time, the PC delivered, disarmed
+      CHECK(g.ControlCallOn(c, fault_call, &n, &pc) == 1 && pc == 0x4000 + c && !g.ControlArmed(c));
+    }
+    CHECK(g.ControlCallOn(c, ok_call, &n, &pc) == 0 && n == 5);
+    CHECK(g.ControlCallOn(c, nested_call, &n, &pc) == 0 && n == 6 && !g.ControlArmed(c));
+  }
+  CHECK(g.ControlFaults() == 6);
+  // cores 0 and 1 run the call unguarded (a fault there is the board's)
+  int n = 0;
+  u64 pc = 0;
+  CHECK(g.ControlCallOn(0, ok_call, &n, &pc) == 0 && !g.ControlArmed(0) && n == 1);
+  CHECK(g.ControlCallOn(1, ok_call, &n, &pc) == 0 && !g.ControlArmed(1) && n == 2);
+  // (core 2 inside a voice's render, Enter: unguarded too - Enter lives in guard.cpp, which this test does not build)
+}
+
 int main() {
+  control_calls();
   static CGuard g;
   const unsigned N = CGuard::kOverBlocks;
   g.SetBudget(100);

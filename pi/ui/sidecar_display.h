@@ -32,6 +32,8 @@ public:
 	void SplashStep (unsigned nStep);
 	unsigned GetFrameWidth (void)		{ return m_bFrameBuffer ? m_nFbWidth : 0; }
 	unsigned GetFrameHeight (void)		{ return m_bFrameBuffer ? m_nFbHeight : 0; }
+	// Pi 5: the screen did not answer at power-on (640x480, no EDID: display_hint.h), for /status "displayHint"; else 0
+	const char *GetHint (void) const	{ return m_pHint; }
 
 	// lv_timer_handler at most every 10 ms (LVGL redraws dirty areas only, at up to 30 fps), touch1/mouse1 looked
 	// up when bPlugAndPlayUpdated; returns at once otherwise
@@ -66,6 +68,9 @@ public:
 	unsigned GetScreensaver (void) const	{ return m_nSaverMin; }
 	boolean IsBlank (void) const		{ return m_bBlank; }
 	void Activity (void);
+#if RASPPI >= 5
+	void PowerOff (void)			{ Blank (TRUE); }	// the power button: the screen dark at once (Update not run again)
+#endif
 
 private:
 	boolean OpenFrameBuffer (void);
@@ -86,6 +91,9 @@ private:
 	unsigned	m_nReqWidth, m_nReqHeight;
 	unsigned	m_nUiReqW, m_nUiReqH;	// SetUiSize (res=), 0: automatic
 	unsigned	m_nEdidW, m_nEdidH;	// the HDMI display's preferred mode (EDID), 0: not read
+	const char	*m_pHint;		// GetHint
+	unsigned	m_nHintTicks;		// the hint drawn on the boot screen (CTimer ticks | 1), 0: not
+	static const unsigned HintMs = 5000;	// the boot screen kept that long with the hint (Initialize)
 	unsigned	m_nOffX, m_nOffY;	// Pi 4: the UI's top left in the frame buffer (centred), else 0
 	CBcmFrameBuffer	*m_pFB;			// on the DSI display when the firmware reports one (OpenFrameBuffer)
 	CDisplay	*m_pOut;		// what is drawn on: m_pFB, or the Pi 5's rp1dsi display (m_pRPiTouch)

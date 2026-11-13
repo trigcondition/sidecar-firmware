@@ -7,7 +7,8 @@
 //            community's "working buffer") answers the same, but 0x80 is not a MIDI data byte: a byte-stream MIDI path
 //            (rytm-emu's link, strict host stacks) cuts the SysEx there [measured]. So n = the active pattern (2D 02);
 //            0x80 only while it is not known (a Rytm without the mod).
-//   answer   F0 00 20 3C 07 00 54 01 01 <pattern> 00 <the record's 4-byte header> <13097 B 7-bit packed>
+//   answer   F0 00 20 3C 07 00 54 01 01 <pattern> <the 13101-B record 7-bit packed from here: groups of 8, a byte of
+//            the next 7 bytes' top bits, then those 7; so 00 <00 00 00 05: the record's header> ..: 14973 B>
 //            <checksum hi lo: sum of the bytes after <pattern> to it & 0x3FFF> <length hi lo: size - 10> F7   (14988 B)
 //            [measured on a real Rytm MKII: patterns 1 and 13 answer sums that leave their number out; pattern 0 hid it]
 //
@@ -40,6 +41,11 @@ int request(uint8_t out[15], int pattern);          // the request's bytes (15):
 // An answer's bytes -> the record (kRecord bytes) and its pattern; false: not a pattern dump, or its checksum / length
 // wrong (pure: the tests and the platform's own parsers).
 bool parse(const uint8_t* m, int n, uint8_t* record, int* pattern);
+// 0.5.0 FILL (core/seq/patwrite.h): the same for another dump id with this framing (0x5A: pattern X, the working buffer's
+// answer to 0x6A), and the way back: answer m (kAnswer bytes, as parse took it) carrying `record` instead - its 7-bit
+// payload packed again (groups from byte 10), its checksum computed again (as the Rytm's own answers), every other byte kept.
+bool parse_id(const uint8_t* m, int n, uint8_t id, uint8_t* record, int* pattern);
+void repack(uint8_t* m, const uint8_t* record);
 
 #if CORE_POLY
 enum : uint8_t { kOff = 0, kPagePattern = 1, kPageVoice = 2 };
@@ -58,6 +64,8 @@ int stale();
 void want(uint32_t delay_ms = 0);                   // a fetch after delay_ms
 void dirty();                                       // seq: 2D 0B, the pattern was written
 void pattern_changed(int pattern);                  // seq: 2D 02's active pattern moved
+int active_pattern();                               // the last 2D 02's active pattern (0..127), -1 none seen yet
+void forget_pattern();                              // seq: a Rytm hello (it rebooted): -1 until the resync's 2D 02
 void byte(uint8_t b);                               // the Rytm -> host MIDI stream, every byte (realtime ones ignored)
 void tick(uint32_t ms);                             // the control loop: sends the request when due, times out
 // The last good record (null: none yet), its pattern and a count that moves with every new one.
@@ -67,6 +75,12 @@ struct Stats {
   uint32_t requests, answers, bad, timeouts, bytes, dirties;
 };
 const Stats& stats();
+// 0.5.0 FILL (core/seq/patwrite.h): the pattern writer's guard - the DIRTYs (2D 0B) and pattern changes seen so far, and
+// its own hold (no fetch of ours while it reads, writes and verifies; the song's set_hold is apart)
+uint32_t dirty_count();
+uint32_t switch_count();
+int hold_level();                                   // set_hold's
+void set_fill_hold(bool on);
 void reset();                                       // tests
 bool command(const char* p, char* out, int cap);    // "rytmpat" (state), "rytmpat=on|voice|off|fetch"
 #endif

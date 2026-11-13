@@ -10,9 +10,11 @@
 #include "fx/send_fx.h"
 #include "hooks.h"
 #include "machines.h"
+#include "mod/mod.h"
 #include "msamp/cardq.h"
 #include "platform.h"
 #include "pool/pool.h"
+#include "seq/patwrite.h"
 #include "seq/rytm_dump.h"
 #include "seq/seq.h"
 #include "store/store.h"
@@ -406,9 +408,10 @@ void fetch_next() {
 
 void sidecar_snapshot(Take& t) {
   t.has_fx = true;
-  for (int k = 0; k < kTracks; ++k) t.fx_send[k][0] = fx::control.send[k][0], t.fx_send[k][1] = fx::control.send[k][1];
+  // the bases (the kit's), never a modulation on top (core/mod: an LFO's FX knob, a send)
+  for (int k = 0; k < kTracks; ++k) t.fx_send[k][0] = mod::send_base(k, 0), t.fx_send[k][1] = mod::send_base(k, 1);
   for (int s = 0; s < 2; ++s)
-    for (int j = 0; j < 6; ++j) t.fx_knob[s][j] = fx::control.knob[s][j];
+    for (int j = 0; j < 6; ++j) t.fx_knob[s][j] = mod::knob_base(s, j);
   t.fx_route = fx::control.route;
 }
 
@@ -425,14 +428,14 @@ void poll_sidecar(bool record) {
   bool edit = false;   // (the Sidecar's send FX: the undo would put them back)
   for (int k = 0; k < kTracks; ++k)
     for (int s = 0; s < 2; ++s)
-      if (fx::control.send[k][s] != e.fx_send[k][s]) {
-        e.fx_send[k][s] = fx::control.send[k][s], edit = true;
+      if (mod::send_base(k, s) != e.fx_send[k][s]) {   // the base: a modulation is no edit, never recorded
+        e.fx_send[k][s] = mod::send_base(k, s), edit = true;
         if (record) e.rec.sidecar(kScSend, (uint16_t)(k * 2 + s), e.fx_send[k][s], f, e.ms_now);
       }
   for (int s = 0; s < 2; ++s)
     for (int j = 0; j < 6; ++j)
-      if (fx::control.knob[s][j] != e.fx_knob[s][j]) {
-        e.fx_knob[s][j] = fx::control.knob[s][j], edit = true;
+      if (mod::knob_base(s, j) != e.fx_knob[s][j]) {
+        e.fx_knob[s][j] = mod::knob_base(s, j), edit = true;
         if (record) e.rec.sidecar(kScKnob, (uint16_t)(s * 6 + j), e.fx_knob[s][j], f, e.ms_now);
       }
   if (fx::control.route != e.fx_route) {
@@ -477,14 +480,15 @@ struct EnginePort : Port {
   bool relink(int k, const Buf& kit) override;
   bool playing() override { return eng().transport != 0; }
   void sidecar(const Ev& ev) override {
-    if (ev.a == kScSend && ev.b < kTracks * 2) fx::control.send[ev.b / 2][ev.b % 2] = (uint8_t)ev.v;
-    else if (ev.a == kScKnob && ev.b < 12) fx::control.knob[ev.b / 6][ev.b % 6] = (uint8_t)ev.v;
+    // the bases, through the filters (a live modulation's base follows, its value stays on top)
+    if (ev.a == kScSend && ev.b < kTracks * 2) fx::set_send_base(ev.b / 2, ev.b % 2, (uint8_t)ev.v);
+    else if (ev.a == kScKnob && ev.b < 12) fx::set_knob_base(ev.b / 6, ev.b % 6, (uint8_t)ev.v);
     else if (ev.a == kScRoute) fx::control.route = (uint8_t)ev.v;
   }
   void sidecar_start(const Take& t) override {
-    for (int k = 0; k < kTracks; ++k) fx::control.send[k][0] = t.fx_send[k][0], fx::control.send[k][1] = t.fx_send[k][1];
+    for (int k = 0; k < kTracks; ++k) fx::set_send_base(k, 0, t.fx_send[k][0]), fx::set_send_base(k, 1, t.fx_send[k][1]);
     for (int s = 0; s < 2; ++s)
-      for (int j = 0; j < 6; ++j) fx::control.knob[s][j] = t.fx_knob[s][j];
+      for (int j = 0; j < 6; ++j) fx::set_knob_base(s, j, t.fx_knob[s][j]);
     fx::control.route = t.fx_route;
   }
 };
@@ -897,6 +901,8 @@ void load_take(int i) {
 void arm() {
   Engine& e = eng();
   if (e.state != kOff) { set_msg("busy (%s): not armed", state_name(e.state)); return; }
+  // 0.5.0 fix round M1: a FILL (core/seq/patwrite.h) mid-job: the take's dump would hold a pattern half written
+  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not armed"); return; }
   if (e.list_due || e.ls || strcmp(e.project_seen, project)) {   // the folder's walk first: the new take's number
     if (strcmp(e.project_seen, project)) e.list_due = true;
     e.arm_due = true;
@@ -909,6 +915,8 @@ void arm() {
 void arm_go() {
   Engine& e = eng();
   if (e.state != kOff) return;
+  // N3 (0.5.0 re-review): the name step may end after a FILL began; the take's dump would hold a pattern half written
+  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not armed"); return; }
   if (e.undo) undo_end("armed");
   ++e.take_gen;
   e.take.clear();
@@ -984,6 +992,7 @@ void replay_request() {
 void confirm() {
   Engine& e = eng();
   if (e.state != kConfirm) { set_msg("nothing to confirm"); return; }
+  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not replayed"); e.state = kOff; return; }
   if (e.transport != 0) { set_msg("stop the Rytm first"); e.state = kOff; return; }
   // (an earlier undo stays until this replay writes: a backup that fails leaves the Rytm, and that undo, as they were)
   e.state = kRestoring;
@@ -1073,6 +1082,7 @@ void undo() {
   if (project_loading()) { set_msg("project %s still loading: not undone", project); return; }
   if (e.state != kOff && e.state != kReplayReady) { set_msg("busy (%s): not undone", state_name(e.state)); return; }
   if (e.transport != 0) { set_msg("stop the Rytm first: not undone"); return; }
+  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not undone"); return; }
   // the whole set first: in the RAM store; read back a file an idle pass (undo_step), every dump checked
   // (UndoRun::begin) - nothing goes out unless all of it can
   if (const char* why = undo_read(false)) { set_msg("%s: nothing written", why); return; }
@@ -1287,6 +1297,9 @@ void publish_lanes() {
 }
 
 }  // namespace
+
+const MidiConfig& midi_config() { return eng().cfg; }
+void set_midi_config(const MidiConfig& c) { eng().cfg = c; }
 
 CORE_COLD const char* state_name(int s) {
   static const char* const k[] = {"off", "arming", "armed", "recording", "saving", "confirm", "restoring", "replay ready",

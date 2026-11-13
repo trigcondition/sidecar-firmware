@@ -71,7 +71,7 @@ CORE_COLD void value_text(const seq::PolyCfg& c, int e, char* b, int cap) {
     case 3: sniprintf(b, cap, CORE_STR("%d"), c.detune); break;
     case 4: sniprintf(b, cap, CORE_STR("%d"), c.spread); break;
     case 5: c.group ? sniprintf(b, cap, CORE_STR("%d"), c.group) : sniprintf(b, cap, "OFF"); break;
-    case 6: c.oct ? sniprintf(b, cap, CORE_STR("%+d"), c.oct) : sniprintf(b, cap, "0"); break;
+    case 6: c.oct ? sniprintf(b, cap, CORE_STR("%s%d"), c.oct < 0 ? "-" : "+", c.oct < 0 ? -c.oct : c.oct) : sniprintf(b, cap, "0"); break;
     default: sniprintf(b, cap, "-"); break;
   }
 }

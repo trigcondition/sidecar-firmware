@@ -216,7 +216,7 @@ CORE_COLD int describe(const seq::PolyCfg& c, const Resolved* r, int machine, ch
   if (n < cap)
     n += sniprintf(out + n, cap - n, " %s UNISON %d DETUNE %d SPREAD %d GROUP %d", alloc_name(c.alloc),
                    c.unison > 1 ? c.unison : 1, c.detune, c.spread, c.group);
-  if (c.oct && n < cap) n += sniprintf(out + n, cap - n, " OCT %+d", c.oct);
+  if (c.oct && n < cap) n += sniprintf(out + n, cap - n, " OCT %s%d", c.oct < 0 ? "-" : "+", c.oct < 0 ? -c.oct : c.oct);
   if (r && n < cap)
     n += sniprintf(out + n, cap - n, " -> %s: %d instance%s, %d note%s at once%s (%d.%02d %% a core)", machine_short(machine),
                    r->instances, r->instances == 1 ? "" : "s", r->lanes, r->lanes == 1 ? "" : "s",

@@ -206,3 +206,86 @@ GRANULAR's picks (`/.rytm/granular/<project>.txt`, a touchscreen pick), the LFO,
 keyboard settings, the sequencer's and the song's files (written a second after the last edit). Each costs ~10-20 ms of
 the control core on the card model when it runs; none is on the bank list's YES. Moving them is the same pattern
 (`cardq::async`).
+
+## 8. 0.5.0: the sample browser - preview, quick load, file menu (host side)
+
+The bank list's files (section 6) get the Digitakt II's preview and the Octatrack's quick load. Every new key needs the
+0.5.0 0026: inside its open list / browser a press made with FUNC held arrives as `31 <code> 2` (release `31 <code> 0`),
+and its hello carries caps bit 5 (32, `ui::kCapsBrowseFunc` in core/ui/extra.h). The host takes the new keys when the
+hello has that bit, or once a `2` came since the last hello. An older 0026 never sends 2 and FUNC + YES reaches the host
+as YES; with it every key works as before (LEFT / RIGHT banks, RIGHT on a file nothing, YES sets the row), and so do the
+JUNO / FM preset lists with any 0026 (the 0.5.0 0026 closes a preset list on FUNC + NO itself, 4A on 0 why 2, as a NO).
+All of it works the same on a SAMPLER track (docs/SAMPLER.md) as on DSP SAMPLE: its SMP list is the SAMPLES pool, and
+YES commits the row to SMP (P11).
+
+| Where | Key | Action |
+|---|---|---|
+| List | UP / DOWN, knob A | row (unchanged) |
+| List | YES / NO | commit / close (unchanged, the Rytm's) |
+| List | FUNC + YES | the files (unchanged) |
+| List | RIGHT | the files: the folder of the last file loaded (cd there first), the cursor on the file after it |
+| List | FUNC + LEFT / RIGHT | bank - / + (moved from LEFT / RIGHT) |
+| List | LEFT | nothing (reserved) |
+| List | FUNC + UP | the bank's row 000 (OFF); YES then sets it |
+| List | FUNC + NO | the cursor to row 000 (OFF), as FUNC + UP; YES then confirms the unload (nothing changes at once) |
+| Files | UP / DOWN, knob A | cursor; FUNC + UP / DOWN a page of 8 (a move stops the preview) |
+| Files | YES | folder: open; file: set the row, back to the list (unchanged) |
+| Files | RIGHT | folder: open; file: load it into the row, back to the list on the next EMPTY row (onwards, then the next banks; none: POOL FULL) |
+| Files | FUNC + YES | preview while YES is held (as the stock browser; YES's release stops it) |
+| Files | knob H | PREVIEW LEVEL, -40 .. -6 dB a step (default -9), said in the header ("PREVIEW LEVEL -8 DB"); a Sidecar setting, /.rytm/preview.txt |
+| Files | FUNC + RIGHT | folder: open; file: the FILE MENU |
+| Files | LEFT / NO | up a folder; at the top back to the list (unchanged) |
+
+A used row asks once ("C003 USED 1: RIGHT=SET"), and pressing the same key again replaces it (the YES ask is unchanged).
+A file that is already in the pool (the same hash) is not loaded twice. RIGHT says "IN POOL B003", stays on the empty
+row and goes on after that file. Loading two files takes two presses each (RIGHT loads, RIGHT goes back in).
+The rows RIGHT loads in one opening of the list are the track's quick-load batch: FILL's SAMPLE (docs/FILL.md) takes
+them as its FROM / TO when it opens on that track (`fill_batch`), so loading a set of files and pressing UP + RIGHT, YES
+p-locks them over the track's trigs.
+
+**FILE MENU** (FUNC + RIGHT on a file; UP / DOWN or knob A an item, YES / RIGHT do it, NO / LEFT close it): LOAD (as
+YES), LOAD TO NEXT EMPTY (into the first empty row from the list's row on; the list on that row; none: POOL FULL),
+PREVIEW, SAMPLE EDIT (SAMPLES lists only: loads into the row - a used row asks first, and its YES loads and opens -
+then opens the editor on that pool row once its file is in - `sedit_page_open(-1,
+code)`; the list's page gives way, the Rytm's list closes on its next key), INFO (rate, bits, MO / ST, length in the
+header's note, e.g. "48K 16B MO 0.2S"; read from the file's head, nothing loaded).
+
+**The preview** (core/samp/preview.h) is a dedicated DRY voice on the POST pair (host -> Rytm 0/1), mixed after
+everything else by the output fill (pi/engine/ob_usb.cpp, after a take's playback). It uses no track voice, INSERT, send
+FX or pool row. It streams the file's head through cardq (open, a 64 KB head read, then 64 KB pieces, one request per
+idle step, core/engine.cpp idle_stream) into a buffer of 480 000 frames of int16 L R (1.92 MB), taken once at boot from
+the sample-RAM arena (`msamp_ram_alloc`; only the 64 KB read stage is static, so the kernel grows by 64 KB). A WAV whose
+`data` chunk lies past the first 64 KB (a big JUNK / LIST chunk) is found by walking the chunk headers over further
+reads. It plays once, at most 10 s of the file (a 96 kHz file: 5 s), at PREVIEW LEVEL, resampled linearly to 48 kHz.
+PREVIEW LEVEL (the owner's hardware test: the first build's fixed -18 dB was too quiet) is knob H in the files, -40 ..
+-6 dB in 1 dB steps (paced as a list knob), default -9 dB, kept in /.rytm/preview.txt (`level=-9`; a Sidecar setting,
+not per kit; saved from the idle chain as the other settings files, lines a newer build wrote kept). It is added after
+the output limit (POST's voices and a send FX return there each limited to -12 dBFS): at -9 dB a full-scale file stays
+under full scale on top of both at their limits (0.25 + 0.25 + 0.35), as long as no computer USB OUT, master FX return
+or take playback is on 0/1 too (those add on the same pair); at -6 dB the sum can reach full scale with both at their
+ceilings. The add saturates, so nothing wraps. A level change ramps over one output block. The 0026 forwards knob H (32 7) only
+while the host's browser is open (ls_key's browse, after 4A on 1); in the list, and with an older 0026, knob H closes
+the list as any other knob. A mono file plays on both sides,
+and a file with more channels plays its first two. The sound starts after 8192 frames are loaded and fades 5 ms in and
+5 ms out. If the card falls behind, it holds the last frame, ramps down and fades back in when the data arrives (one
+underrun counted per hold). The loader does not overwrite the buffer before the audio has taken up a new preview (or
+50 ms passed). Whether it sounds (PLAY in the header) comes from its status and a timed stop, not from the audio
+callback, so a stalled output cannot leave PLAY on. FUNC + YES plays it while YES is held: YES's release (31 44 0,
+which the 0026 forwards whether FUNC is still held or not [measured, rytm-emu bk_emu.py browsefunc / browseknob]) stops
+it; FUNC's own release is never forwarded, so letting go of FUNC first keeps it playing until YES. The menu's PREVIEW
+stays a toggle (a second PREVIEW, or the rest below, stops it). It stops on YES's release, any
+cursor move, a load, LEFT / NO, the browser or the list closing, and another preview, which fades the old one out
+before reusing the buffer. Files: anything core/wavetable/wav_read.h reads. TABLES play as they are (the frames one
+after the other). INSTRUMENTS (.sfz) and the virtual items say NO PREVIEW. The 300 ms rest-preview of GRANULAR /
+WAVETABLE pool files (section 6) is unchanged, except that it is skipped while the dry preview sounds.
+
+Tests: core/tests/test_preview.cpp (POST only, L = R for mono, stereo kept, 44.1 kHz resampled, the 10 s cap, the 5 ms
+stop ramp, a new start fading the old, INFO with no sound, non-audio files, the hold when the card falls behind, no
+allocation in mix) and core/tests/test_browser.cpp (an old 0026 against the 0.5.0 one through the real 4A / 31 / hello
+messages: each key above, the re-entry cursor, the next-empty skip, the used-row ask, the menu drawn and each item,
+the preview stops (also on the Rytm's 4A close), no pool row used, POOL FULL, a file already in the pool, the editor's
+row, FUNC + NO to OFF and its YES, the re-entry from another folder, the old 0026 YES ask). test_preview also runs
+cardq in worker mode (a request in flight, a start and a stop meanwhile), a far `data` chunk, and PLAY without audio.
+preview-hold: test_browser holds FUNC + YES (31 44 2 then 31 44 0: the release stops it; a move while held stops it, the
+late release does nothing), turns knob H (the level, its note, the clamp, the save; knob H in the list is not the
+browser's); test_preview the level (default, clamp, the ramp, preview.txt saved and read back with other lines kept).

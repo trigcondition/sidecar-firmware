@@ -24,6 +24,7 @@ The same engine as on the Pi 4 (`docs/pi-engine.md`), built with `RASPPI=5`:
 | HDMI display (LVGL) | yes | needs `hdmi_force_hotplug=1`; the firmware's frame buffer is 1920x1080, the 800x480 UI is scaled to it ("HDMI display"); `display=0` turns it off |
 | DSI display + touch | the firmware's (frame buffer + FT5406 buffer) | Circle's `addon/rp1dsi` (display and FT5x06 touch, no firmware), preferred over HDMI, 800x480 unscaled ("DSI display"; built, not run) |
 | USB-C gadget (UAC2 12/12 + MIDI to the computer) | yes | **yes, in testing** (0.4.0): on by default as on the Pi 4, `gadget=0` in `cmdline.txt` turns it off; needs a powered USB-C hub or dock that passes data, since USB-C is also the Pi 5's power input ("USB device side"). `PI5_GADGET=0` compiles it out (`SIDECAR_NO_GADGET`; boot log `gadget: none on this board (Pi 5 build)`) |
+| fan header (Active Cooler, case fan) | none | driven by the engine: `fan=auto\|on\|off`, Linux's curve ("The fan") |
 | serial console | GPIO14/15, 921600 | GPIO14/15, 921600 (default, `PI5_UART=0`), or the 3-pin debug connector (`PI5_UART=10`) |
 | `sdboot` (serial bootloader + `engine.img`) and `flash.sh` | yes | not yet: see "Updating the kernel" |
 
@@ -113,7 +114,7 @@ warning names each board's official supply: Pi 5 "use the 27 W (5 V 5 A) adapter
 ## One card for both: Pi 4B and Pi 5
 
 `pi/circle/make-sd-dual.sh K4 SDBOOT K5` (the release: `sidecar-expander/scripts/package_pi.sh`, which builds all
-three from one commit) makes `out/sidecar-sd/`, `out/sidecar-pi-sd-<commit>.zip` (+ `.sha256`) and
+three from one commit) makes `out/sidecar-sd/`, `out/sidecar-pi-sd-<version>-<commit>.zip` (+ `.sha256`) and
 `out/BUILD-INFO-pi.txt`. It refuses kernels whose version stamps differ, a `-dirty` stamp, a kernel for the wrong
 board, a kernel with the engine test mode (the string `testsecs=`: `PI5_TESTMODE=1`, or a `PI5_GADGET=1` build from
 before 0.4.0), and a Pi 5 kernel without the USB-C gadget (`PI5_GADGET=0`) unless `PI5_NOGADGET=1` is set. The Pi 5
@@ -260,6 +261,32 @@ Expected log:
     display: 800x480, LVGL 9.N
     display: touch screen bound (touch1)
     engine: display: 800x480, input touch (USB), longest update N us      (the stats line)
+
+### Only the backlight, or 640x480: the screen did not answer at power-on
+
+*Reported* (a user, Waveshare 10.1" HDMI LCD (B), 1280x800, Pi 5): the panel showed only its backlight. The log:
+
+    display: firmware 1 display(s): 0=HDMI0 -> frame buffer on 0 640x480
+    display: EDID: not available (forced hotplug without a display, or the firmware did not answer)
+    display: HDMI 640x480 with no EDID: the screen did not answer at power-on. Power the screen first, then the Pi (HDMI0, next to USB-C; config.txt [pi5] hdmi_force_hotplug=1). docs/pi5.md "HDMI display"
+    display: res=1280x800 does not fit the frame buffer's 640x480: automatic
+
+The firmware reads the screen's EDID once, at power-on. When the screen is not fully powered yet (a panel fed from
+the Pi's USB, or switched on after the Pi), the EDID comes back empty (its header `00 00 00` instead of
+`00 FF FF ...`) and the firmware falls back to **640x480**. Circle cannot change the Pi 5's HDMI mode afterwards (above),
+so the engine cannot fix it at run time; many panels (this one among them) show no picture at 640x480.
+
+Since 0.5.0 the engine says so when the frame buffer is 640x480 and the EDID gave no preferred mode (the decision:
+`pi/ui/display_hint.h`, tested in `pi/engine/tests/test_display_hint.cpp`; the Pi 4 is unchanged):
+
+- the warning above in the log (`/log`, the serial console);
+- on the boot screen, under the progress bar, large: "No screen info at power-on. Power the screen first, then the
+  Pi." (in the dot font's capitals), kept at least 5 s; then the normal UI at 640x480, for a screen that does show it;
+- `/status` gets `"displayHint":"No screen info at power-on: ..."` (absent otherwise; the web pages do not show it yet).
+
+The fix: **power the screen first, then the Pi** (its own supply, or plugged in and on before the Pi's USB-C), with
+the screen on **HDMI0** (next to USB-C) and `hdmi_force_hotplug=1` in `[pi5]`. A screen whose EDID really prefers
+640x480 gets no hint.
 
 ## DSI display
 
@@ -428,6 +455,41 @@ What replaces it for now:
   12/12 + MIDI on it and the Mac tests (`pi/engine/tests/sidecar_*_test.py`), unless the core differs. A risk worth
   a first spike: Circle's own `sample/29-miniorgan` as a MIDI gadget on the Pi 5.
 
+## Power button
+
+The Pi 5's own power button shuts the Sidecar down cleanly (the Pi 5 build only; the Pi 4 has no such button):
+
+- **Short press** while it runs: the screen goes dark, the audio to the Rytm fades out over 20 ms (no click), the
+  Overbridge stream stops, a recording take is closed (its WAV files valid), the settings and the edits that wait to be
+  saved (LFOs, INSERT FX, the sequencer's patterns, the project, `display.txt`) are written, then the black box, then the
+  board turns off (PSCI SYSTEM_OFF). The card's work gets 3 s at most: a hung card does not keep the board on (a take cut
+  there is repaired at the next boot, as after a power loss). The log says `power-off: the card's work done in N ms`.
+- **Press again** while it is off: the Pi 5's firmware powers it back on and the Sidecar boots.
+- **Long press** (held a few seconds): the power chip's hard off. It skips all of the above, as pulling the cable does.
+
+A press only counts once the button has been seen released since the boot, so the press that powered the board on
+does not turn it off again. The button is read every 20 ms; Circle's 50 ms debounce runs only when it reads pressed.
+The console (and the web page's `/cmd`) can do the same: `:poweroff=1`. The Pi 4 build answers `poweroff: refused,
+the Pi 5 only`.
+
+## The fan
+
+The Pi 5's 4-pin fan header (5 V, PWM, tach, GND) takes the official Active Cooler and the case fan. Under Linux the
+device tree's `pwm-fan` node drives it; the firmware only turns it on at boot to see whether the tach moves (Raspberry
+Pi's Pi 5 documentation) and then leaves it. Under Sidecar the engine drives it (`pi/engine/fan_pi.cpp`, the modes and
+curve in docs/pi-engine.md "Fan (Pi 5)"). From the device tree (`bcm2712-rpi-5-b.dts`, `rp1.dtsi`, Linux rpi-6.12.y):
+
+| | |
+|---|---|
+| PWM | RP1 GPIO45 (`FAN_PWM`), function `pwm1` (funcsel 0), pull-down |
+| PWM block | RP1 PWM1, channel 3 (the fourth), 50 MHz from the RP1 crystal, range 2078 = 41.56 us (24 kHz; the dts asks 41566 ns) |
+| polarity | inverted: pin high = off, low = full; duty = level / 255 of the range, levels 0 / 75 / 125 / 175 / 250 |
+| tach | RP1 GPIO29 (`FAN_TACH`), counted outside the ARM; Linux reads the RPM at PWM1 + 0x3c, and so does `/status` `fan.rpm` |
+
+Circle's `CPWMOutput` is not used: its `Start` asserts that no channel runs and programs all four (clearing + 0x3c);
+`fan_pi.cpp` sets channel 3 only, as Linux's `pwm-rp1.c` does: stop it, clock, control (trailing edge, invert), range,
+duty 0, enable, then the pin. Inferred from the sources; not yet run on hardware.
+
 ## Test checklist (Pi 5, Rytm, Mac)
 
 1. **Boot log**: serial at 921600 on pins 6/8/10. Expect Circle's banner, the engine's `==== rytm-pi engine` line,
@@ -454,3 +516,6 @@ What replaces it for now:
    `pi5-try` again and `pi5-commit`.
 10. **USB-C Sidecar** (a powered USB-C hub or dock between the computer and the Pi that passes data): the USB-C tests
     (`sidecar_*_test.py`, `gadget_midi_test.py`); `/status` `usbHost` true once the computer has configured it.
+11. **Fan** (Active Cooler fitted): the boot line `fan: auto ..., pin GPIO45 PWM1 running`; `fan=on` spins it full,
+    `fan=off` stops it, `fan=auto` follows the curve (`fan` prints the level); `/status` `fan.rpm` non-zero while it
+    spins (else the RPM is not available under Circle); 15 minutes of heavy load without `clockLow` in `/status`.

@@ -293,6 +293,7 @@
         <div class="seg" role="radiogroup" aria-labelledby="l-usbmode" data-key="usbmode"><button type="button" role="radio" aria-checked="false" data-cmd="usbmode=class" data-val="class">Class compliant</button><button type="button" role="radio" aria-checked="false" data-cmd="usbmode=overbridge" data-val="overbridge">Overbridge</button></div>
         <span id="usbnow" class="mut"></span>
         <span class="fb" data-fb="usbmode" role="status" aria-live="polite"></span></div>
+      <p class="note" id="usbnet-late" hidden>The computer on USB-C started its USB-C network after this Sidecar had already chosen Wi-Fi or Ethernet (a Mac locked at the first connection does that). Reboot to use the cable: the page is then at <code>http://172.31.77.1</code>. <button type="button" id="usbnet-reboot">Reboot onto USB-C</button> <span id="usbnet-msg" role="status"></span></p>
       <p class="note" id="usb-warn" hidden>Overbridge passes the Rytm through: its vendor requests and the Overbridge async channel reach it unfiltered, so an OS update from the computer (Transfer, Overbridge) can reach the Rytm. <code>usbmidi=os:</code> filters MIDI only (docs/usb-mirror.md).</p>
       <div class="row"><label for="mvoice">Machine</label>
         <select id="mvoice"></select>
@@ -364,9 +365,11 @@
     <section>
       <h2>Send FX</h2>
       <div class="fxs" id="fx"></div>
+      <div class="fxs" id="fxbw"></div>
       <div class="row"><button data-cmd="killfx">Kill tails</button><button data-cmd="sendfx">Stats to the log</button></div>
       <p class="note">What the Rytm's kit sets: each FX's type, where it returns (PRE on 2/3, POST on 0/1) and the 12 tracks'
-        send levels.</p>
+        send levels. BASE / WIDTH: each FX's return filter, the Rytm's SEND FX 1 / 2 knobs G and H (kept in the Sidecar's kit
+        file; BASE 0, WIDTH 127 is off).</p>
     </section>
     <section>
       <h2>Master FX</h2>
@@ -455,9 +458,9 @@
       <button id="um-empty" title="every slot of this project explicitly empty: nothing is inherited or filled from the sounds">Start this project empty</button>
       <button id="um-export">Export slot list</button>
       <button id="um-impb">Import slot list</button><input id="um-imp" type="file" accept=".json,.txt,application/json" hidden></div>
-    <div class="tbl"><table><thead><tr><th>Name</th><th class="hm">ID</th><th>Ver</th><th class="r hm">File</th><th class="hm">FP</th>
+    <div class="tbl"><table><thead><tr><th>Name</th><th class="hm">ID</th><th>Ver</th><th title="the plugin API it was built for: 2, or 3 (a dual or API 3 only package)">API</th><th class="r hm">File</th><th class="hm">FP</th>
       <th class="r hm">Code+data</th><th class="r hm">State/voice</th><th class="r">CPU/voice</th><th>Slots</th><th>Fits</th><th></th></tr></thead>
-      <tbody id="um-list"><tr><td colspan="11" class="mut">-</td></tr></tbody></table></div>
+      <tbody id="um-list"><tr><td colspan="12" class="mut">-</td></tr></tbody></table></div>
     <div class="mem" id="um-mem"></div>
     <div id="um-res" class="msg"></div>
     <div class="prog" id="um-prog"></div>
@@ -680,7 +683,7 @@ const CMD_NOT_PAGE = "refused: not from this page (the same-origin check): open 
 // the token that just worked and reopen the dialog, which is what happened on the device (2026-10-25: "it confirms
 // it is correct and saved, but the dialog stays on top"). The wrapper remembers the gen it sent with and only acts
 // on a refusal that still belongs to the current one.
-const PAIR = { lostAt: -1e9, tok: "", gen: 0, gate: "on", clients: 0, ready: false, mine: false, hdr: true, host: "", build: "", asked: false };
+const PAIR = { lostAt: -1e9, tok: "", gen: 0, gate: "on", trusted: false, clients: 0, ready: false, mine: false, hdr: true, host: "", build: "", asked: false };
 // Both ends are checked for shape. A junk entry here - `undefined` written as a string when a field was missing, or
 // anything left by an older build - used to be sent to the Sidecar on every load: it answered "the pairing code is
 // 8 digits", which reads as a complaint about a code the user typed correctly, and until 0.3.0 each one also burned
@@ -827,10 +830,11 @@ function pairHint() {
 function pairShow() {                   // the Access section
   pairHint();
   const g = PAIR.gate;
-  $("#ac-state").textContent = g === "off" ? "off on this card (cmdline.txt paircode=0): anyone on this network can change Sidecar"
+  $("#ac-state").textContent = PAIR.trusted ? `on — this page is on the USB-C cable, which is trusted (cmdline.txt usbtrust=0 asks for the code there too)`
+    : g === "off" ? "off on this card (cmdline.txt paircode=0): anyone on this network can change Sidecar"
     : g === "fixed" ? `a fixed code from cmdline.txt (a development card) — ${PAIR.clients} device(s) remembered`
     : `on — ${PAIR.clients} device(s) remembered`;
-  $("#ac-state").className = g === "on" ? "" : "err";
+  $("#ac-state").className = g === "on" || PAIR.trusted ? "" : "err";
   $("#ac-this").textContent = g === "off" ? "no code needed" : PAIR.tok ? (PAIR.mine ? "paired and remembered" : "paired for this visit only")
     : "not paired";
   for (const b of ["#ac-forget", "#ac-all"]) $(b).disabled = g === "off" || !PAIR.tok;
@@ -843,7 +847,9 @@ async function pairBoot() {
   // What the Sidecar says about itself is current either way, so it is recorded first. Only the decisions below
   // are guarded: an earlier version returned here and never set `ready`, which left the page unpaired with no
   // dialog and nothing polling - inert.
-  PAIR.gate = st.gate; PAIR.clients = st.clients; PAIR.ready = true;
+  // trusted: this page reaches the Sidecar over the USB-C cable (docs/usb-network.md): nothing to pair, as with the gate off
+  PAIR.trusted = st.trusted === true;
+  PAIR.gate = PAIR.trusted ? "off" : st.gate; PAIR.clients = st.clients; PAIR.ready = true;
   PAIR.hdr = st.hdr !== false; PAIR.host = st.host || "";
   if (!PAIR.build) {                    // once: which build is answering, so a page left open from before an
     PAIR.build = "?";                   // install is visible instead of looking like a bug in the page
@@ -853,7 +859,9 @@ async function pairBoot() {
     }).catch(() => {});
   }
   if (gen !== PAIR.gen) return;         // a pairing finished while this was in flight: it decides, not this answer
-  if (st.gate === "off" || st.paired) { $("#pair-wrap").hidden = true; pairShow(); return; }
+  // on the trusted cable the header still goes (any value: web.cpp wants it there, another site's page cannot send it)
+  if (PAIR.trusted && !PAIR.tok) { pairDone("usb"); return; }
+  if (PAIR.gate === "off" || st.paired) { $("#pair-wrap").hidden = true; pairShow(); return; }
   if (st.rng === false) {               // the engine refuses every pairing this boot (paircode.h): say why, try nothing
     pairAsk("This Sidecar's random number generator failed its self-test at boot, so it refuses to pair (a guessable code would be worse). Restart it; if this stays, report it.");
     pairShow();
@@ -955,6 +963,11 @@ async function mbSet(f) {
   say($("#mb-msg"), r.ok === false ? r.error : "", r.ok === false);
   if (r.ok !== false) { mbRender(r); if (r.token) { mbTok = r.token; $("#mb-tok").textContent = mbTok; $("#mb-tokrow").hidden = false; } }
 }
+$("#usbnet-reboot").onclick = async () => {
+  if (!confirm("Reboot the Sidecar onto the USB-C network? Audio stops for the reboot; this page then moves to http://172.31.77.1.")) return;
+  const r = await wfPost("/usbnet/reboot", {});
+  say($("#usbnet-msg"), r.ok === false ? r.error : "Rebooting… open http://172.31.77.1 in a moment.", r.ok === false);
+};
 $("#mb-on").onclick = () => mbSet({ on: "1" });
 $("#mb-off").onclick = () => mbSet({ on: "0" });
 $("#mb-os").onchange = () => {
@@ -1105,14 +1118,37 @@ const MFX_NOTE = {
   old: "SRC MIX (through mode): these Rytm mods send no pans or routing, so all 8 stems are added, mono. Take every track off ROUTE TO MAIN on the Rytm, or you hear them twice. The Rytm's delay and reverb stay outside the chain.",
 };
 let mfxLast = "";
+// sfx-basewidth (0.5.0): each send FX's return filter as BASE / WIDTH (bus 1 / 2's POST EQ, the Rytm's SEND FX 1 / 2 knobs
+// G / H): /status "ins" c[8 + i] "bw" [base, width] and "peq" [hpf, lpf, ..]; ins=B1:eq:base:V / ins=B1:eq:width:V
+function fxbwHtml(c) {
+  return [8, 9].map((ci, i) => {
+    const [b, w] = c[ci].bw, [hp, lp] = c[ci].peq || [0, 0], n = i + 1;
+    const what = !hp && !lp ? "off" : `HPF ${hp || "off"} · LPF ${lp || "off"}`;
+    return `<div><b>FX ${n} filter</b> <span class="mut">· ${what}</span>` +
+      `<div><label>BASE <input type="range" min="0" max="127" value="${b}" data-bw="B${n}:eq:base:"></label> ${b}</div>` +
+      `<div><label>WIDTH <input type="range" min="0" max="127" value="${w}" data-bw="B${n}:eq:width:"></label> ${w}</div></div>`;
+  }).join("");
+}
+let fxbwLast = "";
+function showFxBw(ins) {
+  const c = ins && ins.c, box = $("#fxbw");
+  if (!c || !c[9] || !c[8].bw || !c[9].bw) return;   // (an older engine: no "bw")
+  const j = JSON.stringify([c[8].bw, c[9].bw, c[8].peq, c[9].peq]);
+  if (j === fxbwLast || box.contains(document.activeElement)) return;   // (not under a dragged slider)
+  fxbwLast = j;
+  box.innerHTML = fxbwHtml(c);
+  box.querySelectorAll("[data-bw]").forEach((r) => { r.onchange = () => { cmd("ins=" + r.dataset.bw + r.value); r.blur(); }; });
+}
 function mfxHtml(m) {
   const key = (c, t, on) => `<button type="button" data-mfx="${c}"${on ? ' class="on"' : ""}>${t}</button>`;
   let h = `<div class="row">${key(m.byp ? "byp:0" : "byp:1", m.byp ? "Bypassed" : "On", !m.byp)}${key(m.src === "mix" ? "src:ret" : "src:mix", "SRC " + m.src.toUpperCase(), m.src === "mix")}` +
     `<label>LEV <input type="range" min="0" max="127" value="${m.lev}" data-mfx-v="lev:"></label> ${m.lev}` +
     `<label>STEM TRIM <input type="range" min="-24" max="0" value="${m.trim}" data-mfx-v="trim:"></label> ${m.trim} dB</div><div class="fxs">`;
+  // 0.5.0: the send TYPEs' room is shared with the buses (core/fx/master.h): full, a slot without one cannot take one
+  const full = m.fxcap > 0 && m.fxused >= m.fxcap, SENDS = MFX_TYPES.slice(11);
   m.s.forEach((s, i) => {
-    const n = i + 1;
-    h += `<div><label>${n} <select data-mfx-t="${n}">` + MFX_TYPES.map((t) => `<option${t === s.t ? " selected" : ""}>${t}</option>`).join("") + "</select></label>";
+    const n = i + 1, off = full && !SENDS.includes(s.t);
+    h += `<div><label>${n} <select data-mfx-t="${n}">` + MFX_TYPES.map((t) => `<option${t === s.t ? " selected" : ""}${off && SENDS.includes(t) ? " disabled" : ""}>${t}</option>`).join("") + "</select></label>";
     if (s.t !== "OFF") {
       s.p.forEach((v, k) => { h += `<div><label>${s.l[k]} <input type="range" min="0" max="127" value="${v}" data-mfx-v="${n}:p${k + 1}:"></label> ${s.v[k]}</div>`; });
       if (s.send) h += `<div><label>MIX <input type="range" min="0" max="127" value="${s.mix}" data-mfx-v="${n}:mix:"></label> ${s.mix}</div>`;
@@ -1120,6 +1156,7 @@ function mfxHtml(m) {
     }
     h += "</div>";
   });
+  if (full) h += `<p class="note">Send FX types: ${m.fxcap} play at once, the master and the buses together; all ${m.fxcap} are in use.</p>`;
   return h + "</div>";
 }
 function showMfx(m) {
@@ -1211,6 +1248,7 @@ function paintSeg() {
     : (u.shown === "box" ? "now: the Rytm itself" : u.shown === "switching" ? "now: replugging" : "now: the Sidecar device"
       + (u.set === "overbridge" && u.runs === "overbridge" ? " (no box read yet)" : ""))
       + (u.set !== u.runs ? "; not in this build: class compliant runs" : "") + (u.from === "cmdline" ? " (cmdline.txt usb=)" : "");
+  $("#usbnet-late").hidden = !(st.usbNet && st.usbNet.late);   // docs/usb-network.md: the page's reboot onto USB-C
   $("#usb-warn").hidden = !u || (u.set !== "overbridge" && pend.want("usbmode") !== "overbridge");   // set, or being set
 }
 function settle() {       // /status after a change: confirm what matches
@@ -1548,6 +1586,7 @@ function renderStats() {
   showSeqx(st);                       // seqtop: the sequencer's top-8 settings (/status "seqx": core/seq)
   if (st.brightness && document.activeElement !== $("#bright")) { $("#bright").value = st.brightness; $("#brightv").textContent = st.brightness + " %"; }
   if (st.display !== undefined) $("#blank").textContent = !st.display ? "no display attached" : st.blank ? "the screen is black now (a touch wakes it)" : "";
+  if (tab === "sendfx") showFxBw(st.ins);   // sfx-basewidth: the send FX return filters
   if (st.fx && tab === "sendfx") $("#fx").innerHTML = st.fx.map((f, i) => `<div><b>FX ${i + 1}</b> · ${esc(f.type || "OFF")}
     <span class="mut">· returns ${f.post ? "POST on 0/1" : "PRE on 2/3"}</span>
     <div class="sends">${f.send.map((v) => `<i style="height:${(v / 127 * 100).toFixed(0)}%" title="${v}"></i>`).join("")}</div>
@@ -2132,6 +2171,12 @@ function cpuCell(p) {     // measured once it played (% of one Pi core, us per b
   if (!p.blocks || !p.ns) return `<span class="mut" title="the package's own figure, in % of one Teensy voice budget">${decl}</span>`;
   return `${(100 * p.ns / umBlockNs).toFixed(2)} %<div class="mut" style="font-size:11px" title="measured: one voice's render call (12 frames), mean over ${p.blocks} blocks; declared: the package's own figure (Teensy budget)">${(p.ns / 1000).toFixed(1)} µs/block · ${decl}</div>`;
 }
+// the package list's API cell: the plugin API it was built for (2, or 3: a dual or API 3 only package, /um's "api"), and
+// a user effect marked as one (it plays in a send FX's UFX1..UFX4 TYPE, never in a U slot)
+function umApi(p) {
+  const v = p.api != null ? String(p.api) : "-";
+  return p.effect ? `${esc(v)} <span class="badge" title="a user effect: a send FX TYPE (UFX1..UFX4), not a machine for U1..U5">effect</span>` : esc(v);
+}
 function renderUm(a) {
   const P = a.filter((x) => x.t === "plugin"), S = {}, M = a.filter((x) => x.t === "mem");
   const info = a.find((x) => x.t === "plugins") || {};
@@ -2143,13 +2188,13 @@ function renderUm(a) {
     + (info.scanning ? " · scanning" : "") : "";
   $("#um-list").innerHTML = P.length ? P.map((p, i) => {
     const code = (p.image || 0) + (p.bss || 0), why = p.why || (p.status !== "ok" ? p.status : "");
-    return `<tr><td>${esc(p.name || p.id)}</td><td class="hm">${esc(p.id)}</td><td>${esc(p.ver)}</td><td class="r hm">${hb(p.size)}</td>
+    return `<tr><td>${esc(p.name || p.id)}</td><td class="hm">${esc(p.id)}</td><td>${esc(p.ver)}</td><td>${umApi(p)}</td><td class="r hm">${hb(p.size)}</td>
       <td class="hm">${esc(p.fp)}</td><td class="r hm">${hb(code)}</td><td class="r hm">${hb(p.state)}</td>
       <td class="r">${cpuCell(p)}</td><td>${(p.slots || []).map((s) => "U" + s).join(" ") || "-"}</td>
       <td class="w">${p.fit ? `<span class="badge ok">fits</span>` : `<span class="badge err">no</span> <span class="err">${esc(why)}</span>`}
         <span class="mut hm">${esc(p.target || "")}</span></td>
       <td><button class="sm" data-del="${i}">Delete</button></td></tr>`;
-  }).join("") : `<tr><td colspan="11" class="mut">no machines in /Plugins: upload a .rmp</td></tr>`;
+  }).join("") : `<tr><td colspan="12" class="mut">no machines in /Plugins: upload a .rmp</td></tr>`;
   let slots = "";
   for (let n = 1; n <= 5; n++) {
     const s = S[n] || { state: "EMPTY", id: "" }, st = s.state || "EMPTY";
@@ -2157,7 +2202,7 @@ function renderUm(a) {
     if (st === "MISSING") nm = "!" + (s.name || s.id);
     if (st === "EMPTY") nm = "(empty)";
     let opts = `<option value="">(empty)</option>`, have = !s.id;
-    for (const p of P) if (p.fit) { const sel = p.id === s.id; have = have || sel; opts += `<option value="${esc(p.id)}"${sel ? " selected" : ""}>${esc(p.name || p.id)} ${esc(p.ver)}</option>`; }
+    for (const p of P) if (p.fit && !p.effect) { const sel = p.id === s.id; have = have || sel; opts += `<option value="${esc(p.id)}"${sel ? " selected" : ""}>${esc(p.name || p.id)} ${esc(p.ver)}</option>`; }
     if (!have) opts += `<option value="${esc(s.id)}" selected>!${esc(s.name || s.id)}</option>`;
     const meas = s.blocks && s.ns ? ` · ${(100 * s.ns / umBlockNs).toFixed(2)} %/voice` : "";
     const src = slotSrc(s);

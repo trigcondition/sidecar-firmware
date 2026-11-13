@@ -7,7 +7,7 @@
 //          "juno":{"total","list":[{"slot","name","used"}]},"fm":{"total","rom","list":[...]},
 //          "voices":[{"v","m","pat"}]}  (pool slots 1..127 with a path, juno/fm slots 0.. as PAT picks them;
 //          "rom": the FM list is empty, so PAT picks Plaits' 96 ROM voices; voices' "m": PLAITS JUNO FM DAISY
-//          DSPS DD U1..U5)
+//          DSPS SAMPLER DD U1..U5)
 #pragma once
 
 namespace lists {

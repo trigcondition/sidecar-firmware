@@ -4,11 +4,12 @@
 // (core/lib/pools.h): the page calls them directly. Cold.
 //
 // Knobs: A the list (SAMPLES / TABLES / INSTR), B the bank (A..H), C the row (FUNC: 8 at a time), D the action
-// (SELECT, UNUSED, ALL, NONE, UNLOAD, REPLACE, UNDO). YES does the action: SELECT toggles the row; UNUSED selects the
+// (SELECT, UNUSED, ALL, NONE, UNLOAD, REPLACE, UNDO, EDIT). YES does the action: SELECT toggles the row; UNUSED selects the
 // rows not seen playing in this project (the footer says a Rytm lock may still use them); ALL / NONE; UNLOAD the
 // selection (or the row): P3 - rows in use ask first ("2 IN USE: YES AGAIN"), and while the Rytm plays they are refused;
 // REPLACE opens the list's browser aimed at the row (C / UP / DOWN move, YES into a folder or sets the file - asks the
-// same as UNLOAD -, NO up, at the top back to the rows); UNDO takes the last replace / unload back.
+// same as UNLOAD -, NO up, at the top back to the rows); UNDO takes the last replace / unload back; EDIT opens a
+// SAMPLES row in SAMPLE EDIT (page_sedit.cpp).
 // Drawn: the header with the list's name and the RAM figure (MB and % of the pool RAM), five rows ("A001 name", the
 // selection a '*', the cursor inverted with the row's state: RAM, LOADING, MISSING, CHANGED, its size), the footer the
 // action (or the question).
@@ -27,8 +28,8 @@ namespace ui {
 
 namespace {
 
-enum Act : uint8_t { kSelect = 0, kUnused, kAll, kNone, kUnload, kReplace, kUndo, kActs };
-const char* const kActNames[kActs] = {"SELECT", "UNUSED", "ALL", "NONE", "UNLOAD", "REPLACE", "UNDO"};
+enum Act : uint8_t { kSelect = 0, kUnused, kAll, kNone, kUnload, kReplace, kUndo, kEdit, kActs };
+const char* const kActNames[kActs] = {"SELECT", "UNUSED", "ALL", "NONE", "UNLOAD", "REPLACE", "UNDO", "EDIT"};
 const char* const kTabs[pools::kLists] = {"SAMPLES", "TABLES", "INSTR"};
 const char* const kShort[pools::kLists] = {"SMP", "TBL", "INST"};
 constexpr int kTabPitch = 9;   // a bank letter a text item at a fixed pitch (the Rytm's glyphs are narrower: rui1040)
@@ -299,6 +300,11 @@ CORE_COLD bool pool_key(int code) {
       P.browse = true, P.cur = 0, P.ask = false;
       break;
     case kUndo: note(pools::undo(l) ? "UNDONE" : "NOTHING TO UNDO"); break;
+    case kEdit:   // the row's sample in SAMPLE EDIT (page_sedit.cpp): the whole sample, no track
+      if (l != pools::kSamples) return note("EDIT: SAMPLES ONLY"), true;
+      if (!P.row || pools::at(l, c).type != pools::kSample) return note("NO SAMPLE IN THE ROW"), true;
+      sedit_page_open(-1, c);
+      break;
   }
   return true;
 }
@@ -319,7 +325,7 @@ CORE_COLD void pool_page_reset() {
 // Shown where SAMPLE is (the Pi: the machines that read the lists, a recorder)
 CORE_COLD bool pool_shown() { return kRecPage.shown && kRecPage.shown(); }
 UI_ROM const ExtraPage kPoolPage = {"POOL", pool_shown, pool_draw, pool_enc, pool_key, 0x0F, false, nullptr, nullptr, nullptr,
-                                    false, true};   // updown044: UP / DOWN its rows
+                                    false, nullptr, nullptr, true};   // updown044: UP / DOWN its rows
 
 }  // namespace ui
 }  // namespace core

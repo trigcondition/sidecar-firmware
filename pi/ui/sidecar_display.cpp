@@ -6,6 +6,7 @@
 #include "sidecar_display.h"
 #include "sidecar_seqed.h"		// the second finger: the SEQ page's pinch
 #include "sidecar_splash.h"
+#include "display_hint.h"		// the Pi 5 at 640x480 without an EDID
 #include "sidecar_dot.h"		// the OLED theme's dot expansion (Flush)
 #include "dsi_rotate.h"			// a portrait DSI panel mounted landscape
 #include "lvgl.h"
@@ -54,6 +55,8 @@ CSidecarDisplay::CSidecarDisplay (unsigned nWidth, unsigned nHeight)
 	m_nUiReqH (0),
 	m_nEdidW (0),
 	m_nEdidH (0),
+	m_pHint (0),
+	m_nHintTicks (0),
 	m_nOffX (0),
 	m_nOffY (0),
 	m_pFB (0),
@@ -216,6 +219,14 @@ boolean CSidecarDisplay::OpenFrameBuffer (void)
 		m_nFbHeight = m_nHeight = m_pFB->GetHeight ();
 		if (!(m_bDsiSeen && bPreferDsi)) ReadEdid ();	// on HDMI (not the DSI display)
 #if RASPPI >= 5
+		// 640x480 and no EDID: the firmware's fallback, the screen not answering at power-on (not powered yet,
+		// reported with the Waveshare 10.1" HDMI LCD (B)); Circle cannot change the mode (docs/pi5.md "HDMI display")
+		if (!(m_bDsiSeen && bPreferDsi) && sidecar_no_edid_fallback (m_nFbWidth, m_nFbHeight, m_nEdidW != 0 && m_nEdidH != 0))
+		{
+			m_pHint = SIDECAR_NOEDID_STATUS;
+			LOGWARN ("HDMI 640x480 with no EDID: the screen did not answer at power-on. Power the screen first, then "
+				 "the Pi (HDMI0, next to USB-C; config.txt [pi5] hdmi_force_hotplug=1). docs/pi5.md \"HDMI display\"");
+		}
 		ScaleSetup (nUiWidth, nUiHeight);
 #endif
 	}
@@ -586,12 +597,17 @@ boolean CSidecarDisplay::Splash (void)
 		m_pSplash = new u16[m_nWidth * m_nHeight];	// drawn at the UI's size, scaled as the UI is
 		if (!m_pSplash) return TRUE;
 		sidecar_splash_draw (m_pSplash, m_nWidth, m_nWidth, m_nHeight);
+		if (m_pHint && sidecar_splash_hint (m_pSplash, m_nWidth, m_nWidth, m_nHeight, SIDECAR_NOEDID_TEXT))
+			m_nHintTicks = CTimer::GetClockTicks () | 1;
 		CDisplay::TArea Area = {0, m_nWidth - 1, 0, m_nHeight - 1};
 		Put (Area, m_pSplash);
 		return TRUE;
 	}
 	sidecar_splash_draw ((u16 *) (uintptr) m_pFB->GetBuffer (), m_pFB->GetPitch () / 2,
 			     m_pFB->GetWidth (), m_pFB->GetHeight ());
+	if (m_pHint && sidecar_splash_hint ((u16 *) (uintptr) m_pFB->GetBuffer (), m_pFB->GetPitch () / 2,
+					    m_pFB->GetWidth (), m_pFB->GetHeight (), SIDECAR_NOEDID_TEXT))
+		m_nHintTicks = CTimer::GetClockTicks () | 1;
 	return TRUE;
 }
 
@@ -616,6 +632,11 @@ boolean CSidecarDisplay::Initialize (void)
 	{
 		LOGWARN ("no frame buffer: the display is off");
 		return FALSE;
+	}
+	if (m_nHintTicks)					// the boot screen's hint (display_hint.h) up HintMs at least
+	{
+		unsigned nMs = (CTimer::GetClockTicks () - m_nHintTicks) / 1000;
+		if (nMs < HintMs) CTimer::Get ()->MsDelay (HintMs - nMs);
 	}
 	delete [] m_pSplash;					// LVGL's screen replaces it
 	m_pSplash = 0;

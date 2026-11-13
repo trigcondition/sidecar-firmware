@@ -1,0 +1,13 @@
+{
+  "id": "fx.pingpong",
+  "version": "1.0.0",
+  "name": "PINGPONG",
+  "short": "PPD",
+  "licence": "MIT",
+  "knobs": [
+    {"p": 1, "long": "Time", "short": "TIM", "look": "list", "text": "enum", "names": ["1/16", "1/8T", "1/8", "1/4T", "1/8D", "1/4", "1/2", "1 BAR"], "default": 36},
+    {"p": 2, "long": "Feedback", "short": "FDB", "default": 64},
+    {"p": 3, "long": "Tone", "short": "TON", "default": 96},
+    {"p": 4, "long": "Width", "short": "WID", "default": 127}
+  ]
+}

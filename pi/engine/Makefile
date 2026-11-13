@@ -13,9 +13,12 @@ include $(CORE)/engines/engines.mk
 DEFINE += -DCORE_MSAMP=1
 # Circle-side objects: Circle's flags and headers (Rules.mk's %.o: %.cpp)
 OBJS = main.o kernel.o platform_pi.o shared.o ob_usb.o ob_follow.o cores.o console.o selftest.o guard.o tcp_link.o $(GADGET_OBJS) web.o sdfiles.o um_pi.o wifi.o rec_pi.o
+OBJS += web_ws.o               # /ws, the WebSocket (web_ws.h, docs/web-ws.md; the portable parts are ws_frame.h, ws_json.h, ws_session.h)
 OBJS += paircode_pi.o          # the pairing code's Pi side (paircode_pi.h; the portable paircode.cpp is in PORT_SRC)
 OBJS += midibridge_pi.o        # the Rytm MIDI bridge (midibridge_pi.h; the portable part is the header midibridge.h)
+OBJS += usbnet_pi.o            # the USB-C network (usbnet_pi.h; the portable parts are ncm_ntb.h, dhcpd_lite.h, usbnet_cfg.h)
 OBJS += usbc_pi.o              # the USB-C mode for the SIDECAR MENU > USB-C on the Rytm (usbc_pi.h; the portable part is usb_mode.h)
+OBJS += update_pi.o             # the firmware update from the web page (update_pi.h; the portable part update.cpp is in PORT_SRC)
 # the volumes besides the card and the storage bench (docs/STORAGE.md): Circle's side; the logic is hosted (PORT_SRC)
 OBJS += stor_pi.o
 OBJS += blackbox_pi.o          # the black box: the log to /.rytm/blackbox.log (blackbox.h)
@@ -29,6 +32,8 @@ ifeq ($(strip $(RASPPI)),5)
 # (build.sh: a Circle tree with circle-pi5-gadget.patch). The serial console: PI5_UART (build.sh, default 0: GPIO14/15,
 # pins 8/10, as on the Pi 4; 10: the 3-pin debug connector, Circle's default)
 DEFINE += -DSERIAL_DEVICE_DEFAULT=$(or $(PI5_UART),0)
+# the fan header (fan_pi.h: RP1 GPIO45, PWM1; the speed from the SoC temperature: fan.h)
+OBJS += fan_pi.o
 ifneq ($(PI5_GADGET),1)
 DEFINE += -DSIDECAR_NO_GADGET
 GADGET_OBJS =
@@ -51,10 +56,14 @@ endif
 OBJS += ../ui/sidecar_display.o ../ui/sidecar_ui.o ../ui/sidecar_splash.o ../ui/sidecar_wordmark.o
 # the pattern pages (docs/TOUCH-EDITOR.md): the SEQ editor and the Rytm pattern view, LVGL only
 OBJS += ../ui/sidecar_seqed.o ../ui/sidecar_rytmpat.o ../ui/rytm_pattern.o ../ui/sidecar_theme.o ../ui/sidecar_dot.o ../ui/sidecar_dotfont.o
+# the SIDECAR theme's text faces: Space Grotesk Medium, 12..28 px (pi/ui/fonts/gen.sh)
+OBJS += $(patsubst %,../ui/fonts/sidecar_sg%.o,12 14 16 18 20 22 24 28)
 # the WAVETABLE / GRANULAR machine view (pi/ui/sidecar_wgview.h), filled by wgview_pi.cpp
 OBJS += ../ui/sidecar_wgview.o
 # the CHOP page (pi/ui/sidecar_chop.h), filled by chopview_pi.cpp
-OBJS += ../ui/sidecar_chop.o ../ui/sidecar_font28.o
+OBJS += ../ui/sidecar_chop.o
+# the SAMPLE EDIT page (pi/ui/sidecar_sedit.h), filled by seditview_pi.cpp
+OBJS += ../ui/sidecar_sedit.o
 # the JUNO / 6-OP FM preset pages (pi/ui/sidecar_preset.h), filled by preset_pi.cpp
 OBJS += ../ui/sidecar_preset.o
 # the touch calibration (pi/ui/touch_cal.h: Settings > Display > Calibrate)
@@ -66,6 +75,10 @@ OBJS += ../ui/sidecar_song.o
 # the INSERT FX page (pi/ui/sidecar_insfx.h, fx-ins), filled by insfx_pi.cpp
 OBJS += ../ui/sidecar_insfx.o
 OBJS += ../ui/sidecar_mfx.o
+# 0.5.0: the MORPH page (pi/ui/sidecar_morph.h, core/mod/scene.h), its view built on core 3 by morph_pi.cpp
+OBJS += ../ui/sidecar_morph.o
+# 0.5.0: the XY page (pi/ui/sidecar_xy.h, core/mod/xypad.h), its view built on core 3 by xypad_pi.cpp
+OBJS += ../ui/sidecar_xy.o
 # the REC page (pi/ui/sidecar_rec.h, the Overbridge recorder), filled by rec_pi.cpp
 OBJS += ../ui/sidecar_rec.o
 # touch2: the SCOPE page (pi/ui/sidecar_scope.h, scope_pi.cpp) and the SIDECAR STATUS page (sidecar_status.h, status_pi.cpp)
@@ -85,6 +98,7 @@ CORE_SRC += $(wildcard $(CORE)/seq/*.cpp)   # the Sidecar sequencer (core/seq/se
 CORE_SRC += $(wildcard $(CORE)/song/*.cpp)  # SONG RECORD (core/song/song.h)
 CORE_SRC += $(wildcard $(CORE)/bundle/*.cpp)   # project bundles (core/bundle, docs/BUNDLES.md)
 CORE_SRC += $(wildcard $(CORE)/lib/*.cpp) $(wildcard $(CORE)/fmt/*.cpp)   # the source browser and pools (srclib), the sample library and sha256 (docs/LIBRARY.md), the format registry (core/fmt)
+CORE_SRC += $(wildcard $(CORE)/mod/*.cpp)   # the modulation layer (core/mod, spec-050 section 1)
 CORE_SRC += $(wildcard $(CORE)/store/*.cpp)   # the RAM store: one project's card files in RAM, filled by the card core (core/store/store.h)
 CORE_SRC += $(CORE)/rec/rec_names.cpp   # the recorder's sources, channel lists and take names (shared with the Sidecar Mini)
 CORE_SRC += $(CORE)/msamp/cardq.cpp $(wildcard $(CORE)/samp/*.cpp)   # the card queue (core/msamp/cardq.h); sampling, auto-sampler (core/samp)
@@ -92,7 +106,7 @@ CORE_SRC += $(CORE)/msamp/cardq.cpp $(wildcard $(CORE)/samp/*.cpp)   # the card 
 # messages, the slot map), hosted: user machines on the Pi (core/user/um.cpp, docs/user-machines-pi.md)
 RMPSRC := ../../teensy/libraries/RytmPlugins/src
 RMP_SRC := rmp_loader.cpp rmp_manifest.cpp rmp_meta.cpp rmp_proto.cpp rmp_resolve.cpp rmp_slots.cpp rmp_presets.cpp rmp_pool.cpp
-PORT_SRC := neon_bench.cpp output.cpp a4_in.cpp midi_in.cpp bridge.cpp emu_proto.cpp tones.cpp sendfx_pi.cpp masterfx_pi.cpp fsweb.cpp bundleweb.cpp poolweb.cpp bundle_pi.cpp recorder.cpp rec_play.cpp wifi_conf.cpp paircode.cpp power_state.cpp wgview_pi.cpp preset_pi.cpp chopview_pi.cpp presetweb.cpp voice_pi.cpp insfx_pi.cpp song_pi.cpp \
+PORT_SRC := neon_bench.cpp output.cpp a4_in.cpp midi_in.cpp bridge.cpp emu_proto.cpp tones.cpp sendfx_pi.cpp spectrum_pi.cpp masterfx_pi.cpp fsweb.cpp update.cpp bundleweb.cpp poolweb.cpp bundle_pi.cpp recorder.cpp rec_play.cpp wifi_conf.cpp paircode.cpp power_state.cpp wgview_pi.cpp preset_pi.cpp chopview_pi.cpp seditview_pi.cpp presetweb.cpp voice_pi.cpp insfx_pi.cpp song_pi.cpp morph_pi.cpp xypad_pi.cpp \
             scope_pi.cpp status_pi.cpp stor_vol.cpp stor_bench.cpp lib_pi.cpp
 # the SEQ page's engine side (seqed_pi.cpp, ../ui/seq_touch.cpp): only with the sequencer's engine in the tree
 # (core/seq/seq.cpp, the seq-mvp branch); without it the page says there is no sequencer

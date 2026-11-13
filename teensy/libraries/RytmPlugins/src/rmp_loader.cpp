@@ -50,7 +50,8 @@ RMP_COLD rmp_status rmp_verify_header_any(const uint8_t *hdr, uint32_t len, rmp_
   // 1..3: same image, relocations; 4 (format 3 with an RLB2 block), 5 (a list over 16 names) RMPA packages only: the Teensy shows no
   // labels that follow a knob, so an RMP1 package stops at 3
   if (h.format < RMP_FORMAT_MIN || h.format > (target == RMP_TARGET_A64 ? RMP_FORMAT : RMP_FORMAT_RMP1)) return RMP_ERR_FORMAT;
-  if (h.api < RMP_API_MIN || h.api > RMP_API) return RMP_ERR_API;                  // API 1 plugins still load
+  // API 1 plugins still load; API 3 (rmp_api3.h) is RMPA only: the Teensy stays on API 2
+  if (h.api < RMP_API_MIN || h.api > (h.magic == RMP_FILE_MAGIC_A64 ? RMP_API_RMPA : RMP_API)) return RMP_ERR_API;
   if (h.id[0] == 0 || !memchr(h.id, 0, sizeof h.id)) return RMP_ERR_FORMAT;   // non-empty, NUL inside the 32 bytes
   uint64_t need = (uint64_t)RMP_HEADER_BYTES + h.image_size + 8ull * h.reloc_count + h.manifest_size;
   // the packer pads the body to 4 bytes: no more, no less (no trailing garbage)

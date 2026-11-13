@@ -13,6 +13,11 @@
 //                    E GRID  F TRANSIENT  G LAZY (arm; again: STOP)  H RESAMPLE the slice
 //   SLICE 1  A PTCH B FINE C GAIN D REV / E ATK F DEC G LOOP H CHOK      (the selected slice's own; a push auditions)
 //   SLICE 2  A NUDG B STUT C SLEN D SDEC / E TAPE F TTIM G NBR H RSET (push: SHUFFLE back to the map's order)
+//   SLICE 3  A POLY B GATE (0.5.0: MONO by default; GATE: full level while held, DEC the fade after the note-off)
+// ALL (MPC-style edit all pads): a TAP of UP (press and release with no other key or turn between, under kTapMs) toggles the
+// edit target ONE slice <-> ALL slices; in ALL a change of a slice field (the SLICE views) sets that value on every slice,
+// one UNDO takes it back. UP held + a key stays the combos (the Rytm's own page requests ...). The release of UP reaches
+// the page (0026 forwards a caught key's release: remote.cpp on_key -> ExtraPage::key_up; rytm-mods rui.c key_body).
 // Keys: YES auditions the slice; LEFT / RIGHT the slice before / after; T1..T16 select and audition the slices of the
 // trig bank (DOWN: the next bank of 16); NO leaves. LAZY armed: the pads, the trigs and T1..T16 drop markers, push D
 // takes the last back, YES keeps them (STOP), NO drops them. A RESAMPLE's offer: YES replaces the slice, NO keeps it.
@@ -33,12 +38,15 @@ namespace {
 
 UI_ROM const char* const kTrackNames[12] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"};
 UI_ROM const char* const kZoomNames[5] = {"ALL", "NEAR", "SLICE", "START", "END"};
-UI_ROM const char* const kViewNames[3] = {"EDIT", "SLICE 1", "SLICE 2"};
+UI_ROM const char* const kViewNames[4] = {"EDIT", "SLICE 1", "SLICE 2", "SLICE 3"};
+constexpr int kViews = 4;
+constexpr uint32_t kTapMs = 350;   // UP's tap: released before the Rytm's 0.4 s "held alone" map (49 1 5)
 UI_ROM const char* const kEditLab[8] = {"SLC", "STRT", "END", "ZOOM", "GRID", "SENS", "LAT", "RSMP"};
 UI_ROM const int kFields1[8] = {chop::kFPitch, chop::kFFine, chop::kFGain, chop::kFRev,
                                 chop::kFAtk, chop::kFDec, chop::kFLoop, chop::kFChoke};
 UI_ROM const int kFields2[8] = {chop::kFNudge, chop::kFStut, chop::kFSlen, chop::kFSdec,
                                 chop::kFTape, chop::kFTms, chop::kFNbr, -1};
+UI_ROM const int kFields3[8] = {chop::kFPoly, chop::kFGate, -2, -2, -2, -2, -2, -2};   // -2: no field, -1: RSET
 constexpr int kWaveY = 10, kWaveH = 20, kRow0 = 31, kRow1 = 44;
 constexpr uint32_t kMsgMs = 2500;
 
@@ -50,8 +58,11 @@ struct Ed {
   char msg[28];
   uint32_t msg_ms;
   uint32_t edits;
+  bool all, up_down, up_clean;   // ALL slices; UP held (its press), and nothing but UP since: a tap in the making
+  uint32_t up_ms;
 };
-CORE_RAM2 Ed ed = {false, -1, 0, 0, 1, 16, 64, 0, -1, false, "", 0, 0};
+CORE_RAM2 Ed ed = {false, -1, 0, 0, 1, 16, 64, 0, -1, false, "", 0, 0, false, false, false, 0};
+CORE_COLD const int* fields_of(int view) { return view == 1 ? kFields1 : view == 2 ? kFields2 : kFields3; }
 
 CORE_COLD int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 CORE_COLD void say(const char* m) {
@@ -176,7 +187,7 @@ CORE_COLD void src_draw(Canvas& c, const Rect& r, const Cell& cell, const Source
 }
 
 // ---- the editor
-CORE_COLD void field_lab(int f, char* b, int cap) { sniprintf(b, cap, "%s", f >= 0 ? chop::field_name(f) : "RSET"); }
+CORE_COLD void field_lab(int f, char* b, int cap) { sniprintf(b, cap, "%s", f >= 0 ? chop::field_name(f) : f == -1 ? "RSET" : ""); }
 CORE_COLD void ed_draw(Canvas& c, int page, int npages, uint32_t ms) {
   (void)ms;
   c.clear();
@@ -184,6 +195,7 @@ CORE_COLD void ed_draw(Canvas& c, int page, int npages, uint32_t ms) {
   char right[12];
   sniprintf(right, sizeof right, "%s", t >= 0 ? kTrackNames[t] : vi >= 0 ? "V" : "");
   if (vi >= 0 && t < 0) sniprintf(right, sizeof right, CORE_STR("V%d"), vi + 1);
+  if (ed.all) sniprintf(right, sizeof right, "ALL");
   const chop::Map* m = vi >= 0 ? chop::map_of(vi) : nullptr;
   char title[16];
   sniprintf(title, sizeof title, CORE_STR("CHOP %s"), kViewNames[ed.view]);
@@ -230,11 +242,11 @@ CORE_COLD void ed_draw(Canvas& c, int page, int npages, uint32_t ms) {
     sniprintf(v[6], sizeof v[6], CORE_STR("%d.%dMS"), lat10 / 10, lat10 % 10);
     sniprintf(v[7], sizeof v[7], "%s", ed.fx ? "+FX" : "DRY");
   } else {
-    const int* fs = ed.view == 1 ? kFields1 : kFields2;
+    const int* fs = fields_of(ed.view);
     for (int e = 0; e < 8; ++e) {
       field_lab(fs[e], lab[e], sizeof lab[e]);
       if (fs[e] >= 0) chop::field_text(s, fs[e], m->rate, v[e], sizeof v[e]);
-      else sniprintf(v[e], sizeof v[e], "PUSH");
+      else if (fs[e] == -1) sniprintf(v[e], sizeof v[e], "PUSH");
     }
   }
   for (int e = 0; e < 8; ++e) {
@@ -257,6 +269,7 @@ CORE_COLD void ed_draw(Canvas& c, int page, int npages, uint32_t ms) {
     sniprintf(f, sizeof f, CORE_STR("LAZY %d: TAP  YES KEEP"), l ? l->n : 0);
   } else if (ed.msg_ms && now_ms() - ed.msg_ms < kMsgMs) sniprintf(f, sizeof f, "%s", ed.msg);
   else if (chop::transient_busy(vi)) sniprintf(f, sizeof f, "TRANSIENT...");
+  else if (ed.all && ed.view != 0) sniprintf(f, sizeof f, CORE_STR("ALL %d SLICES  UP: ONE"), m->n);
   else {
     char l[12];
     secs_text(s.end - s.start, m->rate, l, sizeof l);
@@ -273,6 +286,7 @@ CORE_COLD void ed_enc(int e, int d, bool func) {
   const chop::Map* m = vi >= 0 ? chop::map_of(vi) : nullptr;
   if (!m || !m->n) return;
   ed.touched = e;
+  ed.up_clean = false;   // (a turn while UP is held: a combo, no tap)
   ed.sel = clampi(ed.sel, 0, m->n - 1);
   const int l = e == 0 ? list_turn_long(e, d) : list_turn(e, d);   // SLICE, ZOOM, GRID, FX and the small fields
   const chop::Slice& s = m->s[ed.sel];
@@ -294,7 +308,7 @@ CORE_COLD void ed_enc(int e, int d, bool func) {
     }
     return;
   }
-  const int* fs = ed.view == 1 ? kFields1 : kFields2;
+  const int* fs = fields_of(ed.view);
   int f = fs[e];
   if (f < 0) return;
   int lo, hi;
@@ -305,10 +319,17 @@ CORE_COLD void ed_enc(int e, int d, bool func) {
   if (!func && (f == chop::kFSlen || f == chop::kFSdec || f == chop::kFNbr)) step = 5;
   if (hi - lo < 16) d = l;   // an enumerated field or a small count
   if (!d) return;
-  chop::edit_field(vi, ed.sel, f, clampi(chop::field_get(s, f) + d * step, lo, hi));
+  int nv = clampi(chop::field_get(s, f) + d * step, lo, hi);
+  if (ed.all) chop::edit_field_all(vi, f, nv);   // ALL: that value on every slice (absolute), one UNDO
+  else chop::edit_field(vi, ed.sel, f, nv);
   ++ed.edits;
 }
 CORE_COLD bool ed_key(int code) {
+  if (code == 0x42) {   // UP: the Sidecar's modifier; pressed alone and let go at once it toggles ONE <-> ALL (ed_key_up)
+    ed.up_down = true, ed.up_clean = true, ed.up_ms = now_ms();
+    return true;
+  }
+  ed.up_clean = false;   // any other key while UP is held: a combo
   int vi = ed_voice();
   const chop::Map* m = vi >= 0 ? chop::map_of(vi) : nullptr;
   bool lazy = vi >= 0 && chop::lazy_on(vi);
@@ -331,9 +352,8 @@ CORE_COLD bool ed_key(int code) {
     ed.on = false, ed.track = -1, ed.touched = -1;   // NO: back to SIDECAR (remote.cpp)
     return false;
   }
-  if (code == 0x42) return true;   // UP: the Sidecar's modifier
   if (code == 0x84) {              // PAGE: the next view
-    ed.view = (ed.view + 1) % 3, ed.touched = -1;
+    ed.view = (ed.view + 1) % kViews, ed.touched = -1;
     return true;
   }
   if (!m || !m->n) return code == 0x40 || code == 0x41 || code == 0x43 || (code >= 0 && code < 16);
@@ -357,11 +377,11 @@ CORE_COLD bool ed_key(int code) {
   if (code >= 0x70 && code <= 0x77) {   // the encoders' pushes
     int e = code - 0x70;
     if (ed.view != 0) {
-      const int* fs = ed.view == 1 ? kFields1 : kFields2;
-      if (fs[e] < 0) {   // RSET: SHUFFLE back to the map's order (the Rytm's SEED to 0, P5)
+      const int* fs = fields_of(ed.view);
+      if (fs[e] == -1) {   // RSET: SHUFFLE back to the map's order (the Rytm's SEED to 0, P5)
         remote_param_write(vi, kChopMachine, 4, 0, 0);
         say("SHUFFLE: THE MAP'S ORDER");
-      } else {
+      } else if (fs[e] >= 0) {
         ed_audition(vi);
       }
       return true;
@@ -397,6 +417,17 @@ CORE_COLD bool ed_key(int code) {
   }
   return false;
 }
+// UP's release: a tap (nothing between, under kTapMs) toggles the edit target ONE <-> ALL
+CORE_COLD bool ed_key_up(int code) {
+  if (code != 0x42 || !ed.up_down) return true;
+  ed.up_down = false;
+  const char* shown = remote_page_title();   // (UP + T-key / YES ... left the page: the release is no tap)
+  if (ed.up_clean && now_ms() - ed.up_ms <= kTapMs && ed_voice() >= 0 && shown && !strcmp(shown, "CHOP")) {
+    ed.all = !ed.all;
+    say(ed.all ? "EDIT: ALL SLICES" : "EDIT: ONE SLICE");
+  }
+  return true;
+}
 CORE_COLD bool ed_shown() {
   if (ed.on) return true;
   return ed_voice() >= 0;
@@ -431,12 +462,13 @@ UI_ROM const Page kChopSrcPage = {
     {"SRC", "SLC", "TUNE", "MRPH", "SEED", "NBR", "VEL", "LEV"},
 };
 UI_ROM const ExtraPage kChopPage = {"CHOP", ed_shown, ed_draw, ed_enc, ed_key, 0xFF, false, nullptr, ed_trigs, ed_leds, true,
-                                    true};   // updown044: DOWN the trig keys' next bank
+                                    ed_key_up, nullptr, true};   // key_up: UP's tap (ALL); updown044: DOWN the trig keys' next bank
 
 CORE_COLD uint32_t chop_key(const Cell& c, const Source& s) { return src_key(c, s); }
 CORE_COLD void chop_draw(Canvas& cv, const Rect& r, const Cell& c, const Source& s, int slot) { src_draw(cv, r, c, s, slot); }
 CORE_COLD void chop_page_open(int track) {
   ed.on = true, ed.track = track >= 0 && track < 12 ? track : -1, ed.touched = -1, ed.view = 0;
+  ed.all = ed.up_down = ed.up_clean = false;   // (the editor opens on ONE slice)
   remote_show_page("CHOP");
 }
 CORE_COLD bool chop_src_push(int track, int code, bool down) {
@@ -444,12 +476,14 @@ CORE_COLD bool chop_src_push(int track, int code, bool down) {
   if (down) chop_page_open(track);
   return true;
 }
+CORE_COLD void chop_page_up_cancel() { ed.up_clean = false; }
 #if CORE_UI_TOOLS
 CORE_COLD void chop_page_set(int view, int sel, int zoom) {
-  ed.on = true, ed.view = clampi(view, 0, 2), ed.sel = sel, ed.zoom = clampi(zoom, 0, 4), ed.touched = -1, ed.msg_ms = 0;
+  ed.on = true, ed.view = clampi(view, 0, kViews - 1), ed.sel = sel, ed.zoom = clampi(zoom, 0, 4), ed.touched = -1, ed.msg_ms = 0;
 }
 CORE_COLD int chop_page_sel() { return ed.sel; }
-CORE_COLD void chop_page_reset() { ed = Ed{false, -1, 0, 0, 1, 16, 64, 0, -1, false, "", 0, 0}; }
+CORE_COLD bool chop_page_all() { return ed.all; }
+CORE_COLD void chop_page_reset() { ed = Ed{false, -1, 0, 0, 1, 16, 64, 0, -1, false, "", 0, 0, false, false, false, 0}; }
 #endif
 
 }  // namespace ui

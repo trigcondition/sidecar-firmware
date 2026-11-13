@@ -1,0 +1,15 @@
+{
+  "id": "fx.bbd",
+  "version": "1.0.0",
+  "name": "BBD",
+  "short": "BBD",
+  "licence": "MIT",
+  "knobs": [
+    {"p": 1, "long": "Time", "short": "TIME", "look": "list", "text": "enum",
+     "names": ["FREE#", "FREE#", "FREE#", "FREE#", "FREE#", "FREE#", "FREE#", "FREE#",
+               "1/16", "1/8T", "1/8", "1/4T", "1/8D", "1/4", "1/4D", "1/2"], "default": 40},
+    {"p": 2, "long": "Feedback", "short": "FDBK", "default": 56},
+    {"p": 3, "long": "Wow/Flutter", "short": "W/F", "default": 24},
+    {"p": 4, "long": "Tone", "short": "TONE", "default": 80}
+  ]
+}

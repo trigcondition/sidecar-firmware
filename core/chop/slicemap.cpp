@@ -244,6 +244,12 @@ struct Parse {
     } else if (is("sc_nbr")) {
       if (!num) return fail_with("a bad sc_nbr");
       cur.nbr = (uint8_t)clampi((int)x, 0, 100);
+    } else if (is("sc_poly")) {   // (0.5.0; a map without it: 0, MONO)
+      if (!num) return fail_with("a bad sc_poly");
+      cur.poly = (uint8_t)(x != 0);
+    } else if (is("sc_gate")) {
+      if (!num) return fail_with("a bad sc_gate");
+      cur.gate = (uint8_t)(x != 0);
     }
     return true;   // (other opcodes: SFZ's own, read by other players)
   }
@@ -415,6 +421,8 @@ int write(const Map& m, char* out, int cap) {
     if (s.stut > 1) o.num("sc_stut", s.stut), o.num("sc_stutlen", s.stut_len), o.num("sc_stutdec", s.stut_dec);
     if (s.tape) o.put(s.tape == kTapeStop ? " sc_tape=stop" : " sc_tape=spin"), o.num("sc_tapems", s.tape_ms);
     if (s.nbr) o.num("sc_nbr", s.nbr);
+    if (s.poly) o.num("sc_poly", 1);
+    if (s.gate) o.num("sc_gate", 1);
     if (alt) o.put(" sample="), o.put(m.alt[(int)s.alt]);
     o.put("\n");
   }

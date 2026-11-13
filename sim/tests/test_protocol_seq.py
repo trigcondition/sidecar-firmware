@@ -86,7 +86,8 @@ class Messages(unittest.TestCase):
 
 class RytmDump(unittest.TestCase):
     """The stock pattern dump (verified in rytm-emu: rytm-mods tools/emu/sq_emu.py fetch, where this packing gave the
-    Rytm's own answer byte for byte)."""
+    Rytm's own answer byte for byte). 0.5.0 FILL: the 7-bit groups start at byte 10 (the record's header the first
+    group's first 4 bytes) [measured, rytm-emu: grouped after the header, the lock slots came out as noise]."""
     REC = bytes([0, 0, 0, 5]) + bytes((i * 37 + (i >> 5)) & 0xFF for i in range(P.RYTM_RECORD - 4))
 
     def test_roundtrip(self):
@@ -101,6 +102,14 @@ class RytmDump(unittest.TestCase):
         cs = (old[-5] << 7 | old[-4]) + 3
         old[-5], old[-4] = cs >> 7 & 0x7F, cs & 0x7F
         self.assertIsNone(P.rytm_dump_parse(bytes(old)))
+        # the groups from byte 10: its top-bit byte covers the header and the record's bytes 4..6
+        hi = bytearray(self.REC)
+        hi[5] |= 0x80
+        m2 = P.rytm_dump(bytes(hi), 0)
+        self.assertEqual(m2[10], 0x02)   # the record's byte 5: bit 6 - 5
+        self.assertEqual(m2[11:15], bytes([0, 0, 0, 5]))
+        self.assertEqual(m2[16], hi[5] & 0x7F)
+        self.assertEqual(m2[18], 0x38)   # the second group's: the record's 7..13 (0x94 0xb9 0xde set)
         self.assertEqual(P.RYTM_DUMP_REQ, bytes.fromhex("f000203c0700640101800000" "0005f7"))
         self.assertEqual(P.rytm_dump_request(5), bytes.fromhex("f000203c0700640101050000" "0005f7"))
 
@@ -242,6 +251,15 @@ class File(unittest.TestCase):
         self.assertEqual(P.rui_write(3, 0, 5), bytes([0xF0, 0x7D, 0x52, 0x54, 0x48, 1, 3, 0, 5, 0xF7]))
         d = P.decode_rui(P.RUI_MODE, bytes([1, 0x15, 1, 0]))
         self.assertEqual(d["page"] - P.RUI_PAGE_SEQ, 5)
+
+    def test_host_cmd_050(self):
+        """0.5.0: the host command (5A) and the QPERF report's bytes, as rytm-mods 0026 and core/mod/rytm_out.cpp."""
+        self.assertEqual(P.host_mute(0x801, 0x002), bytes([0xF0, 0x7D, 0x52, 0x54, 0x5A, 1, 1, 1, 0x10, 2, 0, 0xF7]))
+        self.assertEqual(P.host_cmd(P.HOST_SCENE, 12), bytes([0xF0, 0x7D, 0x52, 0x54, 0x5A, 1, 2, 12, 0xF7]))
+        self.assertEqual(P.host_cmd(P.HOST_PERF, 1, 127), bytes([0xF0, 0x7D, 0x52, 0x54, 0x5A, 1, 3, 1, 127, 0xF7]))
+        self.assertEqual(P.decode_qperf([1, 0x7F, 0x7F, 0x1F, 3]), dict(pos=255, mask=0xFFF, flags=3))
+        self.assertIsNone(P.decode_qperf([1, 0x7F, 0x7F, 0x1F]))
+        self.assertEqual(len({P.SEQ_QPERF, P.SEQ_SCENE, P.HOST_ACK, P.SEQ_SOLO, P.SEQ_FILL, P.SEQ_DIRTY}), 6)
 
     def test_strum(self):
         n = [(64, 100, 96, 0), (60, 100, 96, 0), (67, 100, 96, 0)]

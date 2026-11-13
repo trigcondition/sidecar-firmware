@@ -1,6 +1,6 @@
 #!/bin/bash
 # Make ONE SD card set that boots on a Raspberry Pi 4B and on a Raspberry Pi 5 (docs/pi5.md, "One card for both"):
-# OUT/sidecar-sd/ (copy its contents to the root of a FAT32 (MBR) card), OUT/sidecar-pi-sd-<commit>.zip with its
+# OUT/sidecar-sd/ (copy its contents to the root of a FAT32 (MBR) card), OUT/sidecar-pi-sd-<version>-<commit>.zip with its
 # .sha256, OUT/BUILD-INFO-pi.txt. OUT default pi/circle/out.
 #   ./make-sd-dual.sh [K4 SDBOOT K5]
 #     K4      the Pi 4 kernel (pi/engine/kernel8-rpi4.img, RASPPI=4 pi/engine/build.sh), wrapped as engine.img
@@ -61,6 +61,7 @@ if grep -aqF 'gadget: none on this board (Pi 5 build)' "$K5"; then
 fi
 grep -aqF 'gadget: USB-C Sidecar' "$K5" || [ "${PI5_NOGADGET:-0}" = 1 ] || { echo "$K5: no USB-C Sidecar gadget in it"; exit 1; }
 COMMIT=$(echo "$S4" | sed -n 's/.*(\([0-9a-f]*\)).*/\1/p')
+VER=${S4%% *}	# "0.5.0" from "0.5.0 (abc1234)": in the zip name, so a card zip says which release it is
 
 # Wi-Fi chip firmware: RPi-Distro/firmware-nonfree at the commit Circle's addon/wlan/firmware/Makefile pins, once
 # into build/fw5/ (as make-sd-pi5.sh), with the licence text from that commit's debian/copyright
@@ -189,7 +190,7 @@ find "$SD" -name .DS_Store -delete
 [ ! -e "$SD/wifi.txt" ] && [ ! -e "$SD/.rytm" ] && [ ! -e "$SD/sidecar-wifi.txt" ] || { echo "a Wi-Fi file is in the card set"; exit 1; }
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
-Z=$OUT/sidecar-pi-sd-$COMMIT.zip
+Z=$OUT/sidecar-pi-sd-$VER-$COMMIT.zip
 rm -f "$OUT"/sidecar-pi-sd-*.zip "$OUT"/sidecar-pi-sd-*.zip.sha256
 python3 - "$SD" "$Z" <<'PY'
 import os, sys, zipfile

@@ -71,6 +71,16 @@ class Index {
   // when the index is built: no sorting while the voices play); CORE_MSAMP (the Pi, the Mac): from its copy in RAM,
   // read at begin() - no card time, so the control core may call it (loadstall, 0.3.0).
   bool file(int f, int i, FileRec* r);
+#if CORE_MSAMP
+  // sedit-050: a file written after boot (the sample editor's saved copy) made known in folder f, after the folder's
+  // own nfiles (file(f, nfiles + k) is the k-th added there), until the next boot's index has it; its open is by path
+  // (the card core's), never by dir_index. Returns the file's index in f; -1: the table is full or f is not a folder.
+  // A file deleted after it was added stays until the next boot (its open by path fails: silent, no harm).
+  // Control core only: add_file and file() on the table are not synchronised with the card core (no card-core path
+  // calls cards.file today); begin() empties it at boot.
+  int add_file(int f, const FileRec& r);
+  int files_in(int f) const;   // folder f's files, the added ones included
+#endif
   uint64_t hash() const { return hash_; }
   core::Fs& sd() { return sd_; }
 
@@ -89,6 +99,15 @@ class Index {
   FileRec* ram_ = nullptr;   // CORE_MSAMP: files.bin's first nram_ records (begin; file() reads them, no card)
   uint32_t nram_ = 0;
   static constexpr uint32_t kRamFiles = 131072;   // 11 MB at most
+#if CORE_MSAMP
+  static constexpr int kAdded = 128;   // files added after boot (add_file): 128 x 86 bytes
+  struct Added {
+    int16_t folder;
+    FileRec r;
+  };
+  Added added_[kAdded];
+  int nadded_ = 0;
+#endif
   Folder* folders_ = nullptr;
   uint32_t* wavs_below_ = nullptr;
   int nfolders_ = 0;

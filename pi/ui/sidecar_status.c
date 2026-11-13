@@ -2,7 +2,7 @@
 // a changed text) and horizontal meters (th_meter_set only a changed value), no code-drawn area, so a second's update
 // of a page whose numbers barely move redraws a few labels. OLED: dotted group panels, captions in the micro face,
 // values in the body face, the voices' load as dot ladders (teal over 60 %), MUTED and errors in the teal's tint.
-// CLASSIC: display windows on the grey panel, the same rows in its fonts, the loads as recessed LED bars.
+// SIDECAR: cards on the night blue, the same rows in its fonts, the loads as rounded bars.
 #include "sidecar_status.h"
 #include "sidecar_theme.h"
 #include "sidecar_vlabel.h"
@@ -67,7 +67,7 @@ static void rows (lv_obj_t *p, int y, int rp, int w, int capw, int n, const char
 void sidecar_status_create (void *parent, int y0)
 {
 	const int O = oled (), dx = TH->dx, dy = TH->dy;
-	const int pw = O ? TH->w - LU (48) : TH->w, ph = O ? TH->h : LU (428) + dy;
+	const int pw = th_page_w (), ph = O ? TH->h : LU (428) + dy;
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, pw, ph);
 	s_Page = pg;
 	s_nGen = ~0u;
@@ -113,7 +113,7 @@ void sidecar_status_create (void *parent, int y0)
 	for (int k = 0; k < 2; k++)
 	{
 		int ry = pt + k * rp;
-		th_label (fp, O ? LU (6) : LU (12), ry, f_val (), k ? c_ink () : (O ? th_oled_secondary (127) : 0x34C85A), k ? "FX 2" : "FX 1");
+		th_label (fp, O ? LU (6) : LU (12), ry, f_val (), k ? c_ink () : (O ? th_oled_secondary (127) : TH->accent), k ? "FX 2" : "FX 1");
 		s_Fx[k] = val (fp, (O ? LU (6) : LU (12)) + namew + (O ? LU (4) : LU (8)), ry, cw - namew - (O ? LU (60) : LU (120)), 0);
 		s_FxPp[k] = val (fp, cw - (O ? LU (46) : LU (92)), ry, O ? LU (40) : LU (74), 1);
 	}
@@ -212,7 +212,7 @@ static void vol_text (char *b, int cap, int state, const char *fs, unsigned free
 }
 
 // the library's row: "48213 FILES 61%" / "1203 FILES  2 DUP  1 MISS" (OLED), "48213 files, 61 % hashed, 120 pending,
-// waiting: playing" / "1203 files, all hashed, 2 duplicates, 1 missing" (CLASSIC)
+// waiting: playing" / "1203 files, all hashed, 2 duplicates, 1 missing" (SIDECAR)
 static void lib_text (char *b, int cap, const sidecar_status_view_t *v)
 {
 	const int O = oled ();
@@ -220,7 +220,7 @@ static void lib_text (char *b, int cap, const sidecar_status_view_t *v)
 	if (v->lib_state == 5) { lv_snprintf (b, cap, O ? "FAILED" : "failed (see the log)"); return; }
 	if (v->lib_state == 1) { lv_snprintf (b, cap, O ? "LOADING" : "loading the index"); return; }
 	if (v->lib_state == 2) { lv_snprintf (b, cap, O ? "%u FILES, WALKING" : "%u files, looking at the card", v->lib_files); return; }
-	// short enough for its row (UX review R1): OLED 18 characters (thousands as K), CLASSIC about 38
+	// short enough for its row (UX review R1): OLED 18 characters (thousands as K), SIDECAR about 38
 	char f[16];
 	if (O && v->lib_files >= 10000) lv_snprintf (f, sizeof f, "%uK", v->lib_files / 1000);
 	else lv_snprintf (f, sizeof f, "%u", v->lib_files);

@@ -357,6 +357,11 @@ int rows(int kind) {
   return n ? n : kind == kIxJuno ? 128 : dx7::kRomVoices;
 }
 bool built_ins(int kind) { return !(kind == kIxJuno ? junolib.listed() : dxlib.listed()); }
+bool row_used(int kind, int r) {
+  if (r < 0 || r >= rows(kind)) return false;
+  if (built_ins(kind)) return true;
+  return kind == kIxJuno ? junolib.slot(r).used : dxlib.slot(r).used;
+}
 const char* row_name(int kind, int r, char* b, int cap) {
   b[0] = 0;
   if (kind == kIxJuno) {

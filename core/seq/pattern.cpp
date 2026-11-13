@@ -95,7 +95,7 @@ CORE_COLD int lock_of(const Step& s, int param) {
   return -1;
 }
 CORE_COLD bool set_lock(Step& s, int param, int value) {
-  if (param < 0 || param >= kLockParams) return false;
+  if (!lock_param_ok(param)) return false;
   value = value < 0 ? 0 : value > 16383 ? 16383 : value;
   if (arp_lock(param) && value > lock_top(param) << 7) value = lock_top(param) << 7;
   for (int i = 0; i < s.nl && i < kLocks; ++i)
@@ -277,7 +277,10 @@ CORE_COLD const char* fx_text(const Fx& f, char* b, int cap) {
   if (!f.cmd || f.cmd >= kFxCmds) sniprintf(b, cap, "---");
   else if (f.cmd == kFxLop) sniprintf(b, cap, "LOP %dx%d", (f.val & 15) + 1, (f.val >> 4) + 1);
   else if (f.cmd == kFxDir) sniprintf(b, cap, "DIR %s", dir_name(f.val));
-  else if (f.cmd == kFxOct || f.cmd == kFxTrs) sniprintf(b, cap, "%s %+d", kFxNames[f.cmd], (int8_t)f.val);
+  else if (f.cmd == kFxOct || f.cmd == kFxTrs) {
+    int v = (int8_t)f.val;
+    sniprintf(b, cap, "%s %s%d", kFxNames[f.cmd], v < 0 ? "-" : "+", v < 0 ? -v : v);
+  }
   else sniprintf(b, cap, "%s %d", kFxNames[f.cmd], f.val);
   return b;
 }
@@ -630,7 +633,7 @@ CORE_COLD bool unpack(Pattern& p, int index, const uint8_t* d, int len) {
           g_unpack_err = kUnpackNewer;
           return false;
         }
-        if (prm < kLockParams && tmp.nl < kLocks) tmp.lock[tmp.nl++] = {(uint8_t)prm, 0, (uint16_t)(val & 0x3FFF)};
+        if (lock_param_ok(prm) && tmp.nl < kLocks) tmp.lock[tmp.nl++] = {(uint8_t)prm, 0, (uint16_t)(val & 0x3FFF)};
       }
       if (!tmp.n && !tmp.nl) continue;   // (an empty step: nothing to keep)
       if (t && idx < kMaxSteps) t->step[idx] = tmp;

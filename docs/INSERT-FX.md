@@ -75,6 +75,40 @@ shows the voice's post EQ on its hint line and marks a bus chain that has one (`
 has no dials for it (the page has no room, see "Left open"). Console: `ins=V3:eq:hpf:40`, `ins=b1:eq:lpf:90`,
 `ins=V3:eq:off`; `ins` and `/status` `"ins"` carry `"peq"` per chain.
 
+**BASE / WIDTH (0.5.0): the send FX's return filter as a band.** On buses 1 and 2, the HPF and LPF knobs are also
+shown as the Elektron pair stock's DELAY and REVERB have: **BASE** is the high-pass edge and **WIDTH** puts the low-pass
+above it. They are two views of the same two filters (no new DSP, no new storage: the kit file's `PEQ B1` line), so
+turning one view moves the other:
+
+    HPF = BASE
+    LPF = 127 - BASE - WIDTH, or 0 (off) when BASE + WIDTH >= 127
+
+The two knob scales mirror each other (HPF 20 x 2^(10 v / 127), LPF 20k x 2^(-10 v / 127)), so `LPF = 127 - BASE -
+WIDTH` puts the low-pass edge WIDTH steps above the high-pass edge on the HPF's scale, within ~0.03 octave: BASE 50
+WIDTH 20 is an LPF at 891 Hz, where an HPF at step 70 is 913 Hz [measured, `test_insert`]. **BASE 0, WIDTH 127** (the
+default) is both filters off, so the bus is passed bit for bit as before. Only WIDTH 127 (or BASE + WIDTH >= 127) is
+off: BASE 0 WIDTH 126 leaves the LPF on at its top step (LPF 1, ~18.9 kHz), as designed. Read back, BASE is the HPF,
+and WIDTH is the one last set through BASE / WIDTH while it still gives the same LPF (so a WIDTH that runs past the
+top, and closes nothing, is kept while you turn: BASE 40 WIDTH 100 reads 100, not 87); else WIDTH is 127 - HPF - LPF
+(0 when they cross), or 127 with the LPF off. The remembered WIDTH is not stored: any other write of the HPF or LPF
+(the EQ view, the console's `hpf` / `lpf`, a kit file's `PEQ` line) and a reset forget it, so a kit's filters always
+read as the same WIDTH whatever came before [tested, `test_insert`]. The shelves stay on the INSERT page's EQ view.
+
+- **The Rytm**: the SEND FX 1 / SEND FX 2 pages' knobs **G BASE** and **H WID** (0029, records 1..4; the values come
+  from the Sidecar and a turn is sent to it, the kit is not touched). No p-locks: a trig held on those knobs locks
+  nothing (the step-lock space is full, below). With no Sidecar, or with the Teensy (no inserts), they show 0 / 127
+  and a turn does nothing lasting.
+- **Link**: 0x22 ver 2 (docs/core.md, "Send FX"), both ways; the Sidecar sends both again every 2 s while the Rytm
+  is connected, so a lost message or a turn that crossed one of ours leaves the Rytm's knobs off for 2 s at most.
+- **Saving**: a turn writes the bus's post EQ, which marks the kit file dirty; the file is written once, 1 s after the
+  last change (`idle_save`), not per message.
+- **Touchscreen**: Settings > Send FX shows each FX's BASE and WIDTH as dials (read only).
+- **Web**: the old page's Send FX tab, and web-next's bus 1 / 2 strip: BASE and WIDTH sliders / knobs (`/status`
+  `"ins"` bus chains carry `"bw":[base,width]`).
+- **Console**: `ins=B1:eq:base:40`, `ins=B2:eq:width:60`; `ins` shows `(BASE b WIDTH w)` on bus 1 / 2's eq line.
+- **LFO**: no BASE / WIDTH targets. BASE is the HPF (`QHPF`, param 8 of `B1` / `B2`) already; WIDTH is not one param
+  (it moves the LPF against the HPF), so an LFO on it would need a target of its own. Use `QLPF` for the top.
+
 **Card.** One line per chain that is off its flat defaults, in the kit file beside the slot lines:
 `PEQ V1 40 0 64 70` (HPF LPF LOW HIGH). A missing word keeps that knob flat. As with every other line kind, a build
 that does not know `PEQ` treats the file as locked and keeps it as it is rather than dropping the line (ticket 1042).
@@ -241,8 +275,52 @@ MODEL capture A is SYNTHETIC (random weights, not an amp: no amp colour); with M
   P2..P5 as before) and **FX again**: the **INS** lock page (A..D INSERT A, E..H INSERT B, the TYPE's labels; FX once
   more goes back). Console: `seq=lock:T:S:25..32:V`. A lock holds until the track's next step without it, STOP restores
   the knobs, a shared voice's lock belongs to the track that set it. An older Sidecar drops these locks from the file.
-- **LFOs**: targets `I1..I8` (voice chains) and `B1..B3` (bus chains), params 0..7 = A P1..P4, B P1..P4 (names "ACUT"),
-  an offset on top of the knob / lock.
+- **LFOs**: targets `I1..I8` (voice chains), `B1..B3` (bus chains) and, 0.5.0, `M1`, `M2` (the master's,
+  docs/MASTER-FX.md), params 0..7 = A P1..P4, B P1..P4 (names "ACUT"), 8..11 the POST EQ, an offset on top of the knob /
+  lock. A send TYPE's P1..P4 on a bus or the master are targets like any other. A bus slot's send TYPE MIX is one too: `MFX` B1A..B3B (bus 1 slot A .. bus 3 slot B), core/mod `MFX:B1A`..`MFX:B3B`;
+  an LFO, never a step lock (the lock space is unchanged).
+
+## Send FX types on the buses (0.5.0)
+
+The send FX's own effects - CHORUS, COMB, SPACE, RINGS, CLOUD, HALO - are INSERT TYPEs on the bus chains B1..B3 too, as they
+already were on the master (docs/MASTER-FX.md). Bus 3, the dry bus of the voices' sends, becomes an FX bus of its own:
+`B3 A RINGS` resonates whatever the voices send it.
+
+- **The room**: 4 at a time, the master's four slots and the buses' six together (`master::kFxSlots`). Each one costs
+  up to ~7 % of a Pi 4 core (CLOUD; table below) on render core 2, which already carries voices 5..8, the send FX, the
+  bus chains and the master: four is about a quarter of that core more. The fifth is refused and the slot keeps what it
+  has: the console answers `ins: B2 A: CHORUS: 4 send FX inserts at most, the master and the buses together (4 in use)`;
+  on the Rytm, F TYPE passes the send TYPEs over and the footer says `SEND FX INSERTS: 4 IN USE`; the web pages grey
+  them out and say why. A slot that holds one keeps its room when its TYPE changes to another send TYPE.
+- **The voices never take one**: a voice's chain runs on the core that renders the voice (core 1 for voices 1..4), and
+  the insert SendFx are core 2's. `ins=V1:A:type:rings` answers that they are for the buses and the master.
+- **How**: the same code as the master's slots (`master::send_run`, `SendFx::Insert`: the same fades, structure zones and
+  clears; mono in, (L + R) / 2). Two more `fx::SendFx` of two slots each (5.9 MB each, reserved at boot with the core's
+  buffers), booked per slot (`master::slot_index`: the master's 0..3, the buses' 4..9). Bus 1 and 2's chains run inside
+  the send FX's own block (after send FX 1 / 2's return), bus 3's after it and the master after that, all on core 2, so
+  the bookings and the SendFx need no lock. Same output as the send FX's own return at MIX 127 [measured, `test_sendfx_ins`].
+- **A room handed over** (a kit change, a TYPE released and taken elsewhere): the room starts from clean (no old tail).
+  A slot that takes a room its last user still fades out on passes its input dry until that fade ends (at most 10 ms of
+  its own frames, so a frozen bus 1 / 2 chain holds nothing), then fades from dry into the effect.
+- **Bus 1 / 2 need their send FX on**: their chains run inside send FX 1 / 2's return, so with that send FX OFF a
+  send TYPE on bus 1 or 2 is silent, yet it still holds one of the 4 rooms. The Rytm's BUS view says
+  `SEND FX 1 OFF: SILENT` (or 2). Bus 3 and the master have no such condition.
+- **MIX**: a knob per slot, 0 the dry input, 127 the effect alone, default 40. On the Rytm: G in the BUS view, 1 a detent (FUNC + G is the bus there, so no coarse step); web: the
+  strip's MIX knob; console `ins=B3:A:mix:V` (only on a slot that holds a send TYPE; else the help). An LFO target: `MFX` B1A..B3B (below).
+- **Saved** on the slot's line after P4: `B3 A RINGS 50 0 80 60 40`. A line the engine refuses (a fifth send TYPE, or a
+  send TYPE on a voice: a file edited by hand or written by a later build) is logged
+  (`ins: line "B3 B CHORUS" not taken: ...`) and the file is kept as it is, never written over (as any line this build
+  does not read).
+- **Older Sidecars (0.4.x)** refuse a send TYPE on a bus without a word and load the slot as OFF; their next save of that
+  kit drops the line. Going back to 0.4.x after using these loses them in kits edited there.
+- **Cost** (`test_sendfx_ins`, the Mac x 13.2 for a Pi 4 as docs/core.md, an estimate): one RINGS or CLOUD ~0.5 % of a
+  Mac core (~6.6..7 % of a Pi 4), four RINGS ~25 %, four CLOUDs ~27 %, RINGS + CLOUD + SPACE + HALO ~17 %, four
+  CHORUS ~3 %.
+  On the Pi, the boot bench logs `bench sfxins RINGS CLOUD SPACE HALO: ...` and `bench sfxins CLOUD x4: ...`: four send
+  TYPE inserts at once (B1 A, B2 A, B3 A, M1 A, MIX 64) for 1 s of 12-frame blocks through the bus 1 / 2 hook, bus 3
+  and the master render, on core 0 before cores 1-3 start (so before core 3 applies the project's inserts, and nothing
+  else writes the controls meanwhile); it gives back only the bytes it set and frees every room (`bench=0` skips it).
+  Pi 5: RINGS CLOUD SPACE HALO 3.62 % of a core (worst block 16.0 %), CLOUD x4 4.72 % (18.7 %) [measured].
 
 ## UI
 
@@ -253,7 +331,9 @@ MODEL capture A is SYNTHETIC (random weights, not an amp: no amp colour); with M
   YES swaps the voice's EQ for the bus's. TRACK view: the Rytm's selected track's
   voice (FUNC + G another track), a strip `[A TYPE] > [B TYPE] > sends`, A..D P1..P4 (values as the effect reads them:
   Hz, dB, ms), E SLOT, F TYPE, G BUS, H SEND. **YES**: BUS view (A..D, E SLOT, F TYPE, G BUS 1..3, H ROUTE for bus 3);
-  NO / YES back. `30 02` opens it directly (`kPageIns`).
+  NO / YES back. `30 02` opens it directly (`kPageIns`). 0.5.0: the BUS view's F runs on past SAT into the send TYPEs
+  (below), and G is the slot's MIX while it holds one, as on the MASTER FX page (FUNC + G picks the bus then); H stays
+  bus 3's ROUTE, seen and set whatever the slots hold.
 - **Pi touchscreen INSERT FX** page (both themes, OLED default; page 9): the voice's two slots as dials with labels and
   values, a TYPE key per slot (tap: the next TYPE), V1..V8 keys, the three sends as bars, each bus's chain and return.
   It follows the Rytm's selected track. Open it from Settings > Send FX > **Inserts**, or with the Rytm's UP + T5
@@ -262,7 +342,8 @@ MODEL capture A is SYNTHETIC (random weights, not an amp: no amp colour); with M
   lists the new targets. Editing on the web page: the console (`ins=...`), no dedicated tab yet.
 - **Console**: `ins`, `ins=V3:A:type:filter`, `ins=V3:A:p1:90`, `ins=V3:B:off`, `ins=V3:send:2:100`,
   `ins=B1:A:type:eq`, `ins=b3:route:post`, `ins=reset`; ins1112: `ins=V3:eq:hpf:40`, `ins=b1:eq:lpf:90`,
-  `ins=V3:eq:off`.
+  `ins=V3:eq:off`; 0.5.0: `ins=B3:A:type:rings`, `ins=B3:A:mix:90`, `ins=B1:eq:base:40`, `ins=B1:eq:width:60`
+  (the send FX return filter, above).
 
 ### Rytm mod changes wanted (rytm-mods 0026, not in this branch)
 
@@ -372,7 +453,7 @@ machine lines). Core 2's worst for SAT, every bus and master slot on it (10 ster
 - **The UI rendered, not asserted by return value**: `build/rui_pages/ins1112_1_track_view.png`, `_2_eq_view.png`,
   `_3_eq_bus_view.png`, `_4_bus_view.png`, `_5_eq_no_slots.png` (RIGHT in, the knobs turned, YES to the bus, LEFT and
   NO out, and the EQ view with no slot set at all), plus a pixel check that the strip's POST EQ box is filled while
-  the EQ is on. The touchscreen: `pi/ui/host/shots*/oled-insfx-voice.png` and `classic-insfx-voice.png` (the hint
+  the EQ is on. The touchscreen: `pi/ui/host/shots*/oled-insfx-voice.png` and `sidecar-insfx-voice.png` (the hint
   line and the bus line's `> POST EQ`).
 
 ## Files

@@ -39,6 +39,7 @@ const FieldDef kFieldDefs[kFields] = {
     {"ATK", "atk", 0, 2000},    {"DEC", "dec", 0, 10000},     {"LOOP", "loop", 0, 2},     {"CHOK", "choke", 0, 4},
     {"NUDG", "nudge", -2400, 2400}, {"STUT", "stut", 1, 16},  {"SLEN", "slen", 1, 100},   {"SDEC", "sdec", 0, 90},
     {"TAPE", "tape", 0, 2},     {"TTIM", "tms", 20, 4000},    {"NBR", "nbr", 0, 100},
+    {"POLY", "poly", 0, 1},     {"GATE", "gate", 0, 1},
 };
 int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 }  // namespace
@@ -70,6 +71,8 @@ int field_get(const Slice& s, int f) {
     case kFTape: return s.tape;
     case kFTms: return s.tape_ms;
     case kFNbr: return s.nbr;
+    case kFPoly: return s.poly;
+    case kFGate: return s.gate;
     default: return 0;
   }
 }
@@ -92,6 +95,8 @@ void field_set(Slice* s, int f, int v) {
     case kFTape: s->tape = (uint8_t)v; break;
     case kFTms: s->tape_ms = (uint16_t)v; break;
     case kFNbr: s->nbr = (uint8_t)v; break;
+    case kFPoly: s->poly = (uint8_t)v; break;
+    case kFGate: s->gate = (uint8_t)v; break;
   }
 }
 const char* field_text(const Slice& s, int f, uint32_t rate, char* b, int cap) {
@@ -118,6 +123,7 @@ const char* field_text(const Slice& s, int f, uint32_t rate, char* b, int cap) {
     case kFStut: if (v > 1) sniprintf(b, cap, "X%d", v); else sniprintf(b, cap, "OFF"); break;
     case kFSlen: case kFSdec: case kFNbr: sniprintf(b, cap, "%d%%", v); break;
     case kFTape: sniprintf(b, cap, "%s", tape_name(v)); break;
+    case kFPoly: case kFGate: sniprintf(b, cap, "%s", v ? "ON" : "OFF"); break;
     default: sniprintf(b, cap, "%d", v); break;
   }
   return b;
@@ -134,6 +140,9 @@ inline void st_rlx(volatile uint32_t* p, uint32_t v) { __atomic_store_n(p, v, __
 constexpr float kEdge = 48.0f;          // a jump's (a loop's, a stutter's, a one-shot's end) fade, frames: 1 ms
 constexpr float kKillFrames = 96.0f;    // a choked / stolen / silenced note's fade: 2 ms
 constexpr float kRelFrames = 1440.0f;   // a looped slice's release after its note-off: 30 ms
+constexpr uint32_t kGateRelMs = 5;      // GATE with DEC HOLD: the fixed release after the note-off
+constexpr uint32_t kStaleOffMs = 3;     // a 0x11 this soon after a GATE note's 0x04 is the trig before's (same tick), not its own
+constexpr uint32_t kChordMs = 8;        // the sequencer's notes this close together are one step's chord (they do not cut each other)
 constexpr uint32_t kMapText = 65536;    // a slice map's file at most (fmt's max_bytes; 64 regions are ~16 KB)
 constexpr uint32_t kTransientPiece = 65536;   // TRANSIENT's frames a step
 constexpr int kKeyFrames = 96;          // a pad's way to the host (scan + USB MIDI), frames [inferred: 2 ms]
@@ -188,6 +197,9 @@ struct Start {
   float stut_len, stut_g;       // a repeat's frames (source), the level a repeat keeps
   float tape_r0;                // the tape ramp's source frames (inc x its time / 2)
   float atk, dec_k;             // the attack's step a frame, the decay's factor a frame (1 hold)
+  uint8_t keep;                 // RESAMPLE's take: never cut by a mono hit, never released by a 0x11
+  uint8_t poly, gate;           // the slice's POLY (cuts nothing, is not cut) and GATE (full level while held, DEC after the note-off)
+  float rel_frames;             // GATE: the release's frames to -60 dB (DEC, or kGateRelMs)
   uint32_t rel_gen, kill_gen;
 };
 struct Tail {                   // a note cut by a new start on its player: its last read faded out
@@ -204,7 +216,8 @@ struct Note {
   volatile uint32_t rel_n, kill_n;
   volatile uint32_t done;
   // the control core's
-  bool held, live;
+  bool held, live, cut, seqc, keep;   // cut: a kill is posted (mono / choke / silence); seqc: started by the sequencer's poly track
+  uint32_t t_ms;                // when it started
   int8_t ch;
   uint8_t key, mnote;
   uint32_t order;
@@ -841,6 +854,7 @@ CORE_COLD void release_note(Note& n) {
 }
 CORE_COLD void kill_note(Note& n) {
   n.held = n.live = false;
+  n.cut = true;
   if (!note_free(n)) st_rel(&n.kill_n, n.kill_n + 1);
 }
 // The knobs' overrides on slice sl (P9..P16: fully down the slice's own)
@@ -899,7 +913,13 @@ CORE_COLD bool make_start(int vi, int k, int vel, bool knobs, Start* o) {
   if (o->tape_r0 > (float)len * 0.95f) o->tape_r0 = (float)len * 0.95f;
   float af = (float)(s.atk_ms ? s.atk_ms : 0) * 48.0f;
   o->atk = af < 24.0f ? 1.0f / 24.0f : 1.0f / af;
-  o->dec_k = s.dec_ms ? expf(-6.9077553f / ((float)s.dec_ms * 48.0f)) : 1.0f;
+  o->poly = s.poly, o->gate = s.gate;
+  if (s.gate) {   // GATE: the level holds while the note is held; DEC is the fade after its note-off (HOLD: a short fixed one)
+    o->dec_k = 1.0f;
+    o->rel_frames = (float)(s.dec_ms ? s.dec_ms : kGateRelMs) * 48.0f;
+  } else {
+    o->dec_k = s.dec_ms ? expf(-6.9077553f / ((float)s.dec_ms * 48.0f)) : 1.0f;
+  }
   // MORPH's partner: the right-hand neighbour (the last slice: its left one), the same source only
   if (mp.n > 1) {
     int k2 = k + 1 < mp.n ? k + 1 : k - 1;
@@ -924,13 +944,26 @@ CORE_COLD void start_note(int vi, const Start& s0, bool live) {
   if (s0.choke)   // CHOKE: the voice's other notes of the group cut
     for (int k = 0; k < kPerVoice; ++k) {
       Note& n = notes[vi][k];
-      if (!note_free(n) && n.st.choke == s0.choke) kill_note(n), ++st.chokes;
+      if (!note_free(n) && !n.keep && n.st.choke == s0.choke) kill_note(n), ++st.chokes;
     }
+  // MONO (the default): a new hit cuts the voice's playing notes (the 2 ms kill fade) - except a POLY slice's, which no later
+  // hit cuts; a POLY slice's own hit cuts nothing. The sequencer's poly track (live notes on poly::kSeqCh) is polyphonic by
+  // nature: the notes of one step (started within kChordMs of each other) never cut each other, the next step's hit does.
+  const bool seqc = live && cur_live.on && cur_live.ch == poly::kSeqCh;
+  if (!s0.poly && !s0.lazy) {
+    const uint32_t now = now_ms();
+    for (int k = 0; k < kPerVoice; ++k) {
+      Note& n = notes[vi][k];
+      if (note_free(n) || n.cut || n.st.poly || n.st.lazy || n.keep) continue;
+      if (seqc && n.seqc && now - n.t_ms <= kChordMs) continue;
+      kill_note(n), ++st.cuts;
+    }
+  }
   int k = pick(vi);
   Note& n = notes[vi][k];
   Start s = s0;
   s.rel_gen = n.rel_n, s.kill_gen = n.kill_n;
-  n.held = true;
+  n.held = true, n.cut = false, n.seqc = seqc, n.keep = s0.keep != 0, n.t_ms = now_ms();
   n.live = live && cur_live.on, n.ch = cur_live.ch, n.mnote = cur_live.mnote;
   n.order = ++order_n;
   post(n, s);
@@ -1016,6 +1049,7 @@ CORE_COLD void set_source(int vi) {
 }
 // The Rytm's tracks on CHOP (its 33) and their SRC (the SRC view's 2A or our own 48): the sample and its map in before
 // the first report / trig - a choice in the machine list and a turn of SRC load it (no trig waits kLateMs for it then)
+int pre14[12];                  // each track's last SRC (14 bits) preload_step applied (-2: none yet)
 CORE_COLD void preload_step() {
   static uint32_t last = 0;
   uint32_t now = now_ms();
@@ -1028,12 +1062,21 @@ CORE_COLD void preload_step() {
     on[vi] = true;
     VS& x = vs[vi];
     int c14 = ui::remote_track_src14(t);
-    if (c14 < 0 || (x.reported && v[vi].cp)) continue;   // (a voice that reports itself: its own SRC)
+    // A choice of SRC is applied whenever it CHANGES, also on a voice that has reported itself: the Rytm's 0x03 / 0x04
+    // reports come only while the voice plays, so a sample picked on an idle voice (the SRC view's 2A, our own 48) reaches
+    // us only here. (Before: a voice that had reported once - the first 0x03 after the machine was chosen - was skipped,
+    // and its waveform stayed LOADING until the track was triggered.) A trig's own report still wins at its hit.
+    if (c14 < 0 || c14 == pre14[t]) continue;
+    pre14[t] = c14;
     int code = srclib::code_of14(c14);
     x.p[0] = (float)(code & 127) + (float)srclib::lo_of(code) / 128.0f;
     set_source(vi);
   }
   for (int vi = 0; vi < kVoices; ++vi) vs[vi].pre = on[vi];
+  for (int t = 0; t < 12; ++t) {   // (a track that leaves CHOP and comes back: its SRC is looked at again)
+    int vb = ui::remote_track_machine(t);
+    if (vb < 0 || vb == 0x7F || (vb & 0x78) != kChopMachine) pre14[t] = -2;
+  }
 }
 CORE_COLD MapSlot* edit_slot(int vi, bool undo) {
   if (vi < 0 || vi >= kVoices || !job) return nullptr;
@@ -1082,6 +1125,7 @@ CORE_COLD void begin(bool card) {
     x.p[0] = 10, x.p[2] = 64, x.p[6] = 64, x.p[7] = 100;   // (before a report: SRC A010, TUNE 0, VEL 50 %, LEV 100)
     for (int k = 0; k < kPerVoice; ++k) g_head[vi][k] = -1;
   }
+  for (int t = 0; t < 12; ++t) pre14[t] = -2;
 }
 
 CORE_COLD bool step() {
@@ -1092,6 +1136,8 @@ CORE_COLD bool step() {
   // RESAMPLE: the slice played out (and the FX's tail): the take stopped; the take in the pool: the offer
   if (rs.state == kRsPlaying && (int32_t)(now_ms() - rs.until_ms) >= 0) {
     samp::stop();
+    for (int k = 0; k < kPerVoice; ++k)   // the take is over: its player ends (a LOOP slice would not)
+      if (notes[rs.vi & 7][k].keep) kill_note(notes[rs.vi & 7][k]);
     rs.state = kRsWriting;
   }
   if (rs.state == kRsWriting) {
@@ -1205,8 +1251,37 @@ CORE_COLD int voice_notes(int vi) {
 CORE_COLD void note_off(int vi) {
   vi &= 7;
   vs[vi].pend.on = false;
-  for (int k = 0; k < kPerVoice; ++k)
-    if (!notes[vi][k].live) release_note(notes[vi][k]);
+  // The 0x11 carries only the voice: it ends the NEWEST held trig note (identical under MONO; a POLY note of an older trig
+  // keeps its own trig's 0x11). A GATE note that started under kStaleOffMs ago is not released: that 0x11 is the previous trig's
+  // (LEN 1.00 / a ratchet: the off and the next 0x04 on one tick). RESAMPLE's take is never released.
+  int b = -1;
+  for (int k = 0; k < kPerVoice; ++k) {
+    const Note& n = notes[vi][k];
+    if (n.live || n.keep || !n.held || note_free(n)) continue;
+    if (b < 0 || (int32_t)(n.order - notes[vi][b].order) > 0) b = k;
+  }
+  if (b < 0) return;
+  Note* n = &notes[vi][b];
+  if (n->st.gate && now_ms() - n->t_ms < kStaleOffMs) {
+    // stale (the previous trig's 0x11): it belongs to the next-newest held note, when there is one
+    int c = -1;
+    for (int k = 0; k < kPerVoice; ++k) {
+      const Note& m = notes[vi][k];
+      if (k == b || m.live || m.keep || !m.held || note_free(m) || !m.st.gate) continue;
+      if (c < 0 || (int32_t)(m.order - notes[vi][c].order) > 0) c = k;
+    }
+    if (c < 0) return;
+    n = &notes[vi][c];
+  }
+  release_note(*n);
+}
+// The link to the Rytm is gone (or its machine changed): no 0x11 will come - every held GATE note of every voice is released
+CORE_COLD void release_gates() {
+  for (int vi = 0; vi < kVoices; ++vi)
+    for (int k = 0; k < kPerVoice; ++k) {
+      Note& n = notes[vi][k];
+      if (!n.keep && n.st.gate && n.held && !note_free(n)) n.live = false, release_note(n);
+    }
 }
 CORE_COLD void silence(int vi) {
   vi &= 7;
@@ -1357,6 +1432,13 @@ CORE_COLD bool edit_field(int vi, int k, int f, int value) {
   edited(m);
   return true;
 }
+CORE_COLD bool edit_field_all(int vi, int f, int value) {
+  MapSlot* m = edit_slot(vi, true);   // (the whole map is UNDO's copy: one UNDO takes the change on every slice back)
+  if (!m || !m->m.n || f < 0 || f >= kFields) return false;
+  for (int k = 0; k < m->m.n; ++k) field_set(&m->m.s[k], f, value);
+  edited(m);
+  return true;
+}
 CORE_COLD bool edit_undo(int vi) {
   MapSlot* m = edit_slot(vi, false);
   if (!m || !m->has_undo) return false;
@@ -1457,6 +1539,7 @@ CORE_COLD bool resample(int vi, int k, bool fx) {
   if (!mp || !s || k < 0 || k >= mp->n) return false;
   Start st0;
   if (!make_start(vi, k, 127, true, &st0)) return false;
+  st0.poly = 1, st0.keep = 1, st0.gate = 0, st0.choke = 0, st0.loop = kLoopOff;   // the take's player: no mono hit or audition cuts it, no 0x11 ends it
   const samp::Config was = samp::config();   // review M4: the user's sampler settings, back after the arm
   samp::Config c = was;
   c.src = samp::kSrcVoice, c.sub = (uint8_t)vi, c.start = samp::kManual, c.pre_ms = 0, c.bars = 0;
@@ -1750,7 +1833,7 @@ bool render_note(int vi, int k, Note& n, float* l, float* r, int cnt) {
       }
     } else {
       n.env *= n.rel_k;
-      if (n.env < 0.0001f) { alive = false; break; }
+      if (n.env < (s.gate ? 0.001f : 0.0001f)) { alive = false; break; }   // (GATE: DEC's -60 dB)
     }
     // where it reads: u along the slice (STUTTER's repeats over its first part)
     bool last_seg = n.rep >= (int)s.stut - 1;
@@ -1856,7 +1939,7 @@ void render_voice(int vi, float* l, float* r, int cnt) {
         }
         n.u = 0, n.dir = 1, n.rep = 0, n.rep_g = 1, n.env = 0, n.stage = 0, n.kill_g = 1;
         n.r_rel = n.r_kill = false;
-        n.rel_k = expf(-9.2103404f / kRelFrames);
+        n.rel_k = s.gate ? expf(-6.9077553f / s.rel_frames) : expf(-9.2103404f / kRelFrames);
         if (!n.p1 || n.r.b <= n.r.a) {   // (nothing to play: its sources read no more)
           n.r_on = false;
           st_rel(&n.reads, (ld_rlx(&n.reads) & 0xFF0000u) | 0xFFFFu);
@@ -1872,7 +1955,7 @@ void render_voice(int vi, float* l, float* r, int cnt) {
     if (!n.r_kill && ld_acq(&n.kill_n) != n.r.kill_gen) n.r_kill = true;
     if (!n.r_rel && ld_acq(&n.rel_n) != n.r.rel_gen) {
       n.r_rel = true;
-      if (n.r.loop != kLoopOff) n.stage = 2;   // (a one-shot plays on to its end / its decay)
+      if (n.r.loop != kLoopOff || n.r.gate) n.stage = 2;   // (a one-shot plays on to its end / its decay; GATE releases it)
     }
     if (!render_note(vi, k, n, l, r, cnt)) {
       n.r_on = false;

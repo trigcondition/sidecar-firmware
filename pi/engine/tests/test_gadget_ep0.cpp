@@ -25,6 +25,8 @@
 
 #include "check.h"
 #include "mirror_ep.h"
+#include "ep_stop.h"
+#include "ncm_ntb.h"
 
 // ---- the fake core: the endpoints live in one arena, bus addresses are offsets into it (DMA arithmetic holds)
 alignas (64) static u8 g_Arena[64 * 1024];
@@ -89,6 +91,7 @@ void FakeWrite (u32 a, u32 v)
 		return;
 	}
 	if (a == DWHCI_CORE_RESET) { g_Reg[a] = v & ~DWHCI_CORE_RESET_TX_FIFO_FLUSH; return; }
+	if (a == DWHCI_CORE_INT_STAT) { g_Reg[a] &= ~v; return; }	// write-1-to-clear, as the endpoints' interrupts
 	g_Reg[a] = v;
 }
 
@@ -252,6 +255,61 @@ static void Suspend (CDWUSBGadgetEndpoint *p, unsigned ep)
 {
 	p->OnSuspend ();
 	g_Reg[DWHCI_DEV_OUT_EP_INT (ep)] = 0, g_Reg[DWHCI_DEV_IN_EP_INT (ep)] = 0;
+}
+
+
+// the USB-C network's data endpoints with CNcmEP's shape (sidecar_gadget.cpp): nothing armed at SET_CONFIGURATION, OUT
+// armed at alt 1 and again after each block (its datagrams parsed), the link's stop at alt 0 and at a bus suspend.
+// bOld: the stop of bf90503 / 53e1469 (CancelTransfer alone); else ep_stop.h's
+static const TUSBEndpointDescriptor DescNcmOut = {7, DESCRIPTOR_ENDPOINT, 0x07, 2, 512, 0};
+static const TUSBEndpointDescriptor DescNcmIn = {7, DESCRIPTOR_ENDPOINT, 0x81, 2, 512, 0};
+struct CNcmTestEP : CDWUSBGadgetEndpoint
+{
+	CNcmTestEP (const TUSBEndpointDescriptor *p, bool b) : CDWUSBGadgetEndpoint (p, &g_Gadget), bOld (b), nEP (p->bEndpointAddress & 0xF),
+		bOutRole (!(p->bEndpointAddress & 0x80)) {}
+	void OnActivate (void) override { w.activated (); active = true; busy = false; if (bResuming && bOutRole) ArmOut (); }
+	void OnDeactivate (void) override { active = false; busy = false; Stop (); }
+	void OnSuspend (void) override { w.suspend (*this); }
+	void OnResume (void) override { bResuming = true; w.wake (*this); bResuming = false; }
+	void OnTransferComplete (boolean, size_t n) override
+	{
+		busy = false;
+		if (!bOutRole) { ++sent; return; }
+		ncm::parse16 (m_Buf, n, ncm::kOutMaxDatagrams, [this] (const u8 *, unsigned) { ++frames; });
+		++blocks;
+		ArmOut ();
+	}
+	void ArmOut (void) { if (!active || busy || !up) return; busy = true; BeginTransfer (TransferDataOut, m_Buf, sizeof m_Buf); }
+	void Send (unsigned n) { if (!active || busy || !up) return; busy = true; BeginTransfer (TransferDataIn, m_Buf, n); }
+	void Stop (void) { if (!IsTransferActive ()) return; if (bOld) CancelTransfer (); else ep_stop::stop (*this, nEP, !bOutRole); }
+	void Halt (void) { Stop (); busy = false; }
+	void Cancel (void) { CancelTransfer (); }
+	boolean Active (void) const { return active; }
+	mirror::EpWake w;
+	bool bOld, active = false, busy = false, up = false, bResuming = false;
+	unsigned nEP;
+	bool bOutRole;
+	int frames = 0, blocks = 0, sent = 0;
+	DMA_BUFFER (u8, m_Buf, 2048);
+};
+// SET_INTERFACE on the data interface as NetSetAlt does it: both stopped, the link's state, OUT armed at alt 1
+static void NcmSetAlt (CNcmTestEP *pOut, CNcmTestEP *pIn, u8 uchAlt)
+{
+	pIn->Halt (), pOut->Halt ();
+	pIn->up = pOut->up = uchAlt != 0;
+	if (uchAlt) pOut->ArmOut ();
+}
+// an NTB16 with one datagram of nFrame bytes
+static unsigned NcmBlock (u8 *p, unsigned nFrame)
+{
+	memset (p, 0, 12 + 16 + nFrame + 4);
+	ncm::wr32 (p, ncm::kNth16Sig), ncm::wr16 (p + 4, 12);
+	const unsigned nNdp = (12 + nFrame + 3) & ~3u, nBlock = nNdp + 16;
+	ncm::wr16 (p + 8, (u16) nBlock), ncm::wr16 (p + 10, (u16) nNdp);
+	memset (p + 12, 0xAB, nFrame);
+	ncm::wr32 (p + nNdp, ncm::kNdp16Sig), ncm::wr16 (p + nNdp + 4, 16);
+	ncm::wr16 (p + nNdp + 8, 12), ncm::wr16 (p + nNdp + 10, (u16) nFrame);
+	return nBlock;
 }
 
 struct CTestEP : CDWUSBGadgetEndpoint
@@ -459,6 +517,56 @@ int main (void)
 		p->OnResume ();
 		CHECK (Out (6, "n", 1) && p->done == 2);
 		g_Gadget.m_pEP[6] = nullptr;
+	}
+	{	// the USB-C network (CNcmEP, docs/usb-network.md): alt 1, the computer's blocks taken and the OUT armed again
+		// each time; then the link's stop with the endpoints armed (alt 0, a bus suspend). The Pi 5 on 2026-11-07:
+		// CancelTransfer alone left "EP disabled" to Circle's IRQ handler, which panics on it for a bulk endpoint
+		for (bool bOld : {true, false})
+		{
+			g_Gadget.m_pEP[1] = g_Gadget.m_pEP[7] = nullptr;
+			for (unsigned ep : {1u, 7u})
+				g_Reg[DWHCI_DEV_OUT_EP_CTRL (ep)] = g_Reg[DWHCI_DEV_IN_EP_CTRL (ep)] = 0,
+				g_Reg[DWHCI_DEV_OUT_EP_INT (ep)] = g_Reg[DWHCI_DEV_IN_EP_INT (ep)] = 0;
+			CNcmTestEP *pOut = new (Alloc (sizeof (CNcmTestEP))) CNcmTestEP (&DescNcmOut, bOld);
+			CNcmTestEP *pIn = new (Alloc (sizeof (CNcmTestEP))) CNcmTestEP (&DescNcmIn, bOld);
+			pOut->OnUSBReset (), pIn->OnUSBReset ();
+			pOut->OnActivate (), pIn->OnActivate ();	// SET_CONFIGURATION: the data interface at alt 0
+			static u8 Ntb[256];
+			const unsigned n = NcmBlock (Ntb, 60);
+			CHECK (!Out (7, Ntb, n));			// alt 0: nothing armed, NAKed
+			NcmSetAlt (pOut, pIn, 1);			// the computer's driver takes the link
+			CHECK (Out (7, Ntb, n) && pOut->blocks == 1 && pOut->frames == 1);
+			CHECK (g_Reg[DWHCI_DEV_OUT_EP_CTRL (7)] & Ena);	// armed again
+			CHECK (Out (7, Ntb, n) && pOut->blocks == 2 && pOut->frames == 2);
+			// alt 0 with OUT armed and an IN block the computer has not read: both stopped, the core's "EP
+			// disabled" delivered as the IRQ would
+			pIn->Send (100);
+			int p = g_nPanics;
+			NcmSetAlt (pOut, pIn, 0);
+			OutIrq (7), InIrq (1);
+			if (bOld) CHECK (g_nPanics == p + 2);		// "EP7 disabled", "EP1 disabled": the Pi's panic
+			else CHECK (g_nPanics == p && g_Reg[DWHCI_DEV_OUT_EP_INT (7)] == 0 && g_Reg[DWHCI_DEV_IN_EP_INT (1)] == 0);
+			CHECK (!(g_Reg[DWHCI_DEV_OUT_EP_CTRL (7)] & Ena) && !(g_Reg[DWHCI_DEV_IN_EP_CTRL (1)] & Ena));
+			CHECK (!(g_Reg[DWHCI_CORE_INT_STAT] & DWHCI_CORE_INT_STAT_GLOBAL_OUT_NAK_EFF) || bOld);
+			CHECK (!(g_Reg[DWHCI_DEV_CTRL] & DWHCI_DEV_CTRL_SET_GLOBAL_OUT_NAK));	// the other OUT endpoints run on
+			g_nPanics = p;
+			// up again: blocks flow
+			NcmSetAlt (pOut, pIn, 1);
+			CHECK (Out (7, Ntb, n) && pOut->blocks == 3);
+			pIn->Send (100);
+			CHECK (In (1) == 64 && In (1) == 36 && pIn->sent == 1);
+			// a bus suspend with OUT armed, then a resume without a reset: armed again, no panic
+			p = g_nPanics;
+			pOut->OnSuspend (), pIn->OnSuspend ();
+			OutIrq (7);
+			if (bOld) CHECK (g_nPanics == p + 1);
+			else CHECK (g_nPanics == p);
+			g_nPanics = p;
+			g_Reg[DWHCI_DEV_OUT_EP_INT (7)] = 0;
+			pOut->OnResume (), pIn->OnResume ();
+			CHECK (Out (7, Ntb, n) && pOut->blocks == 4 && pOut->frames == 4);
+			g_Gadget.m_pEP[1] = g_Gadget.m_pEP[7] = nullptr;
+		}
 	}
 	CHECK (g_nPanics == 0);
 	puts ("test_gadget_ep0: ok");

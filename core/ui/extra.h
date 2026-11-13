@@ -29,12 +29,23 @@ struct ExtraPage {
   // kLed*), or false: stock (null: never)
   bool (*leds_now)(uint8_t c[16]);
   bool off_ring;   // UX review R3: not on the LEFT / RIGHT ring (in the page list only while it is the page shown)
+  // 0.5.0 (spec-050 2.6): the release of a key whose press `key` took (true), to the page that took it, also after the
+  // page changed; a hello or the page closing releases every key still held (the Rytm's releases are lost with the
+  // link). Null: releases dropped, as before (aggregate initialisation leaves it null on the other pages)
+  bool (*key_up)(int code);
+  // 0.5.0 (spec-050 2.6, EDIT): the modulation target (core/mod/target.h Tid) encoder e edits now, 0 none: with a scene
+  // key held and the scenes' EDIT on, a turn of it locks that target into the scene instead of editing it. Null: the
+  // page locks nothing (its trig keys stay its own)
+  uint16_t (*enc_tid)(int e);
   // updown044 (0.4.4, the owner: the Sidecar takes UP / DOWN only on a page that uses them): a page that stands alone
   // (off the ring, or only its keys open it: remote.cpp standalone) catches UP / DOWN only when this is set (its rows,
   // its banks); else they are the Rytm's (CHRO's octave on the pads). A ring page always takes them (DOWN: its next
   // page); the SEQ page decides per moment (seq::updown_wanted)
   bool updown;
 };
+#if CORE_UI_TOOLS
+void extra_test_page(const ExtraPage* p);   // tests: one more page at the end of the order (null: none)
+#endif
 // UX review R3 / N3 (page_menu.cpp): MENU (YES on SIDECAR: every page with its shortcut) and KEYS (every combo; also
 // while UP is held alone on the stock screen: rui1044's 49 1 4)
 extern const ExtraPage kMenuPage, kKeysPage, kWebUiPage, kUsbPage;   // WEB UI, USB-C: the MENU's rows (remote_webui, remote_usb)
@@ -140,6 +151,30 @@ bool remote_play_take(PlayInput* in);   // false: nothing since the last call
 extern const ExtraPage kRecPage;
 // ---- the LFO page (page_lfo.cpp, core/lfo.h): first of the pages drawn by code (LFO, REC, SCOPE)
 extern const ExtraPage kLfoPage;
+// ---- the MORPH page (page_morph.cpp, core/mod/scene.h, spec-050 2.6): the scenes, A / B, the fader, a scene's locks
+extern const ExtraPage kMorphPage;
+// 0.5.0 (the owner): MIDI (page_midi.cpp, CORE_POLY), the SIDECAR MENU's row: the keyboards' route, auto channel and
+// computer notes (core/keys.h), the MIDI-learn routes (core/mod/learn.h), the USB-A devices and the last key's way
+extern const ExtraPage kMidiPage;
+void midi_page_open();    // shown (the MENU's YES on its row)
+void midi_page_reset();   // tests
+// 0.5.0 FILL (page_fill.cpp, core/seq/lockfill.h, notes/design sampler-lock-fill): p-locks the selected track's trigs
+// with a range of its machine's values (samples, engines, presets) or VELOCITY. Opened by UP + RIGHT (remote.h
+// kPageFill: the 0.5.0 0026) and by the SIDECAR MENU's FILL row (older mods); off the LEFT / RIGHT ring (CORE_POLY).
+extern const ExtraPage kFillPage;
+void fill_page_open(int track);   // track -1: the Rytm's selected track
+void fill_page_reset();           // tests
+// The FILL page's state for the tests: its track, target, FROM / TO (indexes), options, the last note
+struct FillView { bool on; int track, target, ntargets, from, to, order, trigs, every, offset, seed; bool undo; const char* note; };
+FillView fill_page_view();
+// the console's "fill": "fill" (state), "fill=yes|clear|undo", "fill=playing:on|off" (E4: writes while playing allowed)
+bool fill_command(const char* p, char* out, int cap);
+// page_wavegrain.cpp: the last quick-load batch (RIGHT in a list, one opening) of track t in list kind (0 samples,
+// 1 wavetables, 2 instruments): its first and last code; false none
+bool fill_batch(int t, int kind, int* first, int* last);
+void morph_page_reset();   // the page's own state (holds, the question) cleared (tests)
+int morph_page_held();     // the scene key held on it (0..11), -1 none
+void morph_value_text(uint16_t tid, uint16_t v, char* b, int cap);   // a lock's value (x 128) as the page shows it
 #if CORE_POLY
 extern const ExtraPage kSeqPage;   // the Sidecar sequencer's page (page_seq.cpp, core/seq/seq.h)
 // fix1028: NOTE EDIT's roll (page_seq.cpp) gives each pitch its lane and, when the page has more pitches than lanes
@@ -173,10 +208,20 @@ uint32_t chop_key(const Cell& c, const Source& s);
 void chop_draw(Canvas& cv, const Rect& r, const Cell& c, const Source& s, int slot);
 bool chop_src_push(int track, int code, bool down);
 void chop_page_open(int track);
+void chop_page_up_cancel();   // a UP combo reached the host (49 / 30 / 29): the tap in the making is no tap
+// SAMPLE EDIT (page_sedit.cpp, core/samp/sedit.h): the sample editor on the Rytm's screen (off the ring; shown while an
+// edit is open). sedit_src_push: a push of encoder B on a DSP SAMPLE track's SRC view (31 0x71) opens the track's sample
+// (true: taken); sedit_page_open the same from elsewhere: track t's sample, else (t -1) SAMPLES pool code `code` (the
+// POOL page's EDIT), else (both -1, the MENU) the Rytm's selected track's, or the edit open already
+extern const ExtraPage kSeditPage;
+bool sedit_src_push(int track, int code, bool down);
+void sedit_page_open(int track, int code);
 #if CORE_UI_TOOLS
-void chop_page_set(int view, int sel, int zoom);   // tests and the renderer: the editor's view (0 EDIT 1 SLICE 1 2 SLICE 2)
+void chop_page_set(int view, int sel, int zoom);   // tests and the renderer: the editor's view (0 EDIT 1 SLICE 1 2 SLICE 2 3 SLICE 3)
 int chop_page_sel();
+bool chop_page_all();   // the edit target is ALL slices (an UP tap toggles ONE <-> ALL)
 void chop_page_reset();
+void sedit_page_reset();   // tests
 #endif
 void poly_page_closed();
 int poly_page_track();   // the track it shows (tests)
@@ -192,7 +237,7 @@ void source_meter_update(uint32_t ms);   // the tap's peaks into the source mete
 void source_meter_draw(Canvas& c, int y, int ch0, int n, int thr_db, int slot);   // n bars of tap channels ch0.., thr_db < 0: its tick
 int source_meter_level(int ch);          // tap channel ch's level now, 0..127 (a footer's box)
 extern const ExtraPage kPoolPage;      // POOL, after AUTO: the project's three POOL lists (page_pool.cpp, core/lib/pools.h)
-void pool_page_set(int list, int bank, int row, int act);   // tests: the view (act: SELECT UNUSED ALL NONE UNLOAD REPLACE UNDO)
+void pool_page_set(int list, int bank, int row, int act);   // tests: the view (act: SELECT UNUSED ALL NONE UNLOAD REPLACE UNDO EDIT)
 bool pool_page_browsing();
 int pool_page_selected();
 void pool_page_reset();
@@ -200,7 +245,10 @@ extern const ExtraPage kProjectPage;   // PROJECT, after SONG: project bundles (
 void project_page_reset();             // tests: the page's own state cleared
 extern const ExtraPage kAutoPage;  // AUTO, after SAMPLE: the auto-sampler's plan, run and result (page_auto.cpp)  // SAMPLE, after SCOPE (shown where REC is): the sampler and the auto-sampler (page_samp.cpp, core/samp)
 #endif
-const char* voice_label(int vi, int k);   // voice vi's P(k+1) as its machine page labels it (null: none)
+// voice vi's P(k+1) (k 0..15) as the Rytm labels it for the machine the voice plays now, into b ("" none: unused);
+// returns b. machine_label: a machine's P(k+1) that no code page names (null none). (page_lfo.cpp)
+const char* voice_label(int vi, int k, char* b, int cap);
+const char* machine_label(int machine, int k);
 #if CORE_UI_TOOLS
 void lfo_page_set(int sel, bool design, int step, uint32_t ms);   // tests and the renderer: the view
 #endif
@@ -284,10 +332,17 @@ void src_names_resend();
 // ends (a file set into the row through the pool's rules - core/lib/pools.h set_file / set_special: one entry per hash,
 // P3's ask on a row in use, refused while the Rytm plays - or NO / LEFT at its top).
 void src_bank_list(int t, int vi, int machine, int code, int on, int why);
-bool src_bank_key(int code, bool down);
+// 0.5.0 (the sample browser, docs/SRC-BANKS.md "0.5.0"): down 0 a release, 1 a press, 2 a press with FUNC held (the 0.5.0
+// 0026 inside its open list / browser; an older 0026 never sends 2). The new keys (RIGHT quick load and re-entry, FUNC +
+// LEFT / RIGHT banks, FUNC + YES preview, FUNC + RIGHT the file menu, FUNC + UP OFF) only with a Rytm that has them:
+// its hello's kCapsBrowseFunc, or a 2 seen since the hello; else every key as before.
+// kCapsBrowseFunc: hello caps bit 5, the 0.5.0 0026's FUNC-in-browser forwarding (no bit 64: SAMPLER is machine 43).
+constexpr int kCapsBrowseFunc = 32;
+bool src_bank_key(int code, int down);
+bool src_bank_new_keys();   // the new keys are on (above)
 bool src_bank_enc(int e, int delta, bool func);
 const Page* src_bank_page(int t, int machine);
-struct BankListState { bool on; int track, machine, bank, row, commits; bool browse; int cur, assigns, refusals; };
+struct BankListState { bool on; int track, machine, bank, row, commits; bool browse; int cur, assigns, refusals, menu; };
 BankListState src_bank_state();   // tests
 // P1's value as a name on those machines' pages (the bottom bar, no echo): null on any other page / parameter.
 const char* src_value_name(const Page& p, int param, const Source& s);

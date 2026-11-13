@@ -639,13 +639,13 @@ int main() {
     CHECK(ins::control.type[2][0] == ins::kFilter && ins::control.play[2][0][0] == 80 && ins::param(2, 0, 0) == 80);
     ins::lock(2, 0, 0, 30);
     CHECK(ins::control.play[2][0][0] == 30 && ins::locked(2, 0, 0) == 30);
-    ins::lfo_offset(2, 0, 0, 10);
+    ins::mod_offset(2, 0, 0, 10);
     CHECK(ins::control.play[2][0][0] == 40);
     ins::lock(2, 0, 0, -1);
     CHECK(ins::control.play[2][0][0] == 90);
-    ins::lfo_offset(2, 0, 0, 100);
+    ins::mod_offset(2, 0, 0, 100);
     CHECK(ins::control.play[2][0][0] == 127);
-    ins::lfo_offset(2, 0, 0, 0);
+    ins::mod_offset(2, 0, 0, 0);
     char b[400], t[16];
     ins::value_text(ins::kFilter, 0, 72, t, sizeof t);
     CHECK(!strcmp(t, "1.0K"));
@@ -851,9 +851,9 @@ int main() {
     ins::set_eq(2, 0, 90);
     CHECK(ins::eq_on(2) && ins::eq_any_on() && ins::any_on() && ins::eq_playing(2, 0) == 90);
     CHECK(ins::control.peq[2][0] == 90);
-    ins::eq_lfo_offset(2, 0, -20);
+    ins::eq_mod_offset(2, 0, -20);
     CHECK(ins::eq_param(2, 0) == 90 && ins::eq_playing(2, 0) == 70 && ins::control.peq[2][0] == 70);
-    ins::eq_lfo_offset(2, 0, 0);
+    ins::eq_mod_offset(2, 0, 0);
     ins::set_eq(2, 2, 100);   // a shelf: stored as the knob less 64, so flat is a zero
     CHECK(ins::control.peq[2][2] == 36 && ins::eq_param(2, 2) == 100);
     ins::set_eq(2, 2, 64);
@@ -897,6 +897,101 @@ int main() {
     int n = ins::json(js, sizeof js);
     CHECK(n > 0 && n < (int)sizeof js);
     CHECK(strstr(js, "\"peq\":[55,0,64,64]") && strstr(js, "\"peql\":[55,0,64,64]"));
+    ins::reset();
+  }
+  // ---- sfx-basewidth (0.5.0): HPF / LPF as BASE / WIDTH (the Rytm's SEND FX 1 / 2 knobs G / H; the web, the console)
+  {
+    ins::reset();
+    const int c = ins::kBus0;
+    int b, w;
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 0 && w == 127);   // flat: BASE 0, full WIDTH - both filters off
+    ins::set_eq_bw(c, 0, 127);
+    CHECK(!ins::eq_on(c) && ins::control.peq[c][0] == 0 && ins::control.peq[c][1] == 0);   // passes bit for bit (peq 0)
+    ins::set_eq_bw(c, 40, 50);   // HPF 40, LPF 127 - 90 = 37 (the band's top 50 steps above BASE)
+    CHECK(ins::eq_param(c, 0) == 40 && ins::eq_param(c, 1) == 37);
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 40 && w == 50);
+    ins::set_eq_bw(c, 40, 100);   // past the top: the LPF off, the WIDTH kept while it still gives that
+    CHECK(ins::eq_param(c, 1) == 0);
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 40 && w == 100);
+    ins::set_eq_bw(c, 30, 100);   // BASE moves the band, WIDTH stays
+    ins::eq_bw(c, &b, &w);
+    CHECK(ins::eq_param(c, 0) == 30 && ins::eq_param(c, 1) == 0 && b == 30 && w == 100);
+    ins::set_eq_bw(c, 30, 60);
+    CHECK(ins::eq_param(c, 1) == 37);
+    ins::set_eq(c, 1, 20);   // the LPF as itself: WIDTH follows it (127 - 30 - 20)
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 30 && w == 77);
+    ins::set_eq(c, 1, 0);   // the LPF off by itself: full WIDTH
+    ins::eq_bw(c, &b, &w);
+    CHECK(w == 127);
+    ins::set_eq(c, 0, 100), ins::set_eq(c, 1, 60);   // a band closed from both sides: the nearest, WIDTH 0
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 100 && w == 0);
+    int bad = 0;
+    for (int bs = 0; bs < 128; ++bs)   // every BASE / WIDTH reads back as set (the whole 128 x 128)
+      for (int wd = 0; wd < 128; ++wd) {
+        ins::set_eq_bw(c, bs, wd);
+        ins::eq_bw(c, &b, &w);
+        if (b != bs || w != wd || ins::eq_param(c, 0) != bs || ins::eq_param(c, 1) != (bs + wd >= 127 ? 0 : 127 - bs - wd)) ++bad;
+      }
+    CHECK(bad == 0);
+    // the edges, spelled out: BASE + WIDTH 126 leaves the LPF at its top step (1, ~18.9 kHz), 127 and up is off
+    ins::set_eq_bw(c, 0, 126);
+    CHECK(ins::eq_param(c, 1) == 1 && ins::eq_on(c));
+    ins::set_eq_bw(c, 0, 127);
+    CHECK(ins::eq_param(c, 1) == 0 && !ins::eq_on(c));
+    ins::set_eq_bw(c, 60, 66);
+    CHECK(ins::eq_param(c, 1) == 1);
+    ins::set_eq_bw(c, 60, 67);
+    CHECK(ins::eq_param(c, 1) == 0);
+    ins::set_eq_bw(c, 60, 68);
+    CHECK(ins::eq_param(c, 1) == 0);
+    ins::set_eq_bw(c, 127, 0);
+    CHECK(ins::eq_param(c, 0) == 127 && ins::eq_param(c, 1) == 0);
+    ins::set_eq_bw(c, 127, 127);
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 127 && w == 127);
+    ins::set_eq_bw(c, -5, 300);
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 0 && w == 127);   // clamped
+    // review 1: the WIDTH past the top is remembered only from a BASE / WIDTH edit. Any other write of the HPF or LPF
+    // (the INSERT page's EQ view, the console's hpf / lpf, a kit file's PEQ line, a reset) forgets it, so the same
+    // HPF / LPF always reads as the same WIDTH, whatever came before.
+    ins::set_eq_bw(c, 40, 100);
+    ins::reset();
+    ins::set_eq(c, 0, 40);   // as a kit file "PEQ B1 40 0" loads
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 40 && w == 127);
+    ins::set_eq_bw(c, 40, 100);
+    ins::set_eq(c, 0, 40);   // the same HPF written from the EQ view
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 40 && w == 127);
+    ins::set_eq_bw(c, 40, 100);
+    ins::set_eq(c, 0, 30);   // BASE moved from the EQ view: WIDTH is what the filters give (LPF off: 127)
+    ins::eq_bw(c, &b, &w);
+    CHECK(b == 30 && w == 127);
+    ins::set_eq_bw(c, 40, 100);
+    ins::set_eq(c, 2, 70);   // a shelf is not the band: the WIDTH is kept
+    ins::eq_bw(c, &b, &w);
+    CHECK(w == 100);
+    // the frequencies: the LPF at BASE + WIDTH sits within 0.03 octave of where the HPF would at that step
+    char t1[16], t2[16];
+    ins::set_eq_bw(c, 50, 20);
+    ins::eq_value_text(0, 70, t1, sizeof t1);
+    ins::eq_value_text(1, ins::eq_param(c, 1), t2, sizeof t2);
+    printf("sfx-basewidth: BASE 50 WIDTH 20 = HPF %d LPF %d; the LPF reads %s, an HPF at step 70 %s\n", ins::eq_param(c, 0),
+           ins::eq_param(c, 1), t2, t1);
+    char o[300];
+    ins::reset();
+    CHECK(ins::command("ins=b2:eq:base:40", o, sizeof o) && ins::eq_param(c + 1, 0) == 40 && ins::eq_param(c + 1, 1) == 0 &&
+          strstr(o, "BASE 40 WIDTH 127"));
+    CHECK(ins::command("ins=b2:eq:width:30", o, sizeof o) && ins::eq_param(c + 1, 1) == 57 && strstr(o, "BASE 40 WIDTH 30"));
+    CHECK(ins::command("ins=b2:eq:width:x", o, sizeof o) && strstr(o, "ins=") && ins::eq_param(c + 1, 1) == 57);
+    static char js[8192];
+    CHECK(ins::json(js, sizeof js) > 0 && strstr(js, "\"bw\":[40,30]") && strstr(js, "\"bw\":[0,127]"));
     ins::reset();
   }
   // ---- the remote INSERT page: listed once a chain is set (or the Rytm names a Sidecar track), drawn from the values

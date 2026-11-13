@@ -1,0 +1,16 @@
+{
+  "id": "fx.phaser",
+  "version": "1.0.0",
+  "name": "PHASER",
+  "short": "PHS",
+  "licence": "MIT",
+  "knobs": [
+    {"p": 1, "long": "Rate", "short": "RATE", "look": "list", "text": "enum",
+     "names": ["FREE#", "FREE#", "FREE#", "FREE#", "FREE#", "FREE#", "FREE#", "FREE#",
+               "8BAR", "4BAR", "2BAR", "1BAR", "1/2", "1/4", "1/8", "1/16"], "default": 28},
+    {"p": 2, "long": "Depth", "short": "DPTH", "default": 96},
+    {"p": 3, "long": "Feedback", "short": "FDBK", "default": 40},
+    {"p": 4, "long": "Stages/Sprd", "short": "SPRD", "look": "list", "text": "enum",
+     "names": ["4ST#", "6ST#", "8ST#"], "default": 64}
+  ]
+}

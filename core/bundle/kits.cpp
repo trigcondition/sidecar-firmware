@@ -15,6 +15,8 @@
 #include "../store/store.h"
 #if CORE_POLY
 #include "../fx/insert.h"
+#include "../mod/scene.h"
+#include "../mod/xypad.h"
 #endif
 
 namespace core {
@@ -26,10 +28,14 @@ const Feature kFeatures[] = {
     {"lfo"},
 #if CORE_POLY
     {"ins"},
+    {"scene"},   // 0.5.0 (core/mod/scene.h): up to 12 x 64 locks, ~18 KB - more than kPostMax, written through the queue
+    {"xy"},      // 0.5.0 (core/mod/xypad.h): the XY pad's slots, a few hundred bytes
 #endif
 };
 constexpr int kNumFeatures = sizeof kFeatures / sizeof kFeatures[0];
-constexpr uint32_t kRecMax = 3 * fmt::kPostMax;   // a record: the features' files (each at most kPostMax as saved)
+// a record: the features' files (the LFOs' and the inserts' at most kPostMax as saved, the scenes' up to ~13 KB more,
+// the XY pad's under 512 bytes)
+constexpr uint32_t kRecMax = 3 * fmt::kPostMax + 14 * 1024;
 
 struct Ev { uint8_t op, kit, src; uint32_t gen; };
 Ev g_q[kPending];
@@ -60,7 +66,7 @@ CORE_COLD void work_path(const Feature& f, const char* key, int kit, char* out, 
 CORE_COLD bool live(int k) {
   return lfo::kit() == k
 #if CORE_POLY
-         || ins::kit() == k
+         || ins::kit() == k || scene::kit() == k || xypad::kit() == k
 #endif
       ;
 }
@@ -68,6 +74,8 @@ CORE_COLD void modules_again() {   // each saves its unsaved edits (queued, into
   lfo::project_changed();
 #if CORE_POLY
   ins::project_changed();
+  xypad::project_changed();   // (before the scenes: its release puts the fader back first)
+  scene::project_changed();
 #endif
 }
 

@@ -1,0 +1,4 @@
+#sidecar learn 1
+R 1 1 7 fader
+R 0 14 102 a
+R 2 6 21 MFX:LEV -20

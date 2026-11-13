@@ -299,6 +299,8 @@ with the three lists' tabs and their counts; DONE goes back where it came from. 
   (`pool=K:fill:B:DIR`; empty rows only, name order; SAMPLES and WAVETABLES only: INSTRUMENTS are refused with "add
   each .sfz with +INST"). "Pool & presets" is now **Presets**. `bank_json` carries `ro` (a foreign-newer list: edits in
   RAM only).
+- **Drop zone (Files tab):** WAVs dropped or chosen there are uploaded to `/Samples/Inbox` (made when missing) and each is
+  added with `pool=smp:take:PATH`. Edit a sample with the SAMPLE EDIT page: `docs/SAMPLE-EDIT.md` (the POOL page's EDIT).
 
 ### The console (`pools::command`, the control core; the web's `/cmd`, the serial `:` lines)
 
@@ -308,6 +310,7 @@ with the three lists' tabs and their counts; DONE goes back where it came from. 
 | `pool=K:set:A010:PATH[:yes\|:force]` | a file into the row (a replace when the row holds one; P3) |
 | `pool=K:replace:A010:PATH[:yes\|:force]` | the same |
 | `pool=K:add:B:PATH` | a file into bank B's first free row (`IN POOL` with its row when it is there already) |
+| `pool=smp:take:PATH` | a file into the shown bank's first free row, else the next bank with room (the web's drop zone; the file is in `/Samples/Inbox`) |
 | `pool=K:clear:A010[:yes][,A011..]`, `pool=K:unload:...` | rows emptied (the card file and the library stay; P3 per row) |
 | `pool=K:fill:B:FOLDER` | the folder's files into bank B's empty rows, name order, 16 files a step (smp, wt); a missing folder fills nothing |
 | `pool=smp:input:H001:IN`, `pool=K:builtin:H011:PAD` | an input / built-in into an empty row |

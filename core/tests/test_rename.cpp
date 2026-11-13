@@ -64,6 +64,8 @@ static void fixture(const char* key) {
   std::string k = key;
   put("/.rytm/lfo/" + k + ".txt", "lfo " + k);
   put("/.rytm/ins/" + k + "/k001.txt", "ins " + k);
+  put("/.rytm/scene/" + k + "/k001.txt", "scene " + k);   // 0.5.0: rename_moves_scene_folder
+  put("/.rytm/xy/" + k + "/k001.txt", "xy " + k);         // 0.5.0: the XY pad's folder too
   put("/.rytm/seq/" + k + "/tracks.txt", "tracks " + k);
   put("/.rytm/projects/" + k + "/samples.pool.txt", "pool " + k);
   put("/.rytm/songs/" + k + "/take-001.json", "{\"song\":\"" + k + "\"}");
@@ -71,6 +73,7 @@ static void fixture(const char* key) {
 static bool has_all(const char* key, const char* content_of) {
   std::string k = key, c = content_of;
   return slurp("/.rytm/lfo/" + k + ".txt") == "lfo " + c && slurp("/.rytm/ins/" + k + "/k001.txt") == "ins " + c &&
+         slurp("/.rytm/scene/" + k + "/k001.txt") == "scene " + c && slurp("/.rytm/xy/" + k + "/k001.txt") == "xy " + c &&
          slurp("/.rytm/seq/" + k + "/tracks.txt") == "tracks " + c &&
          slurp("/.rytm/projects/" + k + "/samples.pool.txt") == "pool " + c &&
          slurp("/.rytm/songs/" + k + "/take-001.json") == "{\"song\":\"" + c + "\"}";
@@ -78,7 +81,7 @@ static bool has_all(const char* key, const char* content_of) {
 static bool has_none(const char* key) {
   std::string k = key;
   return !is_file("/.rytm/lfo/" + k + ".txt") && !is_dir("/.rytm/ins/" + k) && !is_dir("/.rytm/seq/" + k) &&
-         !is_dir("/.rytm/projects/" + k) && !is_dir("/.rytm/songs/" + k);
+         !is_dir("/.rytm/scene/" + k) && !is_dir("/.rytm/xy/" + k) && !is_dir("/.rytm/projects/" + k) && !is_dir("/.rytm/songs/" + k);
 }
 static void settle() {   // (a project load's RAM store fill first: the LFOs and inserts switch once it is full)
   for (int i = 0; i < 100000 && project_loading(); ++i) idle_save();
@@ -114,14 +117,14 @@ int main() {
   name_project("SHARED SET 2");
   CHECK(rename::state() == rename::kAsk && rename::asks() == asks + 1);
   CHECK(!strcmp(project, "SHARED SET") && !strcmp(rename::from(), "SHARED SET") && !strcmp(rename::to(), "SHARED SET 2"));
-  CHECK(rename::files() == 5);
+  CHECK(rename::files() == 7);   // (0.5.0: the scenes' and the XY pad's folders too)
   name_project("SHARED SET 2");   // the Rytm's repeat: still the one question
   CHECK(rename::state() == rename::kAsk && rename::asks() == asks + 1 && !strcmp(project, "SHARED SET"));
   // YES: every file and folder under the new key, none left under the old; then the switch
-  CHECK(rename::answer(true) == 5);
+  CHECK(rename::answer(true) == 7);
   CHECK(!strcmp(project, "SHARED SET 2") && rename::state() == rename::kIdle);
   CHECK(has_all("SHARED SET 2", "SHARED SET") && has_none("SHARED SET"));
-  CHECK(!strcmp(rename::last(), "MOVED 5 TO SHARED SET 2"));
+  CHECK(!strcmp(rename::last(), "MOVED 7 TO SHARED SET 2"));
   settle();
 
   // ---- NO: a new project, nothing moved
@@ -201,7 +204,7 @@ int main() {
     host_card_core(3);
     idle_save();
   }
-  CHECK(rename::state() == rename::kAsk && rename::files() == 5);
+  CHECK(rename::state() == rename::kAsk && rename::files() == 7);
   rename::answer(true);
   for (int k = 0; k < 200 && strcmp(project, "JAM 5"); ++k) {
     host_card_core(0);

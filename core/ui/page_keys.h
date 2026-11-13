@@ -20,6 +20,8 @@
  * ux1027 (0.3.0, the user): DOWN is the poly SEQ page's menu (a KEYS row); YES there is the Rytm's (its YES + KIT /
  * PLAY / SCNE quick saves), caught only under a question, with FUNC held first (FUNC + YES: UNDO) or a trig held.
  * SEQ, INSERT (UP + FX / AMP), LFO (UP + LFO) and POLY replace the Rytm's screen: no LEFT / RIGHT siblings.
+ * 0.5.0 MIDI (the owner): the keyboards' route and the other MIDI settings are a SIDECAR MENU row (core/ui/page_midi.cpp),
+ * no UP combo (that needs a rytm-mods change): a KEYS row only, "MENU: MIDI".
  * updown1029 (the user, 2026-10-29): the menu is FUNC + DOWN; UP / DOWN alone are the Rytm's on the SEQ page (CHRO: the
  * pads' octave), caught only under a question or with FUNC held.
  */
@@ -73,6 +75,8 @@ static const sc_page_key_t sc_rytm_mk2_pages[] = {
 	{7, "REC", "REC", ""},		{8, "SET", 0, ""},		{9, "SCOPE", "SCOPE", ""},
 	{10, "STATUS", "SIDECAR", ""},	{11, "SAMPLE", "SAMPLE", ", AGAIN: AUTO"},
 	{12, "PROJECT", "PROJECT", ""},	{13, "POOL", "POOL", ""},
+	{14, "MORPH", "MORPH", ""},	/* 0.5.0 (spec-050 2.6): needs the 0.5.0 flash's 0026 (UP + T14: rui.c forwards
+					   UP + T1..T13 today); until then the SIDECAR MENU's row */
 };
 static const sc_combo_t sc_rytm_mk2_combos[] = {
 	{"pages", "UP+YES", "SIDECAR (YES: MENU)", "YES PAGES", "TRK+YES", 0},
@@ -82,11 +86,16 @@ static const sc_combo_t sc_rytm_mk2_combos[] = {
 	{"ins", "UP+FX", "INSERT FX", "FX INSERT FX", "TRK+FX", "INSERT"},
 	{"out", "UP+AMP", "INSERT OUT VIEW", "AMP OUT", 0, 0},
 	{"arp", "UP+FLTR", "ARPEGGIATOR", "FLTR ARP", 0, "ARP"},	/* 7ae: 30 page 4 (rytm-mods 0026) */
+	/* 0.5.0 FILL: the 0.5.0 0026 sends UP + RIGHT / LEFT as 49 1 1 16 / 15 (hello caps2 bit 0, the host's claim 4A 7E 1;
+	   remote.h kPageFill). Not on UP's map: both maps are full (18 rows) */
+	{"fill", "UP+RIGHT", "FILL (TRACK LOCKS)", 0, 0, "FILL"},
+	{"gen", "UP+LEFT", "GENERATOR (0.5.1)", 0, 0, 0},
 	{"copy", "T+UP+REC", "COPY STEPS (SEQ)", 0, "T+FUNC+REC", 0, "T+REC COPY"},
 	{"paste", "T+UP+STOP", "PASTE STEPS", 0, "T+FUNC+STOP", 0, "T+STOP PASTE"},
 	{"clear", "T+UP+PLAY", "CLEAR STEPS", 0, "T+FUNC+PLAY", 0, "T+PLAY CLEAR"},
 	{"poly", "FUNC+CHRO", "MENU: POLY CONFIG", 0, 0, "POLY"},
 	{"chop", "PUSH ON SRC", "CHOP EDITOR (B..H)", 0, 0, "CHOP"},	/* CHOP: a push of encoder B..H on its SRC view */
+	{0, "SRC: PUSH B", "SAMPLE EDIT (DSP SMPL)", 0, 0, "SAMPLE EDIT"},	/* DSP SAMPLE: a push of encoder B on its SRC view */
 	{0, "FUNC+PAGE", "SCALE (SEQ)", 0, 0, 0},
 	{0, "AMP AMP", "SENDS (AMP 2/2)", 0, 0, 0},
 	{0, "FX: SRC/SMPL", "SEND FX 1 / 2", 0, 0, 0},
@@ -103,13 +112,28 @@ static const sc_combo_t sc_rytm_mk2_combos[] = {
 							   updown1029: FUNC + DOWN (DOWN alone: CHRO's octave) */
 	{0, "FUNC+YES", "UNDO (POLY SEQ)", 0, 0, 0},	/* review round 1: the touchscreen's history; fix1028: the whole poly SEQ page;
 							   ux1027: FUNC first (YES caught only while FUNC is held) */
-	{0, "FUNC+YES", "FILE INTO A ROW", 0, 0, 0},
+	{0, "LIST: FUNC+YES", "FILES FOR ROW", 0, 0, 0},
+	/* 0.5.0 the sample browser (core/ui/page_wavegrain.cpp; the 0.5.0 0026: FUNC in its list, hello caps bit 5) */
+	{0, "LIST: RIGHT", "FILES AFTER LAST", 0, 0, 0},
+	{0, "LIST: FUNC+L/R", "BANK - / +", 0, 0, 0},
+	{0, "LIST: FUNC+NO", "TO OFF (YES SETS)", 0, 0, 0},
+	{0, "FILE: RIGHT", "LOAD, NEXT EMPTY", 0, 0, 0},
+	{0, "FILE: FUNC+YES", "PREVIEW (HOLD)", 0, 0, 0},
+	{0, "FILE: KNOB H", "PREVIEW LEVEL", 0, 0, 0},	/* a Sidecar setting; the 0026 forwards knob H in the browser */
+	{0, "FILE: FUNC+RIGHT", "FILE MENU", 0, 0, 0},
 	{0, "STOP STOP", "SIDECAR FX CLEARED", 0, 0, 0},
 	{0, "NO", "BACK A LEVEL", 0, 0, 0},
-	{0, "CHOP: PAGE", "EDIT SLICE 1 SLICE 2", 0, 0, 0},	/* the CHOP editor's own keys (core/ui/page_chop.cpp) */
+	{0, "CHOP: PAGE", "EDIT SLICE 1 2 3", 0, 0, 0},	/* the CHOP editor's own keys (core/ui/page_chop.cpp) */
 	{0, "CHOP: PUSH A-D", "ADD DEL MERGE UNDO", 0, 0, 0},
 	{0, "CHOP: PUSH E-H", "GRID TRANS LAZY RSMP", 0, 0, 0},
 	{0, "CHOP: T1..T16", "SLICE (LAZY: TAP)", 0, 0, 0},
+	{0, "CHOP: UP TAP", "EDIT ONE / ALL SLICES", 0, 0, 0},	/* 0.5.0: a tap of UP (no other key between) toggles the edit target */
+	{0, "SEDIT: FUNC+YES", "SAVE (+USE)", 0, 0, 0},	/* SAMPLE EDIT's own keys (core/ui/page_sedit.cpp) */
+	{0, "SEDIT: NO", "UNDO, AGAIN: BACK", 0, 0, 0},
+	{0, "SEDIT: A / B", "START / END (AT 0)", 0, 0, 0},	/* sedit-050: on zero crossings */
+	{0, "SEDIT: FUNC+A/B", "TO NEXT TRANSIENT", 0, 0, 0},
+	{0, "SEDIT: C / D / E", "ZOOM / PAN / FUNC", 0, 0, 0},
+	{0, "MENU: MIDI", "KEYBOARD ROUTE", 0, 0, 0},	/* 0.5.0: SIDECAR MENU > MIDI (page_midi.cpp); no key of its own */
 };
 /* rui1051 (the user's report on rui1050): pages that work on what the selected track holds - its poly sequence (SEQ,
    UP+TRIG), its insert (INSERT, UP+FX / UP+AMP), the pool its machine plays from (POOL, UP+T13 or SRC LIST's), its slices

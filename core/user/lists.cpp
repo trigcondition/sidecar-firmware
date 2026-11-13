@@ -51,7 +51,7 @@ struct Js {
 
 const char* machine(const core::V& x, char* b) {
   if (x.user >= 0) { sniprintf(b, 4, "U%d", x.user + 1); return b; }
-  return x.fm ? "FM" : x.juno ? "JUNO" : x.dsps ? "DSPS" : x.daisy ? "DAISY" : x.md ? "MD" : "PLAITS";
+  return x.fm ? "FM" : x.juno ? "JUNO" : x.smpl ? "SAMPLER" : x.dsps ? "DSPS" : x.daisy ? "DAISY" : x.md ? "MD" : "PLAITS";
 }
 
 uint32_t fnv(uint32_t h, const void* p, size_t n) {
@@ -74,7 +74,7 @@ uint32_t state_hash() {
   for (int i = 0; i < nf; ++i) h = fnv(h, &core::dxlib.slot(i), sizeof(dx7::Slot));
   for (int vi = 0; vi < core::kVoices; ++vi) {
     const core::V& x = core::v[vi];
-    int m[5] = {x.user, x.fm, x.juno, x.dsps * 2 + x.daisy, x.md};
+    int m[5] = {x.user, x.fm, x.juno, x.smpl * 4 + x.dsps * 2 + x.daisy, x.md};
     h = fnv(h, m, sizeof m);
     h = fnv(h, &core::juno_pat[vi], sizeof(int));
     h = fnv(h, &core::fm_pat[vi], sizeof(int));

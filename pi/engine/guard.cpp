@@ -2,6 +2,7 @@
 #include "guard.h"
 
 #include <circle/multicore.h>
+#include <circle/synchronize.h>
 
 #include "bridge.h"
 #include "crumb.h"
@@ -63,6 +64,16 @@ void CGuard::LogNews (CLogger *pLogger)
 		pLogger->Write ("guard", LogWarning, "voice %u !%s muted: %s (longest render %u us, budget %u us)", v,
 				bridge::machine_name (v), m_pWhy[v], m_nMaxTicks[v] / nPerUs, m_nBudget / nPerUs);
 	}
+	for (unsigned c = 2; c <= 3; c++)	// Plugin API 3: a guarded plugin call that faulted (once each)
+	{
+		if (m_nCtlLastPC[c])
+		{
+			pLogger->Write ("guard", LogWarning, "core %u: a plugin call faulted at PC 0x%lx, resumed %s (%u in all)", c,
+					(unsigned long) m_nCtlLastPC[c], m_bCtlResumedOK[c] ? "at task level (EL1t)" : "NOT at task level",
+					m_nCtlFaults);
+			m_nCtlLastPC[c] = 0;
+		}
+	}
 	for (unsigned c = 1; c <= 2; c++)
 	{
 		if (m_nFaultPC[c])
@@ -86,9 +97,41 @@ static void __attribute__ ((noinline, noreturn)) ResumeWorker (void)
 	__builtin_longjmp (g_Guard.JumpBuffer (CMultiCoreSupport::ThisCore ()), 1);
 }
 
+// Plugin API 3: a fault inside a guarded plugin call on core 3 comes back here, at task level, as ResumeWorker does.
+static void __attribute__ ((noinline, noreturn)) ResumeControl (void)
+{
+	GUARD_LONGJMP (g_Guard.ControlJumpBuffer (CMultiCoreSupport::ThisCore ()));
+}
+
+int CGuard::ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC)
+{
+	const unsigned c = CMultiCoreSupport::ThisCore ();
+	int r = ControlCallOn (c, pFunc, pParam, pPC);
+	if (r)		// the evidence the hardware check wants: back at task level, on SP_EL0, as the render guard's resume
+	{
+		u64 nSPSel;
+		asm volatile ("mrs %0, spsel" : "=r" (nSPSel));
+		m_bCtlResumedOK[c & 3] = CurrentExecutionLevel () == TASK_LEVEL && nSPSel == 0;
+		m_nCtlLastPC[c & 3] = *pPC;
+	}
+	return r;
+}
+
 void CEngineExceptionHandler::Throw (unsigned nException, TAbortFrame *pFrame)
 {
 	unsigned nCore = CMultiCoreSupport::ThisCore ();
+	if ((nCore == 2 || nCore == 3) && g_Guard.ControlArmed (nCore))
+	{
+		// a user plugin's guarded call faulted (API 3's guard): back into ControlCall, the slot muted by its caller
+		g_Guard.NoteControlFault (nCore, pFrame->elr_el1);
+		u64 nSPSR = pFrame->spsr_el1, nStack = pFrame->sp_el1;		// read before the frame is dropped
+		asm volatile ("msr elr_el1, %0\n"
+			      "msr spsr_el1, %1\n"
+			      "mov sp, %2\n"
+			      "eret"
+			      :: "r" ((u64) &ResumeControl), "r" (nSPSR), "r" (nStack) : "memory");
+		__builtin_unreachable ();
+	}
 	if ((nCore == 1 || nCore == 2) && g_Guard.Armed (nCore))
 	{
 		g_Guard.NoteFault (nCore, pFrame->elr_el1);

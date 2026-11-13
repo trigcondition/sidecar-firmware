@@ -373,7 +373,7 @@ committed (snapshots and dumps are firmware-derived).
    ENCODER DEST = INT+EXT, OUTPUT CH = TRK CH, PARAM OUTPUT = NRPN; GLOBAL > MIDI CONFIG > SYNC: PROG CH RECEIVE and
    PROG CH SEND on (TRANSPORT SEND on). The SONG page shows what is missing ("! ENCODER DEST INT, OUTPUT CH AUTO");
    **CFG** on the touchscreen / **T4** on the Rytm's SONG page show these steps.
-2. **Arm**: touchscreen SONG page (nav column SONG; CLASSIC: the Song key) **ARM**, or the Rytm's remote SONG page
+2. **Arm**: touchscreen SONG page (nav column SONG; SIDECAR: the rail's or header row's SONG key) **ARM**, or the Rytm's remote SONG page
    (the last of the Sidecar pages: LEFT from SIDECAR; listed once a take exists on the card, the touchscreen armed or
    `song=show` asked) **T1**, or the console `song=arm`. Arming reads the Rytm's start state (working kit,
    pattern, settings, GLOBAL: the stock dumps) - the page says "armed: PLAY records".
@@ -461,7 +461,7 @@ pattern fingerprinted in the log).
 | replay scheduler, the confirmed restore (backup first), UNDO REPLAY's restore (`Restore::begin_undo`), the timeline's lanes | `core/song/replay.cpp` |
 | engine glue: the MIDI tap, states, card jobs, console, lanes published for the display | `core/song/song.cpp`, `song.h` |
 | the Rytm's remote SONG page | `core/ui/page_song.cpp` |
-| the touchscreen timeline (OLED + CLASSIC) | `pi/ui/sidecar_song.c/.h`, `pi/engine/song_pi.cpp/.h` |
+| the touchscreen timeline (OLED + SIDECAR) | `pi/ui/sidecar_song.c/.h`, `pi/engine/song_pi.cpp/.h` |
 | tests | `core/tests/test_song.cpp`, `sim/song_e2e.py`, `pi/ui/host/shot.c` (song-* shots), `pi/engine/tests/test_usbmidi_pack.cpp` |
 
 Shared files touched (small hooks): `core/seq/seq.*` (`set_clock_tracks`: BD ticks in the 2E clock mask while armed /
@@ -469,7 +469,7 @@ replaying), `core/engine.cpp` (`song::idle`), `core/host/core_c.cpp` and `pi/eng
 console), `core/ui/extra.h` + `page_scope.cpp` (the SONG page last, after INSERT), `core/Makefile`, `pi/engine/Makefile`,
 `pi/engine/kernel.cpp` (the page's view), `pi/engine/usbmidi_pack.h` (2-byte program changes and SysEx pieces: dumps
 longer than one 4096-byte record go out in 3069-byte pieces), `pi/ui/sidecar_ui.c` (page 10, the nav column's SONG, the
-CLASSIC Song key), `pi/ui/host/Makefile` + `shot.c`.
+SIDECAR rail's SONG key), `pi/ui/host/Makefile` + `shot.c`.
 
 ### Verified
 

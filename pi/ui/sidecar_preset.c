@@ -286,7 +286,7 @@ void sidecar_preset_create (void *parent, int y0)
 	memset (&s_V, 0, sizeof s_V);
 	s_V.folder = -2;
 	const int dx = TH->dx, dy = TH->dy, q = dx / 4;
-	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, o ? TH->w - LU (48) : TH->w, o ? TH->h : LU (428) + dy);
+	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, th_page_w (), o ? TH->h : LU (428) + dy);
 	s_Page = pg;
 	if (o)
 	{

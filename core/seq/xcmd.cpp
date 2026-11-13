@@ -198,7 +198,7 @@ CORE_COLD int command_x(Pattern& pt, const char* p, int* track, char* out, int c
     const char* q3 = q2 ? strchr(q2 + 1, ':') : nullptr;
     bool all = q2 && !strncmp(q2 + 1, "all:", 4);
     int si = q ? atoi(q + 1) - 1 : -1, prm = all ? -1 : q2 ? atoi(q2 + 1) - 1 : -2, c = q3 ? lock_cond_parse(q3 + 1) : -1;
-    Track* t = c >= 0 && si >= 0 && si < kMaxSteps && prm >= -1 && prm < kLockParams && r >= 0 && r < kRytmTracks
+    Track* t = c >= 0 && si >= 0 && si < kMaxSteps && (prm == -1 || lock_param_ok(prm)) && r >= 0 && r < kRytmTracks
                    ? track_of(pt, r, false) : nullptr;
     int n = 0;
     for (int k = 0; t && k < t->step[si].nl; ++k)
@@ -260,7 +260,7 @@ CORE_COLD int command_x(Pattern& pt, const char* p, int* track, char* out, int c
     int n = 0;
     for (int k = 0; t && k < t->step[si].nl; ++k) {
       int x = t->step[si].lock[k].param;
-      if ((!all && x != prm) || arp_lock(x)) continue;   // (an arp lock holds)
+      if ((!all && x != prm) || arp_lock(x) || x >= 32) continue;   // (an arp lock holds; a Rytm lock never slides)
       t->step[si].slide = on ? t->step[si].slide | 1u << x : t->step[si].slide & ~(1u << x);
       ++n;
     }
@@ -309,8 +309,9 @@ CORE_COLD int command_x(Pattern& pt, const char* p, int* track, char* out, int c
     if (!st_.n && rt_on(x)) add_note(st_, def_note(*t));
     st_.rt = x;
     *track = r;
-    return sniprintf(out, cap, CORE_STR("seq: track %d step %d: %s cnt %d rate %s vel %s pitch %+d oct %d gate %d%%"), r + 1, si + 1,
-                     rt_on(x) ? rt_mode_name(x.mode) : "OFF", x.cnt, rt_rate_name(x.rate), vcrv_name(x.vcrv), x.pcrv, x.oct ? x.oct : 1,
+    return sniprintf(out, cap, CORE_STR("seq: track %d step %d: %s cnt %d rate %s vel %s pitch %s%d oct %d gate %d%%"), r + 1, si + 1,
+                     rt_on(x) ? rt_mode_name(x.mode) : "OFF", x.cnt, rt_rate_name(x.rate), vcrv_name(x.vcrv), x.pcrv < 0 ? "-" : "+",
+                     x.pcrv < 0 ? -x.pcrv : x.pcrv, x.oct ? x.oct : 1,
                      x.gate ? x.gate : 100), 1;
   }
   return 0;

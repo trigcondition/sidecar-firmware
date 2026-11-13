@@ -862,6 +862,25 @@ def sendfx_ask():
     return _msg(SENDFX_ASK, [])
 
 
+# 0.5.0 (rytm-mods 0029 sfx-basewidth): 22 with ver 2 = FX fx's BASE / WIDTH, the send FX's return filter (bus 1 / 2's
+# POST EQ: HPF = BASE, LPF at BASE + WIDTH on the same scale, off at 127; docs/INSERT-FX.md "BASE / WIDTH"). The same
+# message both ways: host -> Rytm the values SEND FX 1 / 2's knobs G / H show, Rytm -> host a turn of them. An older
+# 0029 drops it (its ver check), an older host ignores it.
+SENDFX_BW_VER = 2
+
+
+def sendfx_bw(fx, base, width):
+    """22 ver 2: FX fx (0, 1), BASE and WIDTH 0..127."""
+    return bytes(HDR) + bytes([SENDFX_STATE, SENDFX_BW_VER, fx & 1, base & 0x7F, width & 0x7F]) + b"\xf7"
+
+
+def decode_sendfx_bw(payload):
+    """22 ver 2's payload (from the ver byte) -> dict fx, base, width; None if malformed."""
+    if not payload or payload[0] != SENDFX_BW_VER or len(payload) != 4 or payload[1] > 1:
+        return None
+    return dict(fx=payload[1], base=payload[2], width=payload[3])
+
+
 SENDFX_LABELS = 0x24
 LABEL_CHARS, ZONE_CHARS, MAX_ZONES = 4, 5, 12
 # The core's tables (core/fx/knob_labels.h users: send_fx.h, rings_fx.h, cloudseed_fx.h, stutter_fx.h): TYPE id ->
@@ -1069,6 +1088,10 @@ def rui_splash(ticks) -> bytes:
     return _msg(RUI_SPLASH, [max(0, min(127, ticks))])
 
 
+def rui_fill_claim(on=True) -> bytes:
+    return bytes([0xF0, 0x7D, 0x52, 0x54, 0x4A, PROTO_VER, RUI_FILL_CLAIM, 1 if on else 0, 0xF7])
+
+
 def rui_keepalive() -> bytes:
     return _msg(RUI_KEEPALIVE, [])
 
@@ -1108,8 +1131,8 @@ def decode_rui(cmd, payload):
         return dict(key=b[0] << 7 | b[1], down=b[2])
     if cmd == RUI_ENC and len(b) == 3:
         return dict(enc=b[0], delta=b[1] - 64, func=b[2])
-    if cmd == RUI_HELLO and len(b) == 3:
-        return dict(up=b[0] << 7 | b[1], caps=b[2])
+    if cmd == RUI_HELLO and len(b) >= 3:   # 0.5.0 FILL: a 4th byte caps2 (bit 0: UP + LEFT / RIGHT as 49 1 1 15 / 16)
+        return dict(up=b[0] << 7 | b[1], caps=b[2], caps2=b[3] if len(b) > 3 else 0)
     if cmd == RUI_SRC_VIEW and len(b) == 2 and b[0] < 12 and b[1] <= 1:
         return dict(track=b[0], on=b[1])
     if cmd == RUI_SRC_DIAG and len(b) == 8:
@@ -1332,6 +1355,82 @@ def decode_fxin_state(payload):
 SEQ_TICK, SEQ_STATE, SEQ_MASK, SEQ_PAGE_LEDS = 0x2C, 0x2D, 0x2E, 0x2F
 SEQ_TRANSPORT, SEQ_PATTERN, SEQ_SWITCH, SEQ_MUTES, SEQ_REC, SEQ_TEMPO, SEQ_SEQMODE, SEQ_POS = 1, 2, 3, 5, 6, 7, 8, 9
 SEQ_SCALE, SEQ_EDIT, SEQ_DIRTY, SEQ_FILL, SEQ_SOLO = 4, 0x0A, 0x0B, 0x0C, 0x0D
+# 0.5.0 (core/mod/rytm_out.h; rytm-mods 0026 design.md "0.5.0"): host -> Rytm HOST_CMD 01 <op> ... (01 MUTE <set lo7>
+# <set hi5> <clr lo7> <clr hi5>, 02 SCENE <n 0..12, 0 off>, 03 PERF <macro 1..12> <value 0..127>), run by the stock
+# setters a CC 94 / 92 / 35.. reaches; the mod answers 2D 01 HOST_ACK <op> <status 0 done, 1 refused>; the hello's caps
+# bit HOST_CMD_CAPS says the mod has it. Rytm -> host 2D 01 SEQ_QPERF <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>:
+# the QUICK PERF knob 0..255, the macros on it (12 bits), flags bit 0 FUNC held, bit 1 the knob has sent since boot
+# (until then pos means nothing), bit 2 macros muted (0: not located); on a change, at most one per 8 ms, again after
+# each hello. 2D 01 SEQ_SCENE <n>: the Rytm's active scene 1..12, 0 none, on a change by any path and after each hello.
+# Both regardless of the 2E (sq reports).
+HOST_CMD, HOST_ACK, HOST_CMD_CAPS = 0x5A, 0x10, 16
+SEQ_QPERF, SEQ_SCENE = 0x0E, 0x0F
+HOST_MUTE, HOST_SCENE, HOST_PERF = 1, 2, 3
+
+
+def host_cmd(op, *b) -> bytes:
+    """HOST_CMD 01 <op> b..."""
+    return _msg(HOST_CMD, [op & 0x7F] + [x & 0x7F for x in b])
+
+
+def host_mute(set_mask, clr_mask) -> bytes:
+    return host_cmd(HOST_MUTE, set_mask & 0x7F, (set_mask >> 7) & 0x1F, clr_mask & 0x7F, (clr_mask >> 7) & 0x1F)
+
+
+# 0.5.0 (rytm-param-mod, core/mod/rytm_param.h; docs/RYTM-PARAMS.md): the Rytm's own sound parameters modulated from the
+# host. HOST_CMD 01 <op>: 04 OFFSET <kit> <ramp> <n 1..28> {<t> <w> <hi7> <lo7>} (v 14-bit two's complement, 1/64 step),
+# 05 OVERRIDE <kit> <ramp> <n 1..22> {<t> <w | jump << 6> <hi7> <lo7> <mix 0..127>} (v 1/128 step; mix 0 releases),
+# 06 CLEAR <kit> <ramp> <mask lo7> <mask hi6> (the tracks' every entry), 07 STATUS (no bytes) answered 2D 01 PM_STATUS
+# <slots used, saturating at 127> <ring drops hi> <lo> <kit drops hi> <lo> (saturating at 16383) <timeouts, saturating
+# at 127> <flags>. t 0..12 (12 the FX track), w 1..41 the sound words, 48..51
+# VM1..4, 52..55 AT1..4 (offsets only), 56 VEL; ramp in Rytm blocks (32 frames). A refusal: 2D 01 HOST_ACK <op> <1
+# refused, 2 the slots full>. The hello's caps bit HOST_PM_CAPS says the mod has them. The Rytm's arithmetic: pm_model.py.
+HOST_PM_OFFSET, HOST_PM_OVERRIDE, HOST_PM_CLEAR, HOST_PM_STATUS = 4, 5, 6, 7
+HOST_PM_CAPS = 64
+PM_STATUS = 0x11
+PM_MAX_OFFSETS, PM_MAX_OVERRIDES = 28, 22
+
+
+def pm_offset(kit, ramp, recs) -> bytes:
+    """04: recs [(t, w, v)] with v in 1/64 steps (-8192..8191)."""
+    assert 1 <= len(recs) <= PM_MAX_OFFSETS
+    b = [kit, ramp, len(recs)]
+    for t, w, v in recs:
+        v &= 0x3FFF
+        b += [t, w, v >> 7, v & 0x7F]
+    return host_cmd(HOST_PM_OFFSET, *b)
+
+
+def pm_override(kit, ramp, recs) -> bytes:
+    """05: recs [(t, w, v, mix, jump)] with v in 1/128 steps (0..16383), mix 0..127."""
+    assert 1 <= len(recs) <= PM_MAX_OVERRIDES
+    b = [kit, ramp, len(recs)]
+    for t, w, v, mix, jump in recs:
+        b += [t, w | (0x40 if jump else 0), (v >> 7) & 0x7F, v & 0x7F, mix]
+    return host_cmd(HOST_PM_OVERRIDE, *b)
+
+
+def pm_clear(kit, ramp, mask) -> bytes:
+    """06: every entry of the tracks in the 13-bit mask."""
+    return host_cmd(HOST_PM_CLEAR, kit, ramp, mask & 0x7F, (mask >> 7) & 0x3F)
+
+
+def pm_status() -> bytes:
+    return host_cmd(HOST_PM_STATUS)
+
+
+def decode_pm_status(b):
+    """2D 01 11's bytes after the kind -> dict, else None."""
+    if len(b) != 7:
+        return None
+    return dict(slots=b[0], ring_drops=b[1] << 7 | b[2], kit_drops=b[3] << 7 | b[4], timeouts=b[5], flags=b[6])
+
+
+def decode_qperf(b):
+    """2D 01 0E's bytes after the kind -> dict(pos, mask, flags), else None."""
+    if len(b) != 5:
+        return None
+    return dict(pos=b[0] << 7 | b[1], mask=b[2] | b[3] << 7, flags=b[4])
 SEQ_SILENT = 0x46
 SEQ_FLAG_NO_PIN = 4
 SEQ_EDIT_OPS = {1: "COPY PAT", 2: "PASTE PAT", 3: "CLEAR PAT", 4: "UNDO PAT", 5: "COPY TRK", 6: "PASTE TRK",
@@ -1507,9 +1606,10 @@ def decode_seq(cmd, payload):
 # answer is its working buffer as edited, saved or not [measured]; 0x80 | n answers the same but is not a MIDI data byte
 # (a byte-stream MIDI path cuts the SysEx there [measured: rytm-emu's link]): ask for the active pattern by number:
 #   F0 00 20 3C 07 00 64 01 01 <n> 00 00 00 05 F7
-# The answer (14988 bytes): F0 00 20 3C 07 00 54 01 01 <pattern 0..127> 00 <00 00 00 05: the record's 4-byte header>
-#   <the record's other 13097 bytes, 7-bit packed: 14968 bytes> <checksum hi7 lo7: the sum of the bytes from <pattern>
-#   up to the checksum, & 0x3FFF> <length hi7 lo7: the message's size - 10> F7
+# The answer (14988 bytes): F0 00 20 3C 07 00 54 01 01 <pattern 0..127> <the 13101-byte record 7-bit packed: 14973
+#   bytes, groups of 8 from here (so 00 <00 00 00 05: the record's header> ..) [measured, rytm-emu 0.5.0 FILL: grouped
+#   after the header instead, as before, the record past the header was misread]> <checksum hi7 lo7: the sum of the
+#   bytes from <pattern> up to the checksum, & 0x3FFF> <length hi7 lo7: the message's size - 10> F7
 # The record: 13101 bytes (docs/TOUCH-EDITOR.md, pi/ui/rytm_pattern.h's layout).
 RYTM_DUMP_REQ = bytes.fromhex("f000203c0700640101800000" "0005f7")   # the 0x80 form (raw USB-MIDI paths only)
 
@@ -1540,7 +1640,7 @@ def rytm_unpack7(p):
 
 def rytm_dump(record, pattern=0) -> bytes:
     """A stock pattern dump of a 13101-byte record (as the Rytm answers RYTM_DUMP_REQ)."""
-    body = bytes([pattern & 0x7F, 0]) + record[:4] + rytm_pack7(record[4:])
+    body = bytes([pattern & 0x7F]) + rytm_pack7(record)
     cs = sum(body[1:]) & 0x3FFF   # the pattern number not in it [measured on a real Rytm MKII]
     m = bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, 0x54, 0x01, 0x01]) + body + bytes([cs >> 7, cs & 0x7F])
     n = len(m) + 3 - 10
@@ -1554,7 +1654,7 @@ def rytm_dump_parse(m):
         return None
     if (m[-5] << 7 | m[-4]) != sum(m[10:-5]) & 0x3FFF or (m[-3] << 7 | m[-2]) != len(m) - 10:
         return None
-    rec = bytes(m[11:15]) + rytm_unpack7(m[15:-5])
+    rec = rytm_unpack7(m[10:-5])
     return (m[9], rec) if len(rec) == RYTM_RECORD else None
 
 
@@ -1843,6 +1943,12 @@ def rui_write(track, param, value, frac=None, flags=None) -> bytes:
 
 # ---- rui1038 (rytm-mods 0026 "1038", docs/SRC-BANKS.md): the source banks
 RUI_BANK_LIST = 0x4A
+# 0.5.0 FILL (rytm-mods 0026, fill-keys): host -> Rytm 4A 7E <flags>, flags bit 0 the host claims UP + LEFT / RIGHT (the
+# Rytm sends them as page requests 49 1 1 15 GENERATOR / 16 FILL); 0 leaves them to stock. Only to a Rytm whose hello's
+# caps2 has bit 0 (an older one counts it as a bad message), again after every hello: the Rytm clears it at each hello.
+RUI_FILL_CLAIM = 0x7E
+RUI_CAPS2_ARROWS = 1
+RUI_PAGE_GENERATOR, RUI_PAGE_FILL = 15, 16
 BANK_WHY = {0: "open", 1: "yes", 2: "no", 3: "knob", 4: "key", 5: "view", 6: "srcyes"}   # 6 (rui1049, on 3): FUNC + YES
 #                                                                                     on the SRC view: the host aims an OFF
 #                                                                                     entry at the bank's first free row

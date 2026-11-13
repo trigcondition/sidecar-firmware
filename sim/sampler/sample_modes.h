@@ -140,8 +140,24 @@ class SampleModes {
     ch_ = ch;
     rate_ = rate > 0 ? rate : 48000.0f;
     playing_ = false;
+    fa_ = -1;
+    for (SnapMemo& m : memo_) m.ok = false;
     StopGrains();
   }
+  // A frame region [a, b) in place of STA..END (forward; the sample editor's), a < 0 off: STA..END. Kept until Set
+  // changes the sample.
+  void SetFrames(int32_t a, int32_t b) {
+    fa_ = a, fb_ = b;
+  }
+  // LOOP's loop point (SAMPLER's LOOP, core/machines.h kSmplMachine; 0..120 as STA / END; <= 0 none: the whole region loops), read
+  // by a forward LOOP (not ping-pong) at the wrap: forward it goes back to the point (the loop [point, hi]), reversed
+  // to it (the loop [lo, point]); a point outside the region: the whole region.
+  void SetLoop(float p120) { loop_ = p120; }
+  // SAMPLER's zero-crossing snap (0.5.0), off by default (DSP SAMPLE and the Rytm's own build never snap): STA, END and the loop
+  // point are moved, at playback only, to the nearest zero crossing of the sample within kSnapReach frames (stereo: of
+  // the channels' sum), the raw point kept when there is none in the window or when it is the very start / end. The
+  // search runs when a raw point changes (a trig, a knob), not per sample: Region's callers read the memo.
+  void SetSnap(bool on) { snap_ = on; }
   ~SampleModes() { StopGrains(); }
   const int16_t* pcm() const { return pcm_; }
   int channels() const { return ch_; }
@@ -149,6 +165,7 @@ class SampleModes {
   // A trig: note (60 = as recorded), sp the SD SAMPLE page (8 values).
   void Trigger(float note, const float* sp) {
     if (!pcm_ || frames_ < 2) return;
+    for (SnapMemo& m : memo_) m.ok = false;   // (the sample's content may have changed under the same pointer)
     mode_ = Zone(sp[3], kModes);
     note_ = note;
     gain_ = 1.0f;
@@ -156,9 +173,9 @@ class SampleModes {
     StopGrains();
     last_ = -1;
     t_ = 0;
-    float lo, hi;
+    float lo, hi, lpf;
     bool rev;
-    Region(sp, &lo, &hi, &rev);
+    Region(sp, &lo, &hi, &rev, &lpf);
     switch (mode_) {
       case kOneShot:
       case kLoop:
@@ -328,9 +345,80 @@ class SampleModes {
     return (rng_ >> 8) * (1.0f / 16777216.0f);
   }
 
-  // STA..END in frames (0..120 as the Rytm's), low to high, and whether END < STA.
-  void Region(const float* sp, float* lo, float* hi, bool* rev) const {
-    float a = Clamp01(sp[4] / 120.0f) * (frames_ - 1), b = Clamp01(sp[5] / 120.0f) * (frames_ - 1);
+  // The snap's frames: slot 0 STA, 1 END, 2 LOOP's point, each remembered with the raw point it came from (Trigger clears)
+  static constexpr int32_t kSnapReach = 96;   // frames either side (2 ms at 48 kHz)
+  // How loud frame k is: its L / R peak (a stereo sample) or |x|
+  float SnapLevel(int32_t k) const {
+    if (ch_ != 2) return (float)(pcm_[k] < 0 ? -(int32_t)pcm_[k] : (int32_t)pcm_[k]);
+    int32_t l = pcm_[2 * k], r = pcm_[2 * k + 1];
+    l = l < 0 ? -l : l, r = r < 0 ? -r : r;
+    return (float)(l > r ? l : r);
+  }
+  // The nearest sign change of what is heard (mono; a stereo sample: the L+R sum, as the engine's Render without outr plays
+  // the (L+R)/2 mix), the frame of the pair nearer 0; equally near ones: the quieter by SnapLevel. No crossing: the raw
+  // point. (Separate L / R outputs, Render with outr, would need a per-channel rule: the sum's zero is no zero of L or R
+  // for out-of-phase material.)
+  float SnapV(int32_t k) const {
+    return ch_ == 2 ? (float)((int32_t)pcm_[2 * k] + (int32_t)pcm_[2 * k + 1]) : (float)pcm_[k];
+  }
+  float Snapped(int slot, float raw) const {
+    SnapMemo& m = memo_[slot];
+    if (m.ok && m.raw == raw) return m.out;
+    m.ok = true, m.raw = raw, m.out = raw;
+    const int32_t last = (int32_t)frames_ - 1;
+    if (raw <= 0.0f || raw >= (float)last || last < 2) return raw;   // the very start / end stay
+    const int32_t p = (int32_t)(raw + 0.5f);
+    int32_t lo = p - kSnapReach, hi = p + kSnapReach;
+    lo = lo < 1 ? 1 : lo, hi = hi > last ? last : hi;
+    int32_t best = -1, bd = 0;
+    for (int32_t i = lo; i <= hi; ++i) {   // the sign change between i - 1 and i: the frame nearer 0
+      float a = SnapV(i - 1), b = SnapV(i);
+      if ((a <= 0.0f && b >= 0.0f) || (a >= 0.0f && b <= 0.0f)) {
+        int32_t c = (a < 0 ? -a : a) <= (b < 0 ? -b : b) ? i - 1 : i;
+        int32_t d = c > p ? c - p : p - c;
+        if (best < 0 || d < bd || (d == bd && SnapLevel(c) < SnapLevel(best))) best = c, bd = d;
+      }
+    }
+    if (best >= 0) m.out = (float)best;
+    return m.out;
+  }
+
+  // STA..END in frames (0..120 as the Rytm's), low to high, and whether END < STA. *lpf: LOOP's point in frames (-1: none),
+  // snapped like the others unless that leaves the LOOP..END segment much shorter than the raw one (it then keeps the
+  // raw LOOP and END). The snapped region never inverts or collapses (else the raw points stay).
+  void Region(const float* sp, float* lo, float* hi, bool* rev, float* lpf) const {
+    float lp = loop_ > 0.0f ? Clamp01(loop_ / 120.0f) * (frames_ - 1) : -1.0f;
+    *lpf = lp;   // (an explicit frame region keeps the raw loop point)
+    if (fa_ >= 0) {
+      int32_t b = fb_ < (int32_t)frames_ ? fb_ : (int32_t)frames_;
+      *lo = (float)(fa_ < b ? fa_ : b - 1);
+      *hi = (float)(b - 1);
+      *rev = false;
+      return;
+    }
+    const float ra = Clamp01(sp[4] / 120.0f) * (frames_ - 1), rb = Clamp01(sp[5] / 120.0f) * (frames_ - 1);
+    float a = ra, b = rb;
+    if (snap_) {
+      auto ok = [](float x0, float x1, float y0, float y1) {   // (x0, x1) snapped from (y0, y1)
+        float sd = x1 > x0 ? x1 - x0 : x0 - x1, d = y1 > y0 ? y1 - y0 : y0 - y1;
+        return (x1 > x0) == (y1 > y0) && sd >= 1.0f && sd * 2.0f >= d;
+      };
+      float sa = Snapped(0, ra), sb = Snapped(1, rb);
+      if (ok(sa, sb, ra, rb)) a = sa, b = sb;
+      if (lp > 0.0f) {
+        float slp = Snapped(2, lp);
+        bool r = b < a;   // the loop's end: the region's high end forwards, its low end reversed
+        float re = r ? (rb < ra ? rb : ra) : (rb > ra ? rb : ra), ce = r ? (b < a ? b : a) : (b > a ? b : a);
+        float raw_seg = re > lp ? re - lp : lp - re, seg = ce > slp ? ce - slp : slp - ce;
+        if (seg < 2.0f || seg * 2.0f < raw_seg) {   // the snaps pulled LOOP and END together: raw LOOP, raw END
+          b = rb;
+          if (!ok(a, b, ra, rb)) a = ra;
+        } else {
+          lp = slp;
+        }
+      }
+    }
+    *lpf = lp;
     *rev = b < a;
     *lo = *rev ? b : a;
     *hi = *rev ? a : b;
@@ -373,9 +461,9 @@ class SampleModes {
   // ONE and LOOP: STA..END forward or reversed, looping (wrapping, or
   // ping-pong) or once.
   void RenderPlay(const float* sp, bool loop, bool pingpong, float* out, int n) {
-    float lo, hi;
+    float lo, hi, lpf;
     bool rev;
-    Region(sp, &lo, &hi, &rev);
+    Region(sp, &lo, &hi, &rev, &lpf);
     double step = rate_ / 48000.0 * Ratio(sp, true);
     int want = rev ? -1 : 1;
     if (!pingpong) dir_ = want;
@@ -390,10 +478,17 @@ class SampleModes {
           if (pos_ > hi) pos_ = 2.0 * hi - pos_, dir_ = -1;
           else pos_ = 2.0 * lo - pos_, dir_ = 1;
           if (pos_ < lo || pos_ > hi) pos_ = dir_ > 0 ? lo : hi;
-        } else {   // wrap (a step longer than the loop too)
-          double len = (double)hi - lo;
-          pos_ = lo + fmod(pos_ - lo, len);
-          if (pos_ < lo) pos_ += len;
+        } else {   // wrap (a step longer than the loop too); from the loop point when there is one (SetLoop)
+          double lp = lpf;
+          if (lp > lo && lp < hi && dir_ > 0 && pos_ > hi) {
+            pos_ = lp + fmod(pos_ - hi, (double)hi - lp);
+          } else if (lp > lo && lp < hi && dir_ < 0 && pos_ < lo) {
+            pos_ = lp - fmod(lo - pos_, lp - (double)lo);
+          } else {
+            double len = (double)hi - lo;
+            pos_ = lo + fmod(pos_ - lo, len);
+            if (pos_ < lo) pos_ += len;
+          }
         }
       }
       if (r_) Read2(pos_, &out[i], &r_[i]);
@@ -515,9 +610,9 @@ class SampleModes {
   }
 
   void RenderStretch(const float* sp, float* out, int n) {
-    float lo, hi;
+    float lo, hi, lpf;
     bool rev;
-    Region(sp, &lo, &hi, &rev);
+    Region(sp, &lo, &hi, &rev, &lpf);
     dir_ = rev ? -1 : 1;
     double step = rate_ / 48000.0 * Ratio(sp, true);
     double speed = sp[6] / 64.0 * rate_ / 48000.0;   // source frames per output sample
@@ -660,6 +755,14 @@ class SampleModes {
 
   const int16_t* pcm_ = nullptr;
   uint32_t frames_ = 0;
+  int32_t fa_ = -1, fb_ = -1;   // SetFrames' region (fa_ < 0: STA..END)
+  float loop_ = 0.0f;            // SetLoop's point (0..120), <= 0 none
+  bool snap_ = false;            // SetSnap
+  struct SnapMemo {
+    bool ok = false;
+    float raw = 0, out = 0;
+  };
+  mutable SnapMemo memo_[3];
   int ch_ = 1;               // 2: pcm_ interleaved L R
   float* r_ = nullptr;       // Render's right channel while it renders a stereo sample in stereo
   float rate_ = 48000.0f;

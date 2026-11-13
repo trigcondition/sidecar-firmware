@@ -89,6 +89,7 @@ At boot, before the render loops start, every core runs the bench in turn (cores
 | `notes=on\|off` | off | MIDI channels 1..8 play voices 0..7 (the note adapter) |
 | `voicebudget=P` | 50 | a voice's budget in % of a block (5..100), the share measured at 1500 MHz: it is scaled by 1500 / the CPU clock (`cpumhz=`; "CPU clock" below). A voice is muted only when it is over budget while its render core is overloaded (its block took 80 % of a block or more), 200 blocks (50 ms) in a row; a burst never mutes. A muted voice is unmuted by `:unmute` or by a change of its machine |
 | `cpumhz=1500\|1200\|1000` | 1500 | the CPU clock option (Settings > System; `/.rytm/display.txt` has it too, cmdline wins). 1500 is the board's full clock; "CPU clock" below |
+| `fan=auto\|on\|off` | auto | Pi 5 only: the fan header (the official Active Cooler or case fan; "Fan (Pi 5)" below). `/.rytm/display.txt` has it too, cmdline wins |
 | `a4=1` | 0 | an Analog Four MKII in OVERBRIDGE mode on USB-A: its MAIN goes into the Rytm's PRE pair (2 / 3) through an adaptive resampler, no A4 firmware mod (`ob_follow.h`, `drift_src.h`). `a4ch=N` the IN pair (default 0, MAIN), `a4att=N` dB down (default 6). A Rytm alone: unchanged. An A4 with the sidecar-mods `a4` mod needs no option: its hello makes it the Sidecar's box (docs/device-profiles.md) |
 | `idlewfe=0` | 1 | turns off the idle sleep added for the heat (core 0's loop, core 3's render wait; "Idle sleep" below); `:idlewfe=0` / `:idlewfe=1` on the console do it live, for an A/B |
 | `split=N` | 4 | voices 0..N-1 render on core 1, N..7 on core 2 (1..7) |
@@ -103,6 +104,11 @@ At boot, before the render loops start, every core runs the bench in turn (cores
 | `web=0\|1` | 1 | the web page at http://sidecar.local over the Ethernet (below, "Web page"); 0: no HTTP daemon and no mDNS (the network stays up for `link=tcp`) |
 | `paircode=0\|<8 digits>` | (absent: a random code at every boot) | the pairing code that gates the network (below, "Pairing code"). `paircode=0` turns the gate **off**: everything on the network is open, as it was before 0.3.0 - a development card only, and the engine says so at boot, once a minute, in `/health`, in `/status` and on the STATUS page. `paircode=13572468` keeps the gate but fixes the code: this is the way to run a unit with no display at all, and it is the alternative to the code being written to `/sidecar-paircode.txt`. Anything else is ignored (the gate stays on with a random code) |
 | `usb=mirror` | sidecar | Pi 4 and Pi 5, opt-in (Overbridge passthrough: Pi 4 since 0.4.1, Pi 5 since 0.4.2: on USB-C for data a Pi 5 gets about 1.5 A from a computer or hub port, full power needs a USB-C power + data splitter, docs/pi5.md): the USB-C side shows the computer the attached box itself (its descriptors, audio, async channel, MIDI and requests relayed; `docs/usb-mirror.md`) instead of the Sidecar device, which comes back when the box has been gone `mirrorhold=S` seconds (10); Overbridge shows the unit's name with `mirrorname=` (default " (SC)"). Never a public default |
+| `net=auto\|usb\|wifi\|lan` | auto | which network the one stack runs on (`docs/usb-network.md`): auto takes the USB-C network when a computer on USB-C starts its network driver at boot, else Wi-Fi or Ethernet as before; `usb` always the USB-C network, `wifi` never it (Wi-Fi when a network is stored, else Ethernet), `lan` Ethernet even with Wi-Fi stored |
+| `usbnet=on\|off` | on | the USB-C network function (CDC-NCM) in the CLASS COMPLIANT device; off: the device as in 0.4.2, byte for byte (`docs/usb-network.md`) |
+| `usbip=A.B.C.D` | 172.31.77.1 | the Pi's address on the cable (/24); the computer gets .2 by DHCP (.1 when the Pi is .2). No router, no DNS: the computer's internet stays its own |
+| `usbwait=S` `usbquiet=MS` | 5, 700 | net=auto's wait at boot: no start-of-frame on USB-C within `usbquiet` ms (from the gadget's start, overlapping the Wi-Fi chip's) is no computer; a computer that has not started its USB network driver within `usbwait` s keeps today's network (1..30 s, 100..5000 ms) |
+| `usbtrust=1\|0` | 1 | the USB-C cable is trusted: no pairing code on it (web page, /ws, port 7310). 0 asks for the code there too |
 | `oburbs=1..16` `obblocks=1..8` `obout=paced\|free\|off` `oboutdelay=N` `obctr=zero\|in` | 8, 1, paced, 0, zero | spike2's Overbridge host tuning, unchanged (`docs/pi-circle-spike.md`) |
 
 ## Console (921600 baud, the flasher's serial cable)
@@ -138,6 +144,7 @@ Core 0 runs these itself:
 | `pair` | the pairing code's state (below, "Pairing code"): the gate on / off / fixed, how many devices are paired, how many sessions. **Never the code itself** - the console's output is the log the page serves |
 | `pair=show` | the code on the Rytm's screen again (30 s), for when the popup was missed |
 | `pair=revoke` | every paired device and every session dropped: each one needs the code again (also `sdboot.py`'s) |
+| `poweroff=1` | Pi 5 only: a clean power-off, as a short press of the power button (`docs/pi5.md` "Power button": the audio faded, a take closed, the saves written, 3 s at most, then off; the button powers it on again). Refused on the Pi 4 |
 
 An unknown command logs `unknown command "..."`. A long line is dropped whole.
 
@@ -562,6 +569,7 @@ The Pi serves its own page over the on-board Ethernet, like Ableton Move's move.
 - Name: the network's hostname is `sidecar`. Circle's mDNS daemon answers `sidecar.local` (A) and publishes the service `Sidecar | Expander` (`_http._tcp`, port 80; `dns-sd -B _http._tcp` lists it). A second Sidecar on the same network becomes `sidecar-1.local`. `pi/circle/circle-mdns.patch` (applied by `build.sh`, rebuilds `lib/net`) makes Circle's daemon read every question (with name compression), accept the QU bit and any case, and answer AAAA with an NSEC "A only" record: without it macOS's `getaddrinfo` (curl, browsers) waited 5 s for an IPv6 address before using the A record (measured 2026-10-16: `curl http://sidecar.local/` timed out at 5 s; with the patch 7 ms lookup, 13 ms for the page; `dns-sd -Q sidecar.local AAAA` shows "No Such Record").
 - Addresses: the Pi has no DHCP client on the direct cable, so its address is built in or set in cmdline.txt (`ip=`, `netmask=`, "Phase 1" above). For a Mac on a self-assigned link-local address (no manual IP), build with `PI_IP=169.254.61.60 PI_NETMASK=255.255.0.0 ./build.sh kernel` (any free 169.254.x.y/16): the Mac then reaches it with no network settings at all. The Mac's manual 192.168.77.1/24 and the default 192.168.77.2 work too.
 - Endpoints: `GET /` the page; `GET /status` JSON (host, ip, uptime, link, gadget mode, Sidecar up, computer audio, `usbHost` (a computer has configured the USB-C Sidecar: `false` on a plain power supply, `null` without the gadget), Overbridge streaming, the Rytm's USB MIDI, temperature (`temp`) and its warning (`tempWarn`), out, notes, drone, FIFO target, underruns, and the page's own request count and longest handler time in us); `GET /log?since=N` the console log from byte N (first line `START END`, then the bytes; the next poll asks `since=END`), from a 64 KB ring that the logger fills next to the serial port (`CLogTee`: any core may log, one spin lock); `POST /cmd` with `c=<command>` (form encoded): the serial console's own parser (`CConsole::Command`, the `:` lines), logged as `web: command :...`; `GET /lists` the project's pool and JUNO / FM lists and each voice's machine (`core/user/lists.h`, published by core 3 when it changes); `GET /pool?l=smp|wt|inst&b=A..H[&u=1]` one bank of a POOL list with the lists' status and the RAM figure (`pi/engine/poolweb.h`, read only). `wdtest` is refused from the web (its reboot ends a RAM kernel; with sdboot the card's engine comes back).
+- **WebSocket `/ws`** (2026-11, for the next web UI `web-next/` and a later desktop editor; docs/web-ws.md): the same status pushed when it changes (at most every 250 ms..10 s, 1 s by default) and console commands as requests with ids, over one connection. Auth is the pairing token in the first message (never the URL); the upgrade needs the strict same-origin check; at most 2 connections, apart from the 4 HTTP workers. Circle's HTTP daemon hands the socket over through `pi/circle/circle-http-ws.patch` (applied by `build.sh`); the connection then runs in the worker's own task on core 0, polling without blocking and sleeping 10 ms between rounds. Flow control: at most 4 unacked pushes per client, newer states replace older ones while the client is behind. Each connection logs `ws: a client connected` and `ws: closed (code): N pushes, N coalesced, ...`. The old page and every endpoint below are unchanged.
 - The page polls `/status` every second and `/log` every 0.8 s. Tiles: CPU of cores 1/2/3, FIFO min..max and target, underruns, Overbridge (IN packets/s, gap, lost: parsed from the `rytmob:` line), Rytm attached (stream or USB MIDI), USB-C gadget (alt settings, computer audio, late; "no computer on USB-C" while none has configured it), temperature, the page's own cost. Controls: notes on/off, out main/tracks, computer audio on/off, a machine per voice (`notemach=`), drone on/off, FIFO target, and a free command line. The per-second stats lines are hidden in the log view by default (a checkbox shows them). The USB-C Sidecar's line (`sidecar: ... alt`) comes once a minute instead while no computer has configured the device (a power supply alone on USB-C), every second once one has. The **Pool** tab (the pools build): the three POOL lists, banks A..H, the RAM figure, the rows' states, Accept, Replace, Unload, Select unused, Undo (docs/POOLS.md section 6); the Files tab's +SMP / +WT / +INST and Fill bank. The **Presets** tab (before: "Pool & presets", with the DSP SAMPLE pool, now in the Pool tab): the JUNO and FM lists (rename, move up, delete, save what a voice plays now) and each assigned user slot's presets in `/PRESETS/<id>/` (rename, delete through `/fs`, save current with `um=save`).
 - Project bundles (2026-10-22, docs/BUNDLES.md): the Project tab and `GET /bundle/projects|list|status|plan|zip`,
   `GET /bundle-sw.js`, `POST /bundle/export|verify|import|cancel|finish|delete`, `POST /time` (the page's clock, sent when
@@ -960,6 +968,42 @@ Move's way: plugging the Pi into the Mac's USB-C alone gives sidecar.local. What
 
 Effort: about 3-5 days (descriptor and class requests 1, the net device and NCM framing 1-2, DHCP 0.5, the endpoint/FIFO budget and a long audio run with the link busy 1). Risk: medium-high, all of it on core 0's USB-C path that carries the 12-channel audio; every step needs the `sidecar_audio_test.py` long run at 0 dropouts. Recommended order: ECM first (smaller), `net=usb` either-or, link-local on both ends (no DHCP), then NCM and two interfaces if it proves worth it.
 
+## Keyboards and MIDI settings (0.5.0)
+
+USB MIDI keyboards and controllers in the Pi's **USB-A** ports, and the computer on the Sidecar's **USB-C** MIDI port,
+play the Rytm's tracks through the Sidecar (`core/keys.h`): polyphonic on a Sidecar poly track (6-OP FM, MULTISAMPLE,
+WAVETABLE, GRANULAR), forwarded to the Rytm otherwise. Their routing:
+
+- **SELECTED** (the default): every note, CC, pitch bend and program change plays the track selected on the Rytm. For
+  the Rytm the messages go out on its **auto channel**, so the CCs of a controller with several channels (a Launch
+  Control XL's templates) all land on that one track.
+- **CHANNEL**: MIDI channel N plays Rytm track N (1..12); channels 13..16 go to the Rytm as they are. Use it for a
+  controller or a DAW that sends each track its own channel.
+- **AUTO CHANNEL** 1..16 (default 14): the Rytm's own auto channel, as set on the Rytm (its MIDI CONFIG > CHANNELS).
+  Change it here only to match the Rytm.
+- **COMPUTER NOTES** ON (the default): the computer's notes go by channel whatever the route (channel N plays track
+  N, 13..16 to the Rytm as they are), except on the auto channel, which plays the selected track - a DAW sequencing the
+  Rytm's track channels keeps working; OFF: they go straight to the Rytm, untouched.
+
+**Where to change them:** the touchscreen's **Settings > MIDI**; the Rytm's **SIDECAR MENU > MIDI** (UP + YES, YES on
+SIDECAR, the MIDI row; knob A or UP / DOWN pick a row, YES or knob B change it); the console's `keys=selected|channel`,
+`keys=auto:N`, `keys=mac:on|off` (`keys` alone: the state and the counters). Every one takes effect at once and is
+stored in `/.rytm/keys.txt` (`mode=`, `auto=`, `mac=`; written by idle_save a moment later, read at boot).
+
+The Rytm's MIDI page also shows the **MIDI-learn** routes (`core/mod/learn.h`: a CC from the Rytm or a USB-A device
+moving the scenes' fader, picking scene A / B or offsetting a target): their count, WAITING while a learn is armed (YES
+stops it), YES twice clears them all (`/.rytm/learn.txt`; a file a newer build wrote is LOCKED: nothing cleared). A
+learn is armed on the console (`learn=fader|a|b|NAME[:DEPTH]`, `learn=clear:N`, `learn` lists them): its targets are a
+long list. Both screens show the USB-A devices by name and where the last key went (`MPKMINI > SD POLY`); the touchscreen
+shows the learn routes' count.
+
+Other MIDI settings, not on these screens: `notes=` (Settings > Sound's MIDI notes, the MIDI-only voices; cmdline
+`notes=`), the USB-C mode (Settings > Sound, SIDECAR MENU > USB-C) and `gadget=` (cmdline only: USB-C MIDI only or off
+changes the USB device the computer sees, a boot's choice), `tohost=` (cmdline, a test switch), `usbmidi=os:` (OS
+updates through USB-C: a safety gate, off at every boot, console only), the Rytm MIDI bridge (`midibridge=`, a test
+tool, off at every boot), `midifake=` (a test switch), the A4 follower's `a4ch=` / `a4att=` (cmdline), the MIDI
+machine's destination and channel (per sound: the Rytm's SRC page), an LFO's sync (per LFO).
+
 ## Temperature warning (2026-10-25)
 
 The SoC's temperature is read once a second (the stats line's reading: one mailbox call; no other code calls it, and
@@ -989,6 +1033,30 @@ The SoC's temperature is read once a second (the stats line's reading: one mailb
   (unlike the pairing code): the banner and STATUS say it already, nothing is lost by waiting, and a popup that wipes a page
   mid-edit for a condition that is not an emergency (the firmware throttles at 80 C, 85 C is its hard limit) is the wrong
   trade. It appears when the page closes, if the warning still stands.
+
+## Fan (Pi 5, 2026-11-08)
+
+Under Linux the Pi 5's device tree drives the fan header; under Sidecar nothing did, so a Pi 5 with an Active Cooler
+under heavy load reached `socmaxtemp` (78) and Circle lowered its clock (a tester: the UI slowed after about 15 minutes).
+The firmware runs the fan at boot only to check that one is there. Pi 5 builds (`RASPPI=5`) now drive it themselves:
+`pi/engine/fan.h` (the curve, portable; `tests/test_fan.cpp`) and `pi/engine/fan_pi.cpp` (the pin). The pin and its
+PWM are in docs/pi5.md "The fan". Pi 4 builds have none of it (backlog 7ac: a GPIO fan on a Pi 4 case board).
+
+- **Modes.** `fan=auto` (the default), `fan=on`, `fan=off`: a console command (`fan` alone prints the state), stored as
+  `fan=` in `/.rytm/display.txt` (not written while it is AUTO), and cmdline.txt's `fan=` wins at boot without being
+  written to the card (the card keeps its own value; only the console changes that).
+- **AUTO** is Linux's Pi 5 curve: trips at 50 / 60 / 67.5 / 75 C step the fan through 0 / 75 / 125 / 175 / 250 (of
+  255). A level goes up when the SoC reaches its trip and down only 5 C below it, so a unit sitting on a trip does not
+  hunt. One step a second, from the stats line's reading (no mailbox call of its own); a failed reading (0) changes
+  nothing. Several trips can be crossed in one step.
+- **ON** runs it at 250 all the time. **OFF** stops it, except from the temperature warning's 80 C until below 75 C
+  (thermal.h's pair), when it runs at 250: the firmware still throttles, but "off" should not leave the chip there.
+- **Boot.** Started right after the CPU clock option, before the bench, and set from a first reading at once.
+- **Log.** `fan: auto (default), pin GPIO45 PWM1 running, level N (duty D/255) at SoC T C` at boot, then one line per
+  level change: `fan: level 1 -> 2 (duty 125/255), SoC 60 C, auto`.
+- **`/status`** `"fan":{"mode","from","level","duty","override","pin","rpm","changes"}`: `from` is default, card, cmdline
+  or console; `override` true while OFF runs it for the heat; `pin` false if the PWM did not start; `rpm` the RP1's
+  tach count as Linux reads it (0 if nothing fills it under Circle: not yet seen on hardware).
 
 ## Idle sleep (2026-11-01)
 

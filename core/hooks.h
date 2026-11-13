@@ -17,6 +17,12 @@ struct Hooks {
   void (*user_leave)(int vi);                 // voice vi plays a built-in machine now
   void (*user_note_off)(int vi);              // 0x11 for a voice on a user slot
   void (*user_render)(int vi, float* out);    // kBlock samples, -1..1
+  // Plugin API 3: a voice on OUT PRE / POST (a stereo pair): L into l, and R into r when its plugin renders stereo
+  // (true); false: l only (a mono plugin: R = L, as before). Null: user_render for every voice.
+  bool (*user_render2)(int vi, float* l, float* r);
+  // voice vi's P(k+1) as its user slot's manifest labels it now (the short label, the set a list knob picks): into b,
+  // "" when that knob has none (unused); null hook or a false return: no plugin on the voice (core/ui voice_label)
+  bool (*user_label)(int vi, int k, char* b, int cap);
   void (*slot_ask)(const uint8_t* d, int len);      // 0x19 (null: core/slots.cpp)
   void (*slot_assign)(const uint8_t* d, int len);   // 0x1E (null: core/slots.cpp)
   void (*project_seen)();                     // any 0x10 arrived (null: core/slots.cpp's rate-limited 1D)
@@ -29,6 +35,9 @@ struct Hooks {
   void (*transport)(uint8_t status);
   // Another box needs another state folder (core/device/device.h): saved, restart the Sidecar. Null: a board that cannot.
   void (*device_restart)();
+  // The recent log copied to the card once, as /.rytm/logs/<name>.log (the Rytm's first freeze probe of a boot,
+  // core/host_link.cpp). Any core; only asks: the platform writes it later, off the audio path. Null: nothing kept.
+  void (*log_snapshot)(const char* name);
 };
 extern Hooks hooks;
 // True while the core itself calls user_report for a parameter change of its own (voice_params_changed: the Sidecar's

@@ -43,6 +43,19 @@ constexpr int kLiveMachine = 0x78;
 // own number, set in track_vb and the voice's state, never on the wire (SysEx bytes are 7 bits).
 constexpr int kMidiMachine = 0x80;
 constexpr int kRytmMidi = 50;   // the Rytm's machine number (HH TEST; rytm-mods 0021)
+// SAMPLER (0.5.0, docs/SAMPLER.md): the Digitakt-style sample player, DSP SAMPLE's engine without the resonator (page 1
+// SMP STRT END PLAY / TUNE FINE LOOP LEV, page 2 empty; P11 P13 P14 P12 / P9 P10 P15 P16). No flag of its own is left: the Rytm (0021's machine 43, the
+// FUNC. GEN. slot) reports DSP SAMPLE's 0x20 with kSmplTag as the sound tag (as MD's kLayoutTag on 0x40), and names it in
+// 33 by its machine byte. kSmplMachine is the host's own number for its names and pages, never in a voice byte or
+// track_vb (machine_of masks 0x78; bit 7 is MIDI's). The engine keys on the voice's x.smpl, the pages on the track's.
+constexpr int kSmplMachine = 0xA0;
+constexpr int kRytmSampler = 43;
+// The sound tag of SAMPLER's reports: rytm-mods 0021's SAMPLER_TAG (ext.c, design.md "Sound tag 0x29C1"), on the wire
+// 53 41 ('S' 'A'). The host and the Rytm must agree on this one number (test_sampler checks a raw 53 41 report).
+constexpr int kSmplTag = 0x53 << 7 | 0x41;
+static_assert(kSmplTag == 0x29C1, "SAMPLER's sound tag is the Rytm's (0021 ext.c SAMPLER_TAG)");
+// DSP SAMPLE or SAMPLER (the pages' and the sample lists' machine): the same words, the same pool slot on P11
+inline bool sample_machine(int m) { return m == kDspSample || m == kSmplMachine; }
 inline int machine_of(uint8_t voice_byte) { return voice_byte & 0x80 ? kMidiMachine : voice_byte & 0x78; }
 // The user slots U1..U5 (flags 0x50 0x58 0x60 0x68 0x70) -> 0..4; -1 not a user slot (rmp_slot_of_flag's rule).
 inline int user_slot_of(int m) { return (m >= 0x50 && m <= 0x70 && !(m & 7)) ? (m - 0x50) >> 3 : -1; }
@@ -56,6 +69,7 @@ inline const char* machine_short(int m) {
     case kJuno: return "JUNO";
     case kDaisy: return "DAISY";
     case kDspSample: return "DSPS";
+    case kSmplMachine: return "SAMPLR";
     case kFm: return "FM";
     case kMd: return "MD";
     case kGrainMachine: return "GRAIN";
@@ -78,6 +92,7 @@ inline const char* machine_long(int m) {
     case kJuno: return "JUNO";
     case kDaisy: return "DAISYSP";
     case kDspSample: return "DSP SAMPLE";
+    case kSmplMachine: return "SAMPLER";
     case kFm: return "6-OP FM";
     case kMd: return "MD";
     case kGrainMachine: return "GRAIN";

@@ -14,6 +14,8 @@
 #include "lib/srclib.h"
 #include "msamp/msamp.h"
 #include "presets/preset_index.h"
+#include "samp/preview.h"
+#include "samp/sedit.h"
 #include "wavetable/tables.h"
 #include "wavetable/wavetable.h"
 #endif
@@ -75,6 +77,9 @@ UI_ROM const Page kMsBankPage = {"INSTRUMENT", kMultiMachine, 1, kBankCells, {0,
 // DSP SAMPLE's SMP (P11, rytm-mods 7h): knob A of its SRC page, as the others (ENG is SMPL knob D)
 UI_ROM const Page kDsBankPage = {"SAMPLE", kDspSample, 1, kBankCells, {10, 1, 2, 3, 4, 5, 6, 7},
                                  {"SMP", "STR", "BRI", "DMP", "MIX", "SEED", "TUN", "LEV"}};
+// 0.5.0: SAMPLER's (machines.h kSmplMachine; page 1 SMP STRT END PLAY / TUNE FINE LOOP LEV, page_wave.cpp kDspsPageDt)
+UI_ROM const Page kDsBankPageDt = {"SAMPLE", kSmplMachine, 1, kBankCells, {10, 12, 13, 11, 8, 9, 14, 15},
+                                   {"SMP", "STRT", "END", "PLAY", "TUNE", "FINE", "LOOP", "LEV"}};
 // JUNO's and 6-OP FM's PAT (0.4.0): the project's preset list as rows, the same keys (no banks); FUNC + YES the card's
 // presets, from the RAM index (core/presets/preset_index.h)
 UI_ROM const Page kJnBankPage = {"PRESETS", kJuno, 1, kBankCells, {0, 1, 2, 3, 4, 5, 6, 7},
@@ -103,7 +108,26 @@ struct BankList {
   int assigns = 0, refusals = 0;
   bool row_auto = false;        // fix1049: the browser aimed an OFF entry at a free row: no file set, OFF again
   char ask[srclib::kPath] = "";   // P3: the file a YES on an in-use row asked about (a second YES on it replaces)
+  int ask_code = 0x44;          // 0.5.0: the key that asked (YES, or RIGHT's quick load): the same key confirms
+  int menu = -1;                // 0.5.0: the file menu's cursor (FUNC + RIGHT on a file), -1 closed
+  bool seek = false;            // 0.5.0: RIGHT's re-entry: the cursor to the file after the last loaded once listed
+  int edit_code = -1;           // 0.5.0: SAMPLE EDIT asked for this row: the editor opens once its file is in
+  bool edit_next = false;       // 0.5.0: SAMPLE EDIT's load asked first (a used row): its confirming YES opens the editor
+  uint32_t edit_ms = 0;
+  bool info_wait = false;       // 0.5.0: INFO asked: its note once the file's head is read
+  bool hold = false;            // 0.5.0: FUNC + YES's preview: it plays while YES is held (its release stops it)
 };
+// 0.5.0: the last file a load set, per list kind (RIGHT in the list goes back to it); kept across the list's opens
+char last_file[3][srclib::kPath] = {"", "", ""};
+// 0.5.0 FILL (page_fill.cpp): the last quick-load batch (RIGHT's loads in one opening of a list) per track and list
+// kind: its first and last row, the FILL page's FROM / TO
+struct Batch { int8_t kind = -1; int16_t first = -1, last = -1; };
+Batch batch[12];
+bool batch_new = true;
+bool func_seen = false;         // a 31 with down 2 since the hello: a 0.5.0 0026 (with or without its caps bit)
+// the file menu (FUNC + RIGHT on a file)
+enum : int { kMLoad, kMLoadNext, kMPreview, kMEdit, kMInfo, kMItems };
+const char* const kMenuNames[kMItems] = {"LOAD", "LOAD TO NEXT EMPTY", "PREVIEW", "SAMPLE EDIT", "INFO"};
 constexpr uint32_t kNoteMs = 2000;
 BankList bl;
 CORE_COLD bool bank_note_on() { return bl.note_on && now_ms() - bl.note_ms < kNoteMs; }
@@ -263,9 +287,10 @@ CORE_COLD void draw_wt(Canvas& c, const Rect& r, const Source& s, int slot) {
 
 // ---- rui1038: the bank list (4A) as the SRC view's page (rui1045: DSP SAMPLE's SMP the SAMPLES list, as GRANULAR's SRC)
 CORE_COLD int bank_kind() {
-  return bl.machine == kGranMachine || bl.machine == kDspSample || bl.machine == kChopMachine ? 0 : bl.machine == kWaveMachine ? 1 : 2;
+  return bl.machine == kGranMachine || sample_machine(bl.machine) || bl.machine == kChopMachine ? 0 : bl.machine == kWaveMachine ? 1 : 2;
 }
 CORE_COLD int bank_entry(int bank, int row) { return bank * srclib::kBankRows + row; }
+CORE_COLD bool menu_has(int it) { return it != kMEdit || bank_kind() == 0; }   // SAMPLE EDIT: the SAMPLES pool's
 // a row's name as the lists show it: the pool row's name, "!name" its file missing, "~name" its file changed
 CORE_COLD const char* row_name(int k, int e, char* b, int cap) {
   const pools::Entry& p = pools::at(k, e);
@@ -294,6 +319,7 @@ CORE_COLD uint32_t bank_key() {
   int k = bank_kind();
   uint32_t h = (uint32_t)(bl.bank * 128 + bl.row + 1) * 2654435761u ^ lst_gen(k) * 40503u ^ (uint32_t)bl.on << 31;
   if (bl.browse) h = (h ^ (uint32_t)(bl.cur + 1) * 69069u ^ srclib::view_gen(k)) * 16777619u ^ 0x40000000u;   // rui1040
+  if (bl.browse) h = (h ^ (uint32_t)(bl.menu + 2) * 40503u ^ (uint32_t)preview::sounding() << 29) * 16777619u;   // 0.5.0
   if (bank_note_on()) {   // (the note's text: a second note within its time redraws)
     h = (h ^ 0x20000000u) * 16777619u;
     for (const char* q = bl.note; *q; ++q) h = (h ^ (uint8_t)*q) * 16777619u;
@@ -340,6 +366,23 @@ CORE_COLD void draw_browse(Canvas& c, const Rect& r) {
     return;
   }
   if (bl.cur >= n) bl.cur = n - 1;
+  if (bl.menu >= 0) {   // 0.5.0: the file menu over the rows, its file's name on the first
+    const char* fn = "";
+    srclib::item(k, bl.cur, &fn, nullptr, nullptr);
+    char left[kTextLen + 1];
+    sniprintf(left, sizeof left, "%.*s", (wrow - 4) / kRSmall.advance - 1, fn);
+    c.put_text(kSlotRowL, kRSmall, r.x + 1, y0, left, kAlignLeft);
+    int shown = 0, first = bl.menu > 3 ? bl.menu - 3 : 0;
+    for (int it = first; it < kMItems && shown < kBankRowsShown - 1; ++it) {
+      if (!menu_has(it)) continue;
+      int y = y0 + (1 + shown) * kRowH;
+      bool on = it == bl.menu;
+      if (on) c.fill(Rect{(int16_t)r.x, (int16_t)(y - 1), (int16_t)wrow, kRowH}, kOn);
+      c.put_text(kSlotRowL + 1 + shown, kRSmall, r.x + 5, y, kMenuNames[it], kAlignLeft | (on ? kTextInvert : 0));
+      ++shown;
+    }
+    return;
+  }
   int first = bl.cur - 2;
   if (first > n - kBankRowsShown) first = n - kBankRowsShown;
   if (first < 0) first = 0;
@@ -350,7 +393,7 @@ CORE_COLD void draw_browse(Canvas& c, const Rect& r) {
     srclib::item(k, it, &nm, &dir, nullptr);
     bool on = it == bl.cur;
     if (on) c.fill(Rect{(int16_t)r.x, (int16_t)(y - 1), (int16_t)wrow, kRowH}, kOn);
-    const char* right = on ? (dir ? "OPEN" : "SET") : "";
+    const char* right = on ? (dir ? "OPEN" : preview::sounding() ? "PLAY" : "SET") : "";
     int rl = (int)strlen(right), rm = (wrow - 4) / kRSmall.advance - (rl ? rl + 1 : 0);
     char left[kTextLen + 1];
     sniprintf(left, sizeof left, "%.*s%s", rm > 2 ? rm - 1 : 1, nm, dir ? "/" : "");
@@ -616,8 +659,11 @@ CORE_COLD void src_list_pin(bool on) {
 // rui1036: 47 <list> <replace> <total> {<slot> <13 name bytes>} x 8: the lists' names for the Rytm's own value texts
 // (GRANULAR SRC 0, WAVETABLE TBL 1, MULTISAMPLE INST 2: the knob's value v names entry min(v, total - 1)); sent when a
 // list changed (its count, GRANULAR's generation) and after each hello (src_names_resend).
-CORE_COLD void src_names_resend() {
+CORE_COLD void src_names_resend() {   // (each hello)
   names_sig[0] = names_sig[1] = names_sig[2] = 0;
+#if CORE_MSAMP
+  func_seen = false;   // 0.5.0: the new keys again only by this Rytm's caps or its first 2
+#endif
 }
 CORE_COLD int src_names_tick() {
   int sent = 0;
@@ -676,10 +722,42 @@ CORE_COLD void browse_send(int t, int on) {   // rui1040: 4A 01 <track> <browse 
   const uint8_t m[9] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, (uint8_t)t, (uint8_t)on, 0xF7};
   to_rytm(m, 9);
 }
+CORE_COLD void preview_off() {   // 0.5.0: the browser's preview (an INFO read is left to finish)
+  bl.hold = false;
+  if (preview::sounding()) preview::stop();
+}
 CORE_COLD void browse_end(const char* why) {
-  bl.browse = false;
+  preview_off();
+  bl.browse = false, bl.menu = -1, bl.seek = false, bl.info_wait = false, bl.edit_next = false;
   if (why) bank_note(why);
   browse_send(bl.track, 0);
+}
+// rui1040's FUNC + YES on a pool list's row (why 6: from the SRC view, fix1049), and 0.5.0's RIGHT in the list: the
+// card's files for the list's row (the refusals: row 000, an input / built-in row, the pool locked). True: open.
+CORE_COLD bool browse_open(int t, int why) {
+  int k = bank_kind();
+  // 0.5.0 (the owner): not on SAMPLER - its OFF is a choice (SMP OFF unloads the track), refused as on the list
+  if (!bl.row && why == 6 && bl.machine != kSmplMachine) {   // fix1049: FUNC + YES on the SRC view (rytm-mods 0026 1049) on OFF: the bank's first free
+    for (int r = 1; r < srclib::kBankRows && !bl.row; ++r)   // row (an empty pool's first file: A001 on DSP SAMPLE)
+      if (pools::at(k, bank_entry(bl.bank, r)).type == pools::kEmpty) bl.row = r, bl.row_auto = true;
+    if (!bl.row) {
+      ++bl.refusals;
+      browse_end("BANK FULL: PICK A ROW");
+      return false;
+    }
+  }
+  int e = bank_entry(bl.bank, bl.row);
+  const pools::Entry& pe = pools::at(k, e);
+  if (!bl.row || pe.type == pools::kInput || pe.type == pools::kBuiltin || pools::locked(k)) {   // the only refusals
+    ++bl.refusals;
+    browse_end(!bl.row ? "000 IS OFF" : pools::locked(k) ? "POOL LOCKED" : "BUILT-IN: UNLOAD FIRST");
+    return false;
+  }
+  srclib::open(bank_kind());   // its folder listed (a browser not opened since boot had none: READING forever)
+  bl.browse = true, bl.cur = 0, bl.bms = now_ms(), bl.bpreviewed = false, bl.note_on = false, bl.ask[0] = 0, bl.menu = -1;
+  browse_send(t, 1);
+  log(CORE_STR("rui: bank list on track %d: files for %c%03d"), t, 'A' + bl.bank, bl.row);
+  return true;
 }
 }  // namespace
 #endif
@@ -696,34 +774,15 @@ CORE_COLD void src_bank_list(int t, int vi, int machine, int code, int on, int w
       log(CORE_STR("rui: preset list on track %d: the card's presets"), t);
       return;
     }
-    int k = bank_kind();
-    if (!bl.row && why == 6) {   // fix1049: FUNC + YES on the SRC view (rytm-mods 0026 1049) on OFF: the bank's first free
-      for (int r = 1; r < srclib::kBankRows && !bl.row; ++r)   // row (an empty pool's first file: A001 on DSP SAMPLE)
-        if (pools::at(k, bank_entry(bl.bank, r)).type == pools::kEmpty) bl.row = r, bl.row_auto = true;
-      if (!bl.row) {
-        ++bl.refusals;
-        browse_end("BANK FULL: PICK A ROW");
-        return;
-      }
-    }
-    int e = bank_entry(bl.bank, bl.row);
-    const pools::Entry& pe = pools::at(k, e);
-    if (!bl.row || pe.type == pools::kInput || pe.type == pools::kBuiltin || pools::locked(k)) {   // the only refusals
-      ++bl.refusals;
-      browse_end(!bl.row ? "000 IS OFF" : pools::locked(k) ? "POOL LOCKED" : "BUILT-IN: UNLOAD FIRST");
-      return;
-    }
-    srclib::open(bank_kind());   // its folder listed (a browser not opened since boot had none: READING forever)
-    bl.browse = true, bl.cur = 0, bl.bms = now_ms(), bl.bpreviewed = false, bl.note_on = false, bl.ask[0] = 0;
-    browse_send(t, 1);
-    log(CORE_STR("rui: bank list on track %d: files for %c%03d"), t, 'A' + bl.bank, bl.row);
+    browse_open(t, why);
     return;
   }
   if (on) {
-    if (machine != kGranMachine && machine != kWaveMachine && machine != kMultiMachine && machine != kDspSample &&
+    if (machine != kGranMachine && machine != kWaveMachine && machine != kMultiMachine && !sample_machine(machine) &&
         machine != kChopMachine && machine != kJuno && machine != kFm)
       return;
     int commits = bl.commits;
+    batch_new = true;   // FILL: the next quick load starts a batch
     bl = BankList();
     bl.on = true, bl.track = t, bl.vi = vi & 7, bl.machine = machine, bl.commits = commits;
     if (machine == kJuno || machine == kFm) {
@@ -740,10 +799,11 @@ CORE_COLD void src_bank_list(int t, int vi, int machine, int code, int on, int w
     return;
   }
   if (!bl.on || bl.track != t) return;
-  bl.on = false, bl.browse = false;
+  preview_off();
+  bl.on = false, bl.browse = false, bl.menu = -1, bl.edit_code = -1;
   bank_closed_ms = now_ms() | 1;
   if (why == 1) {   // YES: the cursor is the new P1 (the Rytm locks it on the steps held at the YES, else the kit)
-    remote_track_write(t, bl.machine == kDspSample ? 10 : 0, bl.row, srclib::lo_of(bl.bank * srclib::kBankRows), 1);   // (P11: SMP)
+    remote_track_write(t, sample_machine(bl.machine) ? 10 : 0, bl.row, srclib::lo_of(bl.bank * srclib::kBankRows), 1);   // (P11: SMP)
     if (bl.preset < 0) pools::seen(bank_kind(), bank_entry(bl.bank, bl.row));   // (the used set: a committed row)
     ++bl.commits;
     log(CORE_STR("rui: bank list on track %d: %c%03d chosen"), t, 'A' + bl.bank, bl.row);
@@ -805,49 +865,222 @@ CORE_COLD bool preset_key(int code) {
 }
 }  // namespace
 #endif
-CORE_COLD bool src_bank_key(int code, bool down) {
+#if CORE_MSAMP
+namespace {
+// 0.5.0: the first empty row of list k from entry `from` on (row 000 of each bank skipped), -1 none
+CORE_COLD int next_empty(int k, int from) {
+  for (int e = from; e < srclib::kEntries; ++e)
+    if (srclib::index_of(e) && pools::at(k, e).type == pools::kEmpty) return e;
+  return -1;
+}
+// A file (or an input / built-in) of the browser's cursor into the pool row e: the pool's rules (one entry per hash,
+// P3's ask on a row in use, refused while the Rytm plays). `how` 0: YES / LOAD (the list stays on the row), 1: RIGHT's
+// quick load (the list on the next empty row after it), 2: LOAD TO NEXT EMPTY (e: that row; the list on it). The key
+// that asked confirms (ask_code).
+CORE_COLD void load_cur(int k, int e, int how, int key) {
+  char path[srclib::kPath];
+  int out = -1, res = pools::kErrPath, type = 0, id = 0;
+  preview_off();
+  if (srclib::item_path(k, bl.cur, path, sizeof path)) {
+    int conf = !strcmp(bl.ask, path) && bl.ask_code == key ? pools::kConfirmed : pools::kAsk;   // P3: the second press on it confirms
+    res = srclib::special(k, path, &type, &id) ? pools::set_special(k, e, type, id, conf) : pools::set_file(k, e, path, &out, conf);
+  }
+  char w[24];
+  int b = e >> 7, r = e & 127;
+  if (res == pools::kOk || res == pools::kPending) {
+    sniprintf(w, sizeof w, "%s %c%03d", res == pools::kPending ? "READING" : "SET", 'A' + b, r);
+    ++bl.assigns;
+    sniprintf(last_file[k], sizeof last_file[k], "%s", path);
+    log(CORE_STR("rui: bank list on track %d: %c%03d = %s"), bl.track, 'A' + b, r, path);
+    bool edit = bl.edit_next;
+    browse_end(w);
+    bl.bank = b, bl.row = r;
+    if (edit) bl.edit_code = e, bl.edit_ms = now_ms();   // SAMPLE EDIT's load (at once, or its ask confirmed)
+    if (how == 1 && bl.track >= 0 && bl.track < 12) {   // FILL: the batch grows (a new opening: a new batch)
+      Batch& q = batch[bl.track];
+      if (batch_new || q.kind != k) q.kind = (int8_t)k, q.first = (int16_t)e;
+      q.last = (int16_t)e, batch_new = false;
+    }
+    if (how == 1) {   // the list on the next empty row (none: stays, said)
+      int n = next_empty(k, e + 1);
+      if (n >= 0) bl.bank = n >> 7, bl.row = n & 127;
+      else bank_note("POOL FULL");
+    }
+    pools::shown(k, bl.bank);   // (takes go to the bank shown)
+    bl.previewed = false, bl.ms = now_ms();   // the row's new file: previewed as a list row (loads it)
+  } else if (res == pools::kExisting && out >= 0) {   // one entry per hash
+    sniprintf(w, sizeof w, "IN POOL %c%03d", 'A' + (out >> 7), out & 127);
+    if (how == 1) sniprintf(last_file[k], sizeof last_file[k], "%s", path);   // (the quick load goes on after it)
+    bool edit = bl.edit_next;
+    browse_end(w);
+    if (how != 1) bl.bank = out >> 7, bl.row = out & 127, bl.previewed = false, bl.ms = now_ms();   // the list goes to its row
+    if (edit) bl.edit_code = out, bl.edit_ms = now_ms();   // (SAMPLE EDIT: the row that has it)
+    pools::shown(k, bl.bank);
+  } else if (res == pools::kErrUsed) {   // P3: ask - the row plays somewhere (a sound on it now, or seen playing)
+    int u = pools::users(k, e);
+    const char* kn = key == 0x41 ? "RIGHT" : "YES";
+    sniprintf(bl.ask, sizeof bl.ask, "%s", path);
+    bl.ask_code = key;
+    if (u) sniprintf(w, sizeof w, "%c%03d USED %d: %s=SET", 'A' + b, r, u, kn);
+    else sniprintf(w, sizeof w, "%c%03d IN USE: %s=SET", 'A' + b, r, kn);
+    bank_note(w);
+  } else {
+    ++bl.refusals;
+    bank_note(res == pools::kErrPlaying ? "PLAYING: STOP FIRST" : pools::result_text(res));
+  }
+}
+// 0.5.0: RIGHT's re-entry - the cursor on the file after the last one loaded, once the folder is listed
+CORE_COLD void seek_last() {
+  int k = bank_kind();
+  if (!bl.seek || !srclib::listing_done(k)) return;
+  bl.seek = false;
+  const char* lf = last_file[k];
+  const char* base = strrchr(lf, '/');
+  int n = srclib::count(k), dl = base ? (int)(base - lf) : -1;
+  const char* cw = srclib::cwd(k);
+  if (!base || dl != (int)strlen(cw) || strncmp(lf, cw, dl)) return;   // (another folder now: its top)
+  for (int i = 0; i < n; ++i) {
+    const char* nm = "";
+    bool dir = false;
+    if (srclib::item(k, i, &nm, &dir, nullptr) && !dir && !strcmp(nm, base + 1)) {
+      bl.cur = i + 1 < n ? i + 1 : i;
+      return;
+    }
+  }
+}
+CORE_COLD void preview_toggle(int k) {
+  char path[srclib::kPath];
+  const char* nm = "";
+  bool dir = true;
+  if (preview::sounding()) {
+    preview::stop();
+    return;
+  }
+  if (!srclib::item(k, bl.cur, &nm, &dir, nullptr) || dir || !srclib::item_path(k, bl.cur, path, sizeof path)) return;
+  if (k == 2 || preview::start(path) < 0) bank_note("NO PREVIEW");   // (an instrument, an input / built-in)
+}
+// FUNC + YES (0.5.0, the owner's hardware test): the file under the cursor plays while YES is held, as the stock
+// browser's; YES's release (31 44 0, with FUNC still held or not: the 0026 forwards it either way) stops it
+CORE_COLD void preview_hold(int k) {
+  char path[srclib::kPath];
+  const char* nm = "";
+  bool dir = true;
+  preview_off();
+  if (!srclib::item(k, bl.cur, &nm, &dir, nullptr) || dir || !srclib::item_path(k, bl.cur, path, sizeof path)) return;
+  if (k == 2 || preview::start(path) < 0) bank_note("NO PREVIEW");   // (an instrument, an input / built-in)
+  else bl.hold = true;
+}
+// PREVIEW LEVEL (0.5.0): knob H in the files (the 0026 forwards it while the host's browser is open), a Sidecar setting
+constexpr int kPrevKnob = 7;
+CORE_COLD void preview_level(int delta) {
+  preview::set_level_db(preview::level_db() + (delta > 0 ? 1 : -1));
+  char b[24];
+  sniprintf(b, sizeof b, "PREVIEW LEVEL %d DB", preview::level_db());
+  bank_note(b);
+}
+CORE_COLD int menu_items() { return kMItems; }
+// The file menu's keys: UP / DOWN an item, YES / RIGHT do it, NO / LEFT close the menu
+CORE_COLD void menu_key(int code) {
+  int k = bank_kind(), e = bank_entry(bl.bank, bl.row);
+  if (code == 0x42 || code == 0x43) {
+    int m = bl.menu;
+    do m += code == 0x42 ? -1 : 1;
+    while (m >= 0 && m < menu_items() && !menu_has(m));
+    if (m >= 0 && m < menu_items()) bl.menu = m;
+    return;
+  }
+  if (code == 0x40 || code == 0x45) {
+    bl.menu = -1;
+    return;
+  }
+  if (code != 0x41 && code != 0x44) return;
+  int it = bl.menu;
+  bl.menu = -1;
+  char path[srclib::kPath];
+  switch (it) {
+    case kMLoad:
+      load_cur(k, e, 0, 0x44);
+      break;
+    case kMLoadNext: {
+      int n = next_empty(k, e);
+      if (n < 0) bank_note("POOL FULL");
+      else load_cur(k, n, 2, 0x44);
+      break;
+    }
+    case kMPreview:
+      preview_toggle(k);
+      break;
+    case kMEdit:   // the load, then the editor on that row (its ask confirmed by YES: the same)
+      bl.edit_next = true;
+      load_cur(k, e, 0, 0x44);
+      if (!bl.browse || !bl.ask[0]) bl.edit_next = false;
+      break;
+    case kMInfo:
+      if (srclib::item_path(k, bl.cur, path, sizeof path) && path[0] == '/' && k != 2) {
+        preview::info(path);
+        bl.info_wait = true;
+        bank_note("READING");
+      } else {
+        bank_note("NO INFO");
+      }
+      break;
+  }
+}
+}  // namespace
+#endif
+CORE_COLD bool src_bank_new_keys() {
+#if CORE_MSAMP
+  return (remote_caps() & kCapsBrowseFunc) || func_seen;
+#else
+  return false;
+#endif
+}
+CORE_COLD bool src_bank_key(int code, int down) {
 #if CORE_MSAMP
   if (!bl.on || code < 0x40 || code > 0x45) return false;
-  if (!down) return true;
+  if (!down) {
+    if (code == 0x44 && bl.hold) preview_off();   // 0.5.0: FUNC + YES's YES released: its preview stops
+    return true;
+  }
+  bool func = down == 2;
+  if (func) func_seen = true;   // a 0.5.0 0026 (its FUNC inside the open list)
+  bool nk = src_bank_new_keys() && bl.preset < 0;   // (the JUNO / FM preset lists: as before)
+  // FUNC + NO in a JUNO / FM preset list: the 0.5.0 0026 closes that list itself (4A on 0, why 2, rytm-mods 9fe0650)
+  // and never forwards it; kept for a build that did (a NO here: the host's list closed, the Rytm's on its next key)
+  if (bl.preset >= 0 && !bl.browse && func && code == 0x45) {
+    src_bank_list(bl.track, bl.vi, bl.machine, 0, 0, 2);
+    return true;
+  }
   if (bl.preset >= 0) return preset_key(code);
   if (bl.browse) {   // rui1040: the files - UP / DOWN a row, RIGHT / YES into a folder, YES on a file sets the row,
     int k = bank_kind(), n = srclib::count(k);   // LEFT / NO up a folder (at the top: back to the list)
+    if (nk && bl.menu >= 0) {   // 0.5.0: the file menu
+      menu_key(code);
+      if (code != 0x44 || bl.browse) bl.bms = now_ms(), bl.bpreviewed = false;
+      return true;
+    }
     const char* nm = "";
     bool dir = false;
     bool have = srclib::item(k, bl.cur, &nm, &dir, nullptr);
     char path[srclib::kPath];
-    if (code == 0x42 && bl.cur > 0) --bl.cur;
-    else if (code == 0x43 && bl.cur < n - 1) ++bl.cur;
+    if (nk && func && code == 0x44) {   // 0.5.0: FUNC + YES - the preview while held
+      // the Rytm repeats a held key: while this preview's YES is held, a repeat is ignored (no restart); YES's
+      // release clears bl.hold, then FUNC + YES plays again
+      if (have && !dir && !bl.hold) preview_hold(k);
+      return true;
+    }
+    preview_off();   // any other key: the preview stops
+    bl.seek = false;
+    int step = nk && func ? 8 : 1;   // 0.5.0: FUNC + UP / DOWN a page
+    if (code == 0x42 && bl.cur > 0) bl.cur = bl.cur > step ? bl.cur - step : 0;
+    else if (code == 0x43 && bl.cur < n - 1) bl.cur = bl.cur + step < n ? bl.cur + step : n - 1;
     else if ((code == 0x41 || code == 0x44) && have && dir) {
       if (srclib::item_path(k, bl.cur, path, sizeof path) && srclib::cd(k, path)) bl.cur = 0;
     } else if (code == 0x44 && have && !dir) {   // a file (or an input / built-in) into the row: the pool's rules
-      int c0 = bank_entry(bl.bank, bl.row), out = -1, res = pools::kErrPath, type = 0, id = 0;
-      if (srclib::item_path(k, bl.cur, path, sizeof path)) {
-        int conf = !strcmp(bl.ask, path) ? pools::kConfirmed : pools::kAsk;   // P3: the second YES on it confirms
-        res = srclib::special(k, path, &type, &id) ? pools::set_special(k, c0, type, id, conf)
-                                                   : pools::set_file(k, c0, path, &out, conf);
-      }
-      char w[24];
-      if (res == pools::kOk || res == pools::kPending) {
-        sniprintf(w, sizeof w, "%s %c%03d", res == pools::kPending ? "READING" : "SET", 'A' + bl.bank, bl.row);
-        ++bl.assigns;
-        log(CORE_STR("rui: bank list on track %d: %c%03d = %s"), bl.track, 'A' + bl.bank, bl.row, path);
-        browse_end(w);
-        bl.previewed = false, bl.ms = now_ms();   // the row's new file: previewed as a list row (loads it)
-      } else if (res == pools::kExisting && out >= 0) {   // one entry per hash: the list goes to its row
-        sniprintf(w, sizeof w, "IN POOL %c%03d", 'A' + (out >> 7), out & 127);
-        browse_end(w);
-        bl.bank = out >> 7, bl.row = out & 127, bl.previewed = false, bl.ms = now_ms();
-      } else if (res == pools::kErrUsed) {   // P3: ask - the row plays somewhere (a sound on it now, or seen playing)
-        int u = pools::users(k, c0);
-        sniprintf(bl.ask, sizeof bl.ask, "%s", path);
-        if (u) sniprintf(w, sizeof w, "%c%03d USED %d: YES=SET", 'A' + bl.bank, bl.row, u);
-        else sniprintf(w, sizeof w, "%c%03d IN USE: YES=SET", 'A' + bl.bank, bl.row);
-        bank_note(w);
-      } else {
-        ++bl.refusals;
-        bank_note(res == pools::kErrPlaying ? "PLAYING: STOP FIRST" : pools::result_text(res));
-      }
+      load_cur(k, bank_entry(bl.bank, bl.row), 0, 0x44);
+    } else if (nk && code == 0x41 && have && !dir) {   // 0.5.0: RIGHT loads, FUNC + RIGHT the file menu
+      if (func) bl.menu = kMLoad;
+      else load_cur(k, bank_entry(bl.bank, bl.row), 1, 0x41);
     } else if (code == 0x40 || code == 0x45) {
       if (srclib::cwd(k)[0]) srclib::up(k), bl.cur = 0;
       else {
@@ -856,8 +1089,31 @@ CORE_COLD bool src_bank_key(int code, bool down) {
       }
     }
     if (bl.browse == false) bl.row_auto = false;
-    if (code != 0x44) bl.ask[0] = 0;   // (moved away: the next YES asks again)
+    if (code != bl.ask_code) bl.ask[0] = 0, bl.edit_next = false;   // (moved away: the next press asks again)
     bl.bms = now_ms(), bl.bpreviewed = false;
+    return true;
+  }
+  if (nk) {   // 0.5.0: the list - FUNC + LEFT / RIGHT banks, RIGHT the files (the last folder, after the last file),
+              // LEFT nothing, FUNC + UP / FUNC + NO the bank's OFF row (YES then sets it: the unload)
+    if (code == 0x40 && func && bl.bank > 0) --bl.bank;
+    else if (code == 0x41 && func && bl.bank < srclib::kBanks - 1) ++bl.bank;
+    else if (code == 0x41 && !func) {
+      int k = bank_kind();
+      const char* lf = last_file[k];
+      const char* sl = lf[0] ? strrchr(lf, '/') : nullptr;
+      if (sl) {   // the last file's folder (gone: the browser's own)
+        char dir[srclib::kPath];
+        sniprintf(dir, sizeof dir, "%.*s", (int)(sl - lf), lf);
+        if (strcmp(srclib::cwd(k), dir)) srclib::cd(k, dir);
+      }
+      if (browse_open(bl.track, 0) && sl) bl.seek = true, seek_last();
+      return true;
+    } else if (code == 0x42 && func) bl.row = 0;
+    else if (code == 0x45 && func) bl.row = 0, bank_note("OFF: YES SETS");   // (the owner: YES confirms the unload)
+    else if (code == 0x42 && bl.row > 0) --bl.row;
+    else if (code == 0x43 && bl.row < srclib::kBankRows - 1) ++bl.row;
+    pools::shown(bank_kind(), bl.bank);
+    bl.ms = now_ms(), bl.previewed = false;
     return true;
   }
   if (code > 0x43) return true;   // (YES / NO come only while the files are open: a late one after the Rytm let go)
@@ -875,6 +1131,10 @@ CORE_COLD bool src_bank_key(int code, bool down) {
 }
 CORE_COLD bool src_bank_enc(int e, int delta, bool func) {
 #if CORE_MSAMP
+  if (bl.on && bl.browse && bl.preset < 0 && e == kPrevKnob) {   // 0.5.0: PREVIEW LEVEL, a dB a step (paced as a list's)
+    if (int d = list_turn(e, delta)) preview_level(d);
+    return true;
+  }
   if (!bl.on || e != 0) return false;
   delta = list_turn_long(e, delta);
   if (!delta) return true;
@@ -888,7 +1148,14 @@ CORE_COLD bool src_bank_enc(int e, int delta, bool func) {
     if (p < 0) p = 0;
     return true;
   }
+  if (bl.browse && bl.menu >= 0) {   // 0.5.0: the file menu's item
+    int m = bl.menu + (delta > 0 ? 1 : -1);
+    if (m >= 0 && m < menu_items() && !menu_has(m)) m += delta > 0 ? 1 : -1;
+    if (m >= 0 && m < menu_items()) bl.menu = m;
+    return true;
+  }
   if (bl.browse) {   // rui1040: knob A moves the files' cursor
+    preview_off(), bl.seek = false;   // 0.5.0: a move stops the preview
     int n = srclib::count(bank_kind()), c = bl.cur + delta * (func ? 8 : 1);
     bl.cur = c >= n ? n - 1 : c;
     if (bl.cur < 0) bl.cur = 0;
@@ -916,6 +1183,32 @@ CORE_COLD const Page* src_bank_page(int t, int machine) {
     }
     return bl.preset == presets::kIxJuno ? &kJnBankPage : &kFmBankPage;
   }
+  seek_last();   // 0.5.0: RIGHT's re-entry, once the folder is listed
+  if (bl.info_wait && preview::status().st != preview::kHeader && preview::status().st != preview::kOpening) {   // INFO's answer
+    bl.info_wait = false;
+    const preview::Status& ps = preview::status();
+    char w[24];
+    if (ps.st == preview::kDone && !ps.play && ps.rate) {
+      uint32_t ds = (uint32_t)((uint64_t)ps.frames * 10 / ps.rate);
+      sniprintf(w, sizeof w, "%uK %uB %s %u.%uS", (unsigned)((ps.rate + 500) / 1000), (unsigned)ps.bits, ps.ch > 1 ? "ST" : "MO",
+                (unsigned)(ds / 10), (unsigned)(ds % 10));
+    } else {
+      sniprintf(w, sizeof w, "NOT AUDIO");
+    }
+    bank_note(w);
+  }
+  if (bl.edit_code >= 0) {   // 0.5.0: the file menu's SAMPLE EDIT - the editor once the row's file is in (or a refusal)
+    const pools::Entry& pe = pools::at(pools::kSamples, bl.edit_code);
+    if (pe.type == pools::kSample || now_ms() - bl.edit_ms > 5000 || !pools::pending()) {
+      int c = bl.edit_code;
+      bl.edit_code = -1;
+      bl.on = false, bl.browse = false;   // (the list's page gives way; the Rytm's list closes on its next key)
+      bank_closed_ms = now_ms() | 1;
+      sedit_page_open(-1, c);
+      return nullptr;
+    }
+  }
+  if (bl.browse && !bl.bpreviewed && preview::sounding()) bl.bpreviewed = true;   // (not over the dry preview)
   if (bl.browse && !bl.bpreviewed && now_ms() - bl.bms >= kSettleMs) {   // rui1040: a file rested on - previewed when
     bl.bpreviewed = true;                                                   // the machine's list has it (its LIBRARY
     int k = bank_kind();                                                    // window: the same browser's folder)
@@ -939,17 +1232,27 @@ CORE_COLD const Page* src_bank_page(int t, int machine) {
     }
   }
   return machine == kGranMachine || machine == kChopMachine ? &kGrBankPage : machine == kWaveMachine ? &kWtBankPage
-       : machine == kDspSample ? &kDsBankPage : &kMsBankPage;
+       : machine == kDspSample ? &kDsBankPage : machine == kSmplMachine ? &kDsBankPageDt : &kMsBankPage;
 #else
   (void)t, (void)machine;
   return nullptr;
 #endif
 }
+CORE_COLD bool fill_batch(int t, int kind, int* first, int* last) {
+#if CORE_MSAMP
+  if (t < 0 || t >= 12 || batch[t].kind != kind || batch[t].first < 0) return false;
+  *first = batch[t].first, *last = batch[t].last;
+  return true;
+#else
+  (void)t, (void)kind, (void)first, (void)last;
+  return false;
+#endif
+}
 CORE_COLD BankListState src_bank_state() {
 #if CORE_MSAMP
-  return BankListState{bl.on, bl.track, bl.machine, bl.bank, bl.row, bl.commits, bl.browse, bl.cur, bl.assigns, bl.refusals};
+  return BankListState{bl.on, bl.track, bl.machine, bl.bank, bl.row, bl.commits, bl.browse, bl.cur, bl.assigns, bl.refusals, bl.menu};
 #else
-  return BankListState{false, -1, -1, 0, 0, 0, false, 0, 0, 0};
+  return BankListState{false, -1, -1, 0, 0, 0, false, 0, 0, 0, -1};
 #endif
 }
 

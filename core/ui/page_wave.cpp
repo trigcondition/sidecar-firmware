@@ -273,9 +273,9 @@ namespace {
 CORE_COLD int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 // MOD's mode (voices.cpp dsp_mode's rule, here so the Teensy keeps that one inlined in its ITCM callers); -1: streamed.
 // mod: MOD's value as the page reads it (the Source's P12: the SRC view's is the Rytm's own, not the voice's yet)
-CORE_COLD int mode_of(int vi, float mod) {
+CORE_COLD int mode_of(int vi, float mod, bool smpl) {
   if (!psram) return -1;
-  return v[vi & 7].grain ? (int)rytm::SampleModes::kGrain : rytm::SampleModes::Zone(mod, rytm::SampleModes::kModes);
+  return v[vi & 7].grain ? (int)rytm::SampleModes::kGrain : core::dsps_mode_of(smpl, mod);   // (SAMPLER's PLAY zones or MOD's)
 }
 
 // The waveform in rows k.y..k.y+k.h-1, x0..x0+w-1, normalised; columns outside [a, b] dithered (a > b: none)
@@ -324,17 +324,31 @@ CORE_COLD void draw_sample(Canvas& c, const Rect& r, const Cell& cell, const Sou
   int x0 = r.x + 1, wd = r.w - 28, y0 = r.y + 2, h = kLabelDy - 3;
   int sta = s.param(cell.in[0]), end = s.param(cell.in[1]), lop = s.param(cell.in[2]);
   int xs = xpos(x0, wd, sta), xe = xpos(x0, wd, end);
-  bool rev = end < sta;
-  int a = rev ? xe : xs, b = rev ? xs : xe;
+  // SAMPLER (remote_voice_smpl): PLAY's REV / RLP reverse (END < STA then forward), FLP / RLP loop, from LOOP's point
+  // when it lies inside the region (else, and 0 OFF, the whole region); DSP SAMPLE: MOD's LOOP, or ONE / streamed with
+  // LOP >= 1, and END < STA reversed
+  const bool smpl = remote_voice_smpl(vi);
+  const int z = v[vi & 7].grain ? -1 : core::dsps_play_zone(smpl, (float)s.param(11));
+  const bool zrev = z == core::kPlayRev || z == core::kPlayRlp;
+  bool rev = (end < sta) != zrev;
+  int a = end < sta ? xe : xs, b = end < sta ? xs : xe;
   plot(c, w, x0, y0, wd, h, a, b);
-  int mode = mode_of(vi, (float)s.param(11));
-  bool loop = mode == rytm::SampleModes::kLoop || (mode <= 0 && lop >= 1);
+  int mode = mode_of(vi, (float)s.param(11), smpl);
+  bool loop = z >= 0 ? z == core::kPlayFlp || z == core::kPlayRlp : mode == rytm::SampleModes::kLoop || (mode <= 0 && lop >= 1);
   c.vline(a, y0, y0 + h - 1, kOn);
   c.vline(b, y0, y0 + h - 1, kOn);
   if (loop) {   // the loop: brackets at both ends, a dotted line over the region (LOOP's ping-pong: both ways)
-    bracket(c, a, y0 - 1, h + 2, 1);
-    bracket(c, b, y0 - 1, h + 2, -1);
-    c.hline(a + 2, b - 2, y0 - 1, kDither);
+    int la = a, lb = b;
+    if (z >= 0 && lop >= 1) {   // LOOP's point inside the region: the loop from it to the far end (reversed: the near)
+      int xl = xpos(x0, wd, lop);
+      if (xl > a && xl < b) {
+        (rev ? lb : la) = xl;
+        for (int y = y0; y < y0 + h; y += 2) c.pixel(xl, y, kOn);
+      }
+    }
+    bracket(c, la, y0 - 1, h + 2, 1);
+    bracket(c, lb, y0 - 1, h + 2, -1);
+    c.hline(la + 2, lb - 2, y0 - 1, kDither);
   }
   if (mode == rytm::SampleModes::kSlice) {
     int n = rytm::SampleModes::SliceCount((float)lop);
@@ -348,7 +362,8 @@ CORE_COLD void draw_sample(Canvas& c, const Rect& r, const Cell& cell, const Sou
     c.hline(x, x + 4, y, kXor);
     c.pixel(x + 1, y - 1, kXor), c.pixel(x + 1, y + 1, kXor);
   }
-  const char* name = mode < 0 ? (lop >= 1 ? "LOOP" : "ONE") : rytm::SampleModes::Name(mode);
+  const char* name = z >= 0 ? core::dsps_play_name(true, (float)s.param(11))
+                     : mode < 0 ? (lop >= 1 ? "LOOP" : "ONE") : rytm::SampleModes::Name(mode);
   c.put_text(slot, kRSmall, r.x + r.w - 13, y0 + h / 2 - 2, name, kAlignCentre);
   status(c, w, s, x0, wd, y0, h, kSlotStatus);
   int ph = core::dsp_playhead(vi);   // the playhead: as CHOP's, an inverted column
@@ -439,6 +454,36 @@ UI_ROM const Page kDspsSrcPage = {
     {10, 1, 2, 3, 4, 5, 6, 7},
     {"SMP", "STR", "BRI", "DMP", "MIX", "SEED", "TUN", "LEV"},   // rui1050: P6 (never read: FB fixed) SEED MOD's slot
 };
+// 0.5.0: SAMPLER (machines.h kSmplMachine; DSP SAMPLE's engine, no resonator): page 1 (SRC, the waveform's) SMP STRT
+// END PLAY / TUNE FINE LOOP LEV - P11 P13 P14 P12 / P9 P10 P15 P16, DSP SAMPLE's words - page 2 empty (the Rytm's knob
+// order since rytm-mods feature/sampler-layout, owner 2026-11-12: STRT / END show in the waveform, so TUNE / FINE take
+// the knob cells under it). The P-numbers are the words, so sounds, locks and targets are unchanged; only the knobs moved.
+// The same page as the voice's own and as the SRC view (src_view_page: itself); PLAY in GRAIN's zone: POS SIZE (B C)
+// and DENS (G) under GRAIN's picture.
+UI_ROM const Cell kSmplCells[] = {
+    {kDraw, 0, 0, 4, 1, {12, 13, 14, 11}, kDrawSample, nullptr},
+    {kKnob, 0, 1, 1, 1, {8, kNone, kNone, kNone}, 0, nullptr},
+    {kKnob, 1, 1, 1, 1, {9, kNone, kNone, kNone}, 0, nullptr},
+    {kKnob, 2, 1, 1, 1, {14, kNone, kNone, kNone}, 0, nullptr},
+    {kBar, 3, 1, 1, 1, {15, kNone, kNone, kNone}, 0, nullptr},
+};
+UI_ROM const Cell kSmplGrainCells[] = {
+    {kDraw, 0, 0, 4, 1, {12, 13, 14, 11}, kDrawGrain, nullptr},
+    {kKnob, 0, 1, 1, 1, {8, kNone, kNone, kNone}, 0, nullptr},
+    {kKnob, 1, 1, 1, 1, {9, kNone, kNone, kNone}, 0, nullptr},
+    {kDraw, 2, 1, 1, 1, {13, 14, kNone, kNone}, kDrawCloud, nullptr},   // the cloud: SIZE wide grains, DENS many
+    {kBar, 3, 1, 1, 1, {15, kNone, kNone, kNone}, 0, nullptr},
+};
+UI_ROM const Page kDspsPageDt = {
+    "SAMPLER", kSmplMachine, sizeof kSmplCells / sizeof kSmplCells[0], kSmplCells,
+    {10, 12, 13, 11, 8, 9, 14, 15},
+    {"SMP", "STRT", "END", "PLAY", "TUNE", "FINE", "LOOP", "LEV"},
+};
+UI_ROM const Page kGrainPageDt = {
+    "GRAIN", kSmplMachine, sizeof kSmplGrainCells / sizeof kSmplGrainCells[0], kSmplGrainCells,
+    {10, 12, 13, 11, 8, 9, 14, 15},
+    {"SMP", "POS", "SIZE", "PLAY", "TUNE", "FINE", "DENS", "LEV"},
+};
 // A Rytm before rytm-mods 7h (its 19s say no 36 names, remote_rytm_040): its knob A is still ENG
 UI_ROM const Page kDspsSrcPage030 = {
     "DSP SAMPLE", kDspSample, sizeof kDspsSrcCells / sizeof kDspsSrcCells[0], kDspsSrcCells,
@@ -471,11 +516,15 @@ CORE_COLD const Page* src_view_page(const Page* p) {
 }
 
 CORE_COLD const Page* code_page_for_machine(int machine) {
-  return machine == kDspSample ? &kDspsPage : gfx_page_for_machine(machine);
+  if (machine == kDspSample) return &kDspsPage;
+  if (machine == kSmplMachine) return &kDspsPageDt;
+  return gfx_page_for_machine(machine);
 }
 
 CORE_COLD const Page* page_for_voice(int machine, int vi, int mod) {
-  if (machine == kDspSample && mode_of(vi, mod < 0 ? v[vi & 7].p[11] : (float)mod) == rytm::SampleModes::kGrain) return &kGrainPage;
+  if (sample_machine(machine) &&
+      mode_of(vi, mod < 0 ? v[vi & 7].p[11] : (float)mod, machine == kSmplMachine) == rytm::SampleModes::kGrain)
+    return machine == kSmplMachine ? &kGrainPageDt : &kGrainPage;
   if (machine == kGrainMachine) return &kGrainMachinePage;
   return page_for_machine(machine);
 }
@@ -485,8 +534,10 @@ CORE_COLD uint32_t draw_key(const Cell& c, const Source& s) {
   if (c.arg == kDrawSample || c.arg == kDrawGrain) {
     int vi = s.voice() < 0 ? 0 : s.voice() & 7, st = 0, prog = 0;
     const void* w = wave_of_slot(smp_slot(s), &st, &prog);
-    h = (uint32_t)(w ? (uintptr_t)w : 1) ^ (uint32_t)st << 8 ^ (uint32_t)(prog / 16) << 12 ^ (uint32_t)(mode_of(vi, (float)s.param(11)) + 1) << 20 ^
-        (uint32_t)(smp_slot(s) < 1) << 28;
+    const bool smpl = remote_voice_smpl(vi);
+    h = (uint32_t)(w ? (uintptr_t)w : 1) ^ (uint32_t)st << 8 ^ (uint32_t)(prog / 16) << 12 ^ (uint32_t)(mode_of(vi, (float)s.param(11), smpl) + 1) << 20 ^
+        (uint32_t)(smp_slot(s) < 1) << 28 ^ (uint32_t)smpl << 29 ^
+        (uint32_t)(core::dsps_play_zone(smpl, (float)s.param(11)) + 1) << 24;   // (REV / FLP: the same engine mode as FWD)
     if (c.arg == kDrawSample) {   // the playhead moves the picture: 2 px steps of the ~100 (a tile or two a frame)
       static LiveKey keys[8];     // 0.4.3: at most every kLiveMs
       int ph = core::dsp_playhead(vi);

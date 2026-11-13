@@ -48,6 +48,7 @@ void source(int src, bool present, const char* name);      // a keyboard plugged
 bool computer_on();                                        // the computer's notes come here (else straight to the Rytm)
 int selected();                                            // the selected track as known now (0..11), -1 unknown
 int auto_channel();                                        // the Rytm's auto channel 1..16 (keys=auto:N, default 14)
+const char* source_name(int src);                          // source src's name as shown ("MPKMINI"), "" when not present
 
 struct View {
   int src;               // the last source played (-1 none yet)

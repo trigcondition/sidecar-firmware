@@ -114,6 +114,11 @@ CORE_COLD const char* set_name(int set) {   // (a static buffer: the control cor
   return b;
 }
 
+CORE_COLD int engines() { return MDT_ENGINES; }
+CORE_COLD int types(int e) { return e >= 0 && e < MDT_ENGINES ? mdt_count[e] : 0; }
+CORE_COLD const char* engine_name(int e) { return e >= 0 && e < MDT_ENGINES ? mdt_engine_names[e] : ""; }
+CORE_COLD const char* type_name(int e, int t) { return t >= 0 && t < types(e) ? mdt_type_names[mdt_base[e] + t] : ""; }
+
 // the control core's cost (/status "md", review M4): a call's us; a TYPE change's set-up (params) and its trig's tail
 // render + set-up (note_on) are the expensive ones, counted apart from the plain knob and trig calls
 static Cost g_cost;
@@ -149,6 +154,12 @@ CORE_COLD void params(int vi, const float* p) {
   set_knobs(vi, before);
 }
 CORE_COLD int voice_set(int vi) { return vi >= 0 && vi < kVoices ? set_of(g_q[vi]) : -1; }
+CORE_COLD const char* label(int vi, int k) {   // (as on_ask's description: P1..P8 the set's controls, P9..P11)
+  int set = voice_set(vi);
+  if (set < 0 || k < 0 || k > 10) return nullptr;
+  if (k >= 8) return mdt_knob_short[k - 8];
+  return k < mdk_builtin_controls(set) && mdt_label[set][k][1][0] ? mdt_label[set][k][1] : nullptr;
+}
 CORE_COLD void trig(int vi, int vel) {
   if (!g_ok || vi < 0 || vi >= kVoices) return;
   uint32_t t0 = now_us();

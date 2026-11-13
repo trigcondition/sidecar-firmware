@@ -20,6 +20,7 @@
 #include "engine.h"
 #include "voices.h"
 #include "wav.h"
+#include "rui_png.h"
 
 using namespace core::ui;
 
@@ -36,6 +37,13 @@ static void report03(int vi, int m, const uint8_t p[16]) {
   for (int k = 0; k < 16; ++k) r[6 + 2 * k] = p[k], r[7 + 2 * k] = 0;
   r[38] = 0xF7;
   core::engine_sysex(r, 39);
+}
+// SAMPLER (0.5.0): DSP SAMPLE's flag with its sound tag (machines.h kSmplTag), the 41-byte 0x03
+static void report03_smpl(int vi, const uint8_t p[16], int tag = core::kSmplTag) {   // (another tag: DSP SAMPLE's)
+  uint8_t r[41] = {0xF0, 0x7D, 0x52, 0x54, 0x03, (uint8_t)(core::kDspSample | vi)};
+  for (int k = 0; k < 16; ++k) r[6 + 2 * k] = p[k], r[7 + 2 * k] = 0;
+  r[38] = (uint8_t)(tag >> 7), r[39] = (uint8_t)(tag & 0x7F), r[40] = 0xF7;
+  core::engine_sysex(r, 41);
 }
 static bool shown(const char* s) {
   uint8_t t[36 * kTextSlots];
@@ -143,6 +151,73 @@ int main() {
   report03(0, core::kDspSample, p);
   tick(30);
   CHECK(shown("SMP OFF"));
+
+  // ---- 0.5.0, SAMPLER (a 0x20 report with SAMPLER's tag): page 1 SMP STRT END PLAY / TUNE FINE LOOP LEV (owner 2026-11-12), the SRC view
+  // the same page; PLAY's name, REV's arrow, a loop from LOOP's point; the labels the LFO names params by; a page edit
+  // keeps the voice SAMPLER; DSP SAMPLE's page as before
+  {
+    const std::string pd = rui_png_dir("RUI_PAGES", "build/rui_pages");   // the pages for the docs and the review
+    uint8_t fb[kBytes];
+    auto png = [&](const char* n) { preview_sent(fb); CHECK(rui_png(pd, n, fb)); };
+    const Page* old = page_for_voice(core::kDspSample, 0);
+    char lb[8];
+    auto vl = [&](int vi, int k) { return std::string(voice_label(vi, k, lb, sizeof lb)); };
+    // DSP SAMPLE: its SMPL page's labels and (2026-11, the targets' names) its SRC page's: P5 MIX, P1 ENG (an older Rytm's
+    // SRC page here: SMP on SMPL's knob C, P11, is no SRC knob of it)
+    CHECK(vl(0, 4) == "MIX" && vl(0, 0) == "ENG" && vl(0, 10) == "" && vl(0, 8) == "TUN" && page_for_machine(core::kDspSample) == old);
+    p[10] = 1, p[11] = 0, p[12] = 0, p[13] = 120, p[14] = 0;
+    report03_smpl(0, p);
+    tick(30);
+    CHECK(core::v[0].smpl && remote_voice_smpl(0));
+    const Page* dt = page_for_voice(core::kSmplMachine, 0);
+    CHECK(dt != old && src_view_page(dt) == dt && page_for_machine(core::kSmplMachine) == dt && !strcmp(dt->title, "SAMPLER"));
+    CHECK(page_for_voice(core::kDspSample, 0) == old);   // (DSP SAMPLE's own, whatever the voice)
+    const char* want[8] = {"SMP", "STRT", "END", "PLAY", "TUNE", "FINE", "LOOP", "LEV"};
+    const int enc[8] = {10, 12, 13, 11, 8, 9, 14, 15};   // the P-numbers stay the words: only the knobs moved
+    for (int e = 0; e < 8; ++e) CHECK(!strcmp(dt->label[e], want[e]) && dt->enc[e] == enc[e]);
+    // the knob cells under the waveform (E..H) show TUNE FINE LOOP LEV; STRT / END are the waveform's markers
+    int below[4] = {-1, -1, -1, -1};
+    for (int i = 0; i < dt->ncells; ++i)
+      if (dt->cells[i].row == 1 && dt->cells[i].col < 4) below[dt->cells[i].col] = dt->cells[i].in[0];
+    CHECK(below[0] == 8 && below[1] == 9 && below[2] == 14 && below[3] == 15);
+    CHECK(vl(0, 8) == "TUNE" && vl(0, 14) == "LOOP" && vl(0, 10) == "SMP" && vl(0, 4) == "");   // (P1..P8: no knobs on SAMPLER)
+    CHECK(shown("SAMPLER"));
+    // (STRT 60 END 90 still: the page's own turns above are held over the reports)
+    const int xs = 1 + (int)core::v[0].p[12] * 99 / 120, xe = 1 + (int)core::v[0].p[13] * 99 / 120;
+    CHECK(shown("FWD") && !px(xs + 1, 10));
+    png("sampler_fwd.png");
+    const int arrow = px(xs + 4, 12), l0 = (int)core::v[0].p[14];
+    from_rytm(0x32, 3, 64 + 15, 0), tick(30);   // PLAY 15: REV, the arrow (inverted) at the region's top left
+    CHECK((int)core::v[0].p[11] == 15 && shown("REV") && px(xs + 4, 12) != arrow && core::v[0].smpl);
+    png("sampler_rev.png");
+    from_rytm(0x32, 3, 64 + 14, 0), tick(30);   // PLAY 29: FLP, brackets over the whole region (LOOP 0: OFF)
+    CHECK(shown("FLP") && px(xs + 1, 10) && px(xe - 1, 10));
+    from_rytm(0x32, 6, 64 + 75 - (int)core::v[0].p[14], 0), tick(30);   // LOOP 75: the loop from there, not from STRT
+    int xl = 1 + 75 * 99 / 120;
+    CHECK((int)core::v[0].p[14] == 75 && px(xl + 1, 10) && !px(xs + 1, 10) && px(xe - 1, 10));
+    png("sampler_flp_loop75.png");
+    from_rytm(0x32, 3, 64 + 28, 0), tick(30);   // PLAY 57: SLICE (DSP SAMPLE's GRAIN zone)
+    CHECK(shown("SLICE") && page_for_voice(core::kSmplMachine, 0) == dt);
+    png("sampler_slice.png");
+    from_rytm(0x32, 3, 64 + 15, 0), tick(30);   // PLAY 72: GRAIN, its page with SAMPLER's knobs
+    const Page* g = page_for_voice(core::kSmplMachine, 0);
+    CHECK(!strcmp(g->title, "GRAIN") && !strcmp(g->label[4], "TUNE") && !strcmp(g->label[1], "POS") && g->enc[4] == 8 &&
+          g->enc[1] == 12 && !strcmp(g->label[6], "DENS") && g->enc[6] == 14);
+    png("sampler_grain.png");
+    auto turn = [&](int e, int d) {   // (a turn's delta: +-63 at most)
+      for (; d; tick(30)) { int k = d > 60 ? 60 : d < -60 ? -60 : d; from_rytm(0x32, (uint8_t)e, (uint8_t)(64 + k), 0), d -= k; }
+    };
+    turn(3, -(int)core::v[0].p[11]);   // PLAY and LOOP back as they were (held turns)
+    turn(6, l0 - (int)core::v[0].p[14]);
+    CHECK(core::v[0].smpl);
+    report03(0, core::kDspSample, p);   // a report without the tag field: still SAMPLER (review M2)
+    tick(30);
+    CHECK(core::v[0].smpl && remote_voice_smpl(0) && shown("FWD"));
+    report03_smpl(0, p, 0);   // DSP SAMPLE again (its tag, 0): its pages as they were
+    tick(30);
+    CHECK(!core::v[0].smpl && page_for_voice(core::kDspSample, 0) == old && (int)core::v[0].p[11] == 0 && shown("ONE"));
+    png("dsps_page.png");
+  }
 
   // GRAIN: MOD in its zone (56) with the sample RAM -> the GRAIN page; the window inverted around POS, SIZE wide
   {
@@ -321,6 +396,70 @@ int main() {
     CHECK(shown("GRAIN") && shown("SMP") && !shown("POS") && remote_stats().page == 4);   // the SRC page's knobs under the grain view
     const uint8_t off[9] = {0xF0, 0x7D, 0x52, 0x54, 0x29, 1, 0, 0, 0xF7};
     core::engine_sysex(off, 9);
+  }
+  // ---- 0.5.0 review M2: the page's own 0x03 (a page edit) never turns a SAMPLER voice or page into DSP SAMPLE, and a
+  // report without the tag field leaves the voice as it was: before the voice's first trig (a fresh 33 names SAMPLER), a
+  // kit change from DSP SAMPLE to SAMPLER, a shared voice (RS / CP) whose first track is DSP SAMPLE
+  {
+    remote_rytm_040(false), remote_reset();   // (a fresh link without the SRC view: the voice pages in the page cycle)
+    from_rytm(0x30, 0, 0, 3), tick(30);
+    auto t33 = [&](int t, int m) {
+      const uint8_t mm[11] = {0xF0, 0x7D, 0x52, 0x54, 0x33, 1, (uint8_t)t, 1, (uint8_t)m, 0x20, 0xF7};
+      core::engine_sysex(mm, 11);
+    };
+    auto open_voice = [&](int vi) {
+      from_rytm(0x30, 0, 0, 3), tick(30);
+      from_rytm(0x30, 0, 1, 0), tick(30);
+      for (int i = 0; i < 16 && !(remote_stats().page == 1 && remote_stats().voice == vi); ++i) from_rytm(0x31, 0, 0x41, 1), tick(30);
+      CHECK(remote_stats().page == 1 && remote_stats().voice == vi);
+    };
+    auto edit = [&]() { from_rytm(0x32, 1, 65, 0), tick(30), from_rytm(0x32, 1, 63, 0), tick(30); };   // knob B up, down
+    uint8_t q[16] = {0, 64, 64, 64, 0, 64, 64, 100, 64, 64, 1, 0, 0, 120, 0, 100};
+    report03_smpl(0, q, 0), tick(30);   // BD's last report: DSP SAMPLE's (its tag)
+    t33(0, core::kRytmSampler), tick(30);   // then a 33: BD on SAMPLER, no trig since
+    CHECK(!core::v[0].smpl && remote_voice_smpl(0));
+    open_voice(0);
+    CHECK(shown("SAMPLER"));
+    edit();
+    CHECK(core::v[0].smpl);   // the edit's 0x03 carried SAMPLER's tag
+    report03(0, core::kDspSample, q), tick(30);
+    CHECK(core::v[0].smpl);   // no tag field: no news
+    report03_smpl(0, q, 0), t33(0, 45), tick(30);   // BD's kit: DSP SAMPLE (its trig and 33)
+    CHECK(!core::v[0].smpl && !remote_voice_smpl(0) && shown("DSP SAMPLE"));
+    t33(0, core::kRytmSampler), tick(30);   // the next kit: SAMPLER, before its first trig
+    edit();
+    CHECK(core::v[0].smpl);
+    t33(2, 45), t33(3, core::kRytmSampler);   // RS (first on voice 8) DSP SAMPLE, CP SAMPLER; CP played last
+    report03_smpl(7, q), tick(30);
+    CHECK(core::v[7].smpl && !remote_voice_smpl(7));
+    open_voice(7);
+    edit();
+    CHECK(core::v[7].smpl);
+    report03(7, core::kDspSample, q), tick(30);
+    CHECK(core::v[7].smpl);
+    report03_smpl(7, q, 0), tick(30);   // RS's trig (DSP SAMPLE's tag): DSP SAMPLE
+    CHECK(!core::v[7].smpl);
+    // the reverse (re-review LOW 1): RS SAMPLER (first on the voice), CP DSP SAMPLE, CP selected on the Rytm and played
+    // last: an edit is CP's, so no SAMPLER tag; with RS selected, the edit is RS's: SAMPLER
+    auto select = [&](int t, int m) {   // 49 02: the Rytm's selected track, its machine, its name
+      uint8_t mm[22] = {0xF0, 0x7D, 0x52, 0x54, 0x49, 1, 2, (uint8_t)t, (uint8_t)m};
+      for (int i = 0; i < 12; ++i) mm[9 + i] = i < 2 ? (uint8_t)"RSCP"[2 * (t - 2) + i] : 0x20;
+      mm[21] = 0xF7;
+      core::engine_sysex(mm, 22);
+      tick(30);
+    };
+    t33(2, core::kRytmSampler), t33(3, 45), tick(30);
+    select(3, 45);
+    CHECK(remote_selected_track(nullptr) == 3);
+    report03_smpl(7, q, 0), tick(30);   // CP's trig
+    CHECK(!core::v[7].smpl && remote_voice_smpl(7));
+    open_voice(7);
+    edit();
+    CHECK(!core::v[7].smpl);   // CP's edit: DSP SAMPLE stays
+    select(2, core::kRytmSampler);
+    edit();
+    CHECK(core::v[7].smpl);   // RS's edit: SAMPLER
+    from_rytm(0x30, 0, 0, 3), tick(30);
   }
   printf("ALL UI WAVE TESTS PASS\n");
   return 0;

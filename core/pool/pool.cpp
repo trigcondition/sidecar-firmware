@@ -12,6 +12,8 @@
 #include "../seq/seq.h"
 #include "../song/song.h"
 #include "../fx/insert.h"
+#include "../mod/scene.h"
+#include "../mod/xypad.h"
 #if CORE_MSAMP
 #include "../bundle/kits.h"
 #include "../bundle/prjslot.h"
@@ -22,6 +24,7 @@
 #include "../lib/srclib.h"
 #include "../store/store.h"
 #include "../msamp/cardq.h"
+#include "../samp/sedit.h"
 #include "../presets/preset_index.h"
 #endif
 
@@ -109,8 +112,8 @@ CORE_COLD void folder_path(int f, char* out, int max) {
   sniprintf(out + l, max - l, "%s%s", l ? "/" : "", cards.folder(f).name);
 }
 
-// A path under /Samples -> folder and file (name order); false if not there.
-CORE_COLD bool find_path(const char* path, int* folder, int* file) {
+// A path under /Samples -> its folder and the name's place in path (false: a folder not there)
+static CORE_COLD bool find_folder(const char* path, int* folder, const char** leaf) {
   int f = 0;
   const char* p = path;
   for (;;) {
@@ -129,8 +132,28 @@ CORE_COLD bool find_path(const char* path, int* folder, int* file) {
     f = next;
     p = slash + 1;
   }
+  *folder = f, *leaf = p;
+  return true;
+}
+
+// A path under /Samples -> folder and file (name order); false if not there.
+CORE_COLD bool find_path(const char* path, int* folder, int* file) {
+  int f;
+  const char* p;
+  if (!find_folder(path, &f, &p)) return false;
   card::FileRec r;
-  for (int i = 0; i < cards.folder(f).nfiles; ++i)
+  const int n = cards.folder(f).nfiles;
+#if CORE_MSAMP
+  // the files added since boot first (cards.add_file): one there is newer than a scanned file of the same name (a file
+  // written again after boot)
+  for (int i = n, all = cards.files_in(f); i < all; ++i)
+    if (cards.file(f, i, &r) && strncmp(r.name, p, card::kName) == 0) {
+      *folder = f;
+      *file = i;
+      return true;
+    }
+#endif
+  for (int i = 0; i < n; ++i)
     if (cards.file(f, i, &r) && strncmp(r.name, p, card::kName) == 0) {
       *folder = f;
       *file = i;
@@ -138,6 +161,26 @@ CORE_COLD bool find_path(const char* path, int* folder, int* file) {
     }
   return false;
 }
+
+#if CORE_MSAMP
+// sedit-050 #5: a WAV written after boot (/Samples/...: the sample editor's copy) made known to the card index, so a
+// pool row on it resolves (pool_sync) and plays, and the WAVE page reads it. A path outside /Samples: nothing to do.
+CORE_COLD int pool_card_add(const char* path, int ch, int bits, uint32_t rate, uint32_t frames, uint32_t data_offset) {
+  if (!card_ok || cards.folders() <= 0 || strncasecmp(path, "/Samples/", 9)) return 0;
+  int f;
+  const char* leaf;
+  if (!find_folder(path + 9, &f, &leaf)) return -1;
+  if (strlen(leaf) >= (size_t)card::kName) return -2;   // (the index cuts names: never found by its path)
+  card::FileRec r;
+  memset(&r, 0, sizeof r);
+  sniprintf(r.name, sizeof r.name, "%s", leaf);
+  r.dir_index = 0xFFFFFFFFu;   // (unknown: opened by its path, on the card core)
+  r.format = 1, r.channels = (uint8_t)ch, r.bits = (uint8_t)bits, r.contiguous = 0;
+  r.data_offset = data_offset, r.data_len = frames * (uint32_t)ch * (uint32_t)(bits / 8), r.rate = rate;
+  r.size = r.data_offset + r.data_len;
+  return cards.add_file(f, r) >= 0 ? 1 : -1;
+}
+#endif
 
 #if CORE_MSAMP
 // The pools design 3.6, rui1045: DSP SAMPLE's slots are the SAMPLES pool's eight banks (SMP's 14 bits: row N of bank B is
@@ -397,6 +440,9 @@ CORE_COLD static void switch_to(const char* n) {
   g_next_name[0] = 0;
   if (strcmp(project, project_name)) log(CORE_STR("project: %s (%s)"), project, project_name);
   else log(CORE_STR("project: %s"), project);
+#if CORE_MSAMP
+  sedit::project_changed();   // the sample editor closed first: its edit is the old project's sample (samp/sedit.h)
+#endif
   pool_load();
 #if CORE_MSAMP
   if (cardq::worker()) {
@@ -433,7 +479,11 @@ CORE_COLD static void announce() {   // the Rytm's tables for the project (its f
   send_fm_names();
 }
 
+static uint32_t g_project_gen = 0;
+uint32_t project_gen() { return g_project_gen; }
+
 CORE_COLD void set_project(const uint8_t* d, int len) {
+  ++g_project_gen;
   char n[24];
   int k = 0;
   for (int i = 0; i < len && k < 23 && d[i] != 0xf7 && d[i]; ++i) n[k++] = d[i] & 0x7f;
@@ -486,6 +536,7 @@ CORE_COLD void project_switch(const char* n) {
 // 2026-10-27 (core/bundle/prjslot.h): the switch to a slot key with the Rytm's name for it; reload: the same key again
 // (its files changed under it: a cleared slot reloaded, a restore). A new name for the same key only renames it.
 CORE_COLD void project_switch_named(const char* key, const char* name, bool reload) {
+  ++g_project_gen;
   project_seen = true;
   if (reload || strcmp(key, project) != 0) {
     sniprintf(g_next_name, sizeof g_next_name, "%s", name ? name : key);
@@ -506,6 +557,8 @@ CORE_COLD void project_fill_begin() {
   kits::want_files();   // (every kit's saved and kept-aside record: core/bundle/kits.h)
 #if CORE_POLY
   ins::want_files();
+  scene::want_files();   // (the scenes: core/mod/scene.h)
+  xypad::want_files();   // (the XY pad: core/mod/xypad.h)
   seq::want_files();   // (phase 2: tracks.txt, the patterns, their saved states)
   song::want_files();  // (UNDO REPLAY's backup slots: .backups.txt)
   seq::loading_begin();   // (its edits refused until project_changed: they would be lost to the load)
@@ -522,6 +575,8 @@ CORE_COLD bool project_fill_step() {
   lfo::project_changed();
 #if CORE_POLY
   ins::project_changed();
+  xypad::project_changed();   // (before the scenes: its release puts the fader back first)
+  scene::project_changed();
   seq::project_changed();   // (the boot's too: seq::init leaves its tracks and A01 to this)
 #endif
   log(CORE_STR("store: %s loaded: %d files of %d paths, %u bytes"), project, store::present(), store::entries(),
@@ -781,7 +836,12 @@ CORE_COLD int list_folder(int f) {
   lns = cards.subfolders(f, lsub + juno + dx, 510) + juno + dx;
   if (juno) lsub[0] = 0xffff;   // JUNO
   if (dx) lsub[juno] = 0xfffe;  // DX7
-  int nf = (int)cards.folder(f).nfiles < 512 - lns ? (int)cards.folder(f).nfiles : 512 - lns;
+#if CORE_MSAMP
+  const int all = cards.files_in(f);   // (the files added since boot too, after the scanned ones)
+#else
+  const int all = cards.folder(f).nfiles;
+#endif
+  int nf = all < 512 - lns ? all : 512 - lns;
   lparent = f ? cards.folder(f).parent : 0;
   return lns + nf;
 }

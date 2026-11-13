@@ -1,7 +1,7 @@
 // pi/ui/sidecar_voice.c - see sidecar_voice.h. Eight knobs (th_meter TH_METER_KNOB, the Rytm's labels as captions), a
 // code-drawn scope + level (or the machine's panel: 6-OP FM, MULTISAMPLE, DAISYSP), a code-drawn heatmap of the track's
 // p-locks; every mark through the theme (th_fill) so the OLED theme keeps its dots: greys, the panel's blue print, the
-// FUNC teal (no red); CLASSIC the same drawings at its scale in the display window.
+// FUNC teal (no red); SIDECAR the same drawings at its scale on a card, modulators the accent, carriers coral.
 #include "sidecar_voice.h"
 #include "sidecar_theme.h"
 #include "sidecar_ui.h"		// the box in use: its word, its voices' names
@@ -56,11 +56,11 @@ static void scope_draw (lv_event_t *e)
 }
 
 // ---- the machines' panels (in the scope's place). Every drawing is made of filled rects: lines are runs of dots
-// (OLED) or of 2-px squares (CLASSIC), so the dot theme keeps its grid.
+// (OLED) or of 2-px squares (SIDECAR), so the dot theme keeps its grid.
 static const lv_font_t *f_cap (void) { return oled () ? TH->f_micro : TH->f_small; }
 static const lv_font_t *f_head (void) { return oled () ? TH->f_small : TH->f_mid; }
 static int fh (const lv_font_t *f) { return lv_font_get_line_height (f); }
-static uint32_t c_blue (int v) { return oled () ? th_oled_secondary (v) : th_mix (TH->sub, 0xFFFFFF, 40 + v); }
+static uint32_t c_blue (int v) { return oled () ? th_oled_secondary (v) : th_mix (TH->win_edge, TH->accent, 80 + v); }
 static uint32_t c_teal (void) { return oled () ? th_oled_accent (127) : TH->accent; }
 
 static void dot (lv_layer_t *l, const lv_area_t *c, int x, int y, uint32_t rgb)
@@ -128,15 +128,24 @@ static void fm_draw (lv_layer_t *l, const lv_area_t *c, int sw, int h)
 	for (int k = 0; k < 6; k++)
 	{
 		int car = s_V.fm_car >> k & 1;
-		th_fill (l, c, bx[k], by[k], bx[k] + bw - 1, by[k] + bh - 1, c_bg (), LV_OPA_COVER, 0);
-		frame (l, c, bx[k], by[k], bx[k] + bw - 1, by[k] + bh - 1, car ? c_ink () : c_blue (110));
 		lv_snprintf (b, sizeof b, "%d", k + 1);
-		th_text (l, c, bx[k], by[k] + (oled () ? 3 : 3), bw, fc, car ? c_ink () : c_blue (127), LV_TEXT_ALIGN_CENTER, b);
+		if (oled ())
+		{
+			th_fill (l, c, bx[k], by[k], bx[k] + bw - 1, by[k] + bh - 1, c_bg (), LV_OPA_COVER, 0);
+			frame (l, c, bx[k], by[k], bx[k] + bw - 1, by[k] + bh - 1, car ? c_ink () : c_blue (110));
+		}
+		else						// SIDECAR: rounded, a modulator the accent, a carrier coral, tinted inside
+		{
+			uint32_t oc = car ? TH->bad : TH->accent;
+			th_fill (l, c, bx[k], by[k], bx[k] + bw - 1, by[k] + bh - 1, th_mix (c_bg (), oc, 30), LV_OPA_COVER, LU (6));
+			th_frame (l, c, bx[k], by[k], bx[k] + bw - 1, by[k] + bh - 1, oc, 2, LU (6));
+		}
+		th_text (l, c, bx[k], by[k] + (oled () ? 3 : 3), bw, fc, car || !oled () ? c_ink () : c_blue (127), LV_TEXT_ALIGN_CENTER, b);
 		int in = oled () ? 3 : 5, lw = (bw - 2 * in) * s_V.fm_out[k] / 99, ly = by[k] + bh - (oled () ? 4 : 9);
 		if (lw > 0) th_fill (l, c, bx[k] + in, ly, bx[k] + in + lw - 1, ly + (oled () ? 0 : 3), c_teal (), LV_OPA_COVER, 0);
 		if (car)
 		{
-			th_fill (l, c, bx[k] + bw / 2, by[k] + bh, bx[k] + bw / 2 + (oled () ? 0 : 1), bus, c_ink (), LV_OPA_COVER, 0);
+			th_fill (l, c, bx[k] + bw / 2, by[k] + bh, bx[k] + bw / 2 + (oled () ? 0 : 1), bus, oled () ? c_ink () : TH->bad, LV_OPA_COVER, 0);
 			if (bx[k] + bw / 2 < c0) c0 = bx[k] + bw / 2;
 			if (bx[k] + bw / 2 > c1) c1 = bx[k] + bw / 2;
 		}
@@ -144,8 +153,9 @@ static void fm_draw (lv_layer_t *l, const lv_area_t *c, int sw, int h)
 	if (c1 >= 0)				// the output and its arrow's head
 	{
 		int t = oled () ? 0 : 1, ah = oled () ? 3 : 6;
-		th_fill (l, c, c0, bus, c1 + ah * 2, bus + t, c_ink (), LV_OPA_COVER, 0);
-		for (int i = 1; i <= ah; i++) th_fill (l, c, c1 + ah * 2 - i, bus - i, c1 + ah * 2 - i, bus + t + i, c_ink (), LV_OPA_COVER, 0);
+		const uint32_t oc = oled () ? c_ink () : TH->bad;	// (SIDECAR: the output coral, as the carriers)
+		th_fill (l, c, c0, bus, c1 + ah * 2, bus + t, oc, LV_OPA_COVER, 0);
+		for (int i = 1; i <= ah; i++) th_fill (l, c, c1 + ah * 2 - i, bus - i, c1 + ah * 2 - i, bus + t + i, oc, LV_OPA_COVER, 0);
 	}
 	int src = s_V.fm_fb_src, dst = s_V.fm_fb_dst;
 	if (src >= 0 && dst >= 0 && src < 6 && dst < 6)	// feedback: a loop on the right of the box(es)
@@ -192,7 +202,7 @@ static void multi_draw (lv_layer_t *l, const lv_area_t *c, int sw, int h)
 	int n = k1 - k0 + 1;
 	int envh = (h - top) * 2 / 7, kh = (h - top - envh) * 2 / 5, zh = h - top - envh - kh - (LU (oled () ? 5 : 10));
 	int ky = top + zh + (LU (oled () ? 2 : 4)), ey = ky + kh + (LU (oled () ? 3 : 6));
-	// x of key k's left and right edge. CLASSIC: keys equally wide (a sampler's keys are notes, not the piano's look).
+	// x of key k's left and right edge. SIDECAR: keys equally wide (a sampler's keys are notes, not the piano's look).
 	// OLED: the piano's layout - seven white keys an octave, the black keys narrower over their gaps - which the finer
 	// grid draws cleanly (white keys 7-9 dots, black 4-5)
 	static const unsigned char kWi[12] = {0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6};
@@ -250,7 +260,7 @@ static void multi_draw (lv_layer_t *l, const lv_area_t *c, int sw, int h)
 		int nw = th_text_width (TH->f_micro, nm), ty = ky + kh - fh (TH->f_micro) - 1;
 		if (nw > tw) continue;	// over C..E's feet (keys too narrow for it: none)
 		if (piano) th_text (l, c, xa, ty, tw, TH->f_micro, 0x101010, LV_TEXT_ALIGN_LEFT, nm);	// dark on the white keys
-		else	// CLASSIC: its black keys run the keyboard's height - the name on a tag of the background, in its ink
+		else	// SIDECAR: its black keys run the keyboard's height - the name on a tag of the background, in its ink
 		{
 			th_fill (l, c, xa - 1, ty, xa + nw, ky + kh - 1, c_bg (), LV_OPA_COVER, 0);
 			th_text (l, c, xa, ty, tw, TH->f_micro, c_ink (), LV_TEXT_ALIGN_LEFT, nm);
@@ -380,7 +390,7 @@ void sidecar_voice_create (void *parent, int y0)
 	// 1024x600 (TH->dx, dy): the knobs wider apart and taller, the machine's panel (keyboard, algorithm, scope) gets most
 	// of the extra room, the heatmap the full width
 	const int dx = TH->dx, dy = TH->dy;
-	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, o ? TH->w - LU (48) : TH->w, o ? TH->h : LU (428) + dy);
+	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, th_page_w (), o ? TH->h : LU (428) + dy);
 	s_Page = pg;
 	if (o)
 	{
@@ -405,7 +415,7 @@ void sidecar_voice_create (void *parent, int y0)
 		th_panel (pg, LU (8), LU (6), LU (784) + dx, LU (414) + dy, "", TH_PANEL_WINDOW);
 		s_Title = th_label (pg, LU (24), LU (14), TH->f_mid, TH->win_ink, "VOICE");
 		s_Name = th_label (pg, LU (24), LU (40), TH->f_big, TH->win_ink, "");
-		for (int k = 0; k < 8; k++) s_Knob[k] = th_meter (pg, LU (24) + (k & 3) * kp, LU (84) + (k >> 2) * (kh + LU (6)), kp - LU (8), kh, 127, TH_METER_KNOB, TH->win_ink);
+		for (int k = 0; k < 8; k++) s_Knob[k] = th_meter (pg, LU (24) + (k & 3) * kp, LU (84) + (k >> 2) * (kh + LU (6)), kp - LU (8), kh, 127, TH_METER_KNOB, TH->accent);
 		s_Scope = th_box (pg, sx, LU (84), LU (336) + dx * 3 / 4, LU (250) + dy * 3 / 4);
 		s_Mode = th_box (pg, sx, LU (80), LU (336) + dx * 3 / 4, LU (258) + dy * 3 / 4);
 		s_HeatCap = th_label (pg, LU (24), LU (348) + dy, TH->f_small, TH->win_dim, "P-LOCKS (THE RYTM'S PATTERN)");

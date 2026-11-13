@@ -23,6 +23,7 @@
 #include "fx/insert.h"
 #include "fx/send_fx.h"
 #include "machines.h"
+#include "mod/rytm_param.h"
 #include "keys.h"
 #include "poly.h"
 #include "seq/rytm_dump.h"
@@ -79,6 +80,16 @@ static void direct_state(std::vector<uint8_t> body) {
   engine_sysex(m.data(), (int)m.size());
 }
 
+// the Rytm's seq mode on track t (2D 08 1 t), held past the host's 150 ms (review M2: nothing changes before): seq's
+// tick 160 ms on (the test's clock itself not moved: the blocks below time their keys and draws against it). That tick
+// also tells the remote UI the Rytm plays (rytm_dump::set_playing, 0.4.3's rytm-lag: a changed frame held 200 ms);
+// the blocks below never ran seq's tick and draw within 90 ms - their playing flag kept as it was
+static void seqmode_enter(int t) {
+  const bool playing = rytm_dump::is_playing();
+  direct_state({8, 1, (uint8_t)t});
+  seq::tick(now_ms() + 160);
+  rytm_dump::set_playing(playing);
+}
 // A fired note-on: when (host frame) and the frame the planner had for it.
 struct Fired {
   int64_t h, planned;
@@ -255,9 +266,8 @@ static std::vector<std::vector<uint8_t>> sent(uint8_t cmd_) {
 }
 // a stock pattern dump of rec (sim/protocol.py rytm_dump)
 static std::vector<uint8_t> dump_of(const std::vector<uint8_t>& rec, int pattern) {
-  std::vector<uint8_t> m = {0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, 0x54, 0x01, 0x01, (uint8_t)pattern, 0};
-  m.insert(m.end(), rec.begin(), rec.begin() + 4);
-  for (size_t i = 4; i < rec.size(); i += 7) {
+  std::vector<uint8_t> m = {0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, 0x54, 0x01, 0x01, (uint8_t)pattern};
+  for (size_t i = 0; i < rec.size(); i += 7) {   // groups of 8 from byte 10, the record's header first
     uint8_t hi = 0;
     for (size_t k = 0; k < 7 && i + k < rec.size(); ++k) hi |= (uint8_t)((rec[i + k] >> 7) << (6 - k));
     m.push_back(hi);
@@ -308,6 +318,22 @@ static void test_model() {
   CHECK(u && u->length == 96 && u->step[0].n == 3 && u->step[0].strum == 6 && u->step[0].note[2].micro == 12 &&
         u->step[0].note[0].len == 384 && u->step[95].note[0].micro == -40 && u->step[95].note[0].pitch == 72);
   CHECK(seq::track_of(q, 0)->step[3].note[0].vel == 127 && seq::used_steps(*seq::track_of(q, 0)) == 1);
+  // 0.5.0 (rytm-param-mod H9): a lock on the Rytm's own FRQ (param kLockRytm + 30 = 94) round-trips; an older reader
+  // (lock params < 37 only) drops it and keeps the step's notes
+  {
+    static seq::Pattern pr, qr;
+    static uint8_t rb[1 << 12];
+    seq::clear(pr, 6);
+    seq::Track* tr = seq::track_of(pr, 4, true);
+    tr->on = 1, tr->length = 16;
+    seq::add_note(tr->step[2], {60, 100, 24, 0, 0});
+    CHECK(seq::set_lock(tr->step[2], seq::kLockRytm + 30, 90 << 7) && seq::set_lock(tr->step[2], 2, 40 << 7));
+    int rn = seq::pack(pr, rb, sizeof rb);
+    CHECK(rn > 0 && seq::unpack(qr, 6, rb, rn));
+    const seq::Step& st = seq::track_of(qr, 4)->step[2];
+    CHECK(st.n == 1 && st.nl == 2 && seq::lock_of(st, seq::kLockRytm + 30) == 90 << 7 && seq::lock_of(st, 2) == 40 << 7);
+    CHECK(seq::kLockRytm + 30 >= seq::kLockParams);   // (the 0.4 reader's `prm < kLockParams` drops it)
+  }
   buf[20] ^= 1;
   CHECK(!seq::unpack(q, 5, buf, n) && !seq::track_of(q, 4));   // corrupt: empty
   buf[20] ^= 1;
@@ -597,7 +623,7 @@ int main() {
   // ---- step entry (seq mode on BD): T3 tapped = a step with the last notes played; T6 held + pads = its chord; held
   // + E (CHD) + G (STRUM); T1 tapped on a step with notes = cleared
   {
-    direct_state({8, 1, 0});
+    seqmode_enter(0);
     CHECK(seq::view().seqmode && seq::view().track == 0);
     seq::view_set(0, 0, -1, false);
     seq::midi(0x90, 67, 100), seq::midi(0x80, 67, 0);   // the last chord: G3
@@ -1145,7 +1171,7 @@ int main() {
   }
   // ---- seq mode's own gestures on BD: page copy (page 1) / paste on page 2 / the same again = undo; trigs
   {
-    direct_state({8, 1, 0});
+    seqmode_enter(0);
     seq::view_set(0, 0, -1, false);
     seq::Track* t = seq::edit_track(0, false);
     CHECK(t && t->length == 64);
@@ -1671,15 +1697,23 @@ int main() {
     fx::control.knob[0][3] = 40;
     enc(1, 1);
     CHECK(seq::view().lock_page == seq::kLpFx && seq::lock_of(bt->step[2], seq::kLockFx + 1) == 41 << 7);
-    key(0x34, true), key(0x34, false);   // AMP: the Rytm's analog side, nothing to lock
+    // AMP (0.5.0, rytm-param-mod 5.4): the Rytm's own AMP words; ATK HLD DEC none on a pinned track (the host's envelope)
+    key(0x34, true), key(0x34, false);
     enc(0, 4);
-    CHECK(seq::view().lock_page == seq::kLpAmp && bt->step[2].nl == 3);
+    CHECK(seq::view().lock_page == seq::kLpAmp && bt->step[2].nl == 3 && seq::lock_param(seq::kLpAmp, 0) == -1 &&
+          seq::lock_param(seq::kLpAmp, 3) == seq::kLockRytm + 36 && seq::lock_base(seq::kLockRytm + 36) == 64 << 7);
+    enc(3, 4);   // OVR: from the middle (the Rytm's value is not known here)
+    CHECK(seq::lock_of(bt->step[2], seq::kLockRytm + 36) == 68 << 7 && bt->step[2].nl == 4);
     for (int i = 0; i < 3; ++i) remote_tick((uint32_t)(9700 + 30 * i)), advance_ms(30);
-    CHECK(shown("LOCK AMP") && shown("ANALOG"));
+    CHECK(shown("LOCK AMP") && shown("OVR") && shown("VOL") && !shown("ANALOG"));
+    png("seq_lock_amp.png");
+    key(0x73, true), key(0x73, false);   // PUSH_D: that lock cleared
+    CHECK(bt->step[2].nl == 3);
     // FLTR: the arp's page of that step: A MODE B SPD C RNG D GATE E SWNG, each to its own last value, a slot like any lock, no slide
     key(0x33, true), key(0x33, false);
     CHECK(seq::view().lock_page == seq::kLpFltr && seq::lock_param(seq::kLpFltr, 0) == seq::kLockArp &&
-          seq::lock_param(seq::kLpFltr, 4) == seq::kLockArp + 4 && seq::lock_param(seq::kLpFltr, 5) == -1);
+          seq::lock_param(seq::kLpFltr, 4) == seq::kLockArp + 4 && seq::lock_param(seq::kLpFltr, 5) == seq::kLockRytm + 30 &&
+          seq::lock_param(seq::kLpFltr, 7) == -1);   // F G H: the Rytm's FRQ RES (ENV: none on a pinned track)
     CHECK(seq::lock_base(seq::kLockArp) == 0 && seq::lock_base(seq::kLockArp + 1) == 3 << 7);   // the sound's: OFF, 1/16
     enc(0, 1);
     enc(1, 2);
@@ -1688,7 +1722,9 @@ int main() {
     CHECK(seq::lock_of(bt->step[2], seq::kLockArp) == 5 << 7 && seq::lock_of(bt->step[2], seq::kLockArp + 2) == 2 << 7);
     enc(1, 8, true);   // FUNC: stops at its end
     CHECK(seq::lock_of(bt->step[2], seq::kLockArp + 1) == 5 << 7 && bt->step[2].nl == 6);
-    enc(5, 1);         // F: no sixth
+    enc(5, 1);         // F: the Rytm's FRQ (0.5.0), cleared again
+    CHECK(bt->step[2].nl == 7 && seq::lock_of(bt->step[2], seq::kLockRytm + 30) == 65 << 7);
+    key(0x75, true), key(0x75, false);
     CHECK(bt->step[2].nl == 6);
     enc(1, 1);
     for (int i = 0; i < 3; ++i) remote_tick((uint32_t)(9740 + 30 * i)), advance_ms(30);
@@ -1743,6 +1779,15 @@ int main() {
   {
     seq::Track* bt = seq::edit_track(0, false);
     CHECK(bt && bt->step[2].nl == 3);
+    // 0.5.0 (rytm-param-mod 5.4, H6): step 3 also locks the Rytm's own FRQ 90, step 5 its RES 20 (overrides on the Rytm,
+    // a jump at the step's time + the lead); the next trig without them releases them, STOP too
+    seq::Track* bt5 = bt;
+    CHECK(seq::set_lock(bt->step[2], seq::kLockRytm + 30, 90 << 7) && seq::set_lock(bt5->step[4], seq::kLockRytm + 31, 20 << 7));
+    CHECK(!seq::set_lock(bt->step[2], seq::kLockRytm + 4, 0) && !seq::set_lock(bt->step[2], seq::kLockRytm + 12, 0));   // DST; a synth word
+    mod::rp_hello(127), mod::rp_kit(0);
+    static std::vector<std::pair<uint64_t, std::vector<uint8_t>>> rp_sent;   // the 05s and when they went
+    static std::vector<std::pair<uint64_t, int>> rp_lock_at;                 // when the FRQ lock was applied / released
+    rp_sent.clear(), rp_lock_at.clear();
     report(kFm | 0, {0, 64, 64, 127, 64, 64, 100, 127});
     fx::control.knob[0][3] = 40;
     static std::vector<std::pair<int64_t, float>> tl;
@@ -1751,6 +1796,13 @@ int main() {
     g_each = [] {
       tl.push_back({(int64_t)seq::frames(), v[0].p[1]});
       tf.push_back({(int64_t)seq::frames(), (int)fx::control.knob[0][3]});
+      mod::RpView w;
+      int l = mod::rp_view(0, 30, &w) && w.locked;
+      if (rp_lock_at.empty() ? l : rp_lock_at.back().second != l) rp_lock_at.push_back({g_us, l});
+      size_t n0 = g_out.size();
+      mod::rp_tick((uint32_t)g_us);
+      for (size_t i = n0; i < g_out.size(); ++i)
+        if (g_out[i].size() > 7 && g_out[i][4] == 0x5A && g_out[i][6] == 5) rp_sent.push_back({g_us, g_out[i]});
     };
     Run r4;
     r4.t0 = (int64_t)seq::frames() + 3000;
@@ -1794,6 +1846,32 @@ int main() {
     int64_t want = t0 + (int64_t)(2 * r4.period) + off - lat;
     printf("  locks: P2 locked at host frame %lld, the step's note due %lld\n", (long long)lh, (long long)want);
     CHECK(lh >= 0 && std::llabs(lh - want) <= kBlock + 1);
+    // H6: FRQ's override went a lead after its lock was applied: v 90 << 7, mix 127, a jump (ramp 0); released (mix 0,
+    // jump) at the next trig without it (step 5), a lead after that
+    CHECK(rp_lock_at.size() >= 2 && rp_lock_at[0].second == 1 && rp_lock_at[1].second == 0);
+    auto rec = [&](uint64_t from, int w, int* v, int* mix, bool* jump, int* ramp) {   // the first 05 record of word w from then
+      for (auto& m : rp_sent) {
+        if (m.first < from) continue;
+        for (int i = 0; i < m.second[9]; ++i) {
+          const uint8_t* r = &m.second[10 + 5 * i];
+          if (r[0] != 0 || (r[1] & 0x3F) != w) continue;
+          *v = r[2] << 7 | r[3], *mix = r[4], *jump = r[1] & 0x40, *ramp = m.second[8];
+          return (int64_t)m.first;
+        }
+      }
+      return (int64_t)-1;
+    };
+    int rv = 0, rm = 0, rr = 0;
+    bool rj = false;
+    int64_t sent_at = rec(rp_lock_at[0].first, 30, &rv, &rm, &rj, &rr);
+    printf("  rytm locks: FRQ applied at %llu us, its 05 at %lld us (lead %u)\n", (unsigned long long)rp_lock_at[0].first,
+           (long long)sent_at, (unsigned)mod::rp_lead_us());
+    CHECK(sent_at >= 0 && rv == 90 << 7 && rm == 127 && rj && rr == 0);
+    CHECK(sent_at - (int64_t)rp_lock_at[0].first >= (int64_t)mod::rp_lead_us() &&
+          sent_at - (int64_t)rp_lock_at[0].first <= (int64_t)mod::rp_lead_us() + 500);
+    sent_at = rec(rp_lock_at[1].first, 30, &rv, &rm, &rj, &rr);
+    CHECK(sent_at >= 0 && rm == 0 && rj);   // released: the Rytm's own FRQ back at once
+    CHECK(rec(0, 31, &rv, &rm, &rj, &rr) >= 0 && rv == 20 << 7 && rm == 127);   // step 5's RES
     // STOP: every base back
     report(kFm | 0, {0, 30, 64, 127, 64, 64, 100, 127});
     int64_t now = (int64_t)seq::frames();
@@ -1801,6 +1879,15 @@ int main() {
     deliver(now);
     for (int i = 0; i < 10; ++i) block();
     CHECK(v[0].p[1] == 30 && fx::control.knob[0][3] == 40);
+    for (int i = 0; i < 20; ++i) block();   // (a lead later)
+    {
+      mod::RpView w;
+      CHECK(!mod::rp_view(0, 31, &w) || (!w.locked && w.mix == 0));   // H6: STOP released the Rytm's RES too
+    }
+    g_each = nullptr;
+    CHECK(seq::clear_lock(bt->step[2], seq::kLockRytm + 30) && seq::clear_lock(bt5->step[4], seq::kLockRytm + 31));
+    CHECK(cmd("seq=lock:1:9:95:77").find("1 locks") != std::string::npos && seq::lock_of(bt->step[8], seq::kLockRytm + 30) == 77 << 7);
+    CHECK(cmd("seq=lock:1:9:95:-1").find("0 locks") != std::string::npos);
     // the console: seq=lock / unlock
     CHECK(cmd("seq=lock:1:9:3:77").find("1 locks") != std::string::npos && seq::lock_of(bt->step[8], 2) == 77 << 7);
     CHECK(cmd("seq=lock:1:9:3:-1").find("0 locks") != std::string::npos);
@@ -1893,7 +1980,7 @@ int main() {
     report(kFm | 0, {0, 30, 64, 127, 64, 64, 100, 127});
     const int vi = remote_track_voice(0);
     CHECK(vi >= 0 && vi < 8);
-    direct_state({8, 1, 0});
+    seqmode_enter(0);
     seq::view_set(0, 0, -1, false);
     for (int i = 0; i < 4; ++i) block();
     const seq::Step before = s9;
@@ -2036,7 +2123,7 @@ int main() {
     for (int i = 0; i < 10; ++i) block();
     // the TRIG view: seq mode on BD; TRIG toggles notes / trig values; T2 held + E (COND) +9 -> 1:2 on step 2; TRIG again:
     // the notes; T2's release toggles nothing
-    direct_state({8, 1, 0});
+    seqmode_enter(0);
     seq::view_set(0, 0, -1, false);
     CHECK(!seq::view().trigview);   // (the SEQ page shown: ui_key / ui_enc as remote.cpp calls them with it)
     CHECK(seq::ui_key(0x30, true, true) && seq::ui_key(0x30, false, true) && seq::view().trigview);
@@ -2059,7 +2146,7 @@ int main() {
   {
     seq::Track* bt = seq::edit_track(0, true);
     seq::clear_steps(*bt, 0, seq::kMaxSteps);
-    direct_state({8, 1, 0});
+    seqmode_enter(0);
     CHECK(seq::ui_key(4, true, true));
     poly::midi(0x9D, 1, 100), poly::midi(0x8D, 1, 0);   // the SD pad (normal mode)
     CHECK(bt->step[4].n == 0);
@@ -2121,6 +2208,56 @@ int main() {
       poly::selected_voice(-1);
       poly::selected_voice(bvi);                               // BD selected (49 02), CHRO on
       advance_ms(300);
+      {   // polyuser-1: seq mode on BD (JUNO), T5 held, a CHRO pad (40, its 0x04 note 64): the step takes the note the
+          // voice plays (40 + kPadOff), PAD OCT +1 76; a normal-mode pad enters nothing; REC + PLAY records it at 64
+        seq::Track* pt = seq::edit_track(0, true);
+        seq::clear_steps(*pt, 0, seq::kMaxSteps);
+        seqmode_enter(0);
+        CHECK(poly::stats().bound[13] == -1);                  // JUNO: the auto channel stays unbound
+        CHECK(seq::ui_key(4, true, true));
+        poly::midi(0x9D, 40, 100), trig04(kJuno | bvi, 64, 100), poly::midi(0x8D, 40, 0);
+        printf("  polyuser-1: JUNO CHRO pad into held T5: n %d pitch %d (want 1, 64)\n", pt->step[4].n,
+               pt->step[4].n ? pt->step[4].note[0].pitch : -1);
+        CHECK(pt->step[4].n == 1 && pt->step[4].note[0].pitch == 64);
+        advance_ms(300);
+        poly::midi(0x9D, 0, 100), poly::midi(0x8D, 0, 0);    // normal pad mode: BD's trigger, no entry
+        CHECK(pt->step[4].n == 1);
+        advance_ms(300);
+        CHECK(cmd("seq=poly:1:oct=1").size() > 0 && seq::pad_oct(bvi) == 1);
+        poly::midi(0x9D, 40, 100), trig04(kJuno | bvi, 64, 100), poly::midi(0x8D, 40, 0);
+        CHECK(pt->step[4].n == 2 && pt->step[4].note[1].pitch == 76);
+        cmd("seq=poly:1:oct=0");
+        advance_ms(50);
+        seq::ui_key(4, false, true);
+        direct_state({8, 0, 0x7F});
+        seq::clear_steps(*pt, 0, seq::kMaxSteps);
+        advance_ms(300);
+        // REC + PLAY: BD's ticks run, a CHRO pad is recorded at the pitch JUNO plays
+        Run rj;
+        rj.t0 = (int64_t)seq::frames() + 3000;
+        rj.jit = 0;
+        int64_t j0 = rj.t0;
+        state((int64_t)seq::frames(), {6, 1, 0});
+        state(j0 + rj.delay, [&] { std::vector<uint8_t> x = {1, 1}; auto bb = blk4(j0); x.insert(x.end(), bb.begin(), bb.end()); return x; }());
+        run(rj, j0 + (int64_t)(4.2 * rj.period));
+        uint32_t rec0 = seq::stats().recorded;
+        poly::midi(0x9D, 40, 100), trig04(kJuno | bvi, 64, 100);
+        run(rj, (int64_t)seq::frames() + (int64_t)(0.5 * rj.period));
+        poly::midi(0x8D, 40, 0);
+        int got = -1;
+        for (int k = 0; k < 16 && got < 0; ++k)
+          if (pt->step[k].n) got = pt->step[k].note[0].pitch;
+        printf("  polyuser-1: JUNO CHRO pad in REC + PLAY: recorded %u, pitch %d (want 1, 64)\n",
+               seq::stats().recorded - rec0, got);
+        CHECK(seq::stats().recorded == rec0 + 1 && got == 64);
+        int64_t jn = (int64_t)seq::frames();
+        state(jn, [&] { std::vector<uint8_t> x = {1, 0}; auto bb = blk4(jn - 700); x.insert(x.end(), bb.begin(), bb.end()); return x; }());
+        state(jn, {6, 0, 0});
+        deliver(jn);
+        for (int i = 0; i < 10; ++i) block();
+        seq::clear_steps(*pt, 0, seq::kMaxSteps);
+        advance_ms(300);
+      }
       uint32_t jp0 = poly::stats().seq_pads;
       v[bvi].live = false;
       poly::midi(0x9D, 40, 100);                               // a CHRO pad, then its 0x04 (note 64 = 40 + 24)
@@ -2587,9 +2724,10 @@ int main() {
     refill();   // landed on the card: the project loaded again has it
     CHECK(seq::view().pattern == 0 && has(7, 70));
     printf("  store: an edit, a switch away and back before its save lands: the edit is there\n");
-    // round 2: during a fill (the project loaded again), on a pattern switched to meanwhile (locked: loading) - a COPY
-    // is refused (the clipboard kept), a PASTE is refused and leaves no undo: the Rytm's UNDO PASTE after the load
-    // changes nothing (before: the empty stand-in was undone onto the real pattern and its file written over)
+    // round 2: during a fill (the project loaded again), on a pattern switched to meanwhile (locked: loading) - a PASTE
+    // is refused and leaves no undo: the Rytm's UNDO PASTE after the load changes nothing (before: the empty stand-in
+    // was undone onto the real pattern and its file written over). polyuser-4 F-a2: a COPY PAT then is no longer
+    // refused: it is taken once the project is loaded (the pattern's file, not the empty stand-in)
     {
       direct_state({2, 1, 0x7F});
       while (seq::idle()) {}
@@ -2600,9 +2738,9 @@ int main() {
       direct_state({2, 0, 0x7F});
       while (seq::idle()) {}
       CHECK(seq::view().pattern == 0 && seq::view().locked == 3);
-      edit(seq::kPCopy, 0, 0x7F, 1);    // refused
+      edit(seq::kPCopy, 0, 0x7F, 1);    // F-a2: queued until the load's end
       edit(seq::kPPaste, 0, 0x7F, 1);   // refused
-      CHECK(used(0) == 0 && seq::stats().loading_refused == r0 + 2);
+      CHECK(used(0) == 0 && seq::stats().loading_refused == r0 + 1);
       CHECK(cmd("seq=lat:300").find("still loading") != std::string::npos && seq::view().latency != 300);
       loaded();
       CHECK(seq::view().locked == 0 && has(1, 61) && has(7, 70));
@@ -2625,8 +2763,8 @@ int main() {
         if (fp) fclose(fp);
         CHECK(now == before && !before.empty());
       }
-      edit(seq::kPPaste, 0, 0x7F, 1);   // loaded now: the paste is pattern 1's (the clipboard was kept)
-      CHECK(has(0, 63));
+      edit(seq::kPPaste, 0, 0x7F, 1);   // loaded now: the paste is pattern 0's own, copied during the load (F-a2)
+      CHECK(has(1, 61) && has(7, 70) && !has(0, 63));
       edit(seq::kPUndo, 0, 0x7F, 1, 0, 2);
       CHECK(has(1, 61) && !has(0, 63));
       // an old pattern prefetched before a fill began is loaded anew when it is switched to during it: not editable
@@ -2640,8 +2778,141 @@ int main() {
       CHECK(seq::view().locked == 0 && has(0, 63));
       direct_state({2, 0, 0x7F});
       while (seq::idle()) {}
-      printf("  store: a copy / paste on a loading pattern refused, no undo left; a prefetched pattern not editable\n");
+      printf("  store: a paste on a loading pattern refused, no undo left, a copy taken at the load's end; a prefetched pattern not editable\n");
     }
+  }
+  // ---- seqmode_blip (polyuser-3: with REC on, a poly track's SEQ page flashed over the screen at its trigs; review M2):
+  // the Rytm's seq mode is taken once it has stayed 150 ms - an 08 1 then 08 0 60 ms later changes nothing (no seq mode,
+  // no open, no close); held 210 ms seq mode is on and the page opens. With seq track BT's page open, a blip to LT
+  // (08 1 LT, 08 1 BT 60 ms later) leaves the track, the page and the trig LEDs on BT. Round 2 (M-a, L-a): an 08 0 waits 150 ms
+  // too (an exit blip closes nothing); a pending change is dropped when its track leaves the seq tracks or the project changes.
+  {
+    const uint8_t closed[] = {0xF0, 0x7D, 0x52, 0x54, 0x30, 1, 0, 0, 1, 0xF7};
+    engine_sysex(closed, sizeof closed);
+    CHECK(!remote_open());
+    auto req = [](int on) {
+      int k = 0;
+      for (auto& m : sent(0x3A)) k += m.size() > 7 && m[7] == on;
+      return k;
+    };
+    auto wait = [](int ms) {
+      for (int t = 0; t < ms; t += 30) advance_ms(30), seq::tick(now_ms());
+    };
+    printf("  seqmode_blip: %s\n", cmd("seq=track:3:on").c_str());   // BT (L-a: seq mode is a seq track's)
+    CHECK(seq::owns_track(2));
+    g_out.clear();
+    direct_state({8, 1, 2});
+    CHECK(!seq::view().seqmode);   // nothing yet
+    wait(60);
+    direct_state({8, 0, 0x7F});
+    wait(300);
+    printf("  seqmode_blip: 08 1 then 08 0 after 60 ms: seq mode %d, opens %d, closes %d (want 0, 0, 0)\n",
+           (int)seq::view().seqmode, req(1), req(0));
+    CHECK(req(1) == 0 && req(0) == 0 && !seq::view().seqmode);
+    direct_state({8, 1, 2});
+    wait(90);
+    CHECK(req(1) == 0 && !seq::view().seqmode);
+    wait(120);
+    printf("  seqmode_blip: held 210 ms: seq mode %d on track %d, opens %d (want 1, 3, 1)\n", (int)seq::view().seqmode,
+           seq::view().track + 1, req(1));
+    CHECK(req(1) == 1 && seq::view().seqmode && seq::view().track == 2);
+    const uint8_t open[] = {0xF0, 0x7D, 0x52, 0x54, 0x30, 1, 0, 1, 0, 0xF7};   // the Rytm opens the page asked
+    engine_sysex(open, sizeof open);
+    wait(60);
+    CHECK(remote_open() && remote_page_title() && !strcmp(remote_page_title(), "SEQ"));
+    uint8_t led0[16], led1[16];
+    seq::leds(led0);
+    g_out.clear();
+    direct_state({8, 1, 5});   // the blip: LT for 60 ms, then BT again
+    wait(60);
+    CHECK(seq::view().track == 2);
+    direct_state({8, 1, 2});
+    wait(300);
+    seq::leds(led1);
+    printf("  seqmode_blip: a 60 ms blip to LT with BT's page open: track %d, page %s, closes %d, LEDs same %d (want 3, "
+           "SEQ, 0, 1)\n", seq::view().track + 1, remote_page_title() ? remote_page_title() : "-", req(0),
+           (int)!memcmp(led0, led1, sizeof led0));
+    CHECK(seq::view().seqmode && seq::view().track == 2 && req(0) == 0 && req(1) == 0);
+    CHECK(remote_open() && !strcmp(remote_page_title(), "SEQ") && !memcmp(led0, led1, sizeof led0));
+    // review round 2, M-a: an exit blip (BT, 08 0, BT 60 ms later) changes nothing either: no close, no open, BT's
+    // track, page and LEDs kept
+    direct_state({8, 0, 0x7F});
+    wait(60);
+    direct_state({8, 1, 2});
+    wait(300);
+    seq::leds(led1);
+    printf("  seqmode_blip: a 60 ms 08 0 with BT's page open: seq mode %d, track %d, closes %d, opens %d, LEDs same %d "
+           "(want 1, 3, 0, 0, 1)\n", (int)seq::view().seqmode, seq::view().track + 1, req(0), req(1),
+           (int)!memcmp(led0, led1, sizeof led0));
+    CHECK(seq::view().seqmode && seq::view().track == 2 && req(0) == 0 && req(1) == 0);
+    CHECK(remote_open() && !strcmp(remote_page_title(), "SEQ") && !memcmp(led0, led1, sizeof led0));
+    // a held change BT -> LT (both seq tracks): LT's once it has stayed 150 ms, the page still open
+    cmd("seq=track:6:on");
+    CHECK(seq::owns_track(5));
+    direct_state({8, 1, 5});
+    wait(90);
+    CHECK(seq::view().track == 2);
+    wait(120);
+    printf("  seqmode_blip: held BT -> LT: seq mode %d, track %d, closes %d (want 1, 6, 0)\n", (int)seq::view().seqmode,
+           seq::view().track + 1, req(0));
+    CHECK(seq::view().seqmode && seq::view().track == 5 && req(0) == 0 && remote_open());
+    direct_state({8, 1, 2});
+    wait(210);
+    CHECK(seq::view().seqmode && seq::view().track == 2);
+    // an 08 0 while BT -> LT is pending: the exit waits its own 150 ms, then seq mode is over (never stuck on LT)
+    direct_state({8, 1, 5});
+    wait(60);
+    direct_state({8, 0, 0x7F});
+    wait(60);
+    CHECK(seq::view().seqmode && seq::view().track == 2 && req(0) == 0);
+    wait(150);
+    printf("  seqmode_blip: 08 0 during a pending BT -> LT: seq mode %d, closes %d (want 0, 1)\n", (int)seq::view().seqmode,
+           req(0));
+    CHECK(!seq::view().seqmode && req(0) == 1);
+    engine_sysex(closed, sizeof closed);
+    // a plain exit waits 150 ms too (M-a), then the page seq mode opened closes
+    g_out.clear();
+    seqmode_enter(2);
+    engine_sysex(open, sizeof open);
+    direct_state({8, 0, 0x7F});
+    CHECK(seq::view().seqmode && req(0) == 0);
+    wait(180);
+    CHECK(!seq::view().seqmode && req(0) == 1);
+    engine_sysex(closed, sizeof closed);
+    // review round 2, L-a: a pending entry to a track that leaves the seq tracks (TURN OFF) is dropped: seq mode stays on
+    // BT, never entered on a track that is no seq track
+    g_out.clear();
+    seqmode_enter(2);
+    direct_state({8, 1, 5});
+    wait(60);
+    cmd("seq=track:6:off");
+    wait(210);
+    printf("  seqmode_blip: a pending entry to LT, LT turned off: seq mode %d, track %d (want 1, 3)\n",
+           (int)seq::view().seqmode, seq::view().track + 1);
+    CHECK(seq::view().seqmode && seq::view().track == 2);
+    // and a pending entry to a track that is no seq track is never applied
+    direct_state({8, 1, 5});
+    wait(210);
+    CHECK(seq::view().seqmode && seq::view().track == 2);
+    direct_state({8, 0, 0x7F});
+    wait(180);
+    CHECK(!seq::view().seqmode);
+    engine_sysex(closed, sizeof closed);
+    // and at a project change: a pending entry is dropped, a pending exit is applied at once (never left in seq mode)
+    g_out.clear();
+    direct_state({8, 1, 2});
+    wait(60);
+    seq::project_changed();
+    wait(210);
+    printf("  seqmode_blip: a pending entry at a project change: seq mode %d (want 0)\n", (int)seq::view().seqmode);
+    CHECK(!seq::view().seqmode && req(1) == 0);
+    seqmode_enter(2);
+    direct_state({8, 0, 0x7F});
+    seq::project_changed();
+    CHECK(!seq::view().seqmode);
+    wait(210);
+    CHECK(!seq::view().seqmode);
+    engine_sysex(closed, sizeof closed);
   }
   printf("%s\n", cmd("seq").c_str());
   printf("test_seq: OK\n");

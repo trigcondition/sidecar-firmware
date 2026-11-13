@@ -11,7 +11,7 @@
 //         <region> key=<36 + k> offset=<a> end=<b - 1> ... sample=<path>     one a slice, in slice order
 //       per region the standard SFZ opcodes other players read (offset, end, transpose, tune, volume, direction,
 //       ampeg_attack, ampeg_decay, loop_mode, loop_type, group, off_by) and CHOP's own (sc_nudge sc_stut sc_stutlen
-//       sc_stutdec sc_tape sc_tapems sc_nbr); `sample` last on the line (a path may hold spaces). A slice RESAMPLE
+//       sc_stutdec sc_tape sc_tapems sc_nbr sc_poly sc_gate); `sample` last on the line (a path may hold spaces). A slice RESAMPLE
 //       replaced plays its own sample (its region's sample= another file, offset 0).
 //   v1  the sampler's slice maps (core/samp: <name>.sfz / <name>-slices.sfz, no header): <region> sample= key= offset=
 //       end= [loop_mode=one_shot]. Upgraded in memory to v2 (default settings) by fmt::load's chain (upgrade_v1).
@@ -54,6 +54,11 @@ struct Slice {
   uint16_t tape_ms;        // 20..4000
   uint8_t nbr;             // NEIGHBOUR CHANCE %: that share of hits plays the previous or the next slice instead
   int8_t alt;              // -1 the map's sample; 0..kMaxAlts-1: alts[alt] (a RESAMPLE'd slice)
+  // 0.5.0, appended (the fields above keep their places; a map saved before reads them as 0):
+  uint8_t poly;            // 0 (default) MONO: a hit cuts the voice's other playing notes (2 ms fade); 1 POLY: this slice's
+                           // hits neither cut nor are cut by later hits
+  uint8_t gate;            // 0 (default): DEC from the start; 1 GATE: full level while the pad / trig / note is held, DEC
+                           // (0 = 5 ms) as the fade after the note-off
 };
 void slice_defaults(Slice* s, uint32_t start, uint32_t end);
 

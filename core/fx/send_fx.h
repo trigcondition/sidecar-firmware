@@ -131,10 +131,38 @@ void clock_in(uint8_t status, uint16_t spp = 0);
 // The LFOs' (core/lfo.cpp sets them; null without): each knob take_sendfx takes passes knob_filter (the value to play,
 // an LFO's modulation on top), each clock_in byte goes on to clock_listener.
 extern uint8_t (*knob_filter)(int slot, int knob, uint8_t v);
+// The modulation layer's (core/mod/mod.cpp sets it; null without): each track send take_sendfx takes (track t's SEND to
+// FX slot s) passes send_filter, the value to play (mod kSnd: an offset on top of the kit's)
+extern uint8_t (*send_filter)(int track, int slot, uint8_t v);
+// A base written from outside the 0x20 (SONG RECORD's replay): through the filters, so a modulation stays on top
+void set_knob_base(int slot, int knob, uint8_t v);
+void set_send_base(int track, int slot, uint8_t v);
 extern void (*clock_listener)(uint8_t status, uint16_t spp);
+// 0.5.0 (core/mod/mod.cpp sets it; null without): a Sidecar-side edit of a target (mod::Tid: the pages, the console,
+// the touchscreen and the web, never a report or a file load), so it wins over a scene's morph until the fader moves
+// (spec-050 2.5); v the value set, -1 an offset kind's (its knob, read there). An inline variable (one definition, no
+// .cpp): out.cpp, insert.cpp and master.cpp also link without send_fx.cpp (the Pi portable tests' test_ob_usb)
+inline void (*manual_edit)(uint16_t tid, float v) = nullptr;
+inline void edited(uint16_t tid, float v = -1) {
+  if (manual_edit) manual_edit(tid, v);
+}
 // The FX buses' insert chains (core/fx/insert.h, CORE_POLY builds; null without): FX slot s's return y[n] (stereo, before
 // its TYPE fade and the limits) through bus s's chain, in place. The send FX's core.
 extern void (*bus_insert)(int slot, float (*y)[2], int n);
+// Plugin API 3's user effects (core/user/um.cpp): UFX u (0..3) loaded and playing; its render in send slot `slot` over x
+// (mono), its wet stereo return added into y; k the slot's knobs (k[2..5] = the effect's P1..P4). Null: none (MISSING).
+extern bool (*user_ready)(int u);
+extern void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const uint8_t* k);
+inline bool user_plays(int t) { return t >= kFirstUser && t < kFirstUser + 4 && user_ready && user_ready(t - kFirstUser); }
+// The TYPE list (0x21) changed under the Rytm: a user effect slot was assigned, emptied, loaded again, muted or
+// remapped (core/user/um.cpp). The host link sends the list, the labels and the states again (sendfx_step,
+// rate-limited) - the Rytm asks for the list only once.
+extern volatile bool list_dirty;
+extern bool (*user_loaded)(int u);   // UFX u holds a loaded effect (READY, muted or not): its name is kept (slots_load)
+// UFX u's P2..P5 labels and zones for the Rytm (0x24), from its manifest (core/user/um.cpp fx_labels_build): null while
+// it holds no loaded effect. labels(64 + u) answers through it.
+extern const KnobLabels* (*user_labels)(int u);
+inline void list_changed() { list_dirty = true; }
 // The slot that is the STUTTER, or -1: FX 1 if both are (FX 2 is then MISSING: one ring, one insert).
 inline int stutter_slot(const Control& c) {
   return !plays(kStutter) ? -1 : c.knob[0][0] == kStutter ? 0 : c.knob[1][0] == kStutter ? 1 : -1;
@@ -171,6 +199,12 @@ struct UserFx {
 };
 extern UserFx user[kUserSlots];
 extern volatile uint16_t kit_tag[kSlots];   // the kit's tag for FX k (0x20 track 13; 0 = none reported)
+// Plugin API 3: a user TYPE plays in send slot `slot` only when its effect is loaded and the kit was made for it (an
+// untagged kit takes the slot's): a kit for another effect plays silence there (MISSING), not this one
+inline bool user_plays_at(int t, int slot) {
+  int u = t - kFirstUser;
+  return user_plays(t) && (!kit_tag[slot] || kit_tag[slot] == __atomic_load_n(&user[u].tag, __ATOMIC_ACQUIRE));
+}
 uint16_t fx_tag(const char* name);          // FNV-1a 32 of the name, folded to 14 bits, 0 avoided
 
 // ---- the DSP
@@ -583,7 +617,9 @@ class SendFx {
     {
       int ss[kSlots], ns = 0;
       for (int s = 0; s < kSlots; ++s)
-        if ((plays(cur_[s]) && cur_[s] != kStutter) || (plays(c.knob[s][0]) && c.knob[s][0] != kStutter)) ss[ns++] = s;
+        if ((plays(cur_[s]) && cur_[s] != kStutter) || (plays(c.knob[s][0]) && c.knob[s][0] != kStutter) ||
+            user_plays(cur_[s]) || user_plays_at(c.knob[s][0], s))
+          ss[ns++] = s;
       if (ns) Mix(stems, n, tg, ss, ns, xs);
       for (int k2 = 0; k2 < ns; ++k2) have[ss[k2]] = true;
       if (vsend)
@@ -593,9 +629,11 @@ class SendFx {
     for (int s = 0; s < kSlots; ++s) {
       uint8_t want = c.knob[s][0];
       if (want == kStutter && s != sslot) want = kOff;   // the other slot has it: this one silent (MISSING)
+      if (want >= kFirstUser && !user_plays_at(want, s)) want = kOff;   // a user effect not loaded, or the kit's another: off, faded
+      if (cur_[s] >= kFirstUser && !user_plays(cur_[s])) cur_[s] = kOff, fade_[s] = 0;   // (gone: it fades in again when back)
       bool same;
       int t = Step(s, want, n, c, &same);
-      if (!plays(t)) continue;   // off, an effect this build lacks, or waiting for its clear: silence
+      if (!plays(t) && !user_plays(t)) continue;   // off, an effect this build lacks, or waiting for its clear: silence
 #if RYTM_SENDFX_LARGE
       if (t == kStutter) {   // the insert: only its fade here, the DSP once below
         for (int i = 0; i < n; ++i) {
@@ -712,6 +750,14 @@ class SendFx {
     Run(s, t, Gate(s, same, x, xf, n), n, y, c);
     for (int i = 0; i < n; ++i) y[i][0] *= g_[i], y[i][1] *= g_[i];
   }
+  // The inserts' bookings (core/fx/master.cpp): slot s handed to a new user. What it played is left to be cleared (a large
+  // TYPE: zeroed a little a call, as after a TYPE change; a small one is built afresh when it starts), so the next TYPE
+  // starts from clean and never resumes the old user's tail. No allocation, bounded: the render core's.
+  FX_DSP void Drop(int s) {
+    if (s < 0 || s >= kSlots) return;
+    if (plays(cur_[s]) && !small_type(cur_[s])) dirty_[s] |= Bit(cur_[s]);
+    cur_[s] = kOff, zone_[s] = -1, fade_[s] = 0, kill_[s] = false;
+  }
 #if RYTM_SENDFX_LARGE
   const Stutter& stutter() const { return stutter_; }
 #endif
@@ -789,7 +835,9 @@ class SendFx {
       case kCloudSeed: st_[s].cloud.Process(x, n, y, k + 2, sr_, a_); break;
       case kTape: st_[s].tape.Process(x, n, y, k + 2, sr_, a_, c.clock); break;
 #endif
-      default: break;
+      default:   // a user effect (Plugin API 3, UFX1..UFX4): its plugin, wet only, on this core
+        if (user_plays(t) && user_run) user_run(t - kFirstUser, s, x, n, y, k);
+        break;
     }
   }
   // the send mix of slots ss[0..ns-1] (ns 1 or 2) into xs: each stem's level ramped linearly over the block

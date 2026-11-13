@@ -11,7 +11,7 @@
 //                 the arrows move the cursor (row, column), - / + edit the value under it (x10 held: FINE off)
 //   the keys      LAZY (arm; again: STOP and keep), TAP, UNDO, GRID (cycles 4 8 16 32), TRANS, ADD, DEL, RSMP; a
 //                 RESAMPLE's offer: YES / NO
-// LVGL only (pi/ui/host renders it); both themes (OLED, CLASSIC), both sizes. The caller hands it a view (sidecar_chop_set,
+// LVGL only (pi/ui/host renders it); both themes (OLED, SIDECAR), both sizes. The caller hands it a view (sidecar_chop_set,
 // ~10 a second while shown) built for the page's zoom window (sidecar_chop_range); it redraws only what changed.
 // Every edit is a console command through the command function (chop=...: core/chop/chop.cpp command()).
 #ifndef SIDECAR_CHOP_H
@@ -23,7 +23,7 @@ extern "C" {
 
 #define SCH_COLS	512		// the outline's columns at most (the area maps them to its width)
 #define SCH_SLICES	64		// core/chop kMaxSlices
-#define SCH_FIELDS	15		// core/chop kFields (PTCH FINE GAIN REV ATK DEC LOOP CHOK NUDG STUT SLEN SDEC TAPE TTIM NBR)
+#define SCH_FIELDS	17		// core/chop kFields (PTCH FINE GAIN REV ATK DEC LOOP CHOK NUDG STUT SLEN SDEC TAPE TTIM NBR POLY GATE)
 #define SCH_HEADS	8
 #define SCH_TEXT	8
 

@@ -15,6 +15,7 @@
 #include "check.h"
 #include "timing.h"
 #include "engine.h"
+#include "fx/insert.h"
 #include "fx/send_fx.h"
 #include "host_link.h"
 #include "msamp/cardq.h"
@@ -33,10 +34,19 @@ static std::vector<uint8_t> msg(std::vector<uint8_t> body) {
 }
 static bool take(const std::vector<uint8_t>& m) { return take_sendfx(m.data(), (int)m.size()); }
 static void link(const std::vector<uint8_t>& m) { host_sysex(m.data(), (int)m.size()); }
-static int count(uint8_t cmd) {
+static int count(uint8_t cmd) {   // (a 22 with ver 2 is BASE / WIDTH, not a STATE: bw_sent)
   int n = 0;
-  for (auto& m : g_out) n += m[4] == cmd;
+  for (auto& m : g_out) n += m[4] == cmd && !(cmd == 0x22 && m.size() > 5 && m[5] == 2);
   return n;
+}
+static uint64_t g_fake_us = 1000000;   // sfx-basewidth's block runs on a fake clock (its 20 ms rate limit)
+static void host_advance_ms(int ms) { host_fake_time(true, g_fake_us += (uint64_t)ms * 1000); }
+// sfx-basewidth: the 22 ver 2s sent, as {fx, base, width}
+static std::vector<std::array<int, 3>> bw_sent() {
+  std::vector<std::array<int, 3>> r;
+  for (auto& m : g_out)
+    if (m[4] == 0x22 && m.size() == 10 && m[5] == 2) r.push_back({m[6], m[7], m[8]});
+  return r;
 }
 static void clear_control() {
   memset((void*)&control, 0, sizeof control);
@@ -307,7 +317,78 @@ int main() {
       }
     }
   }
+  host_advance_ms(0);   // (sfx-basewidth's fake clock, from before the ASK: its 2 s refresh counts from it)
   link(msg({0x23, 1}));   // an ASK first: no unasked names/labels burst on the first 0x20 below
+  {   // sfx-basewidth (0.5.0): the ASK told the Rytm both BASE / WIDTHs (flat: 0 / 127)
+    auto b = bw_sent();
+    CHECK(b.size() == 2 && b[0] == (std::array<int, 3>{0, 0, 127}) && b[1] == (std::array<int, 3>{1, 0, 127}));
+    g_out.clear();
+    host_advance_ms(30);
+    CHECK(!sendfx_step() && bw_sent().empty());   // nothing changed: nothing again
+    // the Rytm's knob G / H on SEND FX 2: bus 2's post EQ follows, no echo
+    link({0xF0, 0x7D, 0x52, 0x54, 0x22, 0x02, 0x01, 40, 50, 0xF7});
+    CHECK(ins::eq_param(ins::kBus0 + 1, 0) == 40 && ins::eq_param(ins::kBus0 + 1, 1) == 37);
+    host_advance_ms(30);
+    CHECK(!sendfx_step() && bw_sent().empty());
+    link({0xF0, 0x7D, 0x52, 0x54, 0x22, 0x02, 0x02, 40, 50, 0xF7});   // no FX 3: ignored
+    link({0xF0, 0x7D, 0x52, 0x54, 0x22, 0x01, 0x00, 40, 50, 0xF7});   // ver 1 from the Rytm: not ours
+    CHECK(ins::eq_param(ins::kBus0, 0) == 0 && ins::eq_param(ins::kBus0, 1) == 0);
+    // the console (or the web, a kit load) moves bus 1's HPF: the Rytm told FX 1's BASE / WIDTH once, rate-limited
+    char rr[300];
+    CHECK(ins::command("ins=b1:eq:hpf:30", rr, sizeof rr));
+    host_advance_ms(30);
+    CHECK(sendfx_step());
+    auto b2 = bw_sent();
+    CHECK(b2.size() == 1 && b2[0] == (std::array<int, 3>{0, 30, 127}));
+    CHECK(ins::command("ins=b1:eq:width:20", rr, sizeof rr));
+    CHECK(!sendfx_step());   // within 20 ms of the last: later
+    host_advance_ms(30);
+    CHECK(sendfx_step() && bw_sent().size() == 2 && bw_sent()[1] == (std::array<int, 3>{0, 30, 20}));
+    // the Rytm's hello (its port came up again): both again
+    g_out.clear();
+    link(msg({0x35, 1, 0, 0, 0}));
+    auto b3 = bw_sent();
+    CHECK(b3.size() == 2 && b3[0] == (std::array<int, 3>{0, 30, 20}) && b3[1] == (std::array<int, 3>{1, 40, 50}));
+    // review 2 + 3: a value can be lost (the hook gives no answer; a full USB queue) or cross a turn of the Rytm's in
+    // flight (we told it 30 / 20 while its own turn to 45 / 90 was on its way: it shows ours, we keep its turn). Both
+    // heal: both are sent again every 2 s while the link is up, whatever we think the Rytm shows.
+    g_out.clear();
+    host_advance_ms(1500);
+    CHECK(!sendfx_step() && bw_sent().empty());   // nothing changed within 2 s: nothing
+    CHECK(ins::command("ins=b1:eq:base:35", rr, sizeof rr));   // ours: 35 / 20 ...
+    host_advance_ms(30);
+    CHECK(sendfx_step() && bw_sent().size() == 1 && bw_sent()[0] == (std::array<int, 3>{0, 35, 20}));
+    link({0xF0, 0x7D, 0x52, 0x54, 0x22, 0x02, 0x00, 45, 90, 0xF7});   // ... crossed by the Rytm's turn: kept, no echo
+    CHECK(ins::eq_param(ins::kBus0, 0) == 45 && ins::eq_param(ins::kBus0, 1) == 0);
+    g_out.clear();
+    host_advance_ms(30);
+    CHECK(!sendfx_step() && bw_sent().empty());
+    host_advance_ms(2000);   // the periodic refresh: the Rytm's knobs back on what plays
+    CHECK(sendfx_step());
+    auto b4 = bw_sent();
+    CHECK(b4.size() == 2 && b4[0] == (std::array<int, 3>{0, 45, 90}) && b4[1] == (std::array<int, 3>{1, 40, 50}));
+    g_out.clear();
+    host_advance_ms(30);
+    CHECK(!sendfx_step() && bw_sent().empty());   // and not again until the next period
+    // re-review 1: the refresh runs only while the link is up. The Rytm's USB MIDI gone (the platform's rytm_gone ->
+    // link_lost): no refresh and no change sent; its hello: both at once, and the refresh again from there.
+    link_lost();
+    host_advance_ms(2100);
+    CHECK(!sendfx_step() && bw_sent().empty());
+    CHECK(ins::command("ins=b2:eq:base:20", rr, sizeof rr));
+    host_advance_ms(30);
+    CHECK(!sendfx_step() && bw_sent().empty());
+    link(msg({0x35, 1, 0, 0, 0}));
+    auto b5 = bw_sent();
+    CHECK(b5.size() == 2 && b5[1] == (std::array<int, 3>{1, 20, 50}));
+    g_out.clear();
+    host_advance_ms(2100);
+    CHECK(sendfx_step() && bw_sent().size() == 2);
+    ins::reset();
+    host_advance_ms(30);
+    sendfx_step();
+    host_fake_time(false, 0);
+  }
   g_out.clear();
   link(msg({0x20, 1, 12, 0, 0, 65, 0, 0, 0, 0, 0, 0, 0, 0, 0}));   // FX1 TYPE 65 (word 29 hi)
   CHECK(control.knob[0][0] == 65 && count(0x22) == 1);
@@ -351,6 +432,46 @@ int main() {
     g_out.clear();
     link(msg({0x23, 1}));
     CHECK(count(0x24) == 8);
+  }
+  {   // a user effect's labels (Plugin API 3: um builds them from the manifest, fx::user_labels hands them over): id 65
+      // (DUSTY, on FX 1) goes first with the 8 tables; with 16 all ten go; off the slots with 8 it is left out, and a
+      // slot moved to it sends the list and the labels again, 65's first
+    static const Zone z[2] = {{0, 0, 0, 1, 0, "FREE"}, {0, 64, 0, 0, 1, "1/4"}};
+    static const KnobLabels kl = {{"TIM", "FDBK", "W/F", "TONE"}, z, 2};
+    user_labels = [](int u) -> const KnobLabels* { return u == 1 ? &kl : nullptr; };
+    uint8_t m[160];
+    CHECK(sysex_labels(m, 65) == 24 + 2 * 8 && sysex_labels(m, 64) == 0 && sysex_labels(m, 66) == 0);
+    CHECK(m[6] == 65 && memcmp(&m[7], "TIM", 3) == 0 && m[7 + 16] == 4 && memcmp(&m[26], "FREE", 4) == 0);
+    CHECK(m[31] == 8 && m[32] == 64 && memcmp(&m[34], "1/4", 3) == 0);
+    CHECK(control.knob[0][0] == 65);
+    g_out.clear();
+    link(msg({0x23, 1}));   // caps 1: 8 tables, FX 1's TYPE first
+    int first24 = -1;
+    for (int i = 0; i < (int)g_out.size() && first24 < 0; ++i)
+      if (g_out[i][4] == 0x24) first24 = i;
+    CHECK(count(0x24) == 8 && first24 >= 0 && g_out[first24][6] == 65 && g_out[first24].size() == 24 + 2 * 8);
+    link(msg({0x35, 1, 0, 100, 3}));   // caps 3: 16 tables
+    g_out.clear();
+    link(msg({0x23, 1}));
+    CHECK(count(0x24) == 10);
+    link(msg({0x35, 1, 0, 100, 1}));
+    link(msg({0x20, 1, 12, 0, 0, kOff, 0, 0, 0, 0, 0, 0, 0, 0, 0}));   // FX 1 OFF: 65 now after the 8 by id
+    g_out.clear();
+    link(msg({0x23, 1}));
+    bool u65 = false;
+    for (auto& q : g_out) u65 = u65 || (q[4] == 0x24 && q[6] == 65);
+    CHECK(count(0x24) == 8 && !u65);
+    g_out.clear();
+    link(msg({0x20, 1, 12, 0, 0, 65, 0, 0, 0, 0, 0, 0, 0, 0, 0}));     // FX 1 to it: missing, so again, it first
+    first24 = -1;
+    for (int i = 0; i < (int)g_out.size() && first24 < 0; ++i)
+      if (g_out[i][4] == 0x24) first24 = i;
+    CHECK(count(0x21) == 2 && count(0x24) == 8 && first24 >= 0 && g_out[first24][6] == 65);
+    g_out.clear();
+    link(msg({0x20, 1, 12, 0, 0, 65, 7, 0, 0, 0, 0, 0, 0, 0, 0}));     // it stays: nothing again
+    CHECK(count(0x21) == 0 && count(0x24) == 0);
+    user_labels = nullptr;
+    CHECK(sysex_labels(m, 65) == 0);
   }
   command("sendfxout=fx", r, sizeof r);
   CHECK(idle_save() && !card_dirty);

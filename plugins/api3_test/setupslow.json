@@ -1,0 +1,21 @@
+{
+  "id": "rytm.api3_setupsl",
+  "version": "1.0.0",
+  "name": "API3 SSL",
+  "short": "A3T",
+  "licence": "MIT",
+  "knobs": [
+    {
+      "p": 1,
+      "long": "Mode",
+      "short": "MOD",
+      "default": 0
+    },
+    {
+      "p": 2,
+      "long": "Level",
+      "short": "LEV",
+      "default": 100
+    }
+  ]
+}

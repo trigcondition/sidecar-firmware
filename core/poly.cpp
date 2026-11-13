@@ -1111,8 +1111,17 @@ CORE_COLD Detected keys_view(int vi, const uint8_t* notes, int n) {
 
 CORE_COLD int bound_voice(int ch, int* off) {
   if (ch < 0 || ch > 15) return -1;
-  if (off) *off = chans[ch].off + chan_oct(chans[ch]);   // (7g: the recording takes the shifted pitch)
-  return chans[ch].vi;
+  const Chan& c = chans[ch];
+  // polyuser-1: the unbound auto channel's CHRO notes are the selected seq track's pads when its voice takes no live
+  // binding (JUNO, PLAITS, DAISYSP, ...): that voice at the pads' offset, the pitch junopads' chro_on plays (step
+  // entry and REC + PLAY took the raw MIDI note, 24 low, and never recorded it)
+  if (c.vi < 0 && !c.direct && ch == keys::auto_channel() - 1 && sel_vi >= 0 && !plays_live(sel_vi) &&
+      seq::owns_voice(sel_vi)) {
+    if (off) *off = kPadOff + 12 * seq::pad_oct(sel_vi);
+    return sel_vi;
+  }
+  if (off) *off = c.off + chan_oct(c);   // (7g: the recording takes the shifted pitch)
+  return c.vi;
 }
 
 const Stats& stats() { return st; }

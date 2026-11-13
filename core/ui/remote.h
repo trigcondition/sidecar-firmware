@@ -58,6 +58,19 @@ void remote_resync();                           // records for the Rytm were los
 void remote_request(bool on);                   // the host opens / closes the page (3A 0 on)
 bool remote_open();
 int remote_caps();   // fix1049: the Rytm's last hello's caps (bit 0: 36; bit 1, rui1049: 16 send FX label tables), 0 none yet
+// 0.5.0 FILL: the hello's 4th byte (0: none, an older Rytm). kCaps2Arrows: UP + LEFT / RIGHT reach the host as the page
+// requests 49 1 1 kPageGenerator / kPageFill once claimed (remote.cpp fill_claim: 4A 7E 1 after each hello).
+int remote_caps2();
+constexpr int kCaps2Arrows = 1;
+// FILL's claim dropped (4A 7E 0: the Rytm's UP + LEFT / RIGHT stock's again) - fill-keys review L1: a claim left on a
+// Rytm whose host stopped answering. remote_fill_keys(false) (fill=keys:off): dropped, no claim after a hello until
+// remote_fill_keys(true) claims again; control core. remote_going_down(): a planned reboot or power-off (the Pi's
+// kernel, any core: a flag); the control core's next remote_tick drops the claim and claims no more (until a
+// remote_fill_keys(true)).
+void remote_fill_keys(bool on);
+bool remote_fill_keys_on();
+void remote_going_down();
+constexpr int kPageGenerator = 15, kPageFill = 16;
 // The page drawn by code titled `title` (extra.h: "SEQ", "LFO" ..) shown: at once when the page is open, else the page
 // opened (3A 0 1) and that page shown when the Rytm says it is open (30).
 void remote_show_page(const char* title);
@@ -144,6 +157,7 @@ inline constexpr uint32_t kPopupMaxMs = 30000;
 bool remote_popup(const char* line1, const char* line2 = nullptr, uint32_t hold_ms = 0, bool over = false);
 void remote_popup_end();   // take it off now (the job is done: a device paired)
 uint32_t remote_popups();   // how many were shown (tests)
+const char* remote_popup_text();   // the last popup's first line (tests)
 // of them, the status popups (`over` false): a status popup's caller watches this one, so that the pairing code's
 // popup being shown never reads as its own having been (pi/engine/thermal.h popup_due)
 uint32_t remote_status_popups();
@@ -153,6 +167,9 @@ void remote_src_log(bool on);  // 1027: log each 29 / 2A from the Rytm and each 
 // voice_report's hook (voices.cpp, after the report's P1..Pn are decoded, before they apply): the page's held edits for
 // voice vi on machine m (voice byte & 0x78).
 void remote_params(int vi, int m, float* p, int np);
+// 0.5.0 scenes (core/mod/scene.h): voice vi's P(k + 1) is a list cell on its page now (a model, a pattern: the morph
+// takes it whole, at halfway; spec-050 1.3 kV "built-in list knobs step")
+bool remote_is_list(int vi, int k);
 
 struct RemoteStats {
   uint32_t opens, closes, frames, tiles, rects, bytes, keepalives, keys, encs, edits, widgets, bad;
@@ -172,6 +189,12 @@ void preview_sent(uint8_t out[kBytes]);   // that frame with its text slots in t
 int sent_texts(uint8_t* out, int max);    // its text items, 36 B each (x, y, font, flags, 32 chars); how many
 void remote_reset();             // tests: closed, statistics and held edits cleared
 int remote_track_machine(int t);  // 1025: track t's voice byte from the Rytm's 33 (0x7F not a Sidecar machine), -1 none
+int remote_track_rytm_machine(int t);   // 0.5.0: track t's machine number from the 33 (the Rytm's 0..52), -1 none
+// SAMPLER (machines.h kSmplMachine): track t's 33 named machine 43 on DSP SAMPLE's flag; voice vi's first Sidecar track
+// is one (before any 33: its reports' tag, voices.h x.smpl)
+bool remote_track_smpl(int t);
+bool remote_voice_smpl(int vi);
+int remote_voice_machine(int vi);   // the machine voice vi plays, by name (SAMPLER kSmplMachine; its state's before a report)
                                   // (no 33 has named track t yet: a single-track 33 leaves the others unreported)
 int remote_track_voice(int t);    // the voice track t plays on (kTrackVoice; core/poly.h: a chord write-back's track)
 int remote_src_track();           // 1027: the track whose stock SRC page shows (29 t 1: the selected track, on a Sidecar machine), -1 none
@@ -189,6 +212,9 @@ int remote_param_write(int vi, int machine, int k, int value, int lo = 0);
 // 7-bit CC).
 // rui1045: on DSP SAMPLE the banked knob is SMP, P11 (remote_track_src_param 10; 0 P1 elsewhere): src14 is its value.
 bool remote_track_write(int t, int k, int value, int lo, int flags);
+// The Rytm's answer to track t's last P(k+1) write: -2 none (nothing written, or an older build), -1 owed, else its
+// status (0 done, 1 busy: try again, 4 locked on the steps held, others refused)
+int remote_track_write_answer(int t, int k);
 int remote_track_src14(int t);
 // 1027e: track t's P(k+1) as the SRC view draws it (the Rytm's 2A; -1 none yet)
 int remote_track_src_value(int t, int k);
@@ -212,6 +238,9 @@ bool remote_display_owned(int page);
 // the touchscreen has off the map and light only the keys that show something.
 bool remote_display_present();
 int remote_selected_track(uint32_t* gen);
+// 0.5.0 (LFO FINAL): the track the LFO page shows the pair of: remote_selected_track, or 12 while the Rytm has the FX track
+// selected (a 0026 that sends 49 1 2 12: today's sends sound tracks only); *gen counts its changes
+int remote_lfo_track(uint32_t* gen);
 uint32_t remote_track_info(int* track, int* machine, char name[13], uint8_t val[8], char label[8][5]);
 struct Page;
 const Page* remote_track_page(int t);

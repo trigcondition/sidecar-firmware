@@ -10,6 +10,7 @@
 
 #include "fx/insert.h"
 #include "fx/master.h"
+#include "mod/mod.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
 #include "ui/widgets.h"
@@ -26,6 +27,7 @@ struct MfxPage {
   bool eq = false;
   int slot = 0;
   int touched = -1;
+  bool full = false;   // 0.5.0: F skipped the send TYPEs for want of room (the buses share it: master.h kFxSlots)
 };
 CORE_RAM2 MfxPage mp;
 
@@ -108,6 +110,9 @@ CORE_COLD void mfx_draw(Canvas& c, int page, int npages, uint32_t ms) {
   if (e >= 0 && e < 4 && t) {
     sniprintf(b, sizeof b, CORE_STR("%d %s:%s"), mp.slot + 1, L.label[e], val[e]);
     footer(c, b, ins::param(ch, s, e));
+  } else if (e == 5 && mp.full) {
+    sniprintf(b, sizeof b, CORE_STR("SEND FX INSERTS: %d IN USE"), master::kFxSlots);
+    footer(c, b);
   } else if (master::control.src == master::kMix) {
     const int on = master::stems_on_main();
     if (on) sniprintf(b, sizeof b, CORE_STR("%d VOICES STILL ON MAIN"), on);
@@ -122,23 +127,39 @@ CORE_COLD void mfx_enc(int e, int d, bool func) {
   mp.touched = e;
   const int st = func ? 8 : 1, l = list_turn(e, d);   // the slot, type and switches: lists; the rest values
   if (mp.eq) {
-    if (e < ins::kEqParams) ins::set_eq(master::kEqChain, e, ins::eq_param(master::kEqChain, e) + d * st);
-    else if (e == 7) master::set_lev(master::control.lev + d * st);
+    if (e < ins::kEqParams) ins::set_eq(master::kEqChain, e, ins::eq_param(master::kEqChain, e) + d * st), mod::manual_knob(mod::tid(mod::kIns, master::kEqChain, 8 + e));
+    else if (e == 7) master::set_lev(master::control.lev + d * st), mod::manual_knob(mod::tid(mod::kMfx, 0, 0));
     return;
   }
   const int ch = master::chain(mp.slot), s = master::slot(mp.slot), t = ins::control.type[ch][s];
   if (e < 4) {
-    if (t) ins::set_param(ch, s, e, ins::param(ch, s, e) + d * st);
+    if (t) ins::set_param(ch, s, e, ins::param(ch, s, e) + d * st), mod::manual_knob(mod::tid(mod::kIns, ch, s * 4 + e));
   } else if (e == 4) {
     mp.slot = clampi(mp.slot + l, 0, master::kSlots - 1);
   } else if (e == 5) {
-    if (l) ins::set_type(ch, s, master::next_type(mp.slot, t, l));
+    if (l) {
+      const int n = master::next_type(mp.slot, t, l);
+      mp.full = false;
+      if (!master::room(mp.slot))   // a send TYPE passed over on the way: the room is full
+        for (int k = (t + l + ins::kAllTypes) % ins::kAllTypes; k != n; k = (k + l + ins::kAllTypes) % ins::kAllTypes)
+          mp.full |= master::send_type(k);
+      ins::set_type(ch, s, n);
+    }
   } else if (e == 6) {
-    if (master::send_type(t)) master::set_mix(mp.slot, master::control.mix[mp.slot] + d * st);
+    if (master::send_type(t)) master::set_mix(mp.slot, master::control.mix[mp.slot] + d * st), mod::manual_knob(mod::tid(mod::kMfx, 0, 1 + mp.slot));
     else if (t == ins::kAmp && l) master::set_pair(mp.slot, l > 0);
   } else if (e == 7) {
     if (l) master::set_src(l > 0 ? master::kMix : master::kRet);
   }
+}
+
+// 0.5.0 (EDIT): the target mfx_enc's turn of e edits now, as its mod::manual_knob names it (0 none)
+CORE_COLD uint16_t mfx_enc_tid(int e) {
+  if (mp.eq) return e < ins::kEqParams ? mod::tid(mod::kIns, master::kEqChain, 8 + e) : e == 7 ? mod::tid(mod::kMfx, 0, 0) : 0;
+  const int ch = master::chain(mp.slot), s = master::slot(mp.slot), t = ins::control.type[ch][s];
+  if (e < 4) return t ? mod::tid(mod::kIns, ch, s * 4 + e) : 0;
+  if (e == 6 && master::send_type(t)) return mod::tid(mod::kMfx, 0, 1 + mp.slot);
+  return 0;
 }
 
 CORE_COLD bool mfx_key(int code) {
@@ -160,7 +181,8 @@ CORE_COLD bool mfx_shown() {
 
 }  // namespace
 
-UI_ROM const ExtraPage kMasterPage = {"MASTER", mfx_shown, mfx_draw, mfx_enc, mfx_key, 0xFF, false, nullptr, nullptr, nullptr};
+UI_ROM const ExtraPage kMasterPage = {"MASTER", mfx_shown, mfx_draw, mfx_enc, mfx_key, 0xFF, false, nullptr, nullptr, nullptr,
+                                      false, nullptr, mfx_enc_tid};
 
 #if CORE_UI_TOOLS
 void mfx_page_set(int slot, bool eq) { mp.slot = slot, mp.eq = eq, mp.touched = -1; }   // tests

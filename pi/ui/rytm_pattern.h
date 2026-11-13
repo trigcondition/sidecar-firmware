@@ -39,7 +39,7 @@ typedef struct
 	unsigned char	cond[RYTM_STEPS];	// +0x1f0: 0 none, else the trig condition code [inferred]
 	unsigned char	dnote, dvel, dlen;	// the track's defaults (+0x230)
 	unsigned char	speed;			// 0..6 (+0x277) [measured]
-	unsigned char	steps;			// the track's length, 1..64 (+0x276) [inferred]
+	unsigned char	steps;			// the track's length, 1..64 (+0x235) [measured]
 } rytm_track_t;
 
 typedef struct

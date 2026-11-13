@@ -75,6 +75,15 @@ int fxin_json(char* out, int cap);
 // console's `lfo`, `lfo=N:KEY:VALUE` (false: not an lfo command) and /status's "lfo":{...} (any core, plain reads).
 void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2);
 bool lfo_command(const char* p, char* out, int cap);
+bool lfo_link_full();   // 0.5.0 LFO FINAL: the Rytm link full while an LFO is on it (core/lfo.h link_full): the banner
+// the modulation layer (core/mod/mod.h): "mod" (the live targets), "mod=stats"; "\"mod\":{...}" for /status
+bool mod_command(const char* p, char* out, int cap);
+int mod_json(char* out, int cap);
+bool scene_command(const char* p, char* out, int cap);   // scene, scene=...: the morph scenes (core/mod/scene.h)
+// xy, xy=...: the XY pad (core/mod/xypad.h); out "" for xy=pos / xy=up (every 30 ms while a finger drags: not logged)
+bool xy_command(const char* p, char* out, int cap);
+bool learn_command(const char* p, char* out, int cap);   // learn, learn=...: the MIDI-learn routes (core/mod/learn.h)
+int scene_json(char* out, int cap);
 // Poly FM (core/poly.h): the Rytm's channel messages (its pads' notes: live chords), the console's `poly` (its stats;
 // false: not a poly command)
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2);
@@ -93,6 +102,11 @@ void midim_realtime(uint8_t status);                                // the Rytm'
 void asamp_set_midi_out(bool (*f)(int port, const uint8_t* m, int n));   // the auto-sampler's EXT outputs (core/samp/autosamp.h)
 bool keys_computer_on();
 const char* keys_line(char* b, int cap);   // "KEYS MPKMINI > SD POLY", null: no keyboard
+// Settings > MIDI on the touchscreen (pi/ui/sidecar_ui.h keys_*, 0.5.0): the keyboards' route (0 the selected track, 1
+// by channel), the Rytm's auto channel, the computer's notes (1 routed here), the USB-A devices' names ("A, B"; "" none),
+// where the last key went ("MPKMINI > SD POLY", "" none yet), the MIDI-learn routes (-1: learn.txt is a newer build's, locked). Any core,
+// plain reads (a stale value at worst), as keys_line.
+void keys_ui(int* mode, int* auto_ch, int* mac, char* in, int in_cap, char* last, int last_cap, int* learn_routes);
 // The SD card test (core/msamp/sdtest.h): `sdtest`, `sdtest=start[!]`, `sdtest=cancel` (busy: a take records), and
 // /status's "sdtest":{...} (any core, plain reads)
 bool sdtest_command(const char* p, bool busy, char* out, int cap);
@@ -102,6 +116,12 @@ bool sdtest_command(const char* p, bool busy, char* out, int cap);
 void card_worker(bool on);
 int card_service(int n);
 bool card_busy();
+// the Pi 5's power-off (kernel.cpp): the idle saves without their settle waits (core::idle_flush); all on the card (idle_settled)
+void save_flush(bool on);
+bool save_settled();
+// a planned reboot or power-off (kernel.cpp, core 0): FILL's claim on the Rytm's UP + RIGHT dropped (4A 7E 0) at the
+// control core's next tick (core/ui/remote.h remote_going_down), before the USB stream stops
+void going_down();
 // SAMPLING and the AUTO-SAMPLER (core/samp/sampler.h, autosamp.h): the console's samp... / asamp... (core 3), MIDI
 // realtime for the sampler's PLAY / bar starts and tempo (core 3), the producer's frames (core 0: the IN completion,
 // the OUT fill), the card side (core 0's loop: true when it did a step), /status's ,"samp":{...},"asamp":{...}.
@@ -122,6 +142,7 @@ int samp_json(char* out, int cap);
 int sdtest_json(char* out, int cap);
 bool sdtest_running();   // the SD card test runs (the storage bench is refused meanwhile; any core, a plain read)
 int lfo_json(char* out, int cap);
+const int kLfoJsonCap = 12288;   // the /status LFO buffer: core::lfo::kJsonCap (26 LFOs with their names; bridge.cpp checks)
 int poly_json(char* out, int cap);   // E0: "\"poly\":[..],\"inst\":{..},\"md\":{..}" - the seq tracks' poly configs, the instances (core/inst.h), the built-in MD's control-core cost (core/md/md.h)
 int seqx_json(char* out, int cap);   // seqtop: "\"seqx\":{..}" - the pattern's key / scale / seed, the seq tracks' seqtop settings
 // The remote UI's input tap (core/ui/extra.h: SCOPE's waveform, the meters): tap_on() while a page reads it, then each
@@ -186,6 +207,9 @@ const char* ins_bench_name(int type);
 // ins_bench
 uint64_t amp_bench(uint32_t* worst_block);
 uint64_t mfx_bench(uint32_t* worst_block);   // the master chain without AMP (core/fx/master.h bench); 0 when one is set
+// 0.5.0: 4 send TYPE inserts at once across B1 / B2 / B3 / M1 (core/fx/master.h sfx_bench), set 0.. while its name is not null
+uint64_t sfxins_bench(int set, uint32_t* worst_block);
+const char* sfxins_bench_name(int set);
 unsigned poly_voices();
 int rytm_pattern(int* transport);   // UX review T1: the Rytm's pattern (-1 not known) and transport (core/seq's view)   // UX review S1: bit vi - a Rytm track on voice vi is a poly track (the Sidecar sequences it)
 uint32_t machine_gen(int voice);       // with machine_name, the guard's key: 0, or a user voice's slot + 1 and the

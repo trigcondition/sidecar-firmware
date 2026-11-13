@@ -40,6 +40,7 @@ const char* folder_name(int folder);
 int rows(int kind);
 const char* row_name(int kind, int row, char* b, int cap);
 bool built_ins(int kind);        // nothing listed
+bool row_used(int kind, int row);   // 0.5.0 FILL: the row holds a preset (the built-ins: every row; else a used slot)
 
 // An empty list's first add seeds it with the built-ins, row = PAT, so a saved PAT keeps its preset (docs/POOLS.md): FM's 96 rows
 // and room after them; JUNO's 127 rows (PAT is 7 bits and every value was a factory patch: there is no free row, and PAT 127,

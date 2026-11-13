@@ -961,6 +961,28 @@ int main() {
     core::engine_sysex(bl_no, 12);
     src_view(0, 0);
   }
+  {   // 0.5.0 (the owner): SAMPLER (33's machine 43 on DSP SAMPLE's flag) - the same SAMPLES list, its own page (SMP STRT
+      // END PLAY / TUNE FINE ..); FUNC + YES on its SRC view with SMP OFF picks no free row: OFF is the track's choice (SMP OFF
+      // unloads it) - refused as the list's own FUNC + YES on OFF: 000 IS OFF, no files
+    const uint8_t smpl_bd[2] = {core::kRytmSampler, 0x20};
+    machines(0, 1, smpl_bd);
+    const uint8_t o[12] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 1, 0, 0, 0, 0xF7};
+    const uint8_t f6[12] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 3, 0, 0, 6, 0xF7};
+    core::engine_sysex(o, 12);
+    src_view(0, 1);
+    remote_tick(t += 30);
+    CHECK(src_bank_state().on && src_bank_state().machine == core::kSmplMachine && remote_track_src_param(0) == 10);
+    CHECK(shown_text("SAMPLE") && remote_track_page(0) && !strcmp(remote_track_page(0)->label[1], "STRT") &&
+          !strcmp(remote_track_page(0)->label[4], "TUNE"));
+    other.clear();
+    core::engine_sysex(f6, 12);
+    for (int i = 0; i < 3; ++i) remote_tick(t += 30);
+    CHECK(src_bank_state().on && src_bank_state().row == 0 && !src_bank_state().browse && !sent4a(1) && shown_text("000 IS OFF"));
+    printf("ui: 0.5.0 FUNC + YES on SAMPLER's SRC (OFF): refused, 000 IS OFF\n");
+    core::engine_sysex(bl_no, 12);
+    src_view(0, 0);
+    machines(0, 1, dsps_bd);   // BD back on DSP SAMPLE
+  }
   // the 2A's P11 (the view's values) is P11's 14 bits on DSP SAMPLE (P1's on the banked machines)
   src_view(0, 1);
   const uint8_t p11[12] = {0xF0, 0x7D, 0x52, 0x54, 0x2A, 1, 0, 10, 1, 7, 0x30, 0xF7};
@@ -1046,7 +1068,8 @@ int main() {
     for (int i = 0; i < menu_rows(); ++i) CHECK(!menu_row_page(i) || !sc_shortcut_only(menu_row_page(i)));
     for (int i = 0; i < menu_rows() + 4; ++i) from_rytm(0x31, 0, 0x43, 1), from_rytm(0x31, 0, 0x43, 0);   // DOWN to the last row
     remote_tick(t += 30);
-    CHECK(shown_text("KEYS (ALL COMBOS)") && shown_text("USB-C -") && shown_text("UP+T10") && !shown_text("UP+T13"));   // (USB-C, no platform here: "-"; PROJECT's UP+T12 one row up)
+    CHECK(shown_text("KEYS (ALL COMBOS)") && shown_text("USB-C -") && shown_text("MIDI") && !shown_text("MIDI -") &&
+          !shown_text("UP+T13"));   // (USB-C, no platform here: "-"; MIDI there always (0.5.0); STATUS's UP+T10 one row up)
     png("menu_2_end.png");
     from_rytm(0x31, 0, 0x44, 1), from_rytm(0x31, 0, 0x44, 0);   // YES: KEYS
     remote_tick(t += 30);
@@ -1564,6 +1587,70 @@ int main() {
       menu_reset();
       printf("ui: SIDECAR MENU > USB-C: class compliant / overbridge, its warning, what USB-C is now\n");
     }
+  }
+
+  // ---- 0.5.0 Task 37: key releases for engine pages (ExtraPage::key_up, spec-050 2.6). A test page (extra_test_page)
+  // that takes T1..T16 and YES and logs every press and release it gets.
+  {
+    struct Log { int downs[256], ups[256]; };
+    static Log lg;
+    static const ExtraPage kHold = {"HOLDTEST", nullptr, [](Canvas& c, int, int, uint32_t) { c.clear(); },
+                                    [](int, int, bool) {}, [](int code) { lg.downs[code & 0xFF]++; return code < 16 || code == 0x44; },
+                                    0, false, nullptr, [] { return (uint16_t)0xFFFF; }, nullptr, true,
+                                    [](int code) { lg.ups[code & 0xFF]++; return true; }};
+    static const ExtraPage kNoUp = {"NOUPTEST", nullptr, [](Canvas& c, int, int, uint32_t) { c.clear(); },
+                                    [](int, int, bool) {}, [](int code) { lg.downs[code & 0xFF]++; return code < 16; },
+                                    0, false, nullptr, [] { return (uint16_t)0xFFFF; }, nullptr, true};
+    uint32_t t = 900000;
+    auto press = [&](int k, bool down) { from_rytm(0x31, (uint8_t)(k >> 7), (uint8_t)(k & 0x7F), down ? 1 : 0); remote_tick(t += 30); };
+    auto open_on = [&](const ExtraPage* p) {
+      remote_reset();
+      extra_test_page(p);
+      from_rytm(0x30, 0, 1, 0);
+      remote_tick(t += 30);
+      remote_show_page(p->title);
+      remote_tick(t += 30);
+      CHECK(remote_page_title() && !strcmp(remote_page_title(), p->title));
+    };
+    // release_reaches_page: a key the page took at its press gets its release; one it did not take does not
+    memset(&lg, 0, sizeof lg);
+    open_on(&kHold);
+    press(0x02, true);
+    CHECK(lg.downs[2] == 1 && lg.ups[2] == 0);
+    press(0x02, false);
+    CHECK(lg.ups[2] == 1);
+    press(0x41, true), press(0x41, false);   // RIGHT: not the page's (navigation): no release to it
+    CHECK(lg.ups[0x41] == 0);
+    press(0x05, false);                      // a release with no press seen: nothing
+    CHECK(lg.ups[5] == 0);
+    printf("ui: release_reaches_page (a key the page took gets key_up, others do not)\n");
+    // link_loss_releases_holds: keys held when a hello comes (a new link) or the page closes are released to the page
+    open_on(&kHold);
+    memset(&lg, 0, sizeof lg);
+    press(0x00, true), press(0x0B, true), press(0x44, true);
+    from_rytm(0x35, 0, 100, 1);   // a hello: the Rytm restarted (or the cable went), the releases are lost
+    remote_tick(t += 30);
+    CHECK(lg.ups[0] == 1 && lg.ups[0x0B] == 1 && lg.ups[0x44] == 1);
+    press(0x00, false);           // a late release after that: not again
+    CHECK(lg.ups[0] == 1);
+    open_on(&kHold);
+    memset(&lg, 0, sizeof lg);
+    press(0x07, true);
+    from_rytm(0x30, 0, 0, 0);     // the page closed
+    remote_tick(t += 30);
+    CHECK(lg.ups[7] == 1);
+    printf("ui: link_loss_releases_holds (a hello or the page closing releases every held key)\n");
+    // other_pages_unchanged: a page without key_up (aggregate init leaves it null) takes presses as before
+    open_on(&kNoUp);
+    memset(&lg, 0, sizeof lg);
+    press(0x03, true), press(0x03, false);
+    CHECK(lg.downs[3] == 1);
+    from_rytm(0x35, 0, 100, 1);
+    remote_tick(t += 30);
+    CHECK(!kLfoPage.key_up && !kMenuPage.key_up && !kKeysPage.key_up);
+    printf("ui: other_pages_unchanged (no key_up: presses as before)\n");
+    extra_test_page(nullptr);
+    remote_reset();
   }
 
   float full = 0, one = 0;

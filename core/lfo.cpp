@@ -7,6 +7,7 @@
 
 #include "fmt/fmt.h"
 #include "hooks.h"
+#include "mod/mod.h"
 #include "platform.h"
 #include "pool/pool.h"
 #if CORE_MSAMP
@@ -15,14 +16,20 @@
 #endif
 #include "voice_name.h"
 #include "voices.h"
+#if RYTM_SENDFX_LARGE
+#include "ui/remote.h"   // remote_lfo_track: the JSON's "trk" (the web follows the Rytm's selected track)
+#endif
 #if CORE_POLY
 #include "fx/insert.h"
 #include "fx/out.h"
+#include "mod/rytm_param.h"
+#include "device/device.h"
+#include "ui/remote.h"
 #endif
 
 namespace core {
 namespace ui {
-const char* voice_label(int vi, int k);   // page_lfo.cpp: the voice's machine page label of P(k+1), null none
+const char* voice_label(int vi, int k, char* b, int cap);   // page_lfo.cpp: voice vi's P(k+1) as the Rytm labels it, "" none
 }
 namespace lfo {
 
@@ -35,12 +42,26 @@ namespace lfo {
 namespace {
 
 // ---- tables
-UI_ROM_LFO const char kTargetNames[kTargets][4] = {"OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2"
+UI_ROM_LFO const char kTargetNames[kTargets][5] = {"OFF", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "FX1", "FX2"
 #if CORE_POLY
                                                   , "I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "B1", "B2", "B3",
-                                                  "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8"
+                                                  "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8",
+                                                  "M1", "M2", "MFX", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8",
+                                                  "S9", "S10", "S11", "S12", "X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8",
+                                                  "RT1", "RT2", "RT3", "RT4", "RT5", "RT6", "RT7", "RT8", "RT9", "RT10",
+                                                  "RT11", "RT12", "RFX"
 #endif
 };
+#if CORE_POLY
+// 0.5.0: the Rytm words an RT / RFX LFO may move (rytm-param-mod 3.1, 3.3: offsets; no list word, no LFO DST), in the
+// page's order: LFO, SYNTH P1..P8, SAMPLE, FILTER, AMP, the velocity routes, VEL
+UI_ROM_LFO const uint8_t kRtWords[] = {5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 24, 25, 26, 27, 28,
+                                       29, 30, 31, 33, 34, 35, 36, 37, 38, 39, 40, 41, 48, 49, 50, 51, 52, 53, 54, 55, 56};
+// (M0b: the compressor's THR MUP MIX CVOL appended: an older file's index is unchanged; the file keeps the word anyway)
+UI_ROM_LFO const uint8_t kRfxWords[] = {5,  6,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 19,
+                                        20, 21, 22, 23, 24, 25, 27, 28, 30, 35, 36, 37};
+constexpr int kRtN = (int)sizeof kRtWords, kRfxN = (int)sizeof kRfxWords;
+#endif
 UI_ROM_LFO const char kWaveNames[kWaves][7] = {"SINE", "TRI", "SAW+", "SAW-", "SQR", "S&H", "RND", "DESIGN"};
 UI_ROM_LFO const char kRetrigNames[kRetrigs][5] = {"FREE", "TRIG", "PLAY"};
 UI_ROM_LFO const char kShapeNames[kShapes][5] = {"HOLD", "RAMP", "SMTH"};
@@ -61,6 +82,9 @@ struct Run {
 };
 Run g_run[kLfos];
 
+#if !CORE_MOD_LFO
+// CORE_MOD_LFO 0 (the rollback, removed in Phase 2): the targets' table of 0.4.0, the LFOs writing their targets
+// themselves. Else core/mod owns the targets (spec-050 1.1): the LFOs hand it one offset each a tick (waves()).
 struct Tgt {
   uint8_t target = 0, param = 0;
   uint8_t state = 0;   // 0 free, 1 live
@@ -73,6 +97,7 @@ uint32_t g_last_us = 0;
 bool g_started = false;
 uint8_t g_vdirty = 0;
 uint32_t g_user_ms[kVoices];
+#endif
 
 struct Clock {
   bool run = false, ticking = false;
@@ -81,6 +106,7 @@ struct Clock {
   float tick_us = 20833.3f;   // the tempo: 120 BPM until measured
   float tp = 0;               // the clock position now, in ticks mod kWrap
   bool start = false;         // a Start since the last tick (PLAY retrigs)
+  uint32_t starts = 0, stops = 0, jumps = 0;   // FA / FB, FC, F2 since boot (clock_state: API 3's transport flags)
 };
 Clock g_clk;
 
@@ -113,16 +139,41 @@ CORE_COLD float rnd(uint32_t& s) { return (float)(xorshift(s) >> 8) * (2.0f / 16
 
 CORE_COLD bool is_voice(int t) { return t >= kTVoice && t < kTVoice + kVoices; }
 CORE_COLD bool is_fx(int t) { return t == kTFx || t == kTFx + 1; }
+// MFX's params: LEV, the master's 4 slots' MIX, the 6 bus slots' (core/fx/master.h slot_index + 1 = core/mod's kMfx param)
+constexpr int kMfxMaster = 4, kMfxParams = 11;
 #if CORE_POLY
 CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTOut; }   // fx-ins: never true without CORE_POLY
-CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTargets; }   // the OUT route's LEV PAN WID (core/fx/out.h)
+CORE_COLD bool is_out(int t) { return t >= kTOut && t < kTMaster; }   // the OUT route's LEV PAN WID (core/fx/out.h)
+CORE_COLD bool is_mchain(int t) { return t == kTMaster || t == kTMaster + 1; }   // 0.5.0: M1 M2 (insert chains 11, 12)
+CORE_COLD bool is_mfx(int t) { return t == kTMfx; }                               // LEV, MIX1..4, B1A..B3B
+CORE_COLD bool is_snd(int t) { return t >= kTSnd && t < kTSnd + 12; }             // a Rytm track's FX1 / FX2 send
+CORE_COLD bool is_isnd(int t) { return t >= kTIsnd && t < kTIsnd + 8; }           // a voice's sends to the buses
+CORE_COLD bool is_rt(int t) { return t >= kTRt && t <= kTRfx; }                    // 0.5.0: the Rytm's own params
+// an RT / RFX LFO's param (its list's index) <-> the Rytm word (-1: none)
+CORE_COLD int rt_word(int t, int p) {
+  if (!is_rt(t) || p < 0) return -1;
+  return t == kTRfx ? (p < kRfxN ? kRfxWords[p] : -1) : (p < kRtN ? kRtWords[p] : -1);
+}
+CORE_COLD int rt_param(int t, int w) {
+  for (int p = 0, n = t == kTRfx ? kRfxN : kRtN; is_rt(t) && p < n; ++p)
+    if (rt_word(t, p) == w) return p;
+  return -1;
+}
 #else
 CORE_COLD bool is_ins(int t) { return t >= kTIns && t < kTargets; }
 CORE_COLD bool is_out(int) { return false; }
+CORE_COLD bool is_mchain(int) { return false; }
+CORE_COLD bool is_mfx(int) { return false; }
+CORE_COLD bool is_snd(int) { return false; }
+CORE_COLD bool is_isnd(int) { return false; }
+CORE_COLD bool is_rt(int) { return false; }
+CORE_COLD int rt_word(int, int) { return -1; }
+CORE_COLD int rt_param(int, int) { return -1; }
 #endif
 
 CORE_COLD void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
 
+#if !CORE_MOD_LFO
 CORE_COLD Tgt* find(int target, int param) {
   for (Tgt& e : g_t)
     if (e.state && e.target == target && e.param == param) return &e;
@@ -131,9 +182,10 @@ CORE_COLD Tgt* find(int target, int param) {
 
 CORE_COLD float current(int target, int param) {   // a new target's base: what plays now
   if (is_voice(target)) return v[target - kTVoice].p[param & 15];
-  if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (lfo_offset), its base the knob
+  if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (mod_offset), its base the knob
   return fx::control.knob[target - kTFx][2 + (param & 3)];
 }
+#endif
 
 CORE_COLD void retrig(int i) {
   Run& r = g_run[i];
@@ -164,7 +216,7 @@ CORE_COLD float shaped(const Settings& s, float ph, Run& r, bool cycle) {
 }
 
 CORE_COLD void sanitize(Settings& s) {
-  if (s.target >= kTargets) s.target = 0;
+  if (s.target >= kTargets) s.target = 0;   // (a Rytm target: set / from_line refuse it first, target_ok)
   int np = params_of(s.target);
   if (np && s.param >= np) s.param = (uint8_t)(np - 1);
   if (s.wave >= kWaves) s.wave = kSine;
@@ -230,25 +282,45 @@ CORE_COLD void name_of(const char* proj, char* fn, int cap, int kit) {
 }
 CORE_COLD void file_name(char* fn, int cap, int kit) { name_of(g_proj, fn, cap, kit); }
 
-// one LFO as the file's line: N TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN
+// one LFO as the file's line: NAME TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN; NAME the LFO's (lfo_name: "T3A",
+// "FXB" on the Pi from 0.5.0's 26 - an older build reads no such line, so it never writes over the file; the Mini's "N")
 CORE_COLD int to_line(int i, char* b, int cap) {
   const Settings& s = g_set[i];
-  char h[3 * kSteps + 1];
+  char h[3 * kSteps + 1], nm[6];
   design_hex(s, h);
-  return sniprintf(b, cap, CORE_STR("%d %s %d %d %d %d %d %d %d %s\n"), i + 1, target_name(s.target), s.param, s.wave,
-                   s.rate, s.sync, s.retrig, s.depth, s.base, h);
+  int pw = is_rt(s.target) ? rt_word(s.target, s.param) : s.param;   // RT / RFX: the Rytm's word, not the list's index
+  return sniprintf(b, cap, CORE_STR("%s %s %d %d %d %d %d %d %d %s\n"), lfo_name(i, nm, sizeof nm), target_name(s.target),
+                   pw, s.wave, s.rate, s.sync, s.retrig, s.depth, s.base, h);
+}
+// A line's LFO: its name (T3A, FXB), or a number - the Mini's LFO N, or on the Pi a file from before 0.5.0's 26 (8 LFOs,
+// numbered): old LFO N becomes track N's A, its target kept (LFO FINAL: the owner's migration). -1: not one of ours
+CORE_COLD int line_lfo(const char* p) {
+  if (*p >= '0' && *p <= '9') {
+    int n = (int)num(p);
+    if (!kPerTrack) return n >= 1 && n <= kLfos ? n - 1 : -1;
+    return n >= 1 && n <= kTracks ? lfo_of(n - 1, 0) : -1;
+  }
+  const char* e;
+  int i = lfo_index(p, &e);
+  return i >= 0 && (*e == ' ' || !*e) ? i : -1;
 }
 CORE_COLD bool from_line(const char* b) {
   char tn[8] = {0}, h[3 * kSteps + 2] = {0};
-  int n = 0, ti = 0;
+  int ti = 0;
   const char* p = b;
-  n = (int)num(p);
-  if (n < 1 || n > kLfos) return false;
+  const int li = line_lfo(p);
+  if (li < 0) return false;
   while (*p && *p != ' ') ++p;
   while (*p == ' ') ++p;
   while (*p && *p != ' ' && ti < 7) tn[ti++] = *p++;
   int t = target_from_name(tn);
   if (t < 0) return false;
+  if (!target_ok(li, t)) {   // an LFO on a Rytm target: it loads OFF (the line is read, the file not locked; the next save drops it)
+    if (!is_rt(t)) return false;
+    defaults(&g_set[li]);
+    log(CORE_STR("lfo: line %.4s: an LFO on the Rytm is not allowed, loaded OFF"), b);
+    return true;
+  }
   long f[7];
   for (int k = 0; k < 7; ++k) {
     while (*p == ' ') ++p;
@@ -262,14 +334,20 @@ CORE_COLD bool from_line(const char* b) {
   strncpy(h, p, sizeof h - 1);
   Settings s;
   defaults(&s);
+  if (is_rt(t)) {   // the Rytm's word (a word this build's list lacks: the line is not read, the file locks)
+    int q = rt_param(t, (int)f[0]);
+    if (q < 0) return false;
+    f[0] = q;
+  }
   s.target = (uint8_t)t, s.param = (uint8_t)f[0], s.wave = (uint8_t)f[1], s.rate = (uint8_t)f[2], s.sync = (uint8_t)f[3];
   s.retrig = (uint8_t)f[4], s.depth = (int8_t)(f[5] < -64 ? -64 : f[5] > 63 ? 63 : f[5]), s.base = (uint8_t)(f[6] & 127);
   design_from_hex(s, h);
   sanitize(s);
-  g_set[n - 1] = s;
+  g_set[li] = s;
   return true;
 }
 
+#if !CORE_MOD_LFO
 // the targets the LFOs leave: back to their bases
 CORE_COLD void restore(Tgt& e) {
   ++g_stats.restores;
@@ -281,12 +359,13 @@ CORE_COLD void restore(Tgt& e) {
     fx::control.knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)e.base;
   }
 #if CORE_POLY
-  else if (is_ins(e.target) && e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, 0);
-  else if (is_ins(e.target)) ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, 0);
-  else if (is_out(e.target)) out::lfo_offset(e.target - kTOut, e.param % 3, 0);
+  else if (is_ins(e.target) && e.param >= 8) ins::eq_mod_offset(e.target - kTIns, (e.param - 8) & 3, 0);
+  else if (is_ins(e.target)) ins::mod_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, 0);
+  else if (is_out(e.target)) out::mod_offset(e.target - kTOut, e.param % 3, 0);
 #endif
   e.state = 0;
 }
+#endif
 
 }  // namespace
 
@@ -325,8 +404,56 @@ CORE_COLD void preset(Settings* s, int which) {
 
 CORE_COLD const Settings& get(int i) { return g_set[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i]; }
 
+// 0.5.0 owner test (2026-11-13): an LFO on a Rytm param (PAN) made the whole Rytm slow - PLAY, the remote UI - so no
+// LFO, A or B, uses the Rytm link: the XY pad, the scenes and MIDI learn keep it (core/mod/rytm_param.h)
+CORE_COLD bool target_ok(int i, int t) {
+  if (i < 0 || i >= kLfos || t < 0 || t >= kTargets) return false;
+  return !is_rt(t);
+}
+CORE_COLD int target_max(int) {
+#if CORE_POLY
+  return kTRt - 1;   // (the Rytm's targets are the list's last: the list ends before RT1)
+#else
+  return kTargets - 1;
+#endif
+}
+CORE_COLD const char* lfo_name(int i, char* b, int cap) {
+  if (!kPerTrack) sniprintf(b, cap, "%d", i + 1);
+  else if (track_of(i) == 12) sniprintf(b, cap, "FX%c", 'A' + slot_of(i));
+  else sniprintf(b, cap, CORE_STR("T%d%c"), track_of(i) + 1, 'A' + slot_of(i));
+  return b;
+}
+CORE_COLD int lfo_index(const char* s, const char** end) {
+  const char* p = s;
+  int i = -1;
+  if (*p >= '0' && *p <= '9') {
+    int n = (int)num(p, &p);
+    i = n >= 1 && n <= kLfos ? n - 1 : -1;
+  } else if (kPerTrack) {
+    int t = -1;
+    if ((p[0] == 'T' || p[0] == 't') && p[1] >= '1' && p[1] <= '9') {
+      t = (int)num(p + 1, &p) - 1;
+      if (t > 11) t = -1;
+    } else if ((p[0] == 'F' || p[0] == 'f') && (p[1] == 'X' || p[1] == 'x')) {
+      t = 12, p += 2;
+    }
+    char c = *p >= 'a' && *p <= 'z' ? (char)(*p - 32) : *p;
+    if (t >= 0 && (c == 'A' || c == 'B')) i = lfo_of(t, c - 'A'), ++p;
+  }
+  if (end) *end = i < 0 ? s : p;
+  return i;
+}
+CORE_COLD bool link_full() {
+#if CORE_POLY
+  if (!mod::rp_saturated()) return false;
+  for (int i = 0; i < kLfos; ++i)
+    if (is_rt(g_set[i].target) && g_set[i].depth) return true;   // (the LFOs' warning: one of them on the link)
+#endif
+  return false;
+}
+
 CORE_COLD bool set(int i, const Settings& s) {
-  if (i < 0 || i >= kLfos) return false;
+  if (i < 0 || i >= kLfos || !target_ok(i, s.target)) return false;
   Settings n = s;
   sanitize(n);
   Settings& o = g_set[i];
@@ -341,7 +468,125 @@ CORE_COLD const char* wave_name(int w) { return w >= 0 && w < kWaves ? kWaveName
 CORE_COLD const char* retrig_name(int r) { return r >= 0 && r < kRetrigs ? kRetrigNames[r] : "?"; }
 CORE_COLD const char* shape_name(int s) { return s >= 0 && s < kShapes ? kShapeNames[s] : "?"; }
 CORE_COLD const char* target_name(int t) { return t >= 0 && t < kTargets ? kTargetNames[t] : "?"; }
-CORE_COLD const char* target_label(int t) { return t >= kTVoice && t < kTVoice + 8 ? voice_name(t - kTVoice) : target_name(t); }
+#if CORE_POLY
+// ---- the TGT / PAR display order (lfo.h): a mapping over the stored ids, nothing stored changes
+static UI_ROM_LFO const char kRytmTrack[12][3] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"};
+constexpr int kTrN = 12;
+static CORE_COLD bool tracks_view() { return !device::box_screen(); }
+static CORE_COLD bool sidecar_on(int t, bool unknown_is_yes) {   // track t plays a Sidecar machine (before any 33: unknown)
+  int m = ui::remote_track_machine(t);
+  return m < 0 ? unknown_is_yes : m != 0x7F;
+}
+// A voice-shared pair (RS/CP, MT/HT, CH/OH, CY/CB) shows its voice under ONE track of the pair: the first that plays a
+// Sidecar machine (not yet known counts as one). A pair with no Sidecar track has no owner: its first track.
+static CORE_COLD int voice_owner(int v) {
+  for (int t = 0; t < kTrN; ++t)
+    if (ui::remote_track_voice(t) == v && sidecar_on(t, true)) return t;
+  return -1;
+}
+static CORE_COLD int track_of_voice(int v) {   // the track a stored voice target is shown under (lfo.h)
+  const int o = voice_owner(v);
+  if (o >= 0) return o;
+  for (int t = 0; t < kTrN; ++t)
+    if (ui::remote_track_voice(t) == v) return t;
+  return 0;
+}
+#endif
+// the list's voice entries (lfo.h): the 8 voices ranked by the track each is shown under (ties: the voice number)
+static CORE_COLD int b_rank(int v) {
+  int r = 0;
+  const int tv = track_of_voice(v);
+  for (int o = 0; o < 8; ++o)
+    if (o != v) {
+      const int to = track_of_voice(o);
+      if (to < tv || (to == tv && o < v)) ++r;
+    }
+  return r;
+}
+static CORE_COLD int b_voice_at(int r) {
+  for (int v = 0; v < 8; ++v)
+    if (b_rank(v) == r) return v;
+  return r;
+}
+CORE_COLD const char* target_label(int t) {
+#if CORE_POLY
+  if (tracks_view()) {
+    if (is_voice(t)) return kRytmTrack[track_of_voice(t - kTVoice)];
+    if (t >= kTRt && t < kTRt + kTrN) return kRytmTrack[t - kTRt];
+  }
+#endif
+  return t >= kTVoice && t < kTVoice + 8 ? voice_name(t - kTVoice) : target_name(t);
+}
+// 0.5.0 owner test: no LFO targets the Rytm (target_ok), so A's list is B's: one list
+CORE_COLD int target_count() {
+#if CORE_POLY
+  return kTRt;   // OFF, V1..V8, ids 9..52
+#else
+  return kTargets;
+#endif
+}
+CORE_COLD int target_pos(int t) {
+  if (t < 0 || t >= kTargets) return -1;
+#if CORE_POLY
+  return is_rt(t) ? -1 : is_voice(t) && tracks_view() ? 1 + b_rank(t - kTVoice) : t;
+#else
+  return t;
+#endif
+}
+// A voice's PAR list: the params its machine names (ui::voice_label), plus a stored param it does not name while it is
+// the stored one (an older file's); a machine that names none (not known yet, a user machine without labels): all 16.
+// 0.5.0 owner test: SAMPLER names P9..P16 only - its list had eight empty "P1 -".."P8 -" rows.
+static CORE_COLD uint32_t voice_params(int t, int keep) {
+  uint32_t m = 0;
+  for (int p = 0; p < 16; ++p) {
+    char b[8];
+    if (ui::voice_label(t - kTVoice, p, b, sizeof b)[0]) m |= 1u << p;
+  }
+  if (!m) return 0xFFFF;
+  return keep >= 0 && keep < 16 ? m | 1u << keep : m;
+}
+static CORE_COLD int bits_below(uint32_t m, int p) {
+  int n = 0;
+  for (int k = 0; k < p; ++k) n += (int)(m >> k & 1);
+  return n;
+}
+static CORE_COLD int nth_bit(uint32_t m, int i) {
+  for (int k = 0; k < 16; ++k)
+    if ((m >> k & 1) && i-- == 0) return k;
+  return 0;
+}
+// a voice target's first param (TGT, the console / web `tgt`): P2 as before when its machine names it, else its first named
+static CORE_COLD int voice_landing(int t) {
+  const uint32_t m = voice_params(t, -1);
+  return m >> 1 & 1 ? 1 : nth_bit(m, 0);
+}
+CORE_COLD bool target_step(Settings* s, int d) {
+  const int pos = target_pos(s->target);
+  int np = pos + d;
+  const int n = target_count();
+  np = np < 0 ? 0 : np >= n ? n - 1 : np;
+  if (pos < 0 || np == pos) return false;
+  int t = np;   // (the positions are the ids, the voices permuted among 1..8 by the track they are shown under)
+#if CORE_POLY
+  if (np >= kTVoice && np < kTFx && tracks_view()) t = kTVoice + b_voice_at(np - kTVoice);
+#endif
+  s->target = (uint8_t)t, s->param = (uint8_t)(is_voice(t) ? voice_landing(t) : 0);
+  return true;
+}
+CORE_COLD int param_count(const Settings& s) {
+  if (is_voice(s.target)) return bits_below(voice_params(s.target, s.param & 15), 16);
+  return params_of(s.target) ? params_of(s.target) : 1;
+}
+CORE_COLD int param_index(const Settings& s) {
+  if (is_voice(s.target)) return bits_below(voice_params(s.target, s.param & 15), s.param & 15);
+  return s.param;
+}
+CORE_COLD void param_step(Settings* s, int d) {
+  const int n = param_count(*s);
+  int i = param_index(*s) + d;
+  i = i < 0 ? 0 : i >= n ? n - 1 : i;
+  s->param = (uint8_t)(is_voice(s->target) ? nth_bit(voice_params(s->target, s->param & 15), i) : i);
+}
 CORE_COLD int target_from_name(const char* s) {
   for (int t = 0; t < kTargets; ++t) {
     const char* n = kTargetNames[t];
@@ -357,31 +602,46 @@ CORE_COLD int target_from_name(const char* s) {
 CORE_COLD int params_of(int t) {
   if (is_voice(t)) return 16;
   if (is_fx(t)) return 4;
-  if (is_ins(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
-  if (is_out(t)) return 3;
+  if (is_ins(t) || is_mchain(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
+  if (is_out(t) || is_isnd(t)) return 3;
+  if (is_mfx(t)) return kMfxParams;   // LEV, MIX1..4, B1A..B3B (the bus slots' send TYPE MIX, 0.5.0)
+  if (is_snd(t)) return 2;
+#if CORE_POLY
+  if (is_rt(t)) return t == kTRfx ? kRfxN : kRtN;
+#endif
   return 0;
 }
 CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
   b[0] = 0;
   if (is_voice(t)) {
-    const char* l = ui::voice_label(t - kTVoice, p & 15);
-    if (l && *l) sniprintf(b, cap, "%s", l);
-    else sniprintf(b, cap, CORE_STR("P%d"), (p & 15) + 1);
+    ui::voice_label(t - kTVoice, p & 15, b, cap);
+    if (!b[0]) sniprintf(b, cap, "-");   // a P the voice's machine leaves unused
   } else if (is_fx(t)) {
     const fx::KnobLabels* l = fx::labels(fx::control.knob[t - kTFx][0]);
     if (l && l->label[p & 3] && *l->label[p & 3]) sniprintf(b, cap, "%s", l->label[p & 3]);
-    else sniprintf(b, cap, CORE_STR("P%d"), (p & 3) + 2);
+    else sniprintf(b, cap, "-");   // a knob the TYPE leaves unused
 #if CORE_POLY
-  } else if (is_ins(t) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
+  } else if ((is_ins(t) || is_mchain(t)) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
     sniprintf(b, cap, CORE_STR("Q%.3s"), ins::eq_labels().label[(p - 8) & 3]);
-  } else if (is_ins(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
-    int ty = ins::control.type[t - kTIns][(p >> 2) & 1];
+  } else if (is_ins(t) || is_mchain(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
+    int ty = ins::control.type[is_ins(t) ? t - kTIns : ins::kM0 + t - kTMaster][(p >> 2) & 1];
     const char* l = ins::labels(ty).label[p & 3];
     if (ty && l[0]) sniprintf(b, cap, CORE_STR("%c%.4s"), 'A' + ((p >> 2) & 1), l);
-    else sniprintf(b, cap, CORE_STR("%cP%d"), 'A' + ((p >> 2) & 1), (p & 3) + 1);
+    else sniprintf(b, cap, CORE_STR("%c-"), 'A' + ((p >> 2) & 1));   // the slot OFF (or a knob its TYPE leaves unused)
   } else if (is_out(t)) {   // LEV PAN WID
     static const char* const kO[3] = {"LEV", "PAN", "WID"};
     sniprintf(b, cap, "%s", kO[p % 3]);
+  } else if (is_mfx(t)) {   // 0.5.0: the master's LEV, its slots' MIX
+    const int q = p % kMfxParams;
+    if (q > kMfxMaster) sniprintf(b, cap, CORE_STR("B%d%c"), (q - 1 - kMfxMaster) / 2 + 1, 'A' + (q - 1 - kMfxMaster) % 2);
+    else if (q) sniprintf(b, cap, CORE_STR("MIX%d"), q);
+    else sniprintf(b, cap, "LEV");
+  } else if (is_snd(t)) {   // a track's send to FX1 / FX2
+    sniprintf(b, cap, CORE_STR("F%d"), (p & 1) + 1);
+  } else if (is_isnd(t)) {   // a voice's send to bus 1..3
+    sniprintf(b, cap, CORE_STR("B%d"), p % 3 + 1);
+  } else if (is_rt(t)) {   // 0.5.0: the Rytm's own param ("FRQ"; P1..P8 the track's machine's label: "TUN")
+    mod::rp_label(tid_of(t, p), b, cap);
 #endif
   } else {
     sniprintf(b, cap, "-");
@@ -432,14 +692,29 @@ CORE_COLD float wave_at(const Settings& s, float ph, uint32_t seed) {
 CORE_COLD float phase(int i) { return g_run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].ph; }
 CORE_COLD float out(int i) { return g_run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].w; }
 CORE_COLD bool active(int i) { return i >= 0 && i < kLfos && g_set[i].target && g_set[i].depth; }
-CORE_COLD const Stats& stats() { return g_stats; }
+CORE_COLD const Stats& stats() {
+#if CORE_MOD_LFO
+  const mod::Stats& m = mod::stats();   // the layer's counts under the LFOs' names (the "lfo" line unchanged)
+  g_stats.ticks = m.ticks, g_stats.voice_sets = m.voice_sets, g_stats.user_calls = m.user_calls;
+  g_stats.fx_sets = m.fx_sets, g_stats.restores = m.restores;
+#endif
+  return g_stats;
+}
 
 // ---------------------------------------------------------------------------------------------------- the engine
 
 bool clock_now(float* ticks, float* tick_us) {
   *ticks = g_clk.tp;
   *tick_us = g_clk.tick_us;
+#if CORE_MOD_LFO
+  return mod::stats().ticks != 0;
+#else
   return g_stats.ticks != 0;
+#endif
+}
+void clock_state(ClockState* o) {
+  const Clock& c = g_clk;
+  *o = ClockState{c.run, c.ticking, c.pos, c.last_us, c.tick_us, c.tp, c.starts, c.stops, c.jumps};
 }
 
 CORE_COLD void clock(uint8_t status, uint16_t spp) {
@@ -457,13 +732,13 @@ CORE_COLD void clock(uint8_t status, uint16_t spp) {
       break;
     }
     case 0xFA:
-      c.run = true, c.pos = -1, c.start = true;
+      c.run = true, c.pos = -1, c.start = true, ++c.starts;
       for (int i = 0; i < kLfos; ++i)
         if (g_set[i].retrig == kOnPlay) g_run[i].retrig = true;
       break;
-    case 0xFB: c.run = true; break;
-    case 0xFC: c.run = false; break;
-    case 0xF2: c.pos = (int32_t)spp * 6 - 1; break;
+    case 0xFB: c.run = true, ++c.starts; break;
+    case 0xFC: c.run = false, ++c.stops; break;
+    case 0xF2: c.pos = (int32_t)spp * 6 - 1, ++c.jumps; break;
     default: break;
   }
 }
@@ -473,7 +748,77 @@ CORE_COLD void midi_in(uint8_t st, uint8_t d1, uint8_t d2) {
   if ((st & 0x0F) > 12 || (st & 0xF0) != 0x90 || !d2) return;
   for (int i = 0; i < kLfos; ++i)   // a trig on one of the Rytm's tracks (its note out): the FX targets' TRIG
     if (g_set[i].retrig == kOnTrig && is_fx(g_set[i].target)) g_run[i].retrig = true;
+#if CORE_POLY
+  for (int i = 0; i < kLfos; ++i)   // 0.5.0: an RT target's TRIG: its track's note (the track's channel 1..12), RFX any
+    if (g_set[i].retrig == kOnTrig && is_rt(g_set[i].target) &&
+        (g_set[i].target == kTRfx || g_set[i].target - kTRt == (st & 0x0F)))
+      g_run[i].retrig = true;
+#endif
 }
+
+CORE_COLD mod::Tid tid_of(int t, int p) {
+  if (is_voice(t)) return mod::tid(mod::kV, t - kTVoice, p & 15);
+  if (is_fx(t)) return mod::tid(mod::kFx, t - kTFx, p & 3);
+  if (is_ins(t)) return mod::tid(mod::kIns, t - kTIns, p);   // I1..I8 B1..B3: chains 0..10; params 0..11
+  if (is_out(t)) return mod::tid(mod::kOut, t - kTOut, p % 3);
+  if (is_mchain(t)) return mod::tid(mod::kIns, ins::kM0 + t - kTMaster, p);   // 0.5.0: M1 M2, chains 11 12
+  if (is_mfx(t)) return mod::tid(mod::kMfx, 0, p % kMfxParams);
+  if (is_snd(t)) return mod::tid(mod::kSnd, t - kTSnd, p & 1);
+  if (is_isnd(t)) return mod::tid(mod::kIsnd, t - kTIsnd, p % 3);
+#if CORE_POLY
+  if (is_rt(t)) return mod::rytm_tid(t == kTRfx ? 12 : t - kTRt, rt_word(t, p));
+#endif
+  return 0;
+}
+
+#if CORE_MOD_LFO
+CORE_COLD void voice_params(int vi, float* p, int np, bool trig) {
+  int t = kTVoice + (vi & 7);
+  mod::voice_params(vi, p, np);   // the bases (core/mod)
+  if (trig)
+    for (int i = 0; i < kLfos; ++i)
+      if (g_set[i].retrig == kOnTrig && (g_set[i].target == t || is_fx(g_set[i].target))) g_run[i].retrig = true;
+}
+CORE_COLD uint8_t fx_knob(int slot, int knob, uint8_t val) { return mod::fx_knob(slot, knob, val); }
+CORE_COLD float base_of(int vi, int k, float cur) { return mod::base_of(vi, k, cur); }
+CORE_COLD void tick(uint32_t us) { mod::tick(us); }
+
+// mod::tick's source, once a millisecond at most (us now, dus since the last, at most 100 ms): the clock position and
+// the waves, each live LFO's offset handed to the layer
+CORE_COLD void waves(uint32_t us, uint32_t dus) {
+  float dt = (float)dus * 1e-6f;
+  // the clock position: locked to the song position while the Rytm plays and ticks, else on at the last tempo
+  Clock& c = g_clk;
+  uint32_t since = us - c.last_us;
+  bool locked = c.run && c.ticking && since < 250000;
+  if (locked && c.pos < 0) c.tp = 0;
+  else if (locked) c.tp = (float)(c.pos % (int32_t)kWrap) + clampf((float)since / c.tick_us, 0.0f, 0.999f);
+  else c.tp = modp(c.tp + (float)dus / c.tick_us, kWrap);
+  if (c.start) c.start = false;
+
+  for (int i = 0; i < kLfos; ++i) {
+    Settings& s = g_set[i];
+    Run& r = g_run[i];
+    if (r.retrig) r.retrig = false, retrig(i);
+    float ph;
+    if (s.sync) {
+      float d = (float)div_ticks(s.rate);
+      float x = s.retrig == kFree ? c.tp : c.tp - r.anchor;
+      if (x < 0) x += kWrap;
+      ph = modp(x, d) / d;
+    } else {
+      ph = wrap1(r.ph + rate_hz(s.rate) * dt);
+    }
+    bool cycle = r.fresh || ph < r.ph;
+    r.fresh = false;
+    r.ph = ph;
+    r.w = shaped(s, ph, r, cycle);
+    if (!s.target) continue;
+    mod::offset(i, tid_of(s.target, s.param), (float)s.depth, r.w);   // never pre-multiplied here (spec-050 1.4)
+  }
+}
+#else
+CORE_COLD void waves(uint32_t, uint32_t) {}
 
 CORE_COLD void voice_params(int vi, float* p, int np, bool trig) {
   int t = kTVoice + (vi & 7);
@@ -545,6 +890,9 @@ CORE_COLD void tick(uint32_t us) {
       r.ph = ph;
       r.w = shaped(s, ph, r, cycle);
       if (!s.target) continue;
+#if CORE_POLY
+      if (s.target >= kTMaster) continue;   // (0.5.0's new targets: the layer's only, not this rollback path)
+#endif
       Tgt* e = find(s.target, s.param);
       if (!e)
         for (Tgt& f : g_t)
@@ -578,15 +926,15 @@ CORE_COLD void tick(uint32_t us) {
       } else if (is_ins(e.target)) {   // fx-ins: the offset itself (the knob / a step lock is the base, insert.cpp)
         int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
         if ((float)iv != e.applied) {
-          if (e.param >= 8) ins::eq_lfo_offset(e.target - kTIns, (e.param - 8) & 3, iv);   // ins1112: the POST EQ
-          else ins::lfo_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, iv);
+          if (e.param >= 8) ins::eq_mod_offset(e.target - kTIns, (e.param - 8) & 3, iv);   // ins1112: the POST EQ
+          else ins::mod_offset(e.target - kTIns, (e.param >> 2) & 1, e.param & 3, iv);
           e.applied = (float)iv;
           ++g_stats.fx_sets;
         }
       } else if (is_out(e.target)) {   // the OUT route's LEV PAN WID: the offset on the knob (out.cpp)
         int iv = (int)(e.off + (e.off < 0 ? -0.5f : 0.5f));
         if ((float)iv != e.applied) {
-          out::lfo_offset(e.target - kTOut, e.param % 3, iv);
+          out::mod_offset(e.target - kTOut, e.param % 3, iv);
           e.applied = (float)iv;
           ++g_stats.fx_sets;
         }
@@ -614,6 +962,7 @@ CORE_COLD void tick(uint32_t us) {
     voice_params_changed(vi);
   }
 }
+#endif
 
 // ---------------------------------------------------------------------------------------------------- the card
 
@@ -719,7 +1068,7 @@ static CORE_COLD bool save_text(bool queue) {
 #endif
   char fn[80], b[96];
   file_name(fn, sizeof fn, g_kit);
-  static UI_ROM_LFO const char kHead[] = "# Sidecar LFOs: N TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN\n";
+  static UI_ROM_LFO const char kHead[] = "# Sidecar LFOs: NAME TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN\n";
   uint32_t n = sizeof kHead - 1;
   memcpy(t, kHead, n);
   for (int i = 0; i < kLfos; ++i) {
@@ -753,12 +1102,16 @@ static CORE_COLD bool save_text(bool queue) {
 CORE_COLD bool save() { return save_text(false); }
 
 CORE_COLD void project_changed() {
-  // the old project's (or kit's) targets: voices and FX back to their bases
+  // the old project's (or kit's) targets: voices and FX back to their bases, every dirty voice flushed
+#if CORE_MOD_LFO
+  mod::restore_all();
+#else
   for (Tgt& e : g_t)
     if (e.state) restore(e);
   for (int vi = 0; vi < kVoices; ++vi)
     if (g_vdirty >> vi & 1) voice_params_changed(vi);
   g_vdirty = 0;
+#endif
   // the old one's unsaved edits first, into its own file - never deferred past the load that clears g_dirty
 #if CORE_MSAMP
   // 2026-10-26: its write posted or queued (no wait on the card), its text into the store when the store is its
@@ -791,21 +1144,30 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
     int n = 0;
     for (int i = 0; i < kLfos; ++i) {
       const Settings& s = g_set[i];
-      char pn[8], rn[8];
+      char pn[8], rn[8], nm[6];
       param_name(s.target, s.param, pn, sizeof pn);
       rate_name(s, rn, sizeof rn);
-      int k = sniprintf(o + n, cap - n, CORE_STR("%sL%d %s %s %s %s %+d"), i ? ", " : "lfo: ", i + 1,
-                        target_name(s.target), s.target ? pn : "", wave_name(s.wave), rn, s.depth);
-      if (k < 0 || k >= cap - n) break;
+      int k = sniprintf(o + n, cap - n, CORE_STR("%s%s%s %s %s %s %s %s%d"), i ? ", " : "lfo: ", kPerTrack ? "" : "L",
+                        lfo_name(i, nm, sizeof nm), target_name(s.target), s.target ? pn : "", wave_name(s.wave), rn,
+                        s.depth < 0 ? "-" : "+", s.depth < 0 ? -s.depth : s.depth);
+      if (k < 0 || k >= cap - n) {   // (cut: the listing says so, not silently)
+        if (cap - n > 4) strcpy(o + n, "...");
+        else if (n > 3) strcpy(o + n - 3, "...");
+        break;
+      }
       n += k;
     }
     return true;
   }
   const char* a = p + 4;
-  int i = (int)num(a) - 1;
+  const char* ie;
+  int i = lfo_index(a, &ie);
   const char* key = strchr(a, ':');
-  if (i < 0 || i >= kLfos || !key) {
-    sniprintf(o, cap, CORE_STR("lfo=N:KEY:VALUE (N 1..%d; tgt par wav rate sync trig dep base st:I:V:S des:HEX pre:NAME off)"), kLfos);
+  if (i < 0 || ie == a || *ie != ':' || !key) {
+    if (kPerTrack)
+      sniprintf(o, cap, CORE_STR("lfo=N:KEY:VALUE (N 1..%d or T1A..T12B FXA FXB; tgt par wav rate sync trig dep base st:I:V:S des:HEX pre:NAME off)"), kLfos);
+    else
+      sniprintf(o, cap, CORE_STR("lfo=N:KEY:VALUE (N 1..%d; tgt par wav rate sync trig dep base st:I:V:S des:HEX pre:NAME off)"), kLfos);
     return true;
   }
   ++key;
@@ -823,8 +1185,8 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
     if (kl == 3 && !strncmp(key, "tgt", 3)) {
       int t = target_from_name(val);
       if (t < 0 && val[0] >= '0' && val[0] <= '9') t = x;
-      if (t < 0 || t >= kTargets) ok = false;
-      else if (t != s.target) s.target = (uint8_t)t, s.param = is_fx(t) ? 0 : 1;
+      if (t < 0 || t >= kTargets || !target_ok(i, t)) ok = false;   // (no Rytm target: the owner's test)
+      else if (t != s.target) s.target = (uint8_t)t, s.param = (uint8_t)(is_voice(t) ? voice_landing(t) : is_fx(t) ? 0 : 1);
     } else if (kl == 3 && !strncmp(key, "par", 3)) s.param = (uint8_t)x;
     else if (kl == 3 && !strncmp(key, "wav", 3)) s.wave = (uint8_t)x;
     else if (kl == 4 && !strncmp(key, "rate", 4)) s.rate = (uint8_t)(x < 0 ? 0 : x);
@@ -860,16 +1222,23 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   }
   set(i, s);
   const Settings& n = g_set[i];
-  char pn[8], rn[8];
+  char pn[8], rn[8], nm[6];
   param_name(n.target, n.param, pn, sizeof pn);
   rate_name(n, rn, sizeof rn);
-  sniprintf(o, cap, CORE_STR("lfo: L%d %s %s %s %s %s %+d base %d"), i + 1, target_name(n.target), n.target ? pn : "-",
-            wave_name(n.wave), rn, retrig_name(n.retrig), n.depth, n.base);
+  sniprintf(o, cap, CORE_STR("lfo: %s%s %s %s %s %s %s %s%d base %d"), kPerTrack ? "" : "L", lfo_name(i, nm, sizeof nm),
+            target_name(n.target), n.target ? pn : "-", wave_name(n.wave), rn, retrig_name(n.retrig), n.depth < 0 ? "-" : "+",
+            n.depth < 0 ? -n.depth : n.depth, n.base);
   return true;
 }
 
 CORE_COLD int json(char* o, int cap) {
-  int n = sniprintf(o, cap, CORE_STR("\"lfo\":{\"n\":%d,\"kit\":%d,\"l\":["), kLfos, g_kit < 0 ? 0 : g_kit + 1);
+#if RYTM_SENDFX_LARGE
+  const int trk = ui::remote_lfo_track(nullptr);   // the Rytm's selected track (12 FX), -1 none named yet
+#else
+  const int trk = -1;
+#endif
+  int n = sniprintf(o, cap, CORE_STR("\"lfo\":{\"n\":%d,\"pt\":%d,\"kit\":%d,\"full\":%d,\"trk\":%d,\"l\":["), kLfos,
+                    kPerTrack ? 1 : 0, g_kit < 0 ? 0 : g_kit + 1, link_full() ? 1 : 0, trk);
   for (int i = 0; i < kLfos && n < cap; ++i) {
     const Settings& s = g_set[i];
     char pn[8], rn[8], h[3 * kSteps + 1];
@@ -883,6 +1252,17 @@ CORE_COLD int json(char* o, int cap) {
                       s.retrig, s.depth, s.base, h, (int)(g_run[i].ph * 1000));
     if (k < 0 || k >= cap - n) return cap;
     n += k;
+#if CORE_POLY   // (the Pi: the Mini's console line has no room for them)
+    // the names of every param of the target, as param_name gives them ("-" unused): the web's PAR list (pns, 2026-11)
+    n -= 1;   // (inside the LFO's object: its closing brace again below)
+    for (int q = 0, np = params_of(s.target); q <= np; ++q) {
+      if (q < np) param_name(s.target, q, pn, sizeof pn);
+      k = q == np ? sniprintf(o + n, cap - n, "%s]}", np ? "" : ",\"pns\":[")
+                  : sniprintf(o + n, cap - n, CORE_STR("%s\"%s\""), q ? "," : ",\"pns\":[", pn);
+      if (k < 0 || k >= cap - n) return cap;
+      n += k;
+    }
+#endif
   }
   int k = sniprintf(o + n, n < cap ? cap - n : 0, "]}");
   return n + (k > 0 ? k : 0);
@@ -891,11 +1271,16 @@ CORE_COLD int json(char* o, int cap) {
 CORE_COLD void reset() {
   for (Settings& s : g_set) defaults(&s);
   for (int i = 0; i < kLfos; ++i) g_run[i] = Run(), g_run[i].rng = 0x9E3779B9u * (uint32_t)(i + 1);
-  for (Tgt& e : g_t) e = Tgt();
   g_clk = Clock();
-  g_started = false, g_vdirty = 0, g_dirty = false, g_kit = g_rytm_kit = -1;
-  for (uint32_t& m : g_user_ms) m = 0;
+  g_dirty = false, g_kit = g_rytm_kit = -1;
   g_stats = Stats();
+#if CORE_MOD_LFO
+  mod::reset();   // the targets, the tick's clock, the voice flush, the counts: the layer's
+#else
+  for (Tgt& e : g_t) e = Tgt();
+  g_started = false, g_vdirty = 0;
+  for (uint32_t& m : g_user_ms) m = 0;
+#endif
 }
 
 }  // namespace lfo

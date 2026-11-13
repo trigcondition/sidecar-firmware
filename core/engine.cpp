@@ -7,6 +7,9 @@
 #include "fx/insert.h"
 #include "keys.h"
 #include "lfo.h"
+#include "mod/learn.h"
+#include "mod/scene.h"
+#include "mod/xypad.h"
 #include "seq/seq.h"
 #include "song/song.h"
 #if CORE_MSAMP
@@ -15,9 +18,11 @@
 #include "bundle/prjslot.h"
 #include "bundle/projects.h"
 #include "bundle/rename.h"
+#include "msamp/cardq.h"
 #include "msamp/msamp.h"
 #include "presets/preset_index.h"
 #include "msamp/sdtest.h"
+#include "samp/preview.h"
 #include "nmach.h"
 #include "livein/livein.h"
 #endif
@@ -53,6 +58,8 @@ CORE_COLD bool engine_begin() {
     lfo::rekey(project);
 #if CORE_POLY
     ins::rekey(project);
+    scene::rekey(project);
+    xypad::rekey(project);
 #endif
     project_fill_begin();
   }
@@ -72,11 +79,14 @@ CORE_COLD bool engine_begin() {
 #if CORE_POLY
   seq::init();   // the Sidecar sequencer (core/seq/seq.h): its pattern buffers; its tracks and A01 once the store is full
   if (card_ok) keys::load();   // the Pi's own keyboards' routing (core/keys.h)
+  if (card_ok) learn::load();   // the MIDI-learn routes (core/mod/learn.h): a box setting
 #endif
 #if CORE_MSAMP
   if (card_ok) sdtest::load();   // the SD card test's last result (msamp/sdtest.h)
   msamp::begin(card_ok);   // MULTISAMPLE: the arena, the /MULTISAMPLE list queued (msamp/msamp.h)
   nm::begin(card_ok);      // WAVETABLE's built-in tables, GRANULAR's buffers; /WAVETABLES and /GRANULAR queued
+  preview::begin();        // the sample browser's preview buffer (core/samp/preview.h)
+  if (card_ok) preview::load();   // its PREVIEW LEVEL (a Sidecar setting)
 #endif
   return card_ok;
 }
@@ -116,6 +126,9 @@ CORE_COLD bool idle_prepare() {
   return T_("prepare", prepare_pending());
 }
 
+static volatile bool g_flush = false;   // idle_flush: a power-off waits for the saves
+CORE_COLD void idle_flush(bool on) { g_flush = on; }
+
 CORE_COLD bool idle_save() {
 #if CORE_MSAMP
   TV_("rename", rename::tick(now_ms()));       // a project rename's looks / moves (card-queue steps) and its question's timeout
@@ -140,15 +153,25 @@ CORE_COLD bool idle_save() {
     return true;
   }
   if (T_("fxin", fxin::save())) return true;
-  bool leaving = device::leaving();   // a restart is coming: what waits for its edits to settle goes now
+  bool leaving = device::leaving() || g_flush;   // a restart or a power-off is coming: what waits for its edits to settle goes now
   if (leaving) lfo::save_due();
   if (T_("lfo", lfo::save())) return true;
 #if CORE_POLY
   if (leaving) ins::settings_due();
   if (T_("ins", ins::save())) return true;
+  if (leaving) scene::save_due();
+  if (T_("scene", scene::save())) return true;
+  if (leaving) xypad::save_due();
+  if (T_("xy", xypad::save())) return true;
 #endif
 #if CORE_POLY
   if (T_("keys", keys::save())) return true;
+  if (T_("learn", learn::save())) return true;
+#endif
+#if CORE_MSAMP
+  if (T_("preview", preview::save())) return true;   // PREVIEW LEVEL (core/samp/preview.h)
+#endif
+#if CORE_POLY
   if (leaving) seq::save_due();
   if (T_("seq", seq::idle())) return true;   // the sequencer's pattern files: load, prefetch, save
   if (T_("song", song::idle())) return true;  // SONG RECORD: the journal, the song file, a load, a recovery (core/song/song.h)
@@ -164,9 +187,20 @@ CORE_COLD bool idle_save() {
   }
   bool settled = !lfo::dirty() && !fx::card_dirty;
 #if CORE_POLY
-  settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved();
+  settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved() && !scene::dirty() && !xypad::dirty();
 #endif
   return T_("device", device::step(settled)) || ix;   // a change of state folder: the last write, behind all of the above
+}
+
+CORE_COLD bool idle_settled() {
+  bool s = !lfo::dirty() && !fx::card_dirty && !project_dirty && !fmt::post_busy() && fmt::unwritten(nullptr) == 0;
+#if CORE_POLY
+  s = s && !ins::settings_dirty(nullptr) && !seq::unsaved();
+#endif
+#if CORE_MSAMP
+  s = s && cardq::pending() == 0;
+#endif
+  return s;
 }
 
 // With the sample RAM: a stream within ~85 ms of running dry first, then MULTISAMPLE's streams and loads, then a load
@@ -178,6 +212,7 @@ CORE_COLD void idle_stream() {
   TV_("livein", livein::step());               // LIVE IN's news (a feedback mute, a measure's result) into the log: no card, no wait
   if (T_("sdtest", sdtest::step())) return;   // the SD card test while it runs (msamp/sdtest.h)
   if (msamp::step()) return;   // (timed inside, by part)
+  if (T_("pvw", preview::step())) return;   // the browser's preview: its file's next piece (core/samp/preview.h)
 #endif
   if (psram && T_("psram", psram->step())) return;
 #if CORE_MSAMP

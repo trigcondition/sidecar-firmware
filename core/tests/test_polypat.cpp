@@ -452,7 +452,7 @@ int main() {
     tick();
     g_out.clear();
     from_rytm({seq::kSeqMode, 1, CH}, 0x2D);   // GRID REC on CH: seq mode, the SEQ page asked open
-    tick();
+    for (int i = 0; i < 3; ++i) tick();          // (polyuser-3: asked once seq mode held 150 ms)
     from_rytm({0, 1, 0}, 0x30);   // the Rytm opens the page
     for (int i = 0; i < 4; ++i) tick();
     CHECK(remote_page_title() && !strcmp(remote_page_title(), "SEQ") && seq::seqmode_on() == CH);
@@ -520,7 +520,8 @@ int main() {
     cmd("seq=track:9:on");
     // review: seq mode ends early at a switch to a pattern without CH (a trig held then let go edits nothing); back in
     // A01 the Rytm's 2D 08 1 brings it back
-    from_rytm({seq::kSeqMode, 1, CH}, 0x2D), tick();
+    from_rytm({seq::kSeqMode, 1, CH}, 0x2D);
+    for (int i = 0; i < 3; ++i) tick();   // (polyuser-3: the page asked after 150 ms)
     from_rytm({0, 1, 0}, 0x30), tick();
     CHECK(seq::seqmode_on() == CH);
     from_rytm({0, 0, 1}, 0x31), tick();   // T1 held
@@ -532,7 +533,8 @@ int main() {
     page(0);
     go(0);
     CHECK(steps(CH) == 1);
-    from_rytm({seq::kSeqMode, 1, CH}, 0x2D), tick();
+    from_rytm({seq::kSeqMode, 1, CH}, 0x2D);
+    for (int i = 0; i < 3; ++i) tick();   // (review M2: taken once held 150 ms)
     CHECK(seq::seqmode_on() == CH);
     from_rytm({seq::kSeqMode, 0, 0x7F}, 0x2D), tick();
     page(0);

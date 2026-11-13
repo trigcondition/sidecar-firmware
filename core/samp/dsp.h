@@ -1,6 +1,6 @@
 // core/samp/dsp.h - the analysis the sampler (sampler.h) and the auto-sampler (autosamp.h) share (docs/SAMPLING.md):
-// levels, silence trim, transient detection and grid slices, a loop finder for sustained sounds, the WAV header (24 /
-// 16-bit PCM, an optional smpl loop) and note names. Buffers are float, -1..1 full scale, interleaved when ch == 2.
+// levels, silence trim, transient detection and grid slices, a loop finder for sustained sounds, the WAV header (16,
+// 24 or 32-bit PCM, an optional smpl loop) and note names. Buffers are float, -1..1 full scale, interleaved when ch == 2.
 // Portable, allocation-free, cold (never on the render path).
 #pragma once
 #include <math.h>
@@ -61,18 +61,30 @@ void crossfade_loop(float* x, uint32_t s, uint32_t e, uint32_t xf);
 // Is [a, b) sustained (a loop is worth finding): its RMS in 8 parts within 3 dB of their mean, and audible.
 bool sustained(const float* x, uint32_t a, uint32_t b);
 
-// The WAV header for ch channels, bits 16 or 24, rate, frames, and (loop) a smpl chunk with one forward loop
+// The WAV header for ch channels, bits 16, 24 or 32, rate, frames, and (loop) a smpl chunk with one forward loop
 // [loop_s, loop_e] (inclusive, as SFZ's) at root key root: the bytes up to the data (at most kWavHeaderMax). The data
 // is frames * ch * bits / 8 bytes, then a pad byte when that is odd (wav_tail).
 constexpr int kWavHeaderMax = 44 + 68;
 int wav_header(uint8_t* out, int ch, int bits, uint32_t rate, uint32_t frames, bool loop = false, uint32_t loop_s = 0,
                uint32_t loop_e = 0, int root = 60);
 inline uint32_t wav_data_bytes(int ch, int bits, uint32_t frames) { return frames * (uint32_t)ch * (uint32_t)(bits / 8); }
+// One sample to 16-bit little endian (clipped, rounded).
+inline void put16(uint8_t* p, float v) {
+  float y = v * 32768.0f;
+  int32_t s = y >= 32767.0f ? 32767 : y <= -32768.0f ? -32768 : (int32_t)(y < 0 ? y - 0.5f : y + 0.5f);
+  p[0] = (uint8_t)s, p[1] = (uint8_t)(s >> 8);
+}
 // One sample to 24-bit little endian (clipped).
 inline void put24(uint8_t* p, float v) {
   float y = v * 8388608.0f;
   int32_t s = y >= 8388607.0f ? 8388607 : y <= -8388608.0f ? -8388608 : (int32_t)(y < 0 ? y - 0.5f : y + 0.5f);
   p[0] = (uint8_t)s, p[1] = (uint8_t)(s >> 8), p[2] = (uint8_t)(s >> 16);
+}
+// One sample to 32-bit little endian (clipped, rounded; in double: a float's 24 bits are all kept).
+inline void put32(uint8_t* p, float v) {
+  double y = (double)v * 2147483648.0;
+  int32_t s = y >= 2147483647.0 ? 2147483647 : y <= -2147483648.0 ? (int32_t)0x80000000 : (int32_t)(y < 0 ? y - 0.5 : y + 0.5);
+  p[0] = (uint8_t)s, p[1] = (uint8_t)(s >> 8), p[2] = (uint8_t)(s >> 16), p[3] = (uint8_t)(s >> 24);
 }
 
 // SFZ note names (C4 = 60): "C4", "C#4", "C-1"; out at least 5 bytes.

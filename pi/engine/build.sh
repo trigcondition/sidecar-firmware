@@ -178,6 +178,10 @@ grep -q circle-http-auth include/circle/net/httpdaemon.h || patch -p1 < /repo/pi
 # "content-type" for a fetch() with a Headers object, and the form was then not read: /cmd refused every paired change;
 # after circle-http-auth.patch, idempotent)
 grep -q circle-http-case lib/net/httpdaemon.cpp || patch -p1 < /repo/pi/circle/circle-http-case.patch
+# then the WebSocket upgrade (pi/circle/circle-http-ws.patch: the Upgrade / Sec-WebSocket-* headers and the
+# UpgradeConnection hook that hands the socket to web_ws.cpp, docs/web-ws.md; after circle-http-case.patch, idempotent).
+# web.cpp overrides UpgradeConnection, so a tree without this patch does not build.
+grep -q circle-http-ws include/circle/net/httpdaemon.h || patch -p1 < /repo/pi/circle/circle-http-ws.patch
 make -C lib/net -j$J >/dev/null
 # the HID endpoint recovery and diagnostics (pi/circle/circle-hid.patch: a halted xHCI interrupt endpoint is reset
 # and resubmitted from the main loop; counters for the display log line; idempotent), then lib/usb

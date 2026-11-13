@@ -40,10 +40,10 @@ void sidecar_mfx_create (void *parent, int y0)
 	const int o = oled ();
 	s_nGen = ~0u;
 	memset (&s_V, 0, sizeof s_V);
-	const int pw = o ? TH->w - 48 : TH->w, ph = TH->h - y0;
+	const int pw = o ? TH->w - 48 : th_page_w (), ph = TH->h - y0;
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, pw, ph);
 	s_Page = pg;
-	const lv_font_t *f = o ? TH->f_micro : &lv_font_montserrat_14;
+	const lv_font_t *f = o ? TH->f_micro : TH->f_small;
 	const int kind = o ? TH_KEY | TH_KEY_SMALL : TH_KEY, ink = o ? TH->ink : TH->win_ink, dim = o ? TH->dim : TH->win_dim;
 	const int x0 = o ? 0 : 24, w = o ? pw : pw - 48, top = o ? 16 : 44, keyh = o ? 20 + TH->dy / 12 : 38 + TH->dy / 8;
 	const int foot = o ? 22 : 54;	// the POST EQ's line and the hint
@@ -57,7 +57,7 @@ void sidecar_mfx_create (void *parent, int y0)
 	{
 		s_TitleBar = 0;
 		th_panel (pg, 8, 6, pw - 16, ph - 14, "", TH_PANEL_WINDOW);
-		s_Title = th_label (pg, 24, 14, &lv_font_montserrat_18, TH->win_ink, "MASTER FX");
+		s_Title = th_label (pg, 24, 14, TH->f_mid, TH->win_ink, "MASTER FX");
 	}
 	// the top row: ON / BYPASS, SRC, LEV, the meters
 	const int kw = w / 4 - 4;

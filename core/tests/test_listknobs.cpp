@@ -186,9 +186,10 @@ static void test_lfo() {
   rest(), kLfoPage.enc(6, 1, false), wait_ms(67), kLfoPage.enc(6, -1, false); CHECK(lfo::get(0).sync == 1);
   flick(kLfoPage, 6, -1); CHECK(lfo::get(0).sync == 0);
   // TARGET: a detent, one; a spin, four a report
-  detent(kLfoPage, 1, 1); CHECK(lfo::get(0).target == 1);
-  rest(), spin(kLfoPage, 1, 4, 2); CHECK(lfo::get(0).target == 3);
-  rest(), spin(kLfoPage, 1, 20, 2); CHECK(lfo::get(0).target == 3 + 4 + 4);
+  detent(kLfoPage, 1, 1); CHECK(lfo::target_pos(lfo::get(0).target) == 1);   // list positions (the display order): one entry a step
+  CHECK(lfo::get(0).target == lfo::kTVoice);   // the stored ids stay the ids: BD is V1
+  rest(), spin(kLfoPage, 1, 4, 2); CHECK(lfo::target_pos(lfo::get(0).target) == 3 && lfo::get(0).target == lfo::kTVoice + 7);   // RS (unknown: the pair's owner): V8
+  rest(), spin(kLfoPage, 1, 20, 2); CHECK(lfo::target_pos(lfo::get(0).target) == 3 + 4 + 4 && lfo::get(0).target == lfo::target_from_name("I1"));   // past the 8 voices, FX1 FX2: I1 (no Rytm track entries since the owner's test)
   // DEPTH and RATE (free) stay continuous
   s = lfo::get(0), s.depth = 0, s.rate = 64, lfo::set(0, s);
   kLfoPage.enc(3, 5, false); CHECK(lfo::get(0).depth == 5);

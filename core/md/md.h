@@ -45,6 +45,13 @@ void knobs_of(const float* p, int np, bool md_layout, float q[16]);
 int set_of(const float q[16]);
 int voice_set(int vi);                // the set voice vi plays (tests, the log)
 const char* set_name(int set);        // "FM BD" ... "TRX B2"
+// 0.5.0 FILL (core/seq/filltargets.h): ENGINE's names (zones of engines()), and TYPE's for engine e (zones of types(e))
+int engines();
+int types(int e);
+const char* engine_name(int e);
+const char* type_name(int e, int t);
+// voice vi's P(k+1) as the Rytm's MD page labels it for the set it plays (its short label: "DEC"), null none (unused)
+const char* label(int vi, int k);
 uint32_t state_bytes();
 // The control core's cost (review M4: /status "md", and the boot bench's line): ENGINE / TYPE changes (a params()
 // that changes the set, then the trig that renders the old voice's 2 ms tail and sets the new one up) and the most

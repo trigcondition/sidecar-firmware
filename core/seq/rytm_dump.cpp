@@ -19,17 +19,20 @@ CORE_COLD int request(uint8_t out[15], int pattern) {
   return (int)sizeof kReq;
 }
 
-CORE_COLD bool parse(const uint8_t* m, int n, uint8_t* record, int* pattern) {
-  if (n != kAnswer || memcmp(m, kHead, sizeof kHead) || m[n - 1] != 0xF7) return false;
+CORE_COLD bool parse(const uint8_t* m, int n, uint8_t* record, int* pattern) { return parse_id(m, n, kHead[6], record, pattern); }
+
+CORE_COLD bool parse_id(const uint8_t* m, int n, uint8_t id, uint8_t* record, int* pattern) {
+  if (n != kAnswer || memcmp(m, kHead, 6) || m[6] != id || memcmp(m + 7, kHead + 7, 2) || m[n - 1] != 0xF7) return false;
   int pat = m[9];   // (record may be m itself: everything read before it is written)
   uint32_t sum = 0;
   for (int i = 10; i < n - 5; ++i) sum += m[i];   // the pattern number not in it [measured, a real Rytm MKII]
   if ((int)((m[n - 5] << 7) | m[n - 4]) != (int)(sum & 0x3FFF)) return false;
   if ((m[n - 3] << 7 | m[n - 2]) != n - 10) return false;
-  uint8_t head[4];
-  memcpy(head, m + 11, 4);     // the record's header travels in the message's header
-  int k = 4;
-  for (int i = 15; i < n - 5; i += 8) {   // 7-bit groups: a byte of top bits (the first's in bit 6), then up to 7
+  // 7-bit groups of 8 from byte 10 (a byte of the next 7 bytes' top bits, the first's in bit 6, then those 7): the
+  // record's 4-byte header is the first group's first 4 [measured, rytm-emu 0.5.0 FILL: grouped from byte 15 instead,
+  // as before, the record past the header was misread - the lock slots at +0x2091 came out as noise]
+  int k = 0;
+  for (int i = 10; i < n - 5; i += 8) {
     uint8_t hi = m[i];
     for (int j = 1; j < 8 && i + j < n - 5; ++j) {
       if (k >= kRecord) return false;
@@ -37,13 +40,30 @@ CORE_COLD bool parse(const uint8_t* m, int n, uint8_t* record, int* pattern) {
     }
   }
   if (k != kRecord) return false;
-  memcpy(record, head, 4);
   if (pattern) *pattern = pat;
   return true;
 }
 
+CORE_COLD void repack(uint8_t* m, const uint8_t* record) {
+  int k = 0;   // (the same groups as parse: from byte 10, the record's header first)
+  for (int i = 10; i < kAnswer - 5; i += 8) {
+    uint8_t hi = 0;
+    for (int j = 1; j < 8 && i + j < kAnswer - 5; ++j) {
+      uint8_t b = record[k++];
+      hi |= (uint8_t)((b & 0x80) >> j);
+      m[i + j] = b & 0x7F;
+    }
+    m[i] = hi;
+  }
+  uint32_t sum = 0;
+  for (int i = 10; i < kAnswer - 5; ++i) sum += m[i];
+  m[kAnswer - 5] = (uint8_t)(sum >> 7 & 0x7F), m[kAnswer - 4] = (uint8_t)(sum & 0x7F);
+}
+
 #if CORE_POLY
 namespace {
+uint32_t switches = 0;
+bool fill_hold = false;
 int pg = kOff;               // who wants it (kOff: nobody)
 uint8_t* rec = nullptr;      // the last good record
 uint8_t* buf = nullptr;      // the answer being read
@@ -65,7 +85,7 @@ CORE_COLD void alloc() {
 }
 bool after(uint32_t ms, uint32_t t) { return (int32_t)(ms - t) >= 0; }
 // a DIRTY's fetch: not now (held), or the time it is due
-bool dirty_held() { return hold || (playing && pg == kPageVoice); }
+bool dirty_held() { return hold || fill_hold || (playing && pg == kPageVoice); }
 uint32_t dirty_at() {
   if (playing) {   // at most one every kPlayGapMs, kDirtyMs after the first edit at the soonest
     uint32_t a = dirty_first + kDirtyMs, g = sent_ms + kPlayGapMs;
@@ -74,12 +94,12 @@ uint32_t dirty_at() {
   uint32_t q = dirty_last + kQuietMs, c = dirty_first + kStaleMs;   // edits settled, or too long since the first
   return (int32_t)(q - c) < 0 ? q : c;
 }
-bool pat_held() { return hold >= 2 || (hold == 1 && pg != kPagePattern); }
+bool pat_held() { return hold >= 2 || fill_hold || (hold == 1 && pg != kPagePattern); }
 }  // namespace
 
 CORE_COLD void reset() {
   pg = kOff, rec_pattern = -1, gen = 0, nbuf = -1, due = waiting = retried = false, last_pattern = -1;
-  pat_due = dirty_due = playing = sent_any = false, hold = 0;
+  pat_due = dirty_due = playing = sent_any = false, hold = 0, switches = 0, fill_hold = false;
   consumer = nullptr;
   memset(&st, 0, sizeof st);
 }
@@ -116,8 +136,12 @@ CORE_COLD void dirty() {
 CORE_COLD void pattern_changed(int p) {
   if (p == last_pattern) return;
   last_pattern = p;
+  ++switches;
   if (pg) pat_due = true, pat_ms = now_ms();   // trailing: the last switch of a quick run
 }
+
+CORE_COLD int active_pattern() { return last_pattern; }
+CORE_COLD void forget_pattern() { last_pattern = -1; }
 
 CORE_COLD void byte(uint8_t b) {
   if (b >= 0xF8) return;   // realtime, anywhere
@@ -158,7 +182,7 @@ CORE_COLD void tick(uint32_t ms) {
     if (!retried) retried = true, due = true, due_ms = ms;
   }
   if (!pg || waiting) return;
-  bool go = due && hold < 2 && after(ms, due_ms);
+  bool go = due && hold < 2 && !fill_hold && after(ms, due_ms);
   go = go || (pat_due && !pat_held() && after(ms, pat_ms + kPatternMs));
   go = go || (dirty_due && !dirty_held() && after(ms, dirty_at()));
   if (!go) return;
@@ -177,6 +201,10 @@ CORE_COLD const uint8_t* record(int* p, uint32_t* g) {
 }
 CORE_COLD void on_record(void (*fn)(const uint8_t*, int, int)) { consumer = fn; }
 const Stats& stats() { return st; }
+CORE_COLD uint32_t dirty_count() { return st.dirties; }
+CORE_COLD uint32_t switch_count() { return switches; }
+CORE_COLD int hold_level() { return hold; }
+CORE_COLD void set_fill_hold(bool on) { fill_hold = on; }
 
 CORE_COLD bool command(const char* p, char* out, int cap) {
   if (strncmp(p, "rytmpat", 7) || (p[7] && p[7] != '=')) return false;

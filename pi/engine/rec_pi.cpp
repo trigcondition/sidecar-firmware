@@ -603,8 +603,8 @@ void ClockSync (void)
 	if (T->GetTimeZone () == nZone && nNow + 2 >= ep && nNow <= ep + 2) return;
 	T->SetTimeZone (nZone);
 	if (T->SetTime (ep, FALSE))
-		CLogger::Get ()->Write (From, LogNotice, "clock: %s time set (UTC%+d:%02d): take names and file dates from now",
-					core::projects::clock_name (nSrc), nZone / 60, (nZone < 0 ? -nZone : nZone) % 60);
+		CLogger::Get ()->Write (From, LogNotice, "clock: %s time set (UTC%s%d:%02d): take names and file dates from now",
+					core::projects::clock_name (nSrc), nZone < 0 ? "-" : "+", (nZone < 0 ? -nZone : nZone) / 60, (nZone < 0 ? -nZone : nZone) % 60);
 }
 
 }  // namespace

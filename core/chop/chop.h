@@ -65,9 +65,11 @@ constexpr int kKeyRoot = 60;          // a Rytm trig's / CHRO pad's note that pl
 constexpr int kPreviewCh = 125;       // the editor's auditions (a live note's channel tag no MIDI channel uses)
 constexpr int kBins = 256;            // the overview's frames a bin (min / max pairs, for the editors' waveforms)
 enum Field : int { kFPitch = 0, kFFine, kFGain, kFRev, kFAtk, kFDec, kFLoop, kFChoke, kFNudge, kFStut, kFSlen, kFSdec,
-                   kFTape, kFTms, kFNbr, kFields };
+                   kFTape, kFTms, kFNbr,
+                   kFPoly, kFGate,   // (0.5.0: appended - the indices above and the saved maps keep their meaning)
+                   kFields };
 const char* field_name(int f);        // "PTCH" "FINE" "GAIN" "REV" "ATK" "DEC" "LOOP" "CHOK" "NUDG" "STUT" "SLEN" "SDEC"
-                                      // "TAPE" "TTIM" "NBR" (<= 4 characters: the Rytm's labels)
+                                      // "TAPE" "TTIM" "NBR" "POLY" "GATE" (<= 4 characters: the Rytm's labels)
 int field_of(const char* s);          // by name (any case) or "pitch" "fine" ..; -1 none
 int field_get(const Slice& s, int f);
 void field_set(Slice* s, int f, int v);   // clamped to the field's range
@@ -80,6 +82,7 @@ bool step();                          // one bounded job (a load, a map read / w
 bool forced(int vi);                  // chop=voice:V
 void report(int vi, int note, int vel, const float* p);
 void note_off(int vi);
+void release_gates();                 // the Rytm link lost: every held GATE note is released (no 0x11 will come)
 void silence(int vi);
 void render_add(int vi, float* out, int n);
 void render_add2(int vi, float* l, float* r, int n);   // OUT PRE / POST: the pair (docs/STEREO.md)
@@ -117,6 +120,7 @@ bool edit_split(int vi, int k, uint32_t frame);      // frame 0: the middle
 bool edit_start(int vi, int k, int32_t frame);
 bool edit_end(int vi, int k, int32_t frame);
 bool edit_field(int vi, int k, int field, int value);
+bool edit_field_all(int vi, int field, int value);   // ALL slices (MPC-style): the value set on every slice, one UNDO for it
 bool edit_undo(int vi);
 // LAZY: the sample plays from its start on the voice; taps (pads, trigs, the screen) drop markers; STOP keeps them
 bool lazy_arm(int vi);
@@ -145,6 +149,7 @@ struct Stats {
   uint32_t maps_read, maps_written, map_fails, maps_new;
   uint32_t lazy_taps, lazy_refused, nbr_moves, resamples;
   int active, peak;
+  uint32_t cuts;                // notes cut by a new hit on a mono (POLY OFF) voice
 };
 const Stats& stats();
 void reset();                         // tests: every note gone, the maps forgotten, the sources dropped

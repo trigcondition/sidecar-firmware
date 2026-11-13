@@ -131,10 +131,10 @@ grain-sample 2.4 -> 2.9 ns (Mac).
   second while shown, redrawn only on a change): GRANULAR the same picture large (grains' brightness = level, reversed
   in the secondary colour, ANIM's reach as a bracket on the head); WAVETABLE the table as a pseudo-3D stack of 9
   frames with the frame at POS in the accent colour at its depth, the place under it. Both themes (OLED default,
-  CLASSIC). Open it by tapping a GRAN / WAVE voice on HOME; it follows the Rytm's selected track (its SRC view or
+  SIDECAR). Open it by tapping a GRAN / WAVE voice on HOME; it follows the Rytm's selected track (its SRC view or
   voice page on the remote) when that plays WAVETABLE / GRANULAR. Cost [measured Mac, x34 Pi 4 estimate]: OLED ~3-5 ms
-  a frame, CLASSIC ~11-15 ms. `make -C pi/ui/host` shoots `*-mach-granular.png` / `*-mach-wavetable.png`;
-  `./shot wganim DIR N [classic]` an animation.
+  a frame, SIDECAR ~6-20 ms (800x480 to 1280x720). `make -C pi/ui/host` shoots `*-mach-granular.png` / `*-mach-wavetable.png`;
+  `./shot wganim DIR N [sidecar]` an animation.
 - API: `gr::viz` / `gr::viz_wave`, `wt::viz_pos` / `wt::viz_frame` (racy reads for drawing only).
 
 ## 3. Grains and cores

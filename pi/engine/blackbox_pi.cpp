@@ -8,6 +8,7 @@
 #include "blackbox_pi.h"
 #include "blackbox.h"
 #include "bridge.h"
+#include "hooks.h"	// core::hooks.log_snapshot: the Rytm's first freeze probe of a boot (core/host_link.cpp)
 #include "mbtrace.h"
 #include <circle/logger.h>
 #include <circle/timer.h>
@@ -78,6 +79,85 @@ boolean WriteOnce (void)
 	return bOK;
 }
 
+// The freeze snapshot (SnapshotAsk): the last kSnap bytes of blackbox.log copied to /.rytm/logs/<name>.log, one piece a
+// pass of the loop (the SD's streams first), so the minutes before a freeze outlive the rotation. Without the black box
+// (off): the crumb's log ring (~30 s) at once.
+constexpr unsigned kSnap = 256 * 1024;
+char s_SnapName[40];
+volatile int s_nSnap;			// 0 none, 1 asked, 2 copying, 3 done (once a boot)
+uint64_t s_nSnapOff, s_nSnapEnd;
+char s_SnapPath[64];
+
+void SnapDone (unsigned nBytes, const char *pWhy)
+{
+	s_nSnap = 3;
+	if (pWhy != 0) CLogger::Get ()->Write (From, LogWarning, "the log before the freeze not kept: %s", pWhy);
+	else CLogger::Get ()->Write (From, LogNotice, "the log before the freeze is in /.rytm/logs/%s.log (%u KB)", s_SnapName, nBytes / 1024);
+}
+
+boolean SnapCreate (void)
+{
+	f_mkdir ("SD:/.rytm");
+	f_mkdir ("SD:/.rytm/logs");
+	core_snprintf (s_SnapPath, sizeof s_SnapPath, "SD:/.rytm/logs/%s.log", s_SnapName);
+	FIL f;
+	if (f_open (&f, s_SnapPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return FALSE;
+	return f_close (&f) == FR_OK;
+}
+
+boolean SnapAppend (const char *p, unsigned n)
+{
+	FIL f;
+	UINT w = 0;
+	if (f_open (&f, s_SnapPath, FA_WRITE | FA_OPEN_APPEND) != FR_OK) return FALSE;
+	boolean bOK = f_write (&f, p, n, &w) == FR_OK && w == n;
+	return f_close (&f) == FR_OK && bOK;
+}
+
+void SnapStep (void)
+{
+	if (__atomic_load_n (&s_nSnap, __ATOMIC_ACQUIRE) == 1)
+	{
+		if (bridge::card_busy ()) return;
+		mbtrace::Scope Mb (42, 200);
+		if (s_State == kOn) Flush ();		// (the lines up to the probe into the file first)
+		if (!SnapCreate ()) { SnapDone (0, "the card cannot be written"); return; }
+		if (s_State != kOn)		// the crumb's ring, in pieces of s_Buf
+		{
+			uint64_t nDone = 0, nLost = 0;
+			unsigned nAll = 0, n;
+			while ((n = blackbox::take (crumb::area (), &nDone, s_Buf, blackbox::kChunk, &nLost)) != 0)
+			{
+				if (!SnapAppend (s_Buf, n)) { SnapDone (nAll, "a write failed"); return; }
+				nAll += n;
+			}
+			SnapDone (nAll, 0);
+			return;
+		}
+		FILINFO Info;
+		s_nSnapEnd = f_stat (kPath, &Info) == FR_OK ? Info.fsize : 0;
+		s_nSnapOff = s_nSnapEnd > kSnap ? s_nSnapEnd - kSnap : 0;
+		s_nSnap = 2;
+		return;
+	}
+	if (s_nSnap != 2 || bridge::card_busy ()) return;
+	mbtrace::Scope Mb (42, 200);
+	unsigned long long nSize = 0, nFrom = 0;
+	unsigned nWant = s_nSnapEnd - s_nSnapOff < blackbox::kChunk ? (unsigned) (s_nSnapEnd - s_nSnapOff) : blackbox::kChunk;
+	unsigned n = nWant ? Read (false, s_nSnapOff, s_Buf, nWant, &nSize, &nFrom) : 0;
+	if (n != 0 && !SnapAppend (s_Buf, n)) { SnapDone ((unsigned) (s_nSnapOff - (s_nSnapEnd > kSnap ? s_nSnapEnd - kSnap : 0)), "a write failed"); return; }
+	s_nSnapOff += n;
+	if (n == 0 || s_nSnapOff >= s_nSnapEnd) SnapDone ((unsigned) (s_nSnapEnd > kSnap ? kSnap : s_nSnapEnd), 0);
+}
+
+// any core (the control core's SysEx): only the ask; core 0's loop writes it (SnapStep)
+void SnapshotAsk (const char *pName)
+{
+	if (s_nSnap != 0) return;
+	core_snprintf (s_SnapName, sizeof s_SnapName, "%s", pName);
+	__atomic_store_n (&s_nSnap, 1, __ATOMIC_RELEASE);
+}
+
 boolean Start (void)
 {
 	if (crumb::PrevDiedIn (42)) { Off ("the previous boot hung writing /.rytm/blackbox.log"); return FALSE; }
@@ -107,12 +187,14 @@ boolean Start (void)
 void Poll (void)
 {
 	const uint64_t nMs = NowMs ();
+	if (core::hooks.log_snapshot == 0) core::hooks.log_snapshot = SnapshotAsk;
 	if (s_State == kWait)
 	{
 		if (CTimer::Get ()->GetUptime () < 5) return;
 		Start ();
 		s_nLastMs = nMs;
 	}
+	SnapStep ();
 	if (s_State != kOn) return;
 	if (nMs - s_nLastMs < s_nRetryMs) return;
 	const uint64_t nPending = crumb::area ()->log_total - s_nDone;

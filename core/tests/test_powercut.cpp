@@ -35,9 +35,11 @@
 #include "host_link.h"
 #include "keys.h"
 #include "lfo.h"
+#include "mod/scene.h"
 #include "msamp/cardq.h"
 #include "pool/pool.h"
 #include "samp/out.h"
+#include "samp/preview.h"
 #include "seq/seq.h"
 #include "store/store.h"
 
@@ -96,6 +98,7 @@ static void refill() {
   store::clear();
   lfo::want_files();
   ins::want_files();
+  scene::want_files();   // (0.5.0: the scenes' too)
   seq::want_files();   // (phase 2: the sequencer's files too)
   store::fill_begin();
   for (int i = 0; i < 100000 && !store::fill_step(); ++i) {
@@ -120,6 +123,8 @@ static void ins_change(int v) {
   ins::set_type(1, 0, ins::kEq);
   ins::set_param(1, 0, 2, v == 1 ? 100 : 20);
 }
+static void scene_reload() { fmt::sweep_boot(), refill(), scene::load(); }
+static void scene_change(int v) { CHECK(scene::lock(2, core::mod::tid(core::mod::kV, 1, 4), v == 1 ? 1000 : 2000)); }
 static void keys_reload() { keys::load(); }
 static void keys_change(int v) {
   char o[200];
@@ -129,6 +134,8 @@ static void keys_change(int v) {
 }
 static void fxin_reload() { fxin::load(); }
 static void fxin_change(int v) { fxin::set(v == 1); }
+static void preview_reload() { preview::load(); }   // 0.5.0: PREVIEW LEVEL (core/samp/preview.h)
+static void preview_change(int v) { preview::set_level_db(v == 1 ? -12 : -20); }
 static void sendfx_reload() { fx::card_load(); }
 static void sendfx_change(int v) {
   fx::control.route = v == 1 ? fx::kRouteMain : fx::kRouteFx;
@@ -138,9 +145,11 @@ static void sendfx_change(int v) {
 static const Writer kWriters[] = {
     {"LFO (per kit)", "/.rytm/lfo/PWR/k005.txt", lfo_reload, lfo_change},
     {"INSERT (per kit)", "/.rytm/ins/PWR/k005.txt", ins_reload, ins_change},
+    {"scenes (per kit)", "/.rytm/scene/PWR/k005.txt", scene_reload, scene_change},
     {"keys.txt", "/.rytm/keys.txt", keys_reload, keys_change},
     {"fxin.txt", "/.rytm/fxin.txt", fxin_reload, fxin_change},
     {"sendfx.txt", "/.rytm/sendfx.txt", sendfx_reload, sendfx_change},
+    {"preview.txt", "/.rytm/preview.txt", preview_reload, preview_change},
 };
 
 // A clean save of value v, and the bytes it leaves. No .tmp or .prev may be left over.
@@ -213,7 +222,7 @@ int main() {
     engine_sysex(m, (int)sizeof m);
     loaded();
   }
-  lfo::kit_changed(4), ins::kit_changed(4);   // kit 5: its own LFO and INSERT files
+  lfo::kit_changed(4), ins::kit_changed(4), scene::kit_changed(4);   // kit 5: its own LFO, INSERT and scene files
 
   // ---- 1. a clean save, a cut at every point, a full card
   for (const Writer& w : kWriters) test_cut(w);

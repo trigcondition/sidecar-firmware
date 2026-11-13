@@ -3,6 +3,7 @@
 #include "seq/seq.h"
 
 #if CORE_POLY
+#include "seq/patwrite.h"
 #include "seq/rytm_dump.h"
 #include "seq/rng.h"
 #include <stdlib.h>
@@ -15,6 +16,10 @@
 #include "fx/out.h"
 #include "inst.h"
 #include "lfo.h"
+#include "mod/mod.h"
+#include "mod/rytm_out.h"
+#include "mod/rytm_param.h"
+#include "mod/scene.h"
 #include "machines.h"
 #include "midim/midim.h"
 #include "platform.h"
@@ -127,6 +132,23 @@ bool load_due = true;
 bool seqmode = false;
 int seqmode_track = -1;
 bool we_opened = false;
+// polyuser-3 (a poly track's SEQ page flashed in REC): seq mode's own open waits kSeqOpenMs for the same track (tick()),
+// review M2: the whole change does - an 08 1 (another track, or from off) changes nothing (the track, the LEDs, the
+// keys, the page) until the Rytm has stayed there kSeqOpenMs; an 08 back to what is applied cancels it (a blip).
+// Review round 2, M-a: an 08 0 waits kSeqOpenMs as well, so an exit blip (BT, 08 0, BT) closes nothing; a real exit
+// lags kSeqOpenMs
+constexpr uint32_t kSeqOpenMs = 150;
+int seqopen_track = -2;    // the seq mode the Rytm reported, not applied yet: a track, -1 off, -2 none pending
+uint32_t seqopen_ms = 0;
+// a rate-limited console line for every SEQ page the host shows: why, and the track (a user's console names the source)
+CORE_COLD void seqpage_log(const char* why, int t) {
+  static uint32_t last = 0;
+  static int quiet = 0;
+  uint32_t ms = now_ms();
+  if (last && ms - last < 1000) return (void)++quiet;
+  log(CORE_STR("seqpage open: why=%s trk=%d%s"), why, t + 1, quiet ? " (more within 1 s not logged)" : "");
+  last = ms ? ms : 1, quiet = 0;
+}
 bool show_wanted = false;
 bool named = false;         // a project was named since boot (0x10)   // the SEQ page was asked for: in the page list from then on
 int latency = kDefaultLatency;
@@ -226,6 +248,8 @@ struct VLock {
   float base[16], val[16];
 };
 VLock vlk[kVoices];
+// 0.5.0: per Rytm track, the Rytm words (bit w) its last lock set locked (kLockRytm; core/mod/rytm_param.h overrides)
+uint64_t rlk[kRytmTracks];
 struct FLock {
   uint8_t on, seen;
   int8_t owner[8];
@@ -471,10 +495,29 @@ CORE_COLD void release(int r) {
   }
 }
 
+// the pinned tracks (as pinned() below says)
+CORE_COLD uint16_t pins_now() { return (uint16_t)((pin_seq ? mask : 0) | pin_extra | arp_pins); }
 // Track r's locks from now (ls null: none, every base back).
 CORE_COLD void apply_locks(int r, const LockSet* ls) {
   int vi = r >= 0 && r < kRytmTracks ? voice_of(r) : -1;
   int n = ls ? ls->n : 0;
+  if (r >= 0 && r < kRytmTracks) {   // 0.5.0: the Rytm's own words (kLockRytm): overrides at the step's time + the lead,
+    uint64_t want = 0;               // the ones the last set had and this one has not released (rytm-param-mod 5.4)
+    uint16_t rv[42];
+    bool pin = pins_now() >> r & 1;
+    for (int i = 0; i < n; ++i) {
+      int w = ls->l[i].param - kLockRytm;
+      if (!rytm_lock(ls->l[i].param) || (pin && rytm_env_word(w))) continue;   // (cut 1: the pin's envelope is the host's)
+      want |= 1ull << w, rv[w] = ls->l[i].value;
+    }
+    if (want || rlk[r]) {
+      uint32_t due = now_us() + mod::rp_lead_us();
+      for (int w = 1; w <= 41; ++w)
+        if (want >> w & 1) mod::rp_lock(r, w, rv[w], due), ++st.locks_applied;
+        else if (rlk[r] >> w & 1) mod::rp_unlock(r, w, due);
+      rlk[r] = want;
+    }
+  }
   if (vi >= 0 && vi < kVoices) {
     VLock& L = vlk[vi];
     V& x = v[vi];
@@ -484,7 +527,8 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
       if (ls->l[i].param < 16) want |= (uint16_t)(1u << ls->l[i].param), nv[ls->l[i].param] = lock_float(ls->l[i].value);
     if (want || L.on) {
       float p[16];
-      for (int k = 0; k < 16; ++k) p[k] = lfo::base_of(vi, k, x.p[k]);   // what plays without an LFO on it
+      uint32_t t0 = now_us();   // the lookups' cost (mod=stats lookup_us): this runs before a render block
+      for (int k = 0; k < 16; ++k) p[k] = mod::base_of(vi, k, x.p[k]);   // what plays without an LFO on it
       for (int k = 0; k < 16; ++k) {
         uint16_t bit = (uint16_t)(1u << k);
         if (want & bit) {
@@ -495,7 +539,8 @@ CORE_COLD void apply_locks(int r, const LockSet* ls) {
         }
       }
       L.on = want;
-      lfo::voice_params(vi, p, 16, false);   // an LFO on a locked param: the lock is its base
+      mod::voice_params(vi, p, 16);   // an LFO on a locked param: the lock is its base
+      mod::note_lookup(now_us() - t0);
       memcpy(x.p, p, sizeof p);
       voice_params_changed(vi);
       ++st.locks_applied;
@@ -787,6 +832,60 @@ CORE_COLD bool write_pattern(const Pattern& p, const char* ext, bool posted) {
   if (ok) ++st.saves;
   else ++st.save_fails, log(CORE_STR("seq: cannot write %s"), fn);
   return ok;
+}
+// polyuser-4 F-a1: the COPY PAT clipboard kept as the project's clip.sqp (written as a pattern is: the store, then the
+// card core's queue), so a PASTE PAT after a Pi restart still has it: read back (from the store) at a paste with none
+CORE_COLD void clip_file(char* fn, int cap) {
+  char d[64];
+  folder(d, sizeof d);
+  sniprintf(fn, cap, CORE_STR("%s/clip.sqp"), d);
+}
+CORE_COLD void save_clip() {
+  if (!card_ok || !named) return;
+  static uint8_t* buf = nullptr;
+  if (!buf) buf = new uint8_t[pack_bound()];
+  char fn[96];
+  clip_file(fn, sizeof fn);
+  int n = pack(*clip_p, buf, pack_bound());
+#if CORE_MSAMP
+  bool ok = n > 0 && post_file(fn, buf, (uint32_t)n);
+#else
+  bool ok = n > 0 && fmt::write_atomic(fn, buf, (uint32_t)n);
+#endif
+  if (!ok) log(CORE_STR("seq: cannot write %s (the copy is kept until a restart)"), fn);
+}
+CORE_COLD void load_clip() {
+  if (!card_ok || !named) return;
+  char fn[96];
+  clip_file(fn, sizeof fn);
+#if CORE_MSAMP
+  const uint8_t* buf;
+  uint32_t len;
+  if (store::get(fn, &buf, &len) != store::kPresent) return;
+  int n = (int)len;
+#else
+  File f;
+  if (!f.open(fn, kRead)) return;
+  static uint8_t* buf = nullptr;
+  if (!buf) buf = new uint8_t[pack_bound()];
+  int n = (int)f.read(buf, (size_t)pack_bound());
+  f.close();
+#endif
+  if (!unpack(*clip_p, 0, buf, n)) clear(*clip_p, -1), log(CORE_STR("seq: %s does not load: nothing to paste"), fn);
+}
+int copy_due = -1;   // F-a2: the pattern a COPY PAT named while the project loaded (-1 none): copied at the load's end
+Pattern* saved_p = nullptr;   // the SAVE / RELOAD state read back (load_saved, below); take_copy_due's scratch
+CORE_COLD void take_copy_due() {
+  if (copy_due < 0) return;
+  if (!saved_p) saved_p = new Pattern;
+  if (load_into(*saved_p, copy_due)) {
+    memcpy(clip_p, saved_p, sizeof *clip_p);
+    save_clip();
+  } else {   // review M1: its file did not load - the clipboard (and clip.sqp) as it was, as a refused copy left it
+    log(CORE_STR("seq: the copy of pattern %c%02d made while loading not taken (its file did not load): the clipboard "
+                 "as it was"), 'A' + copy_due / 16 % 8, copy_due % 16 + 1);
+  }
+  copy_due = -1;
 }
 CORE_COLD int clampi(int v, int lo, int hi);
 bool tracks_locked = false;   // 1042: tracks.txt there but not readable: not written over until the next project load
@@ -1684,6 +1783,11 @@ CORE_COLD void remask(bool rel) {
       mask);
   mask = m;
   prompt_drop_stale();   // fix1028 review
+  // review round 2, L-a: a pending seq mode entry to a track that left (TURN OFF too) is dropped; a pending exit from
+  // one is moot (seq mode ends below)
+  if ((seqopen_track >= 0 && (gone >> seqopen_track & 1)) ||
+      (seqopen_track == -1 && seqmode && seqmode_track >= 0 && (gone >> seqmode_track & 1)))
+    seqopen_track = -2;
   if (seqmode && seqmode_track >= 0 && (gone >> seqmode_track & 1)) {   // fix1028: its track is no poly track now
     log(CORE_STR("seq: track %d left the poly tracks: seq mode over"), seqmode_track + 1);
     seqmode_end(false);
@@ -1693,8 +1797,7 @@ CORE_COLD void remask(bool rel) {
 // keeps its own saved copy of each pattern); a reload replaces the working copy with it and first keeps the working copy
 // as pNNN.prv (one deep, never lost by a reload). Without a saved state (the Sidecar never saw a SAVE of it) a reload
 // keeps the steps: nothing is ever replaced by a guess. A locked pattern (its file did not load) is neither saved nor
-// reloaded.
-Pattern* saved_p = nullptr;
+// reloaded. (saved_p: defined above, with take_copy_due, which borrows it)
 CORE_COLD bool load_saved(int index) {   // pNNN.sqs into saved_p: false when there is none (or it does not load)
   if (!saved_p) saved_p = new Pattern;
   clear(*saved_p, index);
@@ -1782,8 +1885,15 @@ CORE_COLD void on_edit_op(const uint8_t* a) {
   uint32_t arg = (uint32_t)a[5] | (uint32_t)a[6] << 7 | (uint32_t)a[7] << 14;
   ++st.edits_rytm;
   ensure_pattern(p);
+  // polyuser-4 F-a2: COPY PAT of a loading pattern is taken once the project is loaded (project_changed), its file then
+  if (op == kPCopy && ok && lock_of(cur->index) == kLockLoading) {
+    copy_due = cur->index;
+    log(CORE_STR("seq: pattern %c%02d copied while project %s loads: taken once it is loaded"), 'A' + copy_due / 16 % 8,
+        copy_due % 16 + 1, project);
+    return;
+  }
   // round 2: a copy of a loading pattern (its empty stand-in) is refused: a later paste would wipe the target's tracks
-  if ((op == kPCopy || op == kTCopy || op == kGCopy || op == kRCopy) && ok && lock_of(cur->index) == kLockLoading)
+  if ((op == kTCopy || op == kGCopy || op == kRCopy) && ok && lock_of(cur->index) == kLockLoading)
     return refused_log("a copy");   // (the clipboard as it was)
   if (src == 1) {   // rui1040: seq mode's own gesture (held trigs / PAGE + FUNC + REC / STOP / PLAY, the page open or not):
     for (int k = 0; k < 16; ++k)   // the held keys' releases are no tap toggle and no page step
@@ -1800,9 +1910,11 @@ CORE_COLD void on_edit_op(const uint8_t* a) {
     case kPCopy:
       if (!ok) return;
       memcpy(clip_p, cur, sizeof *clip_p);
+      save_clip();
       return;
     case kPPaste:
     case kPClear:
+      if (ok && op == kPPaste && clip_p->index < 0) load_clip();   // F-a1: the copy made before a restart
       if (!ok || (op == kPPaste && clip_p->index < 0)) return;
       memcpy(undo_p, cur, sizeof *undo_p), undo_p_kind = op == kPPaste ? 2 : 1;
       if (op == kPPaste) {
@@ -2043,6 +2155,23 @@ CORE_COLD void on_state(const uint8_t* a, int n) {
       if (n < 3) break;
       rec_live = a[1] != 0, rec_grid = a[2] != 0;
       return;
+    case kQperf:     // 2D 01 0E <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>: the QUICK PERF knob (core/mod/scene.h)
+      if (n < 6) break;
+      scene::qperf(a[1] << 7 | a[2], (uint16_t)(a[3] | (a[4] & 0x1F) << 7), a[5]);
+      return;
+    case kSceneRep:  // 2D 01 0F <n>: the Rytm's own scene 1..12, 0 none
+      if (n < 2) break;
+      scene::rytm_scene_seen(a[1]);
+      return;
+    case kHostAck:   // 2D 01 10 <op> <status>: the mod command done (0) or refused (core/mod/rytm_out.h)
+      if (n < 3) break;
+      // 0.5.0: ops 04..07 are the Rytm's params' (core/mod/rytm_param.h): counted there, never the CC fallback
+      if (a[1] >= mod::kOpOffset && a[1] <= mod::kOpStatus) mod::rp_ack(a[1], a[2]);
+      else mod::rytm_ack(a[1], a[2]);
+      return;
+    case kPmStatus:  // 2D 01 11 <slots> <ring drops hi> <lo> <kit drops hi> <lo> <timeouts> <flags>: op 07's answer
+      mod::rp_status(a + 1, n - 1);
+      return;
     case kTempo: {
       if (n < 4) break;
       int t = a[1] << 14 | a[2] << 7 | a[3];
@@ -2053,15 +2182,16 @@ CORE_COLD void on_state(const uint8_t* a, int n) {
       if (n < 3) break;
       bool on = a[1] != 0;
       int tr = a[2] < kRytmTracks ? a[2] : -1;
-      if (on && tr >= 0) {
-        seqmode = true, seqmode_track = tr;
-        ui.track = tr;
-        if (!ui::remote_open()) we_opened = true;
-        show_wanted = true;
-        ui::remote_show_page("SEQ");
-      } else {
-        seqmode_end(false);
+      {   // polyuser-3: the Rytm's seq mode reports on the console (at most 4 a second: a blip's pair shows)
+        static uint32_t win = 0;
+        static int nlog = 0;
+        uint32_t ms = now_ms();
+        if (ms - win >= 1000) win = ms, nlog = 0;
+        if (nlog++ < 4) on ? log(CORE_STR("seqmode: 08 on trk=%d"), tr + 1) : log(CORE_STR("seqmode: 08 off"));
       }
+      const int want = on && tr >= 0 ? tr : -1, have = seqmode ? seqmode_track : -1;
+      if (want == have) seqopen_track = -2;   // back to what is applied: a blip, nothing changed
+      else if (want != seqopen_track) seqopen_track = want, seqopen_ms = now_ms();   // applied from tick(), an exit too
       return;
     }
     case kPos:
@@ -2201,7 +2331,17 @@ CORE_COLD void set_seq(int r, bool on) {
 // nothing on the host (the Rytm's analog side, its own LFO).
 CORE_COLD int lock_param_of(int pg, int e) {
   if (e < 0 || e > 7) return -1;
+  // 0.5.0 (rytm-param-mod 5.4): the Rytm's own words as its pages have them (kLockRytm + w): FLTR's F G H FRQ RES ENV
+  // (A..E the arp's), AMP ATK HLD DEC OVR DEL REV PAN VOL, LFO SPD MUL FAD (DST) WAV SPH MOD DEP; a pinned track's
+  // envelope words none (the host's envelope plays them)
+  static const int8_t kFltrW[3] = {30, 31, 25}, kAmpW[8] = {33, 34, 35, 36, 40, 41, 38, 37}, kLfoW[8] = {5, 1, 6, -1, 2, 7, 3, 8};
+  int rw = pg == kLpFltr && e >= kArpLocks ? kFltrW[e - kArpLocks] : pg == kLpAmp ? kAmpW[e] : pg == kLpLfo ? kLfoW[e] : -1;
+  if (rw > 0) return (pins_now() >> ui_track() & 1) && rytm_env_word(rw) ? -1 : kLockRytm + rw;
   if (pg == kLpFltr) return e < kArpLocks ? kLockArp + e : -1;
+  if ((pg == kLpSrc || pg == kLpSmpl) && ui::remote_track_smpl(ui_track())) {   // 0.5.0: SAMPLER's page 1, page 2 empty
+    static const int8_t kDt[8] = {10, 12, 13, 11, 8, 9, 14, 15};   // SMP STRT END PLAY / TUNE FINE LOOP LEV (page_wave.cpp kDspsPageDt)
+    return pg == kLpSrc ? kDt[e] : -1;
+  }
   return pg == kLpSrc ? e : pg == kLpSmpl ? 8 + e : pg == kLpFx && e / 4 < fx::kSlots ? kLockFx + e : pg == kLpIns ? kLockIns + e
                                                                                                              : -1;
 }
@@ -2209,6 +2349,7 @@ CORE_COLD int lock_param_of(int pg, int e) {
 // knob's, 14 bits
 CORE_COLD int base_value(int r, int param) {
   if (param < 16) return ui::remote_track_param(r, param) << 7;
+  if (rytm_lock(param)) return 64 << 7;   // the Rytm's own word: its value is the Rytm's, not known here (the middle)
   if (arp_lock(param)) {   // the track's sound's
     arp::Cfg c = arp::get(r);
     const uint8_t f[kArpLocks] = {c.mode, c.speed, c.range, c.gate, c.swing};
@@ -2392,7 +2533,7 @@ CORE_COLD int seed_slot(int r) {
   if (vb < 0 || vb == 0x7F) return -1;
   switch (vb & 0x78) {
     case kDaisy: return 11;
-    case kDspSample: return 6;
+    case kDspSample: return ui::remote_track_smpl(r) ? -1 : 6;   // (SAMPLER: none, its P1..P8 are no knobs)
     case kFm: case kJuno: return 12;
     default: return -1;
   }
@@ -2682,7 +2823,7 @@ CORE_COLD void reset() {
   out::set_mutes(0);
   rec_live = rec_grid = false;
   pat_now = 0, pat_queued = -1, pat_loaded = 0, load_due = false;
-  seqmode = false, seqmode_track = -1, we_opened = false, show_wanted = false, named = false;
+  seqmode = false, seqmode_track = -1, we_opened = false, show_wanted = false, named = false, seqopen_track = -2;
   latency = kDefaultLatency, quant = 0;
   seed_held = false;
   smod_reset(), seg_gen = 0;   // seqtop R1b
@@ -2693,6 +2834,7 @@ CORE_COLD void reset() {
   dirty = save_now = tracks_dirty = false;
   ui = Ui();
   memset(vlk, 0, sizeof vlk), memset(&flk, 0, sizeof flk), lset_w = 0;   // seq-ux
+  memset(rlk, 0, sizeof rlk);
   memset(slides, 0, sizeof slides), slide_any = 0;                         // seqtop X1
   view_gen = 0, view_track = -1;
   memset(&st, 0, sizeof st);
@@ -2736,12 +2878,22 @@ CORE_COLD bool beat_map(double* origin, double* per16, int* lat) {
   return false;
 }
 
-CORE_COLD void hello() {
+CORE_COLD void hello(int up20) {
   if (!cur) reset();   // (before engine_begin: the tests that skip it)
   hello_due = true;
   mask_sent = -1, pin_sent = -1, clock_sent = -1, silent_sent = 0xFFFF;
   ui.leds_sent = false, ui.pleds_sent = false;
   ui.func = false;   // rui1050: a FUNC release lost with the link
+  // polyuser-4 F-b3: a Rytm restarted within ~10 s of its boot counts from 0 again, a step back the follower read as "a
+  // little older" (a burst of late notes, then the wrong steps): learnt afresh. Review L1: only when the hello shows a
+  // restart - the Rytm up for less time than has passed since the last hello (or no uptime / no hello before); a
+  // re-plug keeps the follower (a reset stopped the planning until the next tick)
+  static uint32_t last_ms = 0;
+  static bool seen = false;
+  uint32_t ms = now_ms();
+  if (up20 < 0 || !seen || (uint32_t)up20 * 50u + 500u < ms - last_ms) fol.reset();
+  seen = true, last_ms = ms;
+  rytm_dump::forget_pattern();   // FILL writes by pattern number: none until the resync's 2D 02 says which
   ++st.resyncs;
 }
 
@@ -2757,12 +2909,17 @@ CORE_COLD void want_files() {
   store::want(fn);
   for (int i = 0; i < 128; ++i) file_ext_of(project, fn, sizeof fn, i, "sqp"), store::want(fn);
   for (int i = 0; i < 128; ++i) file_ext_of(project, fn, sizeof fn, i, "sqs"), store::want(fn);   // 1042's saved states
+  sniprintf(fn, sizeof fn, CORE_STR("%s/clip.sqp"), d), store::want(fn);   // F-a1: the COPY PAT clipboard
 }
 CORE_COLD void rekey(const char* name) { sniprintf(g_proj, sizeof g_proj, "%s", name ? name : ""); }
 CORE_COLD void loading_begin() {
   if (!project[0]) return;   // (the boot with no project named: nothing of one to keep apart)
   if (!cur) reset();
   g_loading = true;
+  if (copy_due >= 0)  // (F-a2: a copy queued in an earlier load is that project's; review L3: said)
+    log(CORE_STR("seq: the copy of pattern %c%02d made while loading dropped: the load was not finished"),
+        'A' + copy_due / 16 % 8, copy_due % 16 + 1);
+  copy_due = -1;
   tracks_keep();
   nxt->index = -1;   // round 2: an old pattern prefetched before the switch never comes up editable during the fill
 }
@@ -2776,6 +2933,10 @@ CORE_COLD void project_leaving() {
 
 CORE_COLD void project_changed() {
   if (!cur) reset();   // (before engine_begin: the tests that skip it)
+  // review round 2, L-a: the Rytm's seq mode change still pending is the old project's: an entry is dropped, an exit
+  // taken at once (never left in seq mode the Rytm left)
+  if (seqopen_track == -1) seqmode_end(false);
+  seqopen_track = -2;
   // NOTE EDIT (review round 2, N4): the undo history and the state after the last gesture are the old project's
   if (ne_hooks && ne_hooks->clear) ne_hooks->clear();
   ne_after_on = false, ui.ne_undo_e = -1, ui.ne_del_ms = 0;
@@ -2802,6 +2963,7 @@ CORE_COLD void project_changed() {
       tracks_touch();
       if (dirty) dirty_ms = now_ms();
       log(CORE_STR("seq: the tracks set before the project was named kept for %s"), project);
+      take_copy_due();
       return;
     }
   }
@@ -2814,6 +2976,9 @@ CORE_COLD void project_changed() {
   if (was_named && tracks_dirty) save_tracks(), tracks_dirty = false;
   memset(pat_lock, 0, sizeof pat_lock);   // 1042: another folder's files
   disarm_undo(-1);   // (round 2: an undo of another project's pattern, or of a refused edit, never lands on this one's)
+  // review L2: the clipboard is the project's, as its clip.sqp (F-a1): another project starts with none in RAM (a
+  // paste reads that project's clip.sqp); the same project loaded again keeps it
+  if (strcmp(g_proj, project)) clear(*clip_p, -1);
   sniprintf(g_proj, sizeof g_proj, "%s", project);   // the sequencer's files are this project's from here
   release(-1);
   load_tracks();
@@ -2823,6 +2988,7 @@ CORE_COLD void project_changed() {
   cur->index = -1;
   install(pat_now);   // its file now (from the store with CORE_MSAMP; a small read without)
   load_due = false;
+  take_copy_due();
 }
 
 CORE_COLD int pad_oct(int vi) {
@@ -3405,13 +3571,14 @@ CORE_COLD bool ne_move(Track& t, int len, bool pos, int d, bool func) {
 }
 // A..E (F..H: the v4 blocks to come, nothing yet): POS NUDG LEN PTCH VEL. A trig held with no notes: the track's note
 // there first (as the step edit's first turn), highlighted.
-CORE_COLD void ne_enc(int e, int d, bool func) {
+// True: done (the web's seqed=nedit says why not: POS / PTCH found no room)
+CORE_COLD bool ne_enc(int e, int d, bool func) {
   int r = ui_track();
   int sc = ne_scope();
   Track* t = ui_track_data(sc >= 0);
-  if (!t) return;
+  if (!t) return false;
   int len = eff_len(t, r);
-  if (e > 4) return;
+  if (e > 4) return false;
   bool filled = false, need = false;
   if (sc >= 0 && sc < len && !t->step[sc].n) {   // (the fill and the turn: one level)
     need = ne_begin(-2), filled = true;
@@ -3420,11 +3587,11 @@ CORE_COLD void ne_enc(int e, int d, bool func) {
     ne_go(sc, t->step[sc].note[0].pitch);
     ui.ne_edits = st.edits;
   }
-  if (!ne_fix()) return;
+  if (!ne_fix()) return false;
   bool done = false;
   if (e == 0 && func) e = 1, func = false;   // FUNC + POS: by 1/96 (as NUDG)
   int n = ne_targets(*t, len, ne_tg);
-  if (!n) return;
+  if (!n) return false;
   if (!filled) need = ne_begin(e);
   if (e == 0 || e == 3) {
     done = ne_move(*t, len, e == 0, d, func);
@@ -3445,24 +3612,26 @@ CORE_COLD void ne_enc(int e, int d, bool func) {
   }
   if (done || filled) replan(r), mark_dirty(), ne_bump();
   ne_commit(e, need, done || filled);
+  return done;
 }
 // FUNC + NO: the targets deleted - more than one asks first (a second FUNC + NO within kNeDelMs); the highlight on to
 // the next note (else the previous), the selection cleared; a step left empty is cleared as a trig off (its locks too)
 constexpr uint32_t kNeDelMs = 2000;
-CORE_COLD void ne_delete() {
+// ask: more than one note asks first (the Rytm's keys; the web's seqed=ndel does not). How many were deleted.
+CORE_COLD int ne_delete(bool ask = true) {
   int r = ui_track();
-  if (!ne_fix()) return;
+  if (!ne_fix()) return 0;
   Track* t = ui_track_data(false);
-  if (!t) return;
+  if (!t) return 0;
   int len = eff_len(t, r), n = ne_targets(*t, len, ne_tg);
-  if (!n) return;
+  if (!n) return 0;
   uint32_t ms = now_ms();
-  if (n > 1 && !(ui.ne_del_ms && ms - ui.ne_del_ms < kNeDelMs && ui.ne_del_n == n)) {
+  if (ask && n > 1 && !(ui.ne_del_ms && ms - ui.ne_del_ms < kNeDelMs && ui.ne_del_n == n)) {
     ui.ne_del_ms = ms | 1, ui.ne_del_n = n;
     char b[28];
     sniprintf(b, sizeof b, CORE_STR("F+NO AGAIN: DEL %d NOTES"), n);
     say(b);
-    return;
+    return 0;
   }
   ui.ne_del_ms = 0;
   bool need = ne_begin(-3);
@@ -3488,6 +3657,7 @@ CORE_COLD void ne_delete() {
   say(b);
   replan(r), mark_dirty();
   ne_commit(-3, need, true);
+  return n;
 }
 // The DATA push: the highlighted note in / out of the selection; FUNC + push: every note, or none when all are in. The
 // footer says what it did (I5: the Rytm drops a DATA turn ~0.55 s after the push: the message is that pause)
@@ -3593,7 +3763,7 @@ CORE_COLD bool ui_key(int code, bool down, bool shown) {
     if (down) {
       if (shown && !ui.held) ne_leave();   // U1: TRIG leaves NOTE EDIT (on to DEFAULTS, as from the notes); a trig held:
                                            // its step pages as before, NOTE EDIT again at the next hold
-      if (!shown) ui.tv = kTvNotes, ui.sv = kSvNotes, ui::remote_show_page("SEQ");
+      if (!shown) ui.tv = kTvNotes, ui.sv = kSvNotes, seqpage_log("trig", ui_track()), ui::remote_show_page("SEQ");
       else if (ui.held) ui.sv = ui.lockpg >= 0 ? kSvTrig : (ui.sv + 1) % kSvPages;
       else ui.tv = (ui.tv + 1) % kTvPages, ui.sv = ui.tv == kTvNotes ? kSvNotes : ui.sv ? ui.sv : kSvTrig;
       ui.lockpg = -1, ui.touched = -1, ui.cond_e = -1, ui.push_down = 0, ui.msg_ms = 0;
@@ -3611,7 +3781,7 @@ CORE_COLD bool ui_key(int code, bool down, bool shown) {
       ui.lockpg = lp, ui.touched = -1, ui.cond_e = -1, ui.push_down = 0, ui.msg_ms = 0;
       for (int k = 0; k < 16; ++k)
         if (ui.held >> k & 1) ui.held_used[k] = true;   // no tap toggle at the release
-      if (!shown) ui::remote_show_page("SEQ");
+      if (!shown) seqpage_log("lockpage", ui_track()), ui::remote_show_page("SEQ");
     }
     return true;
   }
@@ -3931,6 +4101,21 @@ static CORE_COLD void cal_tick(uint32_t ms) {
 
 CORE_COLD void tick(uint32_t ms) {
   if (!cur) reset();   // (before engine_begin: the tests that skip it)
+  if (seqopen_track != -2 && ms - seqopen_ms >= kSeqOpenMs) {   // polyuser-3 / M2: the Rytm stayed there kSeqOpenMs
+    const int w = seqopen_track;
+    seqopen_track = -2;
+    if (w < 0) {
+      seqmode_end(false);
+    } else if (in_mask(w) || (mask_sent >= 0 && (mask_sent >> w & 1))) {   // review round 2, L-a: never on a track
+      // that is no seq track now (the Rytm's own test is the 2E it has: at a switch that is the next pattern's mask)
+      seqmode = true, seqmode_track = w;
+      ui.track = w;
+      if (!ui::remote_open()) we_opened = true;
+      show_wanted = true;
+      seqpage_log("seqmode", w);
+      ui::remote_show_page("SEQ");
+    }
+  }
   // rui1050: a lock page's encoder held kLongPushMs: its COND (or back to its value), at once while it is still held
   for (int e = 0; e < 8 && ui.push_down; ++e)
     if ((ui.push_down >> e & 1) && !(ui.push_done >> e & 1) && ui.held && ui.lockpg >= 0 &&
@@ -3972,6 +4157,7 @@ CORE_COLD void tick(uint32_t ms) {
   cal_tick(ms);
   rytm_dump::set_playing(transport == kPlay);
   rytm_dump::tick(ms);
+  patwrite::tick(ms);   // 0.5.0 FILL (core/seq/patwrite.h)
   // follow: the edited page goes with the playhead
   int r = ui_track();
   const Track* t = track_of(*cur, r);
@@ -4173,6 +4359,173 @@ CORE_COLD void note_moved(int r, int fi, int fp, int ti, int tp) {
   if (fi == ui.ne_idx && fp == ui.ne_pitch) ne_go(ti, tp);
   ne_bump();
 }
+// ---- the web's NOTE EDIT (seq.h note_edit_line): the same state and gestures as the Rytm's DATA, its push and A..E,
+// so both sides edit one selection and one undo history
+// up to n signed integers separated by ':' (a ':' after the n-th taken too), the count, *end after them; -1 a bad one
+CORE_COLD int ne_ints(const char* p, int* v, int n, const char** end) {
+  int k = 0;
+  while (k < n) {
+    bool neg = *p == '-';
+    if (neg) ++p;
+    if (*p < '0' || *p > '9') return -1;
+    int x = 0;
+    while (*p >= '0' && *p <= '9' && x < 100000) x = x * 10 + (*p++ - '0');
+    v[k++] = neg ? -x : x;
+    if (*p != ':') break;
+    ++p;
+  }
+  *end = p;
+  return k;
+}
+// Why the web may not use NOTE EDIT on track r now (null: it may). enter: it may bring NOTE EDIT on there (the SEQ
+// page's track becomes r, outside the Rytm's seq mode, which holds its own track); else NOTE EDIT must be on r already
+CORE_COLD const char* ne_web_refused(int r, int shown, bool enter) {
+  if (!in_mask(r)) return "not a poly track";
+  if (shown >= 0 && r != shown) return "not the shown track";
+  if (ui.prompt) return "the Rytm's SEQ page asks a question";
+  if (ui.held) return "a trig is held on the Rytm";
+  if (!enter && (!ui.ne || r != ui_track())) return ui.ne ? "NOTE EDIT is on another track" : "NOTE EDIT is off";
+  if (r != ui_track() && seqmode) return "the Rytm's seq mode is on another track";
+  return nullptr;
+}
+CORE_COLD void ne_web_enter(int r) {
+  if (r != ui_track()) ui.track = r, ui.lockpg = -1, ui.touched = -1, ui.cond_e = -1, ui.msg_ms = 0;   // (as selected_track)
+  if (!ui.ne) ne_land();   // (as DATA's first turn)
+  ne_fix();                // (another track or pattern: the selection starts empty)
+  ui.ne_undo_e = -1, ui.ne_del_ms = 0;   // (a new gesture, as the DATA push)
+}
+CORE_COLD void ne_web_said(int r, char* out, int cap) {
+  char b[28];
+  if (ui.ne_nsel) sniprintf(b, sizeof b, CORE_STR("SELECTED %d"), ui.ne_nsel);
+  else sniprintf(b, sizeof b, "NONE SELECTED");
+  say(b, 1000);   // (the Rytm's footer, as after its DATA push)
+  sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT T%d: %d selected, highlight step %d pitch %d"), r + 1, ui.ne_nsel,
+            ui.ne_idx, ui.ne_pitch);
+}
+// nset's list "S.P,S.P,...": each note there into the selection (set) or only counted; the lowest key set; false: bad
+CORE_COLD bool ne_web_list(const char* q, const Track* t, int len, bool set, int* found, int* missing, int* low) {
+  while (*q) {
+    int s = -1, pc = -1;
+    const char* e = nullptr;
+    if (ne_ints(q, &s, 1, &e) != 1 || *e != '.' || ne_ints(e + 1, &pc, 1, &e) != 1 || (*e && *e != ',')) return false;
+    q = *e ? e + 1 : e;
+    bool there = t && s >= 0 && s < len && pc >= 0 && pc <= 127 && ne_has(t->step[s], pc);
+    if (!there) {
+      ++*missing;
+      continue;
+    }
+    ++*found;
+    if (!set) continue;
+    ne_sel_set(s, pc, true);
+    if (*low < 0 || (s << 7 | pc) < *low) *low = s << 7 | pc;
+  }
+  return true;
+}
+CORE_COLD int note_edit_line(const char* p, int shown, char* out, int cap) {
+  static const char* const kOps[] = {"seqed=nsel:", "seqed=nset:", "seqed=nclr:", "seqed=nedit:", "seqed=ndel:", "seqed=noff:"};
+  static const int kArgs[] = {4, 2, 1, 3, 1, 1};
+  int op = 0;
+  while (op < 6 && strncmp(p, kOps[op], strlen(kOps[op]))) ++op;
+  if (op == 6) return -1;
+  if (!cur) reset();
+  int a[4] = {0, 0, 0, 0};
+  const char* end = nullptr;
+  int k = ne_ints(p + strlen(kOps[op]), a, op == 3 ? 4 : kArgs[op], &end);
+  if (k < kArgs[op] || (op != 1 && *end)) {
+    sniprintf(out, cap, CORE_STR("seqed: bad line \"%s\""), p);
+    return -2;
+  }
+  int r = a[0];
+  if (r < 0 || r >= kRytmTracks) {
+    sniprintf(out, cap, CORE_STR("seqed: track %d"), r);
+    return -2;
+  }
+  if (op == 3 && (a[1] < 0 || a[1] > 4 || !a[2] || a[2] < -127 || a[2] > 127)) {
+    sniprintf(out, cap, CORE_STR("seqed: nedit:T:E:D[:F] (E 0..4: POS NUDG LEN PTCH VEL; D -127..127, not 0)"));
+    return -2;
+  }
+  if (const char* why = ne_web_refused(r, shown, op <= 1)) {
+    sniprintf(out, cap, CORE_STR("seqed: T%d: %s"), r + 1, why);
+    return 0;
+  }
+  const Track* t = track_of(*cur, r);
+  int len = eff_len(t, r);
+  int found = 0, missing = 0, low = -1;
+  if (op == 0 && !(t && a[1] >= 0 && a[1] < len && a[2] >= 0 && a[2] <= 127 && ne_has(t->step[a[1]], a[2]))) {
+    sniprintf(out, cap, CORE_STR("seqed: T%d has no note at step %d pitch %d"), r + 1, a[1], a[2]);
+    return 0;
+  }
+  if (op == 1) {   // (checked before anything changes: a bad line, or none of its notes there)
+    if (!ne_web_list(end, t, len, false, &found, &missing, &low)) {
+      sniprintf(out, cap, CORE_STR("seqed: bad line \"%s\""), p);
+      return -2;
+    }
+    if (!found && missing) {
+      sniprintf(out, cap, CORE_STR("seqed: T%d has none of those notes"), r + 1);
+      return 0;
+    }
+  }
+  if ((op == 3 || op == 4) && (g_loading || lock_of(cur->index) == kLockLoading)) {   // (as the Rytm's undo)
+    sniprintf(out, cap, CORE_STR("seqed: T%d: the project is still loading"), r + 1);
+    return 0;
+  }
+  switch (op) {
+    case 0:   // nsel:T:S:P:ON - one note in (ON 1) or out (0), highlighted
+      ne_web_enter(r);
+      ne_go(a[1], a[2]);
+      ne_sel_set(a[1], a[2], a[3] != 0);
+      ne_recount(), ne_bump();
+      ne_web_said(r, out, cap);
+      return 1;
+    case 1: {   // nset:T:ADD:S.P,S.P,... - the selection becomes these notes (ADD 1: they are added); gone ones skipped
+      ne_web_enter(r);
+      if (!a[1]) ne_sel_clear();
+      found = missing = 0;
+      ne_web_list(end, t, len, true, &found, &missing, &low);
+      if (low >= 0) ne_go(low >> 7, low & 0x7F);   // the highlight on the first of them (the Rytm's page follows)
+      ne_recount(), ne_bump();
+      ne_web_said(r, out, cap);
+      if (missing) {
+        int n = (int)strlen(out);
+        sniprintf(out + n, cap - n, CORE_STR(" (%d not there)"), missing);
+      }
+      return 1;
+    }
+    case 2:   // nclr:T - the selection cleared, NOTE EDIT stays on (the Rytm's NO with a selection)
+      ne_sel_clear(), ne_bump();
+      ne_web_said(r, out, cap);
+      return 1;
+    case 3: {   // nedit:T:E:D[:F] - encoder A..E (E 0..4) turned D detents (F 1: FUNC held)
+      static const char* const kKnob[] = {"POS", "NUDG", "LEN", "PTCH", "VEL"};
+      int e = a[1], d = a[2];
+      int n = t && ne_fix() ? ne_targets(*t, len, ne_tg) : 0;
+      if (!n) {
+        sniprintf(out, cap, CORE_STR("seqed: T%d: no note to edit"), r + 1);
+        return 0;
+      }
+      if (!ne_enc(e, d, k == 4 && a[3] != 0)) {
+        sniprintf(out, cap, CORE_STR("seqed: T%d: %s"), r + 1, e == 0 ? "no room there" : e == 3 ? "no pitch free" : "no change");
+        return 0;
+      }
+      sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT T%d: %s %s%d on %d note%s"), r + 1, kKnob[e], d > 0 ? "+" : "", d, n,
+                n == 1 ? "" : "s");
+      return 2;
+    }
+    case 4: {   // ndel:T - the selection (else the highlighted note) deleted at once (the web asks first if it wants)
+      int n = ne_delete(false);
+      if (!n) {
+        sniprintf(out, cap, CORE_STR("seqed: T%d: no note to delete"), r + 1);
+        return 0;
+      }
+      sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT T%d: %d note%s deleted"), r + 1, n, n == 1 ? "" : "s");
+      return 2;
+    }
+    default:   // noff:T - NOTE EDIT left (the Rytm's NO without a selection, or TRIG)
+      ne_leave();
+      sniprintf(out, cap, CORE_STR("seqed: NOTE EDIT off"));
+      return 1;
+  }
+}
 CORE_COLD bool data_wanted() {
   if (!cur) return false;
   return in_mask(ui_track());
@@ -4298,6 +4651,7 @@ CORE_COLD void view_request(int r) {
   if (r < 0 || r >= kRytmTracks) return;
   if (!seqmode) ui.track = r;   // (seq mode: its track, the Rytm's selected one: this one)
   ui.view_opened = true, show_wanted = true, ui.lockpg = -1;
+  seqpage_log("trk+trig", r);   // (the Rytm opened it: TRK + TRIG)
   ui.prompt = in_mask(r) ? 0 : can_seq(r) == 1 ? kPromptMake : kPromptExplain, ui.prompt_track = r;
   ++view_gen, view_track = r;
   log(CORE_STR("seq: TRK + TRIG: track %d's SEQ page%s"), r + 1,
@@ -4633,8 +4987,8 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   }
   if (!strncmp(p, "seq=lock:", 9)) {   // seq=lock:T:S:P:V - step S (1..) of track T locks param P (1..16 P1..P16,
                                         // 17..20 FX1 P2..P5, 21..24 FX2's, 25..28 INSERT A P1..P4,
-                                        // 29..32 INSERT B's, 33..37 the arp's MODE SPD RNG GATE SWNG) to V (0..127; the arp's their
-                                        // knob's index); V -1: that lock removed
+                                        // 29..32 INSERT B's, 33..37 the arp's MODE SPD RNG GATE SWNG, 0.5.0 65 + w the Rytm's own
+                                        // word w: kLockRytm) to V (0..127; the arp's their knob's index); V -1: that lock removed
     int a[4] = {0, 0, 0, 0}, k = 0;
     const char* q = p + 9;
     for (; k < 4 && *q; ++k) {
@@ -4644,8 +4998,8 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       ++q;
     }
     int r = a[0] - 1, si = a[1] - 1, prm = a[2] - 1;
-    Track* t = k == 4 && si >= 0 && si < kMaxSteps && prm >= 0 && prm < kLockParams ? slot_for(r) : nullptr;
-    if (!t) return sniprintf(out, cap, CORE_STR("seq=lock:T:S:P:V (P 1..16 the machine's, 17..24 FX1 / FX2 P2..P5, 25..32 INSERT A / B P1..P4, 33..37 ARP MODE SPD RNG GATE SWNG; V 0..127, -1 off)")), true;
+    Track* t = k == 4 && si >= 0 && si < kMaxSteps && lock_param_ok(prm) ? slot_for(r) : nullptr;
+    if (!t) return sniprintf(out, cap, CORE_STR("seq=lock:T:S:P:V (P 1..16 the machine's, 17..24 FX1 / FX2 P2..P5, 25..32 INSERT A / B P1..P4, 33..37 ARP MODE SPD RNG GATE SWNG, 65 + w the Rytm's word w (66..72 LFO, 90..106 FILTER AMP); V 0..127, -1 off)")), true;
     Step& st_ = t->step[si];
     bool ok = a[3] < 0 ? clear_lock(st_, prm) : set_lock(st_, prm, clampi(a[3], 0, 127) << 7);
     replan(r);
@@ -4741,6 +5095,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   }
   if (!strcmp(p, "seq=show")) {
     show_wanted = true;
+    seqpage_log("console", ui_track());
     ui::remote_show_page("SEQ");
     return sniprintf(out, cap, CORE_STR("seq: the SEQ page")), true;
   }

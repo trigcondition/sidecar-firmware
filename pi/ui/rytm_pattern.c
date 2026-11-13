@@ -13,7 +13,7 @@
 #define O_COND		0x1f0
 #define O_DEFS		0x230
 #define O_SNDLOCK	0x237
-#define O_STEPS		0x276		// [inferred]
+#define O_STEPS		0x235		// [measured, rytm-emu 0.5.0 FILL; was 0x276, the sound locks' last byte]
 #define O_SPEED		0x277
 
 static unsigned get14 (const unsigned char *b, int s)

@@ -62,6 +62,26 @@ int main ()
 		unsigned o = offers;
 		step (74, true);  step (76, true);  CHECK (offers == o && shown == 3);
 	}
+	// another popup (the web update's, each second) must not take the thermal popup's "shown": while the thermal one is owed
+	// the other is skipped (popup_owed), so the count only moves when the thermal popup is drawn
+	{
+		State w;
+		Popup p;
+		unsigned shown = 0, thermal_drawn = 0;
+		bool rytm_can = false;			// a page is open: nothing is drawn
+		auto second = [&] (int c, bool update_notice) {
+			Event e = update (w, c);
+			bool t = popup_due (p, w, e, shown);
+			if (update_notice && !popup_owed (p) && rytm_can) shown++;		// the update's popup, drawn
+			if (t && rytm_can) { shown++; thermal_drawn++; }
+		};
+		second (80, true);  second (80, true);  second (80, true);		// owed, the update notice skipped, not shown
+		CHECK (p.owed && shown == 0);
+		rytm_can = true;
+		second (80, true);  CHECK (thermal_drawn == 1 && shown == 1);
+		second (80, true);  CHECK (!p.owed && shown == 2);			// shown: the update's popups go on
+		second (80, true);  CHECK (shown == 3);
+	}
 	// the clock Circle lowered (socmaxtemp 78: 600 MHz): at the full setting, read back well below it, the SoC near the limit
 	CHECK (clock_low_mhz (600, 1500, 79) == 600);			// between the throttle and the warning: lowered (quiet)
 	CHECK (clock_low_mhz (600, 1500, 81) == 600);			// warned and lowered

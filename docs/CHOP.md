@@ -8,6 +8,8 @@ and the Mac tests (`CORE_MSAMP`); the Sidecar Mini (Teensy) has no CHOP. The des
 chop and chop screen and the Dirtywave M8's slice list are the models for behaviour only (their manuals and use), none
 of their code.
 
+See also `docs/SAMPLE-EDIT.md`: crop, trim, normalise and fade the sample before chopping it.
+
 Tags as in the other docs: **[measured]** run on the Mac (or in rytm-emu) and recorded; **[code]** read in the source;
 **[inferred]** follows from those, not run on the real Rytm; **[open]** to be measured on the real Rytm.
 
@@ -44,7 +46,7 @@ first trig does not wait; a trig while it still loads plays when it is in, withi
 | P11 | **TAPE** | SLC / OFF / STOP / SPIN (4 zones) |
 | P12 | **TTIM** | the tape's time, 20 ms .. 4 s (down: the slice's) |
 | P13 | **ATK** | 0.5 ms .. 2 s (down: the slice's) |
-| P14 | **DEC** | 10 ms .. 10 s, fully up HOLD (down: the slice's) |
+| P14 | **DEC** | 10 ms .. 10 s, fully up HOLD (down: the slice's); on a GATE slice the fade after the note-off (HOLD: 5 ms) |
 | P15 | **DIR** | SLC / FWD / REV |
 | P16 | **LOOP** | SLC / OFF / FWD / PING |
 
@@ -60,7 +62,18 @@ reverses one trig. On rui1051 the Rytm writes their defaults (all down) when CHO
   slice lane), modulo the slices; conditions, ratchets and locks per step as on any poly track. Its own pool of slice
   players: VOICES up to 8 (E0, `core/inst_alloc.h`).
 - Then SHUFFLE (SEED) and NEIGHBOUR CHANCE pick the slice that sounds.
-- A one-shot slice plays to its end (a note-off does not cut it); a looped one loops while held and releases over 30 ms.
+- **Mono by default.** Each CHOP track is mono: a new hit **cuts the voice's playing notes** (the 2 ms kill fade), so long
+  slices do not pile up. A slice with **POLY ON** is the exception: its hits cut nothing and later hits do not cut it (it may
+  ring over itself and over the others). **CHOK** groups work as before, across POLY. The sequencer's poly track keeps
+  its polyphony: the notes of one step (a chord, started within 8 ms of each other) never cut each other, a later step's
+  hit does cut a POLY OFF slice, and POLY ON slices overlap as many as the track's VOICES allow.
+- A one-shot slice plays to its end (a note-off does not cut it, unless the slice has **GATE ON**); a looped one loops
+  while held and releases over 30 ms (GATE: over DEC).
+- **GATE.** With GATE ON the slice plays at full level while the pad / trig / note is held and fades out over **DEC**
+  when it is let go (a one-shot too; DEC HOLD / 0 = a fixed 5 ms release); the slice's end still ends it. The Rytm trig's
+  note-off is the Rytm's `0x11 NOTE_OFF` at the end of the trig's length (LEN), which reaches CHOP (`host_link.cpp` ->
+  `voice_note_off` -> `chop::note_off`, which releases only the voice's newest held trig note and ignores a 0x11 within 3 ms of a GATE note's trig; a lost Rytm link releases every GATE note; LEN INF holds); pads and the sequencer's notes release with their own note-off. GATE OFF: DEC runs
+  from the start of the slice (fully up, HOLD: to the slice's end), as before.
 
 ### Per-slice settings (non-destructive)
 
@@ -76,6 +89,8 @@ reverses one trig. On rui1051 the Rytm writes their defaults (all down) when CHO
 | STUT / SLEN / SDEC | x1 (off) .. x16 / 1..100 % of the slice / 0..90 % | STUTTER: the first part repeated, each repeat that much quieter, then the rest |
 | TAPE / TTIM | OFF / STOP / SPIN, 20 ms .. 4 s | TAPE STOP: the pitch falls to zero over the slice's end (it lasts longer); SPIN-UP: rises from zero at its start |
 | NBR | 0..100 % | NEIGHBOUR CHANCE of this slice |
+| POLY | OFF / ON (default OFF) | ON: this slice's hits neither cut the voice's other notes nor are cut by later hits (see *Mono by default*). Saved as `sc_poly=1`; a map saved before reads as OFF |
+| GATE | OFF / ON (default OFF) | ON: full level while held, DEC as the fade after the note-off (HOLD: 5 ms); saved as `sc_gate=1` |
 
 ### Chopping
 
@@ -104,7 +119,7 @@ it opens the editor (A's push stays the source list's).
 **The editor** (page **CHOP**; only from its SRC view's push - not in the SIDECAR MENU since rui1051 (d9f03f3: a page of the selected
 track opens from that track's keys); off the LEFT / RIGHT ring, no page dots) after the Octatrack's
 slice editor: the outline of the selected slice and its neighbours, the markers, the selection inverted, the playheads.
-**PAGE** steps through three views:
+**PAGE** steps through four views:
 
 | view | A | B | C | D | E | F | G | H |
 |---|---|---|---|---|---|---|---|---|
@@ -112,6 +127,16 @@ slice editor: the outline of the selected slice and its neighbours, the markers,
 | EDIT pushes | ADD | DEL | MERGE | UNDO | GRID | TRANSIENT | LAZY (again: STOP) | RESAMPLE |
 | SLICE 1 | PTCH | FINE | GAIN | REV | ATK | DEC | LOOP | CHOK |
 | SLICE 2 | NUDG | STUT | SLEN | SDEC | TAPE | TTIM | NBR | RSET (push: SHUFFLE back to the map's order) |
+| SLICE 3 | POLY | GATE | | | | | | |
+
+**ALL slices** (the MPC's edit-all): a **tap of UP** (pressed and let go with no other key or turn between, within 0.35 s -
+before the 0.4 s that shows UP's map) toggles the edit target **ONE <-> ALL**. In ALL (the header says ALL, the bottom bar
+`ALL n SLICES  UP: ONE`) a turn of a slice field (the SLICE views) **sets that value on every slice** (absolute: the
+selected slice's value stepped, then written to all), and one **UNDO** takes that whole change back. The EDIT view's
+STRT / END, the pushes (ADD, DEL ...) and the auditions still act on the selected slice; T1..T16 select and audition,
+DOWN pages the banks. **UP held with another key** stays the combos (UP + T1..T14 the Rytm's page requests ...). The editor
+opens on ONE. (The Rytm's mod forwards UP's press and its release to a page that takes UP, `core/ui/remote.cpp` on_key ->
+`ExtraPage::key_up`; no mod change.) On the touchscreen's slice list POLY and GATE are two more columns.
 
 STRT / END move a pixel of the view a detent, **FUNC** held: a frame. **YES** auditions the slice; **LEFT / RIGHT** the
 slice before / after; **T1..T16** select and audition the slices of the trig bank (their LEDs: the bank's slices, the
@@ -129,7 +154,7 @@ A CHOP track's VOICE page (UP + T4 on the Rytm, the VOICE key) after the MPC Liv
   move it (sent at the release), tap a slice to select it, drag elsewhere to pan, **ZOOM - / +** around the selection
   (the whole sample down to 1/64 of it); LAZY: the markers so far and the sample's playhead.
 - **16 pads** with bank tabs **A..D** (slices 1..16 .. 49..64): a tap selects and auditions; LAZY: a tap is a tap.
-- **the slice list** (the M8's): the slice, its start and length in ms, and the settings in columns (OLED one, CLASSIC
+- **the slice list** (the M8's): the slice, its start and length in ms, and the settings in columns (OLED one, SIDECAR
   two, three on 1024x600), the cursor's cell framed; **arrows** move the cursor (row, column), **- / +** edit it (x10 on
   the long ranges).
 - **keys**: LAZY (again: STOP), TAP, UNDO, GRID (4 8 16 32), TRANS, ADD (split the selection), DEL, RSMP; an offer:

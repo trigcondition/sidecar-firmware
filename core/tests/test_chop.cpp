@@ -161,7 +161,7 @@ static void test_format() {
   chop::Slice& s1 = m.s[1];
   s1.pitch = -7, s1.fine = 33, s1.gain = -3, s1.rev = 1, s1.atk_ms = 12, s1.dec_ms = 1500, s1.loop = chop::kLoopPing;
   s1.choke = 3, s1.nudge = -240, s1.stut = 6, s1.stut_len = 12, s1.stut_dec = 40, s1.tape = chop::kTapeStop;
-  s1.tape_ms = 750, s1.nbr = 25;
+  s1.tape_ms = 750, s1.nbr = 25, s1.poly = 1, s1.gate = 1;
   m.nalt = 1;
   snprintf(m.alt[0], sizeof m.alt[0], "/Samples/LIVE/AMEN_BREAK-S3.wav");
   m.s[2].alt = 0;
@@ -178,6 +178,17 @@ static void test_format() {
   // the same bytes again (the writer is canonical)
   static char text2[65536];
   CHECK(chop::write(r, text2, sizeof text2) == n && !memcmp(text, text2, (size_t)n));
+  // POLY / GATE (0.5.0, appended): written only when ON; a map without them (saved before) reads as POLY OFF / GATE OFF
+  CHECK(strstr(text, "sc_poly=1") && strstr(text, "sc_gate=1") && r.s[1].poly == 1 && r.s[1].gate == 1 && !r.s[0].poly && !r.s[0].gate);
+  {
+    std::string old(text, (size_t)n);
+    for (const char* w : {" sc_poly=1", " sc_gate=1"})
+      for (size_t at; (at = old.find(w)) != std::string::npos;) old.erase(at, strlen(w));
+    chop::Map o2;
+    CHECK(chop::read(old.data(), (uint32_t)old.size(), &o2, why, sizeof why, "") && o2.n == 4);
+    for (int k = 0; k < 4; ++k) CHECK(o2.s[k].poly == 0 && o2.s[k].gate == 0);
+    CHECK(o2.s[1].nbr == 25 && o2.s[1].choke == 3);   // (the rest of the slice as it was)
+  }
   // other players read the regions: msamp's SFZ parser (MULTISAMPLE, the INSTRUMENTS pool's member scan)
   static msamp::Region regs[16];
   static char smp[8][msamp::kPath];
@@ -473,7 +484,12 @@ static void test_engine_buffer() {
   CHECK(chop::stats().chokes == ch0 + 1 && chop::voice_notes(vi) == 1);
   wg::trig(kC, vi, 60, 127, P(0, slc_v(2)));   // group 0: overlaps the group 1 note
   render(vi, 240);
+  CHECK(chop::voice_notes(vi) == 1);   // (MONO by default: the hit of slice 2 cut slice 1's note)
+  CHECK(chop::edit_field(vi, 3, chop::kFPoly, 1));
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(3)));   // a POLY slice: cuts nothing
+  render(vi, 240);
   CHECK(chop::voice_notes(vi) == 2);
+  CHECK(chop::edit_field(vi, 3, chop::kFPoly, 0));
   render(vi, 12000);
   // SHUFFLE: the same seed the same order (a fresh map's too), seed 0 the map's own, a permutation; SEED moves it live
   uint8_t a[64], b[64], c[64];
@@ -588,6 +604,198 @@ static void test_engine_buffer() {
   chop::silence(vi);
   render(vi, 960);
   printf("test_chop: engine (RAM buffer) PASS\n");
+}
+
+// ---- 5a. MONO by default, POLY per slice
+static void test_mono_poly() {
+  const int vi = 5;
+  fresh_voice(vi, g_tones, kTonesN, P(0));
+  CHECK(chop::edit_grid(vi, 8));
+  // MONO (POLY OFF, the default): a new hit cuts what plays (2 ms fade), long slices do not pile up
+  uint32_t cuts0 = chop::stats().cuts;
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(0)));
+  render(vi, 1000);
+  CHECK(chop::voice_notes(vi) == 1);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(1)));
+  std::vector<float> o = render(vi, 9000);
+  CHECK(chop::voice_notes(vi) == 1);   // (slice 2 plays on: 12000 frames; slice 1's note is gone)
+  CHECK(chop::stats().cuts == cuts0 + 1);
+  CHECK(std::fabs(zc(o, 1000, 9000) - hz_of_slice(1)) < 8);   // (only slice 2's tone: slice 1's was cut)
+  CHECK(rms(o, 480, 9000) < 0.45);                            // (two notes at once would sum above this)
+  quiet(vi);
+  for (int h = 0; h < 6; ++h) {   // six quick hits of long slices: one note at a time
+    wg::trig(kC, vi, 60, 127, P(0, slc_v(h)));
+    render(vi, 480);
+    CHECK(chop::voice_notes(vi) == 1);
+  }
+  quiet(vi);
+  // POLY ON slice 0: hits of it cut nothing and later hits do not cut it
+  CHECK(chop::edit_field(vi, 0, chop::kFPoly, 1));
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(1)));   // a MONO note playing
+  render(vi, 600);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(0)));   // POLY: does not cut slice 1's
+  render(vi, 600);
+  CHECK(chop::voice_notes(vi) == 2);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(2)));   // MONO: cuts slice 1's, leaves the POLY slice 0
+  render(vi, 600);
+  CHECK(chop::voice_notes(vi) == 2);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(0)));   // POLY again over itself: three
+  render(vi, 600);
+  CHECK(chop::voice_notes(vi) == 3);
+  quiet(vi);
+  CHECK(chop::edit_field(vi, 0, chop::kFPoly, 0));
+  // CHOK still cuts across POLY (the group wins): two group-1 slices, the first POLY ON, the second's hit cuts it
+  CHECK(chop::edit_field(vi, 0, chop::kFChoke, 1) && chop::edit_field(vi, 1, chop::kFChoke, 1) && chop::edit_field(vi, 0, chop::kFPoly, 1));
+  uint32_t chk0 = chop::stats().chokes;
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(0)));
+  render(vi, 600);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(1)));
+  render(vi, 600);
+  CHECK(chop::stats().chokes == chk0 + 1 && chop::voice_notes(vi) == 1);
+  CHECK(chop::edit_field(vi, 0, chop::kFChoke, 0) && chop::edit_field(vi, 1, chop::kFChoke, 0) && chop::edit_field(vi, 0, chop::kFPoly, 0));
+  quiet(vi);
+  // a pad's live notes are mono too
+  chop::live_on(vi, 61, 100, 9, 61);   // CHRO pad: slice 2
+  render(vi, 600);
+  chop::live_on(vi, 62, 100, 9, 62);   // slice 3 cuts it
+  render(vi, 600);
+  CHECK(chop::voice_notes(vi) == 1);
+  chop::live_off(vi, 9, 61), chop::live_off(vi, 9, 62);
+  quiet(vi);
+  // the sequencer's poly track (a chord: notes on one step) keeps its notes together; the next step cuts them
+  chop::live_on(vi, 0, 100, poly::kSeqCh, 0);
+  chop::live_on(vi, 2, 100, poly::kSeqCh, 2);
+  chop::live_on(vi, 4, 100, poly::kSeqCh, 4);
+  render(vi, 600);
+  CHECK(chop::voice_notes(vi) == 3);
+  run(20);   // (the next step: 20 ms on)
+  chop::live_on(vi, 6, 100, poly::kSeqCh, 6);
+  render(vi, 600);
+  CHECK(chop::voice_notes(vi) == 1);
+  for (int k : {0, 2, 4, 6}) chop::live_off(vi, poly::kSeqCh, k);
+  quiet(vi);
+  printf("test_chop: MONO / POLY PASS\n");
+}
+
+// ---- 5b. GATE: full level while held, DEC after the note-off (one-shots too), the slice's end still ends it
+static void test_gate() {
+  const int vi = 6;
+  fresh_voice(vi, g_tones, kTonesN, P(0));
+  CHECK(chop::edit_grid(vi, 8));
+  const int k = 3;   // 12000 frames, 300 Hz + 100 k
+  CHECK(chop::edit_field(vi, k, chop::kFDec, 50));
+  // GATE OFF (today): DEC from the start - 50 ms to -60 dB, silent long before the note-off
+  quiet(vi);
+  chop::live_on(vi, 60 + k, 127, 9, 60 + k);
+  std::vector<float> o = render(vi, 6000);
+  CHECK(rms(o, 5000, 6000) < 0.002);
+  chop::live_off(vi, 9, 60 + k);
+  quiet(vi);
+  // GATE ON: the level holds while the pad is held ...
+  CHECK(chop::edit_field(vi, k, chop::kFGate, 1));
+  chop::live_on(vi, 60 + k, 127, 9, 60 + k);
+  o = render(vi, 6000);
+  double r_a = rms(o, 1000, 2000), r_b = rms(o, 5000, 6000);
+  CHECK(r_a > 0.1 && std::fabs(r_b / r_a - 1) < 0.1);
+  // ... and falls over DEC (50 ms: 60 dB) after the note-off, a one-shot too
+  chop::live_off(vi, 9, 60 + k);
+  o = render(vi, 4800);
+  CHECK(rms(o, 0, 240) > 0.05);                // (still sounding at the start of the release)
+  CHECK(rms(o, 1200, 1440) > 0.002 && rms(o, 1200, 1440) < 0.1);   // (half way: falling)
+  CHECK(rms(o, 2640, 4800) < 0.002);           // (60 dB down by 50 ms + a little)
+  CHECK(chop::voice_notes(vi) == 0);
+  // the slice's end still ends a held note
+  chop::live_on(vi, 60 + k, 127, 9, 60 + k);
+  o = render(vi, 14000);
+  CHECK(rms(o, 9000, 11000) > 0.1 && rms(o, 12500, 14000) < 1e-4 && chop::voice_notes(vi) == 0);
+  chop::live_off(vi, 9, 60 + k);
+  // DEC HOLD with GATE: a short fixed release (5 ms); without GATE HOLD plays to the slice's end
+  CHECK(chop::edit_field(vi, k, chop::kFDec, 0));
+  chop::live_on(vi, 60 + k, 127, 9, 60 + k);
+  render(vi, 3000);
+  chop::live_off(vi, 9, 60 + k);
+  o = render(vi, 2400);
+  CHECK(rms(o, 0, 48) > 0.05 && rms(o, 480, 2400) < 0.002 && chop::voice_notes(vi) == 0);
+  CHECK(chop::edit_field(vi, k, chop::kFGate, 0));
+  chop::live_on(vi, 60 + k, 127, 9, 60 + k);
+  render(vi, 3000);
+  chop::live_off(vi, 9, 60 + k);
+  o = render(vi, 2400);
+  CHECK(rms(o, 480, 2400) > 0.1 && chop::voice_notes(vi) == 1);   // (a one-shot plays on: as before)
+  quiet(vi);
+  // a Rytm trig: its gate's end is the 0x11 NOTE_OFF (the trig's LEN), which reaches CHOP
+  CHECK(chop::edit_field(vi, k, chop::kFGate, 1) && chop::edit_field(vi, k, chop::kFDec, 50));
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(k)));
+  o = render(vi, 6000);
+  CHECK(rms(o, 5000, 6000) > 0.1);
+  run(5);
+  wg::off(vi);
+  o = render(vi, 4800);
+  CHECK(rms(o, 2640, 4800) < 0.002 && rms(o, 0, 240) > 0.05);
+  // the knob's DEC (P14) is the fade time too: fully up (HOLD) = 5 ms
+  CHECK(chop::edit_field(vi, k, chop::kFDec, 1000));
+  std::vector<float> pk = P(0, slc_v(k));
+  pk[13] = 127;
+  wg::trig(kC, vi, 60, 127, pk);
+  render(vi, 3000);
+  run(5);
+  wg::off(vi);
+  o = render(vi, 2400);
+  CHECK(rms(o, 480, 2400) < 0.002 && chop::voice_notes(vi) == 0);
+  // M1: the 0x11 of the trig before (it arrives on the same tick as the next 0x04: < 3 ms) does not release a new GATE note ...
+  CHECK(chop::edit_field(vi, k, chop::kFDec, 50));
+  quiet(vi);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(k)));
+  wg::off(vi);   // (stale: no time passed since the trig)
+  o = render(vi, 4800);
+  CHECK(rms(o, 2640, 4800) > 0.1 && chop::voice_notes(vi) == 1);
+  run(5);
+  wg::off(vi);   // ... its own does
+  o = render(vi, 4800);
+  CHECK(rms(o, 2640, 4800) < 0.002 && chop::voice_notes(vi) == 0);
+  // M1: a 0x11 releases only the NEWEST held trig note (POLY GATE slice: two overlapping notes, two 0x11)
+  CHECK(chop::edit_field(vi, k, chop::kFPoly, 1));
+  quiet(vi);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(k)));
+  run(5);
+  render(vi, 600);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(k)));
+  run(5);
+  render(vi, 600);
+  wg::off(vi);
+  o = render(vi, 4800);
+  CHECK(chop::voice_notes(vi) == 1 && rms(o, 2640, 4800) > 0.05);   // the older one still holds
+  run(5);
+  wg::off(vi);
+  o = render(vi, 4800);
+  CHECK(chop::voice_notes(vi) == 0 && rms(o, 2640, 4800) < 0.002);
+  CHECK(chop::edit_field(vi, k, chop::kFPoly, 0));
+  // N4: a stale 0x11 (< 3 ms after the newest GATE note) is the older note's: it releases that one, the newest holds on
+  CHECK(chop::edit_field(vi, k, chop::kFPoly, 1));
+  quiet(vi);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(k)));
+  run(5);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(k)));
+  wg::off(vi);
+  o = render(vi, 4800);
+  CHECK(chop::voice_notes(vi) == 1 && rms(o, 2640, 4800) > 0.05);
+  run(5);
+  wg::off(vi);
+  render(vi, 4800);
+  CHECK(chop::voice_notes(vi) == 0);
+  CHECK(chop::edit_field(vi, k, chop::kFPoly, 0));
+  // M2: the Rytm link lost (no 0x11 will come): every held GATE note is released
+  quiet(vi);
+  wg::trig(kC, vi, 60, 127, P(0, slc_v(k)));
+  run(5);
+  o = render(vi, 3000);
+  CHECK(rms(o, 2000, 3000) > 0.1);
+  core::link_lost();
+  o = render(vi, 4800);
+  CHECK(rms(o, 2640, 4800) < 0.002 && chop::voice_notes(vi) == 0);
+  CHECK(chop::edit_field(vi, k, chop::kFGate, 0) && chop::edit_field(vi, k, chop::kFDec, 0));
+  quiet(vi);
+  printf("test_chop: GATE PASS\n");
 }
 
 // ---- 6. LAZY on the engine: the break plays, taps come at render times (the onsets + the latency + jitter)
@@ -708,6 +916,46 @@ static void test_file_map() {
   printf("test_chop: card sample and map PASS\n");
 }
 
+// ---- 7a. the waveform before the first trig: a track set to CHOP (the Rytm's 33) with a sample chosen (the SRC view's 2A) and
+// never triggered has its sample and map in (the editors' LOADING / waveform need map_of + sample_ready)
+static void say_machine(int t, int vb) {   // the Rytm's 33: one track's machine (CHOP's Rytm machine 33)
+  std::vector<uint8_t> m = {0xF0, 0x7D, 0x52, 0x54, 0x33, 1, (uint8_t)t, 1, 33, (uint8_t)vb, 0xF7};
+  wg::send(m);
+}
+static void say_src(int t, int code) {   // the SRC view's 2A: P1's 14 bits (index, bank << 4)
+  std::vector<uint8_t> m = {0xF0, 0x7D, 0x52, 0x54, 0x2A, 1, (uint8_t)t, 0, 1, (uint8_t)(code & 127), (uint8_t)srclib::lo_of(code), 0xF7};
+  wg::send(m);
+}
+static void test_before_trig() {
+  chop::reset();
+  run(5);
+  run(20);   // (A001 break.wav and A002 tones.wav are in the pool from test_file_map)
+  const int t = 6, vi = ui::remote_track_voice(t);
+  CHECK(vi >= 0);
+  say_machine(t, kChopMachine);   // the machine chosen in the track's list
+  CHECK(ui::remote_track_machine(t) == (kChopMachine | vi));
+  // the Rytm's first report of the new machine (its SRC still OFF): the voice now "reports itself"; a knob turned later while
+  // the voice is idle reaches us only as the SRC view's 2A (the Rytm's 0x03s come while it plays)
+  wg::params(kC, vi, P(0));
+  CHECK(v[vi].cp);
+  run(150);
+  say_src(t, C("A001"));          // a sample chosen
+  CHECK(ui::remote_track_src14(t) >= 0);
+  uint32_t trigs = chop::stats().trigs;
+  int i = 0;
+  for (; i < 600 && !(chop::map_of(vi) && chop::sample_ready(vi)); ++i) run(1);
+  printf("test_chop: before any trig: sample and map ready after %d ms\n", i);
+  CHECK(chop::map_of(vi) && chop::sample_ready(vi) && chop::slices(vi) > 0);
+  CHECK(chop::stats().trigs == trigs);   // (no trig played)
+  // a second choice (another sample), still never triggered
+  say_src(t, C("A002"));
+  for (i = 0; i < 600 && !(chop::map_of(vi) && chop::sample_ready(vi) && chop::sample_frames(vi) == (uint32_t)kTonesN); ++i) run(1);
+  CHECK(chop::map_of(vi) && chop::sample_ready(vi) && chop::sample_frames(vi) == (uint32_t)kTonesN);
+  say_machine(t, 0x7F);   // not ours again
+  run(5);
+  printf("test_chop: waveform before the first trig PASS\n");
+}
+
 // ---- 7b. a Rytm export's chunk layout (item 16 of the hardware list): JUNK before fmt, an smpl chunk (a loop) before data.
 // CHOP walks the chunks (pcache, core/wavetable/wav_read.h) and ignores smpl: the whole file is the sample, sliced by its
 // map, never looped by the file's own loop points.
@@ -800,8 +1048,24 @@ static void test_resample() {
   printf("test_chop: RESAMPLE's card time on the control core: %llu us\n", (unsigned long long)(host_card_us(3) - c3));
   CHECK(host_card_us(3) == c3);   // no card time on the control core (the sampler and the map: the card core)
   // review M5: a take whose slice moved meanwhile is not used (slice 4's start moved before the YES)
+  // N2: slice 4 LOOPs and is in CHOKE group 1 with slice 6: the take still plays through the group-1 hit and ends with the take
+  CHECK(chop::edit_field(vi, 4, chop::kFLoop, chop::kLoopFwd) && chop::edit_field(vi, 4, chop::kFChoke, 1) &&
+        chop::edit_field(vi, 6, chop::kFChoke, 1));
   CHECK(chop::resample(vi, 4, false));
+  // M3: the take's player is not cut by a mono hit, nor ended by a 0x11
+  render(vi, 480);
+  wg::trig(kC, vi, 60, 127, P((float)C("A002"), slc_v(6)));
+  render(vi, 480);
+  CHECK(chop::voice_notes(vi) == 2 && chop::resample_state() == chop::kRsPlaying);
+  run(5);
+  wg::off(vi);
+  render(vi, 4800);
+  CHECK(chop::voice_notes(vi) >= 1 && chop::resample_state() == chop::kRsPlaying);
   take();
+  render(vi, 960);
+  CHECK(chop::voice_notes(vi) == 0);   // (the take is over: a LOOP slice's player ended with it)
+  CHECK(chop::edit_field(vi, 4, chop::kFLoop, chop::kLoopOff) && chop::edit_field(vi, 4, chop::kFChoke, 0) &&
+        chop::edit_field(vi, 6, chop::kFChoke, 0));
   CHECK(chop::resample_state() == chop::kRsOffer);
   uint32_t s4 = chop::map_of(vi)->s[4].start;
   CHECK(chop::edit_start(vi, 4, (int32_t)(s4 + 480)));
@@ -877,12 +1141,34 @@ static void test_pages() {
   rui_png(dir, "chop_src.png", fb);
   int k = extra_index("CHOP");
   CHECK(k >= 0 && ui::extra_page(k).off_ring && ui::extra_page(k).shown());
-  const char* names[] = {"chop_edit.png", "chop_slice1.png", "chop_slice2.png"};
-  for (int view = 0; view < 3; ++view) {
+  const char* names[] = {"chop_edit.png", "chop_slice1.png", "chop_slice2.png", "chop_slice3.png"};
+  for (int view = 0; view < 4; ++view) {
     ui::chop_page_set(view, 3, 1);
     CHECK(ui::remote_render(6 + k, 0, nullptr, c));
     ui::preview(c, fb);
     rui_png(dir, names[view], fb);
+  }
+  auto open_chop = [&]() {   // the editor shown through the remote link (UP's release counts as a tap only then)
+    ui::remote_reset();
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x30, 1, 0, 1, 0, 0xF7});
+    ui::remote_tick(1000);
+    ui::remote_show_page("CHOP");
+    ui::remote_tick(1030);
+    CHECK(ui::remote_page_title() && !strcmp(ui::remote_page_title(), "CHOP"));
+  };
+  open_chop();
+  ui::chop_page_set(1, 3, 1);   // ALL on SLICE 1 (the header and the bottom bar say so)
+  {
+    const ui::ExtraPage& pg = ui::extra_page(k);
+    CHECK(pg.key(0x42) && pg.key_up(0x42) && ui::chop_page_all());
+    CHECK(ui::remote_render(6 + k, 0, nullptr, c));
+    ui::preview(c, fb);
+    rui_png(dir, "chop_slice1_all.png", fb);
+    ui::chop_page_set(0, 3, 1);   // (L4: the EDIT view's header says ALL too)
+    CHECK(ui::remote_render(6 + k, 0, nullptr, c));
+    ui::preview(c, fb);
+    rui_png(dir, "chop_edit_all.png", fb);
+    CHECK(pg.key(0x42) && pg.key_up(0x42) && !ui::chop_page_all());
   }
   ui::chop_page_set(0, 3, 3);   // START zoom
   CHECK(ui::remote_render(6 + k, 0, nullptr, c));
@@ -897,6 +1183,97 @@ static void test_pages() {
   CHECK(ui::extra_page(k).key(0x73) && chop::slices(vi) == n0);
   ui::extra_page(k).enc(1, 3, false);   // B: the start a few pixels on
   CHECK(chop::map_dirty(vi));
+  // ALL slices (MPC-style edit-all): a TAP of UP (press and release, nothing between, under 350 ms) toggles ONE <-> ALL; in ALL a
+  // field change sets that value on every slice and one UNDO takes the whole change back. UP + another key stays a combo.
+  {
+    open_chop();
+    ui::chop_page_set(1, 0, 1);   // SLICE 1: A PTCH B FINE C GAIN D REV ...
+    const ui::ExtraPage& pg = ui::extra_page(k);
+    CHECK(pg.key_up && !ui::chop_page_all());
+    auto all_same = [&](int f, int want) {
+      const chop::Map* mm = chop::map_of(vi);
+      for (int i = 0; i < mm->n; ++i)
+        if (chop::field_get(mm->s[i], f) != want) return false;
+      return true;
+    };
+    CHECK(pg.key(0x42) && pg.key_up(0x42));   // a tap
+    CHECK(ui::chop_page_all());
+    pg.enc(1, 3, false);                      // B FINE +3: on every slice (absolute: slice 1's 0 + 3)
+    CHECK(all_same(chop::kFFine, 3));
+    pg.enc(1, 3, false);
+    CHECK(all_same(chop::kFFine, 6));
+    CHECK(chop::edit_undo(vi) && all_same(chop::kFFine, 3));   // one UNDO: that whole change on all slices
+    CHECK(chop::edit_undo(vi) && all_same(chop::kFFine, 6));   // (UNDO again: the edit back)
+    CHECK(pg.key(0x42) && pg.key(0x41) && pg.key_up(0x42));    // UP + RIGHT: a combo, no toggle
+    CHECK(ui::chop_page_all());
+    CHECK(pg.key(0x42));                                       // UP held long (the map's 0.4 s): no toggle
+    run(450);
+    CHECK(pg.key_up(0x42) && ui::chop_page_all());
+    CHECK(pg.key(0x42));                                       // UP + an encoder turn: no toggle
+    pg.enc(0, 1, false);
+    CHECK(pg.key_up(0x42) && ui::chop_page_all());
+    CHECK(pg.key(0x42) && pg.key_up(0x42) && !ui::chop_page_all());   // a tap: ONE again
+    pg.enc(1, 1, false);   // only the selected slice (slice 6: RIGHT moved it)
+    {
+      const chop::Map* mm = chop::map_of(vi);
+      int sel = ui::chop_page_sel(), diff = 0;
+      for (int i = 0; i < mm->n; ++i) diff += mm->s[i].fine != 6;
+      CHECK(diff == 1 && mm->s[sel].fine == 7);
+    }
+    CHECK(chop::edit_undo(vi));
+    // the page's own T keys and DOWN in ALL mode: T1..T16 still audition, DOWN the banks
+    CHECK(pg.key(0x42) && pg.key_up(0x42) && ui::chop_page_all());
+    CHECK(pg.key(3) && ui::chop_page_sel() == 3 && pg.key(0x43));
+    CHECK(pg.key(0x42) && pg.key_up(0x42) && !ui::chop_page_all());
+    ui::chop_page_set(1, 0, 1);
+    chop::edit_field_all(vi, chop::kFFine, 0);
+  }
+  // the same through the remote link (a key's press and release as the Rytm sends them: 31 <code> <down>)
+  {
+    ui::chop_page_set(1, 0, 1);
+    ui::remote_reset();
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x30, 1, 0, 1, 0, 0xF7});   // the page opens
+    ui::remote_tick(1000);
+    ui::remote_show_page("CHOP");
+    ui::remote_tick(1030);
+    CHECK(ui::remote_page_title() && !strcmp(ui::remote_page_title(), "CHOP"));
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 1, 0xF7});   // UP down
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 0, 0xF7});   // UP up
+    ui::remote_tick(1060);
+    CHECK(ui::chop_page_all());
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 1, 0xF7});
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 0, 0xF7});
+    ui::remote_tick(1090);
+    CHECK(!ui::chop_page_all());
+    // H1: UP + T10 as the mod sends it: UP down, the page request (49 1 10), UP up - the combo was eaten, no toggle
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 1, 0xF7});
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x49, 1, 1, 10, 0xF7});
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 0, 0xF7});
+    ui::remote_tick(1120);
+    CHECK(!ui::chop_page_all());
+    ui::remote_show_page("CHOP");
+    ui::remote_tick(1122);
+    CHECK(ui::remote_page_title() && !strcmp(ui::remote_page_title(), "CHOP"));
+    // N1: a state echo (49 3: the knob values) between UP's press and release is no combo: the tap toggles
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 1, 0xF7});
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x49, 1, 3, 0, 0xF7});
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 0, 0xF7});
+    ui::remote_tick(1125);
+    CHECK(ui::chop_page_all());
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 1, 0xF7});
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 0, 0xF7});
+    ui::remote_tick(1127);
+    CHECK(!ui::chop_page_all());
+    // H1: UP + YES / LFO / FX ... the mod eats the key and moves the page (30): UP's release after the page left is no tap
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 1, 0xF7});
+    ui::remote_show_page("SCOPE");
+    ui::remote_tick(1150);
+    wg::send({0xF0, 0x7D, 0x52, 0x54, 0x31, 1, 0, 0x42, 0, 0xF7});
+    ui::remote_tick(1180);
+    CHECK(!ui::chop_page_all());
+    ui::remote_reset();
+    ui::chop_page_set(0, 0, 1);
+  }
   // LAZY on the page (push G), a trig key taps, YES keeps
   CHECK(ui::extra_page(k).key(0x76) && chop::lazy_on(vi));
   render(vi, 24000);
@@ -952,8 +1329,11 @@ int main() {
   test_onsets();
   test_lazy_pure();
   test_engine_buffer();
+  test_mono_poly();
+  test_gate();
   test_engine_lazy();
   test_file_map();
+  test_before_trig();
   test_rytm_export_layout();
   test_resample();
   test_render_core();

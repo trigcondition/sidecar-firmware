@@ -259,10 +259,10 @@ CORE_COLD void held_values(Canvas& c, const seq::View& w, const seq::Step& s) {
     char lb[8];
     steps_text(n->len, lb, sizeof lb);
     sniprintf(v[2], 10, CORE_STR("L%s"), lb);
-    sniprintf(v[3], 10, CORE_STR("M%+d"), n->micro);
+    sniprintf(v[3], 10, CORE_STR("M%s%d"), n->micro < 0 ? "-" : "+", n->micro < 0 ? -n->micro : n->micro);
     sniprintf(v[4], 10, "%s", s.chd ? poly::kChordNames[s.chd % poly::kChords] : "NOCHD");
     sniprintf(v[5], 10, CORE_STR("INV%d"), s.inv);
-    sniprintf(v[6], 10, CORE_STR("S%+d"), s.strum);
+    sniprintf(v[6], 10, CORE_STR("S%s%d"), s.strum < 0 ? "-" : "+", s.strum < 0 ? -s.strum : s.strum);
     if (w.sel > 0) sniprintf(v[7], 10, CORE_STR("#%d/%d"), w.sel, s.n);
     else sniprintf(v[7], 10, CORE_STR("ALL %d"), s.n);
     (void)hi;
@@ -359,18 +359,13 @@ CORE_COLD void prompt_draw(Canvas& c, const seq::View& w) {
   }
 }
 UI_ROM const char* const kLockNames[8] = {"TRIG", "SRC", "SMPL", "ARP", "AMP", "LFO", "FX", "INS"};   // (kLpFltr: FLTR opens the arp's)
-// The SMPL page's labels by machine (rytm-mods 0026 cu tables; 0021's for 6-OP FM)
+// The SMPL page's labels by machine (rytm-mods 0026 cu tables; 0021's for 6-OP FM, whose P9..P12 the Rytm's stock
+// sample knobs; the others page_lfo.cpp's machine_label, which the targets' names share), "-" an unused one
 CORE_COLD const char* p2_label(int vb, int e) {
-  static const char* const fm[8] = {"TUN", "FIN", "BR", "SMP", "CHD", "INV", "SPR", "VOI"};
-  static const char* const ms[8] = {"TUNE", "FINE", "STRT", "LOOP", "CHD", "INV", "SPR", "VOI"};
-  static const char* const wt[8] = {"ATK", "DEC", "SUS", "ENV", "CHD", "INV", "SPR", "VOI"};
-  static const char* const gr[8] = {"ATK", "REL", "HOLD", "ANIM", "CHD", "INV", "SPR", "VOI"};
-  static const char* const px[8] = {"P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16"};
-  static const char* const ds[8] = {"XTN", "XDC", "SEED", "OUT", "XP4", "XLV", "XP5", "WID"};   // rui1050: DAISYSP P11 SEED
-  static const char* const cp[8] = {"STUT", "SLEN", "TAPE", "TTIM", "ATK", "DEC", "DIR", "LOOP"};   // CHOP (core/chop/chop.h)
+  static const char* const fm[4] = {"TUN", "FIN", "BR", "SMP"};
   int m = vb >= 0 && vb != 0x7F ? machine_of((uint8_t)vb) : -1;
-  return (m == kFm ? fm : m == kMultiMachine ? ms : m == kWaveMachine ? wt : m == kGranMachine ? gr : m == kDaisy ? ds
-          : m == kChopMachine ? cp : px)[e & 7];
+  const char* l = m == kFm && (e & 7) < 4 ? fm[e & 7] : m >= 0 ? machine_label(m, 8 + (e & 7)) : nullptr;
+  return l ? l : "-";
 }
 // An arp lock's value, its name: "UP" "1/32" "2 OCT" "25%" "58%"
 CORE_COLD void arp_text(int prm, int v, char* b, int cap) {
@@ -384,25 +379,32 @@ CORE_COLD void arp_text(int prm, int v, char* b, int cap) {
 }
 CORE_COLD void lock_label(int pg, int t, int e, char* b, int cap) {
   b[0] = 0;
+  if (seq::rytm_lock(seq::lock_param(pg, e))) {   // 0.5.0: the Rytm's own words, as its FILTER / AMP / LFO pages label them
+    static const char* const kF[3] = {"FRQ", "RES", "ENV"};
+    static const char* const kA[8] = {"ATK", "HLD", "DEC", "OVR", "DEL", "REV", "PAN", "VOL"};
+    static const char* const kL[8] = {"SPD", "MUL", "FAD", "", "WAV", "SPH", "MOD", "DEP"};
+    sniprintf(b, cap, "%s", pg == seq::kLpAmp ? kA[e & 7] : pg == seq::kLpLfo ? kL[e & 7] : kF[(e - seq::kArpLocks) % 3]);
+    return;
+  }
   if (pg == seq::kLpFltr) {
     static const char* const k[seq::kArpLocks] = {"MODE", "SPD", "RNG", "GATE", "SWNG"};
     sniprintf(b, cap, "%s", k[e < seq::kArpLocks ? e : 0]);
   } else if (pg == seq::kLpSrc) {
     const Page* p = remote_track_page(t);
     if (p && p->label[e][0]) sniprintf(b, cap, "%.4s", p->label[e]);
-    else sniprintf(b, cap, CORE_STR("P%d"), e + 1);
+    else if (remote_track_voice(t) < 0 || !voice_label(remote_track_voice(t), e, b, cap)[0]) sniprintf(b, cap, "-");   // (unused)
   } else if (pg == seq::kLpSmpl) {
     sniprintf(b, cap, "%s", p2_label(remote_track_machine(t), e));
   } else if (pg == seq::kLpFx && e / 4 < fx::kSlots) {
     const fx::KnobLabels* l = fx::labels(fx::control.knob[e / 4][0]);
     if (l && l->label[e % 4] && l->label[e % 4][0]) sniprintf(b, cap, "%.4s", l->label[e % 4]);
-    else sniprintf(b, cap, CORE_STR("P%d"), 2 + e % 4);
+    else sniprintf(b, cap, "-");   // a knob the TYPE leaves unused
   } else if (pg == seq::kLpIns) {   // fx-ins: the track's voice's INSERT A (A..D) and B (E..H)
     int vi = remote_track_voice(t);
     int ty = vi >= 0 && vi < ins::kVoices ? ins::control.type[vi][e / 4] : 0;
     const char* l = ins::labels(ty).label[e % 4];
     if (ty && l[0]) sniprintf(b, cap, "%.4s", l);
-    else sniprintf(b, cap, CORE_STR("%c P%d"), 'A' + e / 4, 1 + e % 4);
+    else sniprintf(b, cap, CORE_STR("%c -"), 'A' + e / 4);   // the slot OFF
   }
 }
 CORE_COLD void lock_draw(Canvas& c, const seq::View& w) {
@@ -502,7 +504,7 @@ CORE_COLD void kpage_fill(KPage& k, const seq::View& w, const seq::Step* hs) {
     else sniprintf(k.v[1], 12, "OFF");
     k.kv[1] = k127(x.cnt < 2 ? 0 : x.cnt, 0, seq::kRtMax);
     sniprintf(k.v[2], 12, "%s", seq::vcrv_name(x.vcrv)), k.kv[2] = k127(x.vcrv, 0, seq::kVcs - 1);
-    sniprintf(k.v[3], 12, CORE_STR("%+d"), x.pcrv), k.kv[3] = 64 + x.pcrv * 63 / 24;
+    sniprintf(k.v[3], 12, CORE_STR("%s%d"), x.pcrv < 0 ? "-" : "+", x.pcrv < 0 ? -x.pcrv : x.pcrv), k.kv[3] = 64 + x.pcrv * 63 / 24;
     sniprintf(k.v[4], 12, "%s", seq::rt_mode_name(x.mode)), k.kv[4] = k127(x.mode, 0, seq::kRtModes - 1);
     sniprintf(k.v[5], 12, CORE_STR("%d"), x.oct ? x.oct : 1), k.kv[5] = k127(x.oct ? x.oct : 1, 1, 4);
     sniprintf(k.v[6], 12, CORE_STR("%d%%"), x.gate ? x.gate : 100), k.kv[6] = k127(x.gate ? x.gate : 100, 1, 100);
@@ -534,12 +536,12 @@ CORE_COLD void kpage_fill(KPage& k, const seq::View& w, const seq::Step* hs) {
       else sniprintf(k.v[0], 12, "%s", note_name(nt->pitch, nb, sizeof nb)), k.kv[0] = nt->pitch;
       sniprintf(k.v[1], 12, CORE_STR("%d"), nt->vel), k.kv[1] = nt->vel;
       steps_text(nt->len, lb, sizeof lb), sniprintf(k.v[2], 12, "%s", lb), k.kv[2] = nt->len * 127 / (16 * seq::kSub);
-      sniprintf(k.v[3], 12, CORE_STR("%+d"), nt->micro), k.kv[3] = 64 + nt->micro * 63 / seq::kSub;
+      sniprintf(k.v[3], 12, CORE_STR("%s%d"), nt->micro < 0 ? "-" : "+", nt->micro < 0 ? -nt->micro : nt->micro), k.kv[3] = 64 + nt->micro * 63 / seq::kSub;
     } else {
       for (int i = 0; i < 4; ++i) strcpy(k.v[i], "-");
     }
     seq::cond_text(*hs, k.v[4], 12), k.kv[4] = seq::cond_knob(*hs) * 127 / (seq::kCondKnob - 1);   // the condition / %
-    sniprintf(k.v[5], 12, CORE_STR("%+d"), hs->strum), k.kv[5] = 64 + hs->strum * 63 / (seq::kSub / 2);
+    sniprintf(k.v[5], 12, CORE_STR("%s%d"), hs->strum < 0 ? "-" : "+", hs->strum < 0 ? -hs->strum : hs->strum), k.kv[5] = 64 + hs->strum * 63 / (seq::kSub / 2);
     sniprintf(k.v[6], 12, "%s", hs->chd ? poly::kChordNames[hs->chd % poly::kChords] : "OFF"), k.kv[6] = hs->chd * 127 / (poly::kChords - 1);
     sniprintf(k.v[7], 12, CORE_STR("%d"), hs->inv), k.kv[7] = hs->inv * 127 / (poly::kInvs - 1);
     return;
@@ -568,7 +570,12 @@ CORE_COLD void kpage_fill(KPage& k, const seq::View& w, const seq::Step* hs) {
     sniprintf(k.v[1], 12, CORE_STR("%d OCT"), t->rnd_oct ? t->rnd_oct : seq::kRndOctDef), k.kv[1] = k127(t->rnd_oct ? t->rnd_oct : seq::kRndOctDef, 1, 4);
     sniprintf(k.v[2], 12, "%s", seq::weight_name(t->rnd_wght)), k.kv[2] = k127(t->rnd_wght, 0, seq::kWeights - 1);
     sniprintf(k.v[3], 12, "%s", seq::rnd_mode_name(t->rnd_mode)), k.kv[3] = k127(t->rnd_mode, 0, seq::kRndModes - 1);
-    if (t->smod_src) sniprintf(k.v[4], 12, CORE_STR("%d P%d"), t->smod_range, t->smod_src), k.kv[4] = k127(t->smod_range, 1, 64);
+    if (t->smod_src) {   // the source by its machine's name ("16 HRM"), "16 P11" when it has none
+      char sl[8];
+      int vi = remote_track_voice(w.track);
+      if (vi < 0 || !voice_label(vi, t->smod_src - 1, sl, sizeof sl)[0]) sniprintf(sl, sizeof sl, CORE_STR("P%d"), t->smod_src);
+      sniprintf(k.v[4], 12, CORE_STR("%d %s"), t->smod_range, sl), k.kv[4] = k127(t->smod_range, 1, 64);
+    }
     else sniprintf(k.v[4], 12, "OFF");
     sniprintf(k.v[5], 12, "%s", kQ[t->smod_quant % 3]), k.kv[5] = k127(t->smod_quant, 0, 2);
     sniprintf(k.v[6], 12, "%s", kA[t->smod_aff % 4]), k.kv[6] = k127(t->smod_aff, 0, 3);
@@ -643,7 +650,7 @@ CORE_COLD void ne_value(int e, char* b, int cap) {
       else sniprintf(b, cap, CORE_STR("S%d..%d"), lo + 1, hi + 1);
       break;
     case 1:
-      if (lo == hi) sniprintf(b, cap, CORE_STR("N%+d"), lo);
+      if (lo == hi) sniprintf(b, cap, CORE_STR("N%s%d"), lo < 0 ? "-" : "+", lo < 0 ? -lo : lo);
       else sniprintf(b, cap, CORE_STR("%d..%d"), lo, hi);
       break;
     case 2:

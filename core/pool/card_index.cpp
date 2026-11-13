@@ -211,6 +211,9 @@ CORE_COLD void heap_place(void* mem) { folder_mem = (Folder*)mem; }
 
 CORE_COLD bool Index::begin(log_fn log, void* scratch, uint32_t scratch_bytes) {
   log_ = log;
+#if CORE_MSAMP
+  nadded_ = 0;   // (a new index: the files added to the old one are in it, or gone)
+#endif
   scratch_ = (FileRec*)scratch;
   scratch_n_ = scratch_bytes / sizeof(FileRec);
   folders_ = folder_mem;
@@ -278,7 +281,42 @@ CORE_COLD int Index::subfolders(int f, uint16_t* out, int max) const {
   return n;
 }
 
+#if CORE_MSAMP
+CORE_COLD int Index::add_file(int f, const FileRec& r) {
+  if (f < 0 || f >= nfolders_) return -1;
+  int k = 0;
+  for (int j = 0; j < nadded_; ++j) {
+    if (added_[j].folder != f) continue;
+    if (!strncmp(added_[j].r.name, r.name, kName)) {   // (written again: the new header)
+      added_[j].r = r;
+      return folders_[f].nfiles + k;
+    }
+    ++k;
+  }
+  if (nadded_ >= kAdded) return -1;
+  added_[nadded_].folder = (int16_t)f, added_[nadded_].r = r;
+  ++nadded_;
+  return folders_[f].nfiles + k;
+}
+CORE_COLD int Index::files_in(int f) const {
+  if (f < 0 || f >= nfolders_) return 0;
+  int n = folders_[f].nfiles;
+  for (int j = 0; j < nadded_; ++j) n += added_[j].folder == f;
+  return n;
+}
+#endif
+
 CORE_COLD bool Index::file(int f, int i, FileRec* r) {
+#if CORE_MSAMP
+  if (f >= 0 && f < nfolders_ && i >= folders_[f].nfiles) {   // an added one (add_file)
+    for (int j = 0, k = i - folders_[f].nfiles; j < nadded_; ++j)
+      if (added_[j].folder == f && !k--) {
+        *r = added_[j].r;
+        return true;
+      }
+    return false;
+  }
+#endif
   if (f < 0 || f >= nfolders_ || i < 0 || i >= folders_[f].nfiles) return false;
   uint32_t k = folders_[f].first_file + i;
   if (k < nram_) {   // (CORE_MSAMP: the RAM copy, no card)

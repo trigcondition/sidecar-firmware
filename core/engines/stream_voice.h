@@ -23,9 +23,13 @@
 //
 // PCM 16/24/32-bit, 1..2 channels (more: the first two), any rate; render()
 // plays mono (a stereo file summed), or with outr its two channels (a voice on
-// OUT PRE / POST, docs/STEREO.md; a mono file on both sides). Not here yet:
-// reverse playback (END before STA) of files longer than the head - played
-// forward instead.
+// OUT PRE / POST, docs/STEREO.md; a mono file on both sides).
+//
+// Reverse (prepare's rev: SAMPLER's REV / RLP, or END before STRT): the head is the kHead bytes that end just past
+// the start frame (END's), the ring holds what precedes the ring's low end and is refilled downwards, a chunk at a
+// time below it (the same ring, the same requests); playback steps down, sample by sample, from the start frame to
+// the region's low end (STA), a loop back to the head; nothing read below that low end. DSP SAMPLE prepares no rev:
+// its END before STA plays forward from the head, as before 0.5.0.
 #pragma once
 #include "../platform.h"
 #include <math.h>
@@ -45,6 +49,10 @@ class StreamVoice {
   static const uint32_t kHead = 8192;    // bytes from STA, in RAM
   static const uint32_t kChunk = 8192;   // a read: fewer, bigger reads are far
                                          // cheaper on the card than many small
+  // A reverse read (SAMPLER's REV / RLP). Each is a backwards seek, which on FAT32 (FF_USE_FASTSEEK 0) walks the
+  // cluster chain from the file's start: bigger reads mean fewer seeks (review M3, to be measured on the Pi with a FAT32
+  // card). At most kChunk: the card queue's read runs on past the ring's end into kRingBytes' spare kChunk.
+  static const uint32_t kRevChunk = kChunk;
 #if CORE_MSAMP
   static const uint32_t kRing = 32768;   // what follows, refilled from the card
   static const uint32_t kRingBytes = kRing + kChunk;   // a read runs on past the end, copied round when it is in
@@ -64,21 +72,22 @@ class StreamVoice {
 
   // The file (from the card index) and STA (0..1 of the data): open, read the
   // head. Returns false if the file cannot be read.
-  bool prepare(card::Index& cards, int folder, int smp, float start) {
+  bool prepare(card::Index& cards, int folder, int smp, float start, bool rev = false) {
     card::FileRec r;
     core::File f;
     if (!cards.file(folder, smp, &r) || !cards.open(folder, r, &f)) return false;
-    return prepare(r, f, folder, smp, start);
+    return prepare(r, f, folder, smp, start, rev);
   }
 
   // The same with the file's record and an open copy of it at hand (the
   // sketch keeps one per pool slot): no index lookup or open on the card,
-  // only the head's read (8 KB, ~0.65 ms).
-  bool prepare(const card::FileRec& r, const core::File& file, int folder, int smp, float start) {
+  // only the head's read (8 KB, ~0.65 ms). rev: played backwards from start (see the top).
+  bool prepare(const card::FileRec& r, const core::File& file, int folder, int smp, float start, bool rev = false) {
     uint32_t bpf = frame_bytes(r);
     uint32_t frames = bpf ? r.data_len / bpf : 0;
-    uint32_t h0 = (uint32_t)(clamp01(start) * (frames ? frames - 1 : 0)) * bpf;
-    if (ready_ && folder == folder_ && smp == smp_ && h0 == h0_) return true;
+    uint32_t h0, want, s0;
+    head_of(r, bpf, frames, start, rev, &h0, &want, &s0);
+    if (ready_ && folder == folder_ && smp == smp_ && h0 == h0_ && rev == rev_ && s0 == s0_) return true;
     playing_ = false;
     ready_ = false;
     if (f_.isOpen()) f_.close();
@@ -92,8 +101,7 @@ class StreamVoice {
     folder_ = folder;
     smp_ = smp;
     h0_ = h0;
-    uint32_t want = umin(kHead, r.data_len - umin(h0, r.data_len));
-    want -= want % bpf_;
+    rev_ = rev, s0_ = s0;
     if (!f_.seekSet(r.data_offset + h0) || (uint32_t)f_.read(head_, want) != want) return false;
     hlen_ = want;
     ready_ = true;
@@ -103,11 +111,13 @@ class StreamVoice {
 #if CORE_MSAMP
   // prepare() with a card core, called again until it says: the request under way ends, the file before closes, the
   // head is read, each by the card core. urgent: a trig waits for it.
-  Prep prepare_q(const card::FileRec& r, const core::File& file, int folder, int smp, float start, bool urgent) {
+  Prep prepare_q(const card::FileRec& r, const core::File& file, int folder, int smp, float start, bool urgent,
+                 bool rev = false) {
     uint32_t bpf = frame_bytes(r);
     uint32_t frames = bpf ? r.data_len / bpf : 0;
-    uint32_t h0 = (uint32_t)(clamp01(start) * (frames ? frames - 1 : 0)) * bpf;
-    bool same = folder == folder_ && smp == smp_ && h0 == h0_;
+    uint32_t h0, want, s0;
+    head_of(r, bpf, frames, start, rev, &h0, &want, &s0);
+    bool same = folder == folder_ && smp == smp_ && h0 == h0_ && rev == rev_ && s0 == s0_;
     urgent_ = urgent;
     if (!rq_kind_ && same && head_res_ != kPrepWait) {   // its head's read ended
       Prep res = head_res_;
@@ -135,9 +145,8 @@ class StreamVoice {
     folder_ = folder;
     smp_ = smp;
     h0_ = h0;
+    rev_ = rev, s0_ = s0;
     ++seq_;
-    uint32_t want = umin(kHead, r.data_len - umin(h0, r.data_len));
-    want -= want % bpf_;
     post(kRqHead, core::cardq::kReadReq, r.data_offset + h0, head_, want);   // (the queue full: step posts it)
     hwant_ = want;
     return kPrepWait;
@@ -148,18 +157,21 @@ class StreamVoice {
     namespace q = core::cardq;
     uint8_t k = rq_kind_ == kRqPost ? rq_want_ : rq_kind_;
     if (k == kRqNone || (rq_kind_ != kRqPost && q::idle(&rq_))) return false;
-    if (k == kRqRing && (rq_seq_ != seq_ || rq_off_ != rs_ + fill_ || !playing_ || ahead(kRescueFrames) >= kRescueFrames)) return false;
+    if (k == kRqRing && (rq_seq_ != seq_ || !ring_next(rq_off_, rq_n_) || !playing_ || ahead(kRescueFrames) >= kRescueFrames)) return false;
     if (k == kRqHead && rq_seq_ != seq_) return false;
     if (rq_kind_ == kRqPost) return k == kRqRing || urgent_;
     uint32_t w = now - rq_.posted_us;
     return w > (k == kRqRing ? kRescueWaitUs : urgent_ ? kHeadWaitUs : q::kTakeBackUs);
   }
   // Each pass: a finished request taken in, a close owed posted; rescue: an overdue one run here (voices.cpp: one a pass).
+  // Invariant: step / refill_q never run while a render core renders this voice (the Pi: core 3 between RenderBlock's
+  // blocks; the Teensy and the host: one loop). render / render_rev move rs_ / fill_ at a wrap; a completion checked
+  // with ring_next and applied after such a wrap would leave the ring a gap and a reverse voice silent to its next trig.
   void step(uint32_t now, bool rescue = true) {
     namespace q = core::cardq;
     bool late = rescue && overdue(now);
     bool stale = rq_kind_ == kRqPost ? rq_want_ != kRqClose && rq_seq_ != seq_ : false;
-    if (rq_kind_ == kRqRing || (rq_kind_ == kRqPost && rq_want_ == kRqRing)) stale = rq_seq_ != seq_ || rq_off_ != rs_ + fill_;
+    if (rq_kind_ == kRqRing || (rq_kind_ == kRqPost && rq_want_ == kRqRing)) stale = rq_seq_ != seq_ || !ring_next(rq_off_, rq_n_);
     else if (rq_kind_ == kRqHead) stale = rq_seq_ != seq_;
     if (stale) {   // of no use any more: not started, it never runs (core 0 held up, it would block this stream's next one)
       if (rq_kind_ == kRqPost) rq_kind_ = 0;
@@ -177,9 +189,10 @@ class StreamVoice {
       if (!late || !q::take_back(&rq_)) return;
     }
     if (rq_kind_ == kRqRing) {
-      if (rq_.got == (int32_t)rq_n_ && rq_seq_ == seq_ && rq_off_ == rs_ + fill_) {   // still what follows the ring
-        uint32_t w = rq_off_ % kRing;
+      if (rq_.got == (int32_t)rq_n_ && rq_seq_ == seq_ && ring_next(rq_off_, rq_n_)) {   // still what follows the ring
+        uint32_t w = rq_off_ % kRing;                                                    // (reverse: what precedes it)
         if (w + rq_n_ > kRing) memcpy(ring_, ring_ + kRing, w + rq_n_ - kRing);
+        if (rev_) rs_ = rq_off_;
         fill_ += rq_n_;
       }
     } else if (rq_kind_ == kRqHead) {
@@ -219,10 +232,12 @@ class StreamVoice {
 
   void trigger() {
     if (!ready_) return;
-    ip_ = h0_ / bpf_;
+    ip_ = s0_;
     fr_ = 0.0f;
-    rs_ = h0_ + hlen_;     // the ring starts where the head ends
+    rs_ = rev_ ? h0_ : h0_ + hlen_;   // the ring starts where the head ends (reverse: below it)
     fill_ = 0;
+    under_ = false;
+    lo_ = 0;   // (the region's: from the first render on)
     playing_ = true;
     first_ = true;
   }
@@ -234,6 +249,16 @@ class StreamVoice {
     if (core::cardq::worker()) return refill_q();
 #endif
     if (!playing_ || !f_.isOpen()) return 0;
+    if (rev_) {
+      uint32_t off, n;
+      if (!next_rev(&off, &n)) return 0;
+      if (!f_.seekSet(rec_.data_offset + off)) return 0;
+      uint32_t w = off % kRing, a = umin(n, kRing - w);
+      if ((uint32_t)f_.read(ring_ + w, a) != a) return 0;
+      if (n > a && (uint32_t)f_.read(ring_, n - a) != n - a) return 0;
+      rs_ = off, fill_ += n;
+      return n;
+    }
     uint32_t got = 0;
     // drop what playback has passed (keep a frame behind for interpolation)
     uint32_t at = ip_ * bpf_;
@@ -272,15 +297,18 @@ class StreamVoice {
     if (outr && rec_.channels < 2) outr_copy_ = outr, outr = nullptr;   // a mono file: R = L (below)
     else outr_copy_ = nullptr;
     float a = clamp01(start) * (frames_ - 1), b = clamp01(end) * (frames_ - 1);
-    float lo = a < b ? a : b, hi = a < b ? b : a;   // reverse: forward for now
+    float lo = a < b ? a : b, hi = a < b ? b : a;
     if (first_) {
-      ip_ = h0_ / bpf_;
+      ip_ = s0_;
       fr_ = 0.0f;
       first_ = false;
     }
-    (void)lo;
     float step = rec_.rate / 48000.0f * powf(2.0f, semitones / 12.0f);
     step_ = step;
+    if (rev_) {
+      render_rev(lo, hi, loop, step, level, out, n, outr);
+      return;
+    }
     uint32_t ihi = (uint32_t)hi;
     for (int i = 0; i < n;) {
       if (ip_ > ihi || (ip_ == ihi && fr_ > hi - ihi)) {
@@ -294,10 +322,10 @@ class StreamVoice {
             for (int j = 0; j < n; ++j) outr_copy_[j] = out[j];
           return;
         }
-        ip_ = h0_ / bpf_;   // back to the head (STA); the ring restarts
+        ip_ = s0_;   // back to the head (STA); the ring restarts
         fr_ = 0.0f;
         rs_ = h0_ + hlen_;
-        fill_ = 0;
+        fill_ = 0;   // (never while step runs: see step's invariant)
       }
       // the run of frames around ip_ that are in one piece of RAM, ending
       // before hi + 1 (the last frame interpolated towards)
@@ -357,6 +385,7 @@ class StreamVoice {
   // stream with the least first.
   uint32_t ahead(uint32_t cap) const {
     if (!playing_) return cap;
+    if (rev_) return ahead_rev(cap);
     uint32_t end = rs_ + fill_;   // bytes in RAM from the head on, contiguously
     if (rs_ > h0_ + hlen_ && ip_ * bpf_ < rs_) end = h0_ + hlen_;   // looped back into the head
     if (end < h0_ + hlen_) end = h0_ + hlen_;
@@ -393,6 +422,13 @@ class StreamVoice {
   uint32_t refill_q() {
     step(core::now_us(), false);
     if (rq_kind_ || pclose_ || !playing_ || !f_.isOpen()) return 0;
+    if (rev_) {
+      uint32_t off, n;
+      if (!next_rev(&off, &n)) return 0;
+      rq_off_ = off, rq_n_ = n;
+      post(kRqRing, core::cardq::kReadReq, rec_.data_offset + off, ring_ + off % kRing, n);
+      return n;
+    }
     uint32_t at = ip_ * bpf_;
     if (at > rs_ + bpf_ && at - rs_ - bpf_ <= fill_) {
       uint32_t drop = at - rs_ - bpf_;
@@ -407,6 +443,84 @@ class StreamVoice {
     return n;
   }
 #endif
+
+  // The head for a prepare from start (0..1): forward the kHead bytes from its frame; reverse the kHead bytes that end
+  // two frames past it (its frame and the one it interpolates towards). s0: the frame playback starts on.
+  static void head_of(const card::FileRec& r, uint32_t bpf, uint32_t frames, float start, bool rev, uint32_t* h0,
+                      uint32_t* want, uint32_t* s0) {
+    uint32_t f = (uint32_t)(clamp01(start) * (frames ? frames - 1 : 0)), at = f * bpf;
+    *s0 = f;
+    if (!rev) {
+      uint32_t w = umin(kHead, r.data_len - umin(at, r.data_len));
+      *h0 = at, *want = w - (bpf ? w % bpf : 0);
+      return;
+    }
+    uint32_t top = umin(frames * bpf, at + 2 * bpf), w = umin(kHead, top);
+    w -= bpf ? w % bpf : 0;
+    *h0 = top - w, *want = w;
+  }
+  // A ring read of n bytes at off is the one the ring wants next: what follows it (reverse: what precedes it)
+  bool ring_next(uint32_t off, uint32_t n) const { return rev_ ? off + n == rs_ : off == rs_ + fill_; }
+  // Reverse: what playback has passed (above its frame + 1) dropped; the next read below the ring (off, n), false
+  // when none (the ring full, the file's start reached). A read's start on a sector, as forward's end.
+  bool next_rev(uint32_t* off, uint32_t* n) {
+    uint32_t keep = (ip_ + 2) * bpf_;
+    if (fill_ && keep >= rs_ && keep < rs_ + fill_) fill_ = keep - rs_;
+    if (fill_ + kRevChunk > kRing || rs_ <= lo_ * bpf_) return false;   // (nothing below the region's low end: review L3)
+    uint32_t k = umin(kRevChunk, rs_), o = rs_ - k, mis = (uint32_t)((rec_.data_offset + o) % 512);
+    if (k == kRevChunk && mis) k -= 512 - mis, o = rs_ - k;
+    *off = o, *n = k;
+    return true;
+  }
+  // Reverse: frames buffered below the play position (contiguously, the head and the ring under it), at most cap
+  uint32_t ahead_rev(uint32_t cap) const {
+    uint32_t at = ip_ * bpf_, low;
+    if (at >= h0_ && at < h0_ + hlen_) low = fill_ && rs_ + fill_ >= h0_ ? rs_ : h0_;
+    else if (at >= rs_ && at < rs_ + fill_) low = rs_;
+    else return 0;
+    if (low <= lo_ * bpf_) return cap;   // the region's low end (the file's start) in RAM
+    uint32_t lf = (low + bpf_ - 1) / bpf_;
+    if (ip_ <= lf) return 0;
+    float o = (ip_ - lf) / (step_ > 0.01f ? step_ : 0.01f);
+    return o >= cap ? cap : (uint32_t)o;
+  }
+  // Reverse playback: from the start frame down to lo, sample by sample; a loop back to the head
+  void render_rev(float lo, float hi, bool loop, float step, float level, float* out, int n, float* outr) {
+    lo_ = (uint32_t)lo;   // the lowest frame playback reads: the refills stop there
+    for (int i = 0; i < n; ++i) {
+      if (under_ || (float)ip_ + fr_ < lo) {
+        if (!loop || hi - lo < 1.0f) {
+          playing_ = false;
+          for (; i < n; ++i) {
+            out[i] = 0.0f;
+            if (outr) outr[i] = 0.0f;
+          }
+          break;
+        }
+        ip_ = s0_, fr_ = 0.0f, under_ = false;   // back to the head (the start); the ring restarts below it
+        rs_ = h0_, fill_ = 0;   // (never while step runs: see step's invariant)
+      }
+      float s0, s1, r0 = 0.0f, r1 = 0.0f;
+      if (!sample(ip_, &s0, outr ? &r0 : nullptr) || !sample(ip_ + 1, &s1, outr ? &r1 : nullptr)) {
+        ++underruns_;   // the card is behind: silence rather than garbage
+        out[i] = 0.0f;
+        if (outr) outr[i] = 0.0f;
+        continue;
+      }
+      out[i] = (s0 + (s1 - s0) * fr_) * level;
+      if (outr) outr[i] = (r0 + (r1 - r0) * fr_) * level;
+      float f = fr_ - step;
+      if (f >= 0.0f) {
+        fr_ = f;
+        continue;
+      }
+      uint32_t w = (uint32_t)ceilf(-f);
+      if (w > ip_) under_ = true, ip_ = 0, fr_ = 0.0f;
+      else ip_ -= w, fr_ = f + (float)w;
+    }
+    if (outr_copy_)
+      for (int j = 0; j < n; ++j) outr_copy_[j] = out[j];
+  }
 
   void advance(float step) {
     fr_ += step;
@@ -505,12 +619,12 @@ class StreamVoice {
   bool sample(uint32_t k, float* out, float* r = nullptr) {
     uint32_t b = k * bpf_;
     const uint8_t* p;
+    uint8_t tmp[8];   // a frame across the ring's end (on the stack: two render cores read at once)
     if (b >= h0_ && b + bpf_ <= h0_ + hlen_) {
       p = head_ + (b - h0_);
     } else if (b >= rs_ && b + bpf_ <= rs_ + fill_) {
       uint32_t w = b % kRing;
       if (w + bpf_ > kRing) {        // a frame across the ring's end
-        static uint8_t tmp[8];
         for (uint32_t i = 0; i < bpf_; ++i) tmp[i] = ring_[(b + i) % kRing];
         p = tmp;
       } else {
@@ -556,6 +670,9 @@ class StreamVoice {
   uint8_t fmt_ = 0;   // run<>'s format, 0: another (sample by sample)
   float* outr_copy_ = nullptr;   // render's R for a mono file: L copied at the end
   bool ready_ = false, playing_ = false, first_ = false;
+  bool rev_ = false, under_ = false;   // prepared to play backwards; reverse playback went below frame 0
+  uint32_t s0_ = 0;                    // the frame playback starts on (forward: the head's first)
+  uint32_t lo_ = 0;                    // reverse: the region's low frame (render's; 0 before the first render)
   uint32_t underruns_ = 0;
 #if CORE_MSAMP
   core::cardq::Req rq_ = {};

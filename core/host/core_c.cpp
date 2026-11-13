@@ -9,6 +9,7 @@
 #include "poly.h"
 #include "inst.h"
 #include "seq/seq.h"
+#include "seq/patwrite.h"
 #include "seq/rytm_dump.h"
 #include "song/song.h"
 #include "msamp/msamp.h"
@@ -175,6 +176,7 @@ void core_c_render(int16_t* out, int n) {
     while (g_n < want) {
       core::refill_neediest((uint32_t)(want - g_n) + 4 * core::kBlock);
       core::seq::pre_block();   // the sequencer's notes due in this block (core/seq/seq.h)
+      um::pre_block();          // API 3: the block's transport snapshot for the user machines
       core::render_voices(g_ring, kRingFrames, (g_rd + g_n) % kRingFrames, 0, core::kVoices, g_mach);
       g_n += core::kBlock;
     }
@@ -370,7 +372,7 @@ void core_c_poly_tick(void) {
   core::song::tick(core::now_ms());
 }
 int core_c_poly_command(const char* c, char* out, int cap) {
-  return core::poly::command(c, out, cap) || core::seq::command(c, out, cap) || core::rytm_dump::command(c, out, cap) ||
+  return core::poly::command(c, out, cap) || core::seq::command(c, out, cap) || core::rytm_dump::command(c, out, cap) || core::ui::fill_command(c, out, cap) ||
          core::song::command(c, out, cap) || core::inst::command(c, out, cap) ? 1 : 0;
 }
 // The Sidecar sequencer (core/seq/seq.h) for sim/seq_sim.py and poly_live.py: its console, its LEDs (16 trig + 4 page,
@@ -393,6 +395,7 @@ void core_c_seq_rytm_audio(const int32_t* frames12, int n) {
 int core_c_seq_cal_wanted(void) { return core::seq::cal_wanted() ? 1 : 0; }
 void core_c_rytm_byte(int b) {
   core::rytm_dump::byte((uint8_t)b);
+  core::patwrite::byte((uint8_t)b);   // 0.5.0 FILL: the pattern writer's answers (core/seq/patwrite.h)
   core::song::byte((uint8_t)b);   // SONG RECORD (core/song/song.h): the whole stream
 }
 // The last pattern dump's record (13101 B) into out: its pattern, -1 none; gen: the count that moves with each.
