@@ -218,6 +218,7 @@ int core_c_sendfx_names(uint8_t* m, int replace, int total, int first, int count
 int core_c_sendfx_names_total() { return core::fx::names_total(); }
 int core_c_sendfx_state(uint8_t* m, int slot) { return core::fx::sysex_state(m, slot); }
 int core_c_sendfx_labels(uint8_t* m, int id) { return core::fx::sysex_labels(m, id); }
+int core_c_sendfx_full_names(uint8_t* m, int id) { return core::fx::sysex_full_names(m, id); }
 int core_c_fxin_command(const char* p, char* reply, int max) { return core::fxin::command(p, reply, max) ? 1 : 0; }   // IN L/R source (host_link.h)
 int core_c_fxin_json(char* out, int max) { return core::fxin::json(out, max); }
 int core_c_sendfx_command(const char* p, char* reply, int max) { return core::fx::command(p, reply, max) ? 1 : 0; }

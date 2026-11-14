@@ -208,6 +208,12 @@ int main() {
     int n = fx::sysex_labels(m, fx::kFirstUser + 1);
     CHECK(n == 24 + 9 * 8 && memcmp(m + 7, "TIME", 4) == 0);
     CHECK((m[23] & 15) == (0 | 4) && memcmp(m + 26, "FREE", 4) == 0);   // knob 0, show, no step
+    // its manifest's long names as 0x51 SENDFX FULL NAMES (P1..P4 = the send's P2..P5)
+    CHECK(l && std::string(l->long_name[0]) == "Time" && std::string(l->long_name[2]) == "Wow/Flutter");
+    n = fx::sysex_full_names(m, fx::kFirstUser + 1);
+    CHECK(n == 90 && m[4] == 0x51 && m[6] == fx::kFirstUser + 1 && m[7] == 1 && m[8] == 4);
+    CHECK(memcmp(m + 9, "TIME", 4) == 0 && memcmp(m + 13, "Time\0", 5) == 0);
+    CHECK(memcmp(m + 9 + 2 * 20, "W/F\0", 4) == 0 && memcmp(m + 13 + 2 * 20, "Wow/Flutter\0", 12) == 0);
   }
 
   // ---- PHASER: the notches of 4 / 6 / 8 stages at 600 Hz (each stage -90 degrees there), the sweep held

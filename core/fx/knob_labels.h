@@ -18,13 +18,16 @@ struct Zone {
   uint8_t knob, lo, base, show, step;
   const char* name;   // <= 5 characters
 };
+// long: the full names (0x51 SENDFX FULL NAMES, rytm-mods 0029 sendfx-full-names): what the Rytm shows in the upper left while
+// a knob turns, as the stock DELAY / REVERB pages do ("Feedback"). Null: the Rytm keeps "Send FX n" there.
 struct KnobLabels {
   const char* label[4];   // P2..P5, <= 4 characters (as the stock pages' labels)
   const Zone* zones;      // ascending lo within each knob
   uint8_t nzones;
+  const char* long_name[4];   // P2..P5, <= kLongChars characters; null or "" for none
 };
 constexpr int kMaxZones = 12;    // a message's cap (the Rytm's table holds as many per TYPE)
-constexpr int kLabelChars = 4, kZoneChars = 5;
+constexpr int kLabelChars = 4, kZoneChars = 5, kLongChars = 16;
 
 }  // namespace fx
 }  // namespace core

@@ -251,6 +251,26 @@ CORE_COLD int sysex_labels(uint8_t* m, int id) {
   return n;
 }
 
+// 0x51 SENDFX FULL NAMES: F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7. P counts as the
+// effect's own (P1 = the send slot's P2), so #15's pages can send P5..P16 in more messages of the same layout.
+CORE_COLD int sysex_full_names(uint8_t* m, int id) {
+  const KnobLabels* l = labels(id);
+  if (!l) return 0;
+  bool any = false;
+  for (int j = 0; j < 4; ++j) any |= l->long_name[j] && l->long_name[j][0];
+  if (!any) return 0;
+  int n = head(m, kCmdNames);
+  m[n++] = (uint8_t)id;
+  m[n++] = 1;
+  m[n++] = 4;
+  for (int j = 0; j < 4; ++j) {
+    n += name_n(m + n, l->label[j] ? l->label[j] : "", kLabelChars);
+    n += name_n(m + n, l->long_name[j] ? l->long_name[j] : "", kLongChars);
+  }
+  m[n++] = 0xF7;
+  return n;
+}
+
 CORE_COLD int sysex_state(uint8_t* m, int slot) {
   int n = head(m, 0x22), id = control.knob[slot][0];
   m[n++] = (uint8_t)slot;

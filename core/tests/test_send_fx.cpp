@@ -293,8 +293,20 @@ int main() {
         if (m[6] == kStutter) CHECK(m.size() == 24 + 12 * 8);
       }
   }
+  // 0x51 SENDFX FULL NAMES (rytm-mods 0029: the upper left while a knob turns): one right after each 0x24, its TYPE's
+  CHECK(count(0x51) == 8);
+  for (int i = 0; i < (int)g_out.size(); ++i) {
+    const auto& m = g_out[i];
+    if (m[4] == 0x24) CHECK(i + 1 < (int)g_out.size() && g_out[i + 1][4] == 0x51 && g_out[i + 1][6] == m[6]);
+    if (m[4] != 0x51) continue;
+    CHECK(m.size() == 7 + 3 + 4 * 20 && m[5] == 1 && m[7] == 1 && m[8] == 4 && m.back() == 0xF7);
+    CHECK(memcmp(&m[9], &g_out[i - 1][7], 4) == 0);   // P2's short label, as the 0x24's
+    if (m[6] == kRings) CHECK(memcmp(&m[9 + 2 * 20 + 4], "Brightness\0", 11) == 0);
+    if (m[6] == kStutter) CHECK(memcmp(&m[9 + 2 * 20 + 4], "Decay / pitch\0", 14) == 0);
+  }
   {
     uint8_t m[160];
+    CHECK(sysex_full_names(m, kOff) == 0 && sysex_full_names(m, 7) == 0 && sysex_full_names(m, 65) == 0);
     CHECK(sysex_labels(m, kOff) == 0 && sysex_labels(m, 7) == 0 && sysex_labels(m, 65) == 0);   // none: not played
     CHECK(labels(kChorus) && labels(kChorus)->nzones == 0 && !labels(3));
   }

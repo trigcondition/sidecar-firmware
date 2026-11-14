@@ -909,6 +909,47 @@ SENDFX_LABEL_SETS = {
 ZONE_STEP = 8   # the zone byte's step bit (knob | show << 2 | step << 3)
 
 
+SENDFX_FULL_NAMES = 0x51
+LONG_CHARS = 16
+# The full names in the same tables (knob_labels.h long_name): TYPE id -> (P2..P5). 0x51 is sent after each 0x24.
+SENDFX_FULL_NAME_SETS = {
+    1: ("Rate", "Depth", "Delay", "Feedback"),
+    2: ("Tune", "Decay", "Damping", "Spread"),
+    5: ("Time", "Repeat", "Mode", "Age"),
+    6: ("Pitch", "Model", "Brightness", "Decay"),
+    8: ("Character", "Decay", "Damping", "Modulation"),
+    15: ("Engage", "Length", "Decay / pitch", "Gate"),
+    16: ("Rate", "Bits", "Drive", "Tone"),
+    17: ("Frequency", "Spread", "Shape", "LFO"),
+    18: ("Decay", "Modulation", "Tone", "Shimmer"),
+}
+
+
+def sendfx_full_names(type_id, first_p, names):
+    """51 SENDFX FULL NAMES (host -> Rytm; rytm-mods 0029): names [(short <= 4, long <= 16)] for the effect's P first_p ..
+    (P1 = the send slot's P2), 1..4 a message: F0 7D 52 54 51 01 <id> <first p 1..16> <n> {<short 4> <long 16>} F7.
+    The Rytm shows the long name in the upper left while that knob turns; an older 0029 (or 0022's router) drops it."""
+    if not 1 <= len(names) <= 4 or not 1 <= first_p <= 17 - len(names):
+        raise ValueError("1..4 names, P1..P16")
+    body = [type_id & 0x7F, first_p, len(names)]
+    for short, long_ in names:
+        body += text_bytes(short, LABEL_CHARS) + text_bytes(long_, LONG_CHARS)
+    return _msg(SENDFX_FULL_NAMES, body)
+
+
+def decode_sendfx_full_names(payload):
+    """51's payload -> (id, first p, [(short, long)]); None if malformed."""
+    if not payload or payload[0] != PROTO_VER or len(payload) < 4:
+        return None
+    b = bytes(payload)
+    n = b[3]
+    if not 1 <= n <= 4 or len(b) != 4 + n * (LABEL_CHARS + LONG_CHARS) or not 1 <= b[2] <= 17 - n:
+        return None
+    txt = lambda x: x.split(b"\0")[0].decode("ascii")   # noqa: E731
+    w = LABEL_CHARS + LONG_CHARS
+    return b[1], b[2], [(txt(b[4 + w * j:8 + w * j]), txt(b[8 + w * j:4 + w * (j + 1)])) for j in range(n)]
+
+
 def sendfx_labels(type_id, labels, zones):
     """24 SENDFX LABELS: labels (4 strings, P2..P5), zones [(knob 0..3, lo, base, show, name[, step])] (<= 12); a
     5-tuple is an older Sidecar's zone (no step bit)."""

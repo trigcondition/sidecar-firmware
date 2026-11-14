@@ -186,6 +186,10 @@ int sysex_state(uint8_t* m, int slot);
 // not play id or has no labels for it. labels(id): the table, or null.
 const KnobLabels* labels(int id);
 int sysex_labels(uint8_t* m, int id);
+// 0x51 SENDFX FULL NAMES (sim/protocol.py sendfx_full_names): TYPE id's P2..P5 short labels and full names into m (>= 96 bytes),
+// sent right after its 0x24; 0 when it has no full names (the Rytm keeps "Send FX n" in the upper left).
+constexpr uint8_t kCmdNames = 0x51;
+int sysex_full_names(uint8_t* m, int id);
 // A console command without the ':' (sendfx, sendfx=K:TYPE, sendfx=off, sendfxout=fx|main, sendlvl=K:T|all:V,
 // sendknob=K:I:V): true if it was one; the answer (one line) in reply. TYPE and knobs hold until the next 0x20 for
 // the FX track (a stock Rytm sends none). A route change marks the card file to be written (card_dirty).
@@ -298,11 +302,11 @@ using DLine = Line<N>;
 #endif
 
 // The Rytm's labels for P2..P5 (knob_labels.h, 0x24). COMB P3: the decay's polarity, each with its step (0..63).
-inline constexpr KnobLabels kChorusLabels = {{"RATE", "DPTH", "DLY", "FDBK"}, nullptr, 0};
+inline constexpr KnobLabels kChorusLabels = {{"RATE", "DPTH", "DLY", "FDBK"}, nullptr, 0, {"Rate", "Depth", "Delay", "Feedback"}};
 inline constexpr Zone kCombZones[] = {{1, 0, 0, 1, 0, "POS"}, {1, 64, 0, 1, 0, "NEG"}};   // continuous: 0..63 inside
-inline constexpr KnobLabels kCombLabels = {{"TUNE", "DCY", "DAMP", "SPRD"}, kCombZones, 2};
-inline constexpr KnobLabels kCrushLabels = {{"RATE", "BITS", "DRV", "TONE"}, nullptr, 0};
-inline constexpr KnobLabels kRingModLabels = {{"FREQ", "SPRD", "SHPE", "LFO"}, nullptr, 0};
+inline constexpr KnobLabels kCombLabels = {{"TUNE", "DCY", "DAMP", "SPRD"}, kCombZones, 2, {"Tune", "Decay", "Damping", "Spread"}};
+inline constexpr KnobLabels kCrushLabels = {{"RATE", "BITS", "DRV", "TONE"}, nullptr, 0, {"Rate", "Bits", "Drive", "Tone"}};
+inline constexpr KnobLabels kRingModLabels = {{"FREQ", "SPRD", "SHPE", "LFO"}, nullptr, 0, {"Frequency", "Spread", "Shape", "LFO"}};
 
 // Chorus: two taps on one line, LFOs in quadrature (L, R: full width), optional feedback. P2..P5 (0 = the default;
 // k[0..3]): P2 rate 0.2..5 Hz (squared), P3 depth 25..100 % of 6 ms, P4 delay 8..25 ms, P5 feedback 0..0.8. Unity
