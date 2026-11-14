@@ -7,6 +7,8 @@
 #   core/engines/setup_engines.sh DEST      (core/Makefile: core/build/engines; pi/engine/Makefile: its own)
 # Git-ignored output; rerun freely. Runs the Teensy's setup scripts for a missing library.
 set -euo pipefail
+# GNU sed (Linux) wants "sed -i" where BSD sed (macOS) wants "sed -i ''": the scripts are written for the latter
+if sed --version >/dev/null 2>&1; then sed() { if [ "${1:-}" = -i ] && [ -z "${2+x}" -o -z "${2:-}" ]; then shift 2; command sed -i "$@"; else command sed "$@"; fi; }; fi
 D=$(cd "$(dirname "$0")" && pwd)
 T=$(cd "$D/../../teensy" && pwd)
 DEST=${1:?usage: setup_engines.sh DEST}

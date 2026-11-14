@@ -4,6 +4,8 @@
 # library, from the pinned checkout that sim/daisysp/build.sh sets up.
 # Git-ignored; rerun freely.
 set -e
+# GNU sed (Linux) wants "sed -i" where BSD sed (macOS) wants "sed -i ''": the scripts are written for the latter
+if sed --version >/dev/null 2>&1; then sed() { if [ "${1:-}" = -i ] && [ -z "${2+x}" -o -z "${2:-}" ]; then shift 2; command sed -i "$@"; else command sed "$@"; fi; }; fi
 D=$(cd "$(dirname "$0")" && pwd)
 "$D/../sim/daisysp/build.sh" >/dev/null   # makes sure the vendor checkout exists
 V=$(cd "$D/../sim/daisysp/vendor/DaisySP/Source" && pwd -P)
