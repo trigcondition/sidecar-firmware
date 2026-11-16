@@ -113,8 +113,42 @@ struct Control {
   volatile uint8_t kill;                    // bumped by all_sound_off(): the audio side fades out, clears and fades in
   volatile uint32_t clock;                  // the MIDI clock (clock_in; stutter_fx.h ClockWord), for STUTTER
   volatile uint16_t stutter_lag;            // frames the stems trail the MIDI (console stutterlag=; 0 by default)
+  // sendfx-pages (rytm-mods 0029, issue #15): a user effect's P5..P16 in send slot k, 0..127, held here (never in the Rytm's
+  // kit: its words are full), turned on the Rytm's SEND FX pages 2 / 3 (host link 22 ver 3) and saved in the kit's INSERT
+  // file (XFX lines, insert_card.cpp). xtype / xtag: the TYPE and the user effect's tag they belong to - another effect in
+  // the slot starts from its manifest's defaults (xknobs_follow); 0xFF: none yet (a kit load without XFX lines).
+  volatile uint8_t xknob[kSlots][kXKnobs];
+  volatile uint8_t xtype[kSlots];
+  volatile uint16_t xtag[kSlots];
+  volatile uint8_t xn[kSlots];              // how many of P5.. the effect has (its manifest's; a file's lines: 4 a line)
 };
 extern Control control;
+// sendfx-pages: the slots' P5..P16 follow their effect (control side, each host link step): a slot whose TYPE or tag is
+// not the one its values were for takes the effect's defaults (a user effect: once its manifest is loaded). Returns the
+// slots changed (bit k), whose values the Rytm is then sent.
+int xknobs_follow();
+// A turn of the Rytm's P(first)..P(first + n - 1) (5..16) of slot k (22 ver 3): taken while the values are the slot's
+// TYPE's (false otherwise), the kit's INSERT file marked to be saved (xknobs_changed).
+bool xknobs_in(int slot, int first, const uint8_t* v, int n);
+// From the kit's INSERT file (an XFX line): values for TYPE type and tag, P(first).. (forget: none, before a load).
+// Inline: insert.cpp and insert_card.cpp also link without send_fx.cpp (as fx::edited below).
+inline void xknobs_load(int slot, int type, uint16_t tag, int first, const int* v, int n) {
+  if (slot < 0 || slot >= kSlots || type < 0 || type > 127 || first < 5 || first > 16) return;
+  if (control.xtype[slot] != type || control.xtag[slot] != tag) {   // the first line for this TYPE: the rest 0
+    for (int j = 0; j < kXKnobs; ++j) control.xknob[slot][j] = 0;
+    control.xtag[slot] = tag, control.xtype[slot] = (uint8_t)type, control.xn[slot] = 0;
+  }
+  for (int j = 0; j < n && first - 5 + j < kXKnobs; ++j)
+    if (v[j] >= 0) control.xknob[slot][first - 5 + j] = (uint8_t)(v[j] > 127 ? 127 : v[j]);
+  if (first - 5 + n > control.xn[slot]) control.xn[slot] = (uint8_t)(first - 5 + n > kXKnobs ? kXKnobs : first - 5 + n);
+}
+inline void xknobs_forget() {
+  for (int s = 0; s < kSlots; ++s) {
+    control.xtype[s] = 0xFF, control.xn[s] = 0;   // (follow takes the defaults again, unless XFX lines say otherwise)
+    for (int j = 0; j < kXKnobs; ++j) control.xknob[s][j] = 0;
+  }
+}
+inline void (*xknobs_changed)() = nullptr;   // the INSERT file's dirty mark (insert.cpp sets it; null without inserts)
 
 bool builtin(int id);                        // an id this build plays (1, 2; 6, 8 with RYTM_SENDFX_LARGE)
 // The name for id (built in, reserved, or the registry's user effect), at most 10 chars; "OFF" for 0.
@@ -189,7 +223,7 @@ int sysex_labels(uint8_t* m, int id);
 // 0x51 SENDFX FULL NAMES (sim/protocol.py sendfx_full_names): TYPE id's P2..P5 short labels and full names into m (>= 96 bytes),
 // sent right after its 0x24; 0 when it has no full names (the Rytm keeps "Send FX n" in the upper left).
 constexpr uint8_t kCmdNames = 0x51;
-int sysex_full_names(uint8_t* m, int id);
+int sysex_full_names(uint8_t* m, int id, int chunk = 0);   // chunk 1..3: a user effect's P5..P8, P9..P12, P13..P16
 // A console command without the ':' (sendfx, sendfx=K:TYPE, sendfx=off, sendfxout=fx|main, sendlvl=K:T|all:V,
 // sendknob=K:I:V): true if it was one; the answer (one line) in reply. TYPE and knobs hold until the next 0x20 for
 // the FX track (a stock Rytm sends none). A route change marks the card file to be written (card_dirty).

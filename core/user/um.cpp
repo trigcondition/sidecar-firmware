@@ -2243,6 +2243,8 @@ struct FxLabels {
   char lab[4][core::fx::kLabelChars + 1];
   char zn[core::fx::kMaxZones][core::fx::kZoneChars + 1];
   char lng[4][core::fx::kLongChars + 1];   // the manifest's long names (0x51)
+  char xlab[core::fx::kXKnobs][core::fx::kLabelChars + 1];   // sendfx-pages (#15): P5..P16's, for the Rytm's pages 2 / 3
+  char xlng[core::fx::kXKnobs][core::fx::kLongChars + 1];
 };
 FxLabels g_fxl[kUfx][2];
 volatile uint8_t g_fxl_on;   // bit u: the loaded effect u has labels; bit 4 + u: they are in g_fxl[u][1]
@@ -2304,6 +2306,15 @@ void fx_labels_build(int u, int pkg) {
     if (e.desc.knob[q].look == RMP_LOOK_LIST) fx_zones(e, q, j, L, &nz);
   }
   for (int j = 0; j < 4; ++j) L.kl.label[j] = L.lab[j], L.kl.long_name[j] = L.lng[j];
+  for (int j = 0; j < core::fx::kXKnobs; ++j) {   // sendfx-pages: P5..P16 (an unnamed P in between: empty, default 0)
+    int q = rmp_desc_find(&e.desc, j + 5);
+    L.kl.xlabel[j] = L.xlab[j], L.kl.xlong[j] = L.xlng[j];
+    if (q < 0) continue;
+    memcpy(L.xlab[j], e.desc.knob[q].short_name, core::fx::kLabelChars);
+    strncpy(L.xlng[j], e.desc.knob[q].long_name, core::fx::kLongChars);
+    L.kl.xdef[j] = e.desc.knob[q].def;
+    L.kl.nx = (uint8_t)(j + 1);
+  }
   L.kl.zones = L.z;
   L.kl.nzones = (uint8_t)nz;
   uint8_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);   // (only this core writes it)
@@ -2526,8 +2537,8 @@ void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t
     }
     float p[16];
     uint32_t ch = 0;
-    for (int j = 0; j < 16; ++j) {
-      p[j] = j < 4 ? (float)k[2 + j] : 0.0f;
+    for (int j = 0; j < 16; ++j) {   // sendfx-pages (#15): P5..P16 are the Sidecar's (Control::xknob, the Rytm's pages 2 / 3)
+      p[j] = j < 4 ? (float)k[2 + j] : (float)core::fx::control.xknob[sl][j - 4];
       if (p[j] != g_fx_p[u][sl][j]) ch |= 1u << j, g_fx_p[u][sl][j] = p[j];
     }
     // the transport: one snapshot for the whole call; its edges (START, STOP, JUMP) once for this state, in the first

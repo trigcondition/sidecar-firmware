@@ -881,6 +881,31 @@ def decode_sendfx_bw(payload):
     return dict(fx=payload[1], base=payload[2], width=payload[3])
 
 
+# 22 ver 3 SENDFX XKNOBS (sendfx-pages, rytm-mods 0029, issue #15): a user effect's P5..P16, held by the Sidecar (never in
+# the Rytm's kit), on the Rytm's SEND FX pages 2 (encoders A..H = P5..P12) and 3 (A..D = P13..P16). Both ways, as ver 2:
+# host -> Rytm what the knobs show (a kit load, a TYPE's defaults, ASK, hello, the 2 s refresh), Rytm -> host a turn.
+# F0 7D 52 54 22 03 <fx 0|1> <first p 5..16> <n 1..12> <values 0..127> F7. An older 0029 drops it (its ver check).
+SENDFX_XKNOBS_VER = 3
+
+
+def sendfx_xknobs(fx, first_p, values):
+    """22 ver 3: FX fx (0, 1), the effect's P first_p (5..16) .. as values 0..127 (1..12, not past P16)."""
+    if not 1 <= len(values) <= 12 or not 5 <= first_p <= 17 - len(values):
+        raise ValueError("1..12 values within P5..P16")
+    return bytes(HDR) + bytes([SENDFX_STATE, SENDFX_XKNOBS_VER, fx & 1, first_p, len(values)] +
+                              [v & 0x7F for v in values]) + b"\xf7"
+
+
+def decode_sendfx_xknobs(payload):
+    """22 ver 3's payload (from the ver byte) -> dict fx, first, values; None if malformed."""
+    if not payload or payload[0] != SENDFX_XKNOBS_VER or len(payload) < 5 or payload[1] > 1:
+        return None
+    first, n = payload[2], payload[3]
+    if not 1 <= n <= 12 or not 5 <= first <= 17 - n or len(payload) != 4 + n:
+        return None
+    return dict(fx=payload[1], first=first, values=list(payload[4:4 + n]))
+
+
 SENDFX_LABELS = 0x24
 LABEL_CHARS, ZONE_CHARS, MAX_ZONES = 4, 5, 12
 # The core's tables (core/fx/knob_labels.h users: send_fx.h, rings_fx.h, cloudseed_fx.h, stutter_fx.h): TYPE id ->

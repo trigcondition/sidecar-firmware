@@ -86,7 +86,8 @@ static CORE_COLD void sendfx_labels_out() {
     if (!label_id(id) || label_sent(id, sent, usent) || k >= rytm_label_tables()) return;
     if (int n = fx::sysex_labels(m, id)) {
       hooks.to_rytm(m, n), ++k;
-      if (int n2 = fx::sysex_full_names(m, id)) hooks.to_rytm(m, n2);   // its full names (0x51), right after
+      for (int c = 0; c < 4; ++c)   // its full names (0x51), right after: P1..P4, then a user effect's P5..P16 (#15)
+        if (int n2 = fx::sysex_full_names(m, id, c)) hooks.to_rytm(m, n2);
       if (id < fx::kFirstUser) sent |= 1ull << id;
       else usent |= (uint8_t)(1u << (id - fx::kFirstUser));
     }
@@ -130,13 +131,37 @@ static const uint32_t kBwRefreshMs = 2000;
 static int16_t s_bw_sent[fx::kSlots][2] = {{-1, -1}, {-1, -1}};
 static uint32_t s_bw_ms, s_bw_all_ms;
 static bool s_bw_up;   // the Rytm listens: set by its ASK, first 0x20, hello or a turn; cleared by link_lost()
+// sendfx-pages (rytm-mods 0029, issue #15): a user effect's P5..P16 (fx::Control::xknob, the Rytm's SEND FX pages 2 / 3)
+// the same way, 22 ver 3 <fx> <first p 5> <n> <values> (sim/protocol.py sendfx_xknobs): ours when they differ from what
+// the Rytm was last told (a kit load, a TYPE that takes its defaults), with BASE / WIDTH's 2 s refresh, ASK and hello; the
+// Rytm's a turn, taken (no echo). Only for a slot whose effect has them (nx: the Rytm shows no page 2 without).
+static int16_t s_x_sent[fx::kSlots][fx::kXKnobs];
+static CORE_COLD bool sendfx_x_out() {
+  bool sent = false;
+  for (int s = 0; s < fx::kSlots; ++s) {
+    int id = fx::control.knob[s][0];
+    const fx::KnobLabels* l = id >= fx::kFirstUser ? fx::labels(id) : nullptr;
+    if (!l || !l->nx || fx::control.xtype[s] != id) continue;
+    bool same = true;
+    for (int j = 0; j < l->nx; ++j) same &= s_x_sent[s][j] == fx::control.xknob[s][j];
+    if (same) continue;
+    uint8_t m[10 + fx::kXKnobs] = {0xF0, 0x7D, 0x52, 0x54, 0x22, 0x03, (uint8_t)s, 5, l->nx};
+    for (int j = 0; j < l->nx; ++j) m[9 + j] = fx::control.xknob[s][j], s_x_sent[s][j] = fx::control.xknob[s][j];
+    m[9 + l->nx] = 0xF7;
+    hooks.to_rytm(m, 10 + l->nx);
+    sent = true;
+  }
+  return sent;
+}
 static CORE_COLD bool sendfx_bw_out() {
   if (!hooks.to_rytm || now_ms() - s_bw_ms < 20) return false;
   if (now_ms() - s_bw_all_ms >= kBwRefreshMs) {
     for (auto& x : s_bw_sent) x[0] = x[1] = -1;
+    for (auto& x : s_x_sent)
+      for (int16_t& v : x) v = -1;
     s_bw_all_ms = now_ms();
   }
-  bool sent = false;
+  bool sent = sendfx_x_out();
   for (int s = 0; s < fx::kSlots; ++s) {
     int b, w;
     ins::eq_bw(ins::kBus0 + s, &b, &w);
@@ -151,6 +176,8 @@ static CORE_COLD bool sendfx_bw_out() {
 }
 static CORE_COLD void sendfx_bw_all() {   // the Rytm asked or came up: what its knobs show may be its defaults
   for (auto& x : s_bw_sent) x[0] = x[1] = -1;
+  for (auto& x : s_x_sent)
+    for (int16_t& v : x) v = -1;
   s_bw_ms = now_ms() - 20, s_bw_all_ms = now_ms(), s_bw_up = true;
   sendfx_bw_out();
 }
@@ -160,6 +187,11 @@ static CORE_COLD void sendfx_bw_in(int s, int base, int width) {
   fx::edited(mod::tid(mod::kIns, c, 8)), fx::edited(mod::tid(mod::kIns, c, 9));   // (the Rytm's page: a Sidecar edit)
   ins::eq_bw(c, &base, &width);
   s_bw_sent[s][0] = (int16_t)base, s_bw_sent[s][1] = (int16_t)width;
+  s_bw_up = true;
+}
+static CORE_COLD void sendfx_x_in(int s, int first, const uint8_t* v, int n) {
+  if (!fx::xknobs_in(s, first, v, n)) return;
+  for (int j = 0; j < n; ++j) s_x_sent[s][first - 5 + j] = fx::control.xknob[s][first - 5 + j];   // (the Rytm shows it)
   s_bw_up = true;
 }
 #endif
@@ -179,6 +211,7 @@ CORE_COLD void sendfx_project() {
 static uint32_t s_list_ms = 0;
 CORE_COLD bool sendfx_step() {
 #if CORE_POLY
+  fx::xknobs_follow();   // sendfx-pages: a slot's P5..P16 follow its effect (its defaults; sent by sendfx_bw_out)
   if (s_sendfx_hello && s_bw_up && sendfx_bw_out()) return true;   // (after the Rytm was first heard: its ASK / 20 send them all)
 #endif
   // a user effect slot changed (fx::list_changed): the list, the labels and the states again, at most every 100 ms
@@ -418,6 +451,9 @@ __attribute__((noinline)) CORE_COLD void host_sysex(const uint8_t* d, int len) {
     if (d[4] == 0x22) {   // sfx-basewidth: 22 ver 2, a turn of SEND FX 1 / 2's BASE / WIDTH (knobs G / H) on the Rytm
 #if CORE_POLY
       if (len >= 10 && d[5] == 2 && d[6] < fx::kSlots && d[7] < 128 && d[8] < 128) sendfx_bw_in(d[6], d[7], d[8]);
+      // sendfx-pages: 22 ver 3 <fx> <first p 5..16> <n 1..12> <values>, a turn on the Rytm's SEND FX page 2 / 3
+      if (len >= 11 && d[5] == 3 && d[6] < fx::kSlots && d[7] >= 5 && d[8] >= 1 && d[7] + d[8] - 1 <= 16 && len >= 10 + d[8])
+        sendfx_x_in(d[6], d[7], d + 9, d[8]);
 #endif
       return;
     }

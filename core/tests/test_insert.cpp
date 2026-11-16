@@ -1284,6 +1284,30 @@ int main() {
       printf("card: the PEQ line round trip (%s)\n", fn.c_str());
       ins::reset();
     }
+    // sendfx-pages (#15): a user effect's P5..P16 in the kit's file ("XFX 1 5 64 0abc 10 11 12 13", 4 a line, as many as
+    // it has), read back with its TYPE and tag; another kit's load forgets them (follow then takes the defaults)
+    {
+      ins::kit_changed(12);   // kit 13: a file of its own
+      fx::control.xtype[0] = fx::kFirstUser, fx::control.xtag[0] = 0x0abc, fx::control.xn[0] = 10;
+      for (int j = 0; j < fx::kXKnobs; ++j) fx::control.xknob[0][j] = (uint8_t)(10 + j);
+      fx::xknobs_changed();   // (as a turn on the Rytm marks it)
+      host_fake_time(true, us += 1100000);
+      for (int i = 0; i < 64; ++i) idle_save();
+      std::string fn = std::string(tmpl) + "/.rytm/ins/INS/k013.txt";
+      char got[800] = {};
+      FILE* fp = fopen(fn.c_str(), "rb");
+      size_t n = fp ? fread(got, 1, sizeof got - 1, fp) : 0;
+      if (fp) fclose(fp);
+      CHECK(n > 0 && strstr(got, "XFX 1 5 64 0abc 10 11 12 13\n") && strstr(got, "XFX 1 9 64 0abc 14 15 16 17\n") &&
+            strstr(got, "XFX 1 13 64 0abc 18 19 20 21\n") && !strstr(got, "XFX 2"));
+      ins::kit_changed(4);   // kit 5's file has no XFX line
+      CHECK(fx::control.xtype[0] == 0xFF && fx::control.xknob[0][0] == 0 && fx::control.xn[0] == 0);
+      ins::kit_changed(12);
+      CHECK(fx::control.xtype[0] == fx::kFirstUser && fx::control.xtag[0] == 0x0abc && fx::control.xn[0] == 12 &&
+            fx::control.xknob[0][0] == 10 && fx::control.xknob[0][11] == 21 && fx::control.xtype[1] == 0xFF);
+      printf("card: the XFX lines round trip (%s)\n", fn.c_str());
+      ins::reset();
+    }
     // the OUT route (core/fx/out.h) in the kit's file: "OUT V3 POST 90 20 100 30", read back; a default voice no line
     {
       ins::kit_changed(9);   // kit 10: a file of its own

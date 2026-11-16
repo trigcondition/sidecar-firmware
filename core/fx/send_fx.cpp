@@ -234,6 +234,38 @@ CORE_COLD const KnobLabels* labels(int id) {
   }
 }
 
+// ---- sendfx-pages (issue #15): a user effect's P5..P16, held here
+static CORE_COLD uint16_t slot_tag(int id) {
+  return id >= kFirstUser && id < kFirstUser + kUserSlots ? __atomic_load_n(&user[id - kFirstUser].tag, __ATOMIC_ACQUIRE) : 0;
+}
+CORE_COLD int xknobs_follow() {
+  int ch = 0;
+  for (int s = 0; s < kSlots; ++s) {
+    int id = control.knob[s][0];
+    uint16_t tag = slot_tag(id);
+    if (id == control.xtype[s] && tag == control.xtag[s]) continue;
+    const KnobLabels* l = id >= kFirstUser ? labels(id) : nullptr;
+    if (id >= kFirstUser && id < kFirstUser + kUserSlots && !l) continue;   // not loaded yet: its manifest has the defaults
+    for (int j = 0; j < kXKnobs; ++j) control.xknob[s][j] = l && j < l->nx ? l->xdef[j] : 0;
+    control.xn[s] = l ? l->nx : 0;
+    control.xtag[s] = tag;
+    control.xtype[s] = (uint8_t)id;
+    ch |= 1 << s;   // (not saved: the defaults come back from the manifest; a turn marks the file)
+  }
+  return ch;
+}
+CORE_COLD bool xknobs_in(int slot, int first, const uint8_t* v, int n) {
+  if (slot < 0 || slot >= kSlots || first < 5 || n < 1 || first + n - 1 > 16) return false;
+  if (control.xtype[slot] != control.knob[slot][0] || control.xtag[slot] != slot_tag(control.knob[slot][0])) return false;
+  bool ch = false;
+  for (int j = 0; j < n; ++j) {
+    uint8_t x = v[j] > 127 ? 127 : v[j];
+    if (control.xknob[slot][first - 5 + j] != x) control.xknob[slot][first - 5 + j] = x, ch = true;
+  }
+  if (ch && xknobs_changed) xknobs_changed();
+  return true;
+}
+
 CORE_COLD int sysex_labels(uint8_t* m, int id) {
   const KnobLabels* l = labels(id);
   if (!l) return 0;
@@ -252,20 +284,31 @@ CORE_COLD int sysex_labels(uint8_t* m, int id) {
 }
 
 // 0x51 SENDFX FULL NAMES: F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7. P counts as the
-// effect's own (P1 = the send slot's P2), so #15's pages can send P5..P16 in more messages of the same layout.
-CORE_COLD int sysex_full_names(uint8_t* m, int id) {
+// effect's own (P1 = the send slot's P2). chunk 0: P1..P4 (0 when none of them has a full name); chunk c (1..3): P(4c + 1)..
+// P(4c + 4) of a user effect's extra knobs (sendfx-pages, issue #15: the Rytm's pages 2 and 3 take their labels and full
+// names from these, and their count from the highest P sent), 0 past its last.
+CORE_COLD int sysex_full_names(uint8_t* m, int id, int chunk) {
   const KnobLabels* l = labels(id);
-  if (!l) return 0;
-  bool any = false;
-  for (int j = 0; j < 4; ++j) any |= l->long_name[j] && l->long_name[j][0];
-  if (!any) return 0;
+  if (!l || chunk < 0 || chunk > 3) return 0;
+  const char *const *sh = l->label, *const *lg = l->long_name;
+  int cnt = 4;
+  if (chunk) {
+    cnt = l->nx - 4 * (chunk - 1);
+    if (cnt <= 0) return 0;
+    if (cnt > 4) cnt = 4;
+    sh = l->xlabel + 4 * (chunk - 1), lg = l->xlong + 4 * (chunk - 1);
+  } else {
+    bool any = false;
+    for (int j = 0; j < 4; ++j) any |= l->long_name[j] && l->long_name[j][0];
+    if (!any) return 0;
+  }
   int n = head(m, kCmdNames);
   m[n++] = (uint8_t)id;
-  m[n++] = 1;
-  m[n++] = 4;
-  for (int j = 0; j < 4; ++j) {
-    n += name_n(m + n, l->label[j] ? l->label[j] : "", kLabelChars);
-    n += name_n(m + n, l->long_name[j] ? l->long_name[j] : "", kLongChars);
+  m[n++] = (uint8_t)(1 + 4 * chunk);
+  m[n++] = (uint8_t)cnt;
+  for (int j = 0; j < cnt; ++j) {
+    n += name_n(m + n, sh[j] ? sh[j] : "", kLabelChars);
+    n += name_n(m + n, lg[j] ? lg[j] : "", kLongChars);
   }
   m[n++] = 0xF7;
   return n;
