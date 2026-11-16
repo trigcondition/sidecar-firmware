@@ -28,10 +28,10 @@ struct KnobLabels {
   // sendfx-pages (rytm-mods 0029, issue #15): a user effect's P5..P16 (xlabel / xlong [j] = P(5 + j)), on the Rytm's SEND FX
   // pages 2 and 3, held by the Sidecar (Control::xknob) and started from xdef. nx: the highest such P - 4 (0: the effect
   // has P1..P4 only, the Rytm shows no extra page). The built-ins have none (zero).
-  const char* xlabel[12];
-  const char* xlong[12];
-  uint8_t xdef[12];
-  uint8_t nx;
+  const char* xlabel[12] = {};
+  const char* xlong[12] = {};
+  uint8_t xdef[12] = {};
+  uint8_t nx = 0;
 };
 constexpr int kMaxZones = 12;    // a message's cap (the Rytm's table holds as many per TYPE)
 constexpr int kLabelChars = 4, kZoneChars = 5, kLongChars = 16;

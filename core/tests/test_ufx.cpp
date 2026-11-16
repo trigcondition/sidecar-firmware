@@ -488,15 +488,21 @@ int main() {
     // the slot follows its effect: the manifest's defaults
     memset((void*)&fx::control, 0, sizeof fx::control);
     fx::control.knob[0][0] = (uint8_t)id;
+    {   // before the host link step follows it (a load, a kit change): the effect is handed its defaults, never 0
+      float x[16] = {0}, y[16][2] = {};
+      uint8_t k[6] = {(uint8_t)id, 0, 0, 0, 0, 0};
+      fx::user_run(2, 0, x, 16, y, k);
+      CHECK(std::fabs(y[3][0] - 35 / 128.0f) < 1e-4f && std::fabs(y[14][0] - 112 / 128.0f) < 1e-4f);
+    }
     CHECK(fx::xknobs_follow() == 1 && fx::control.xn[0] == 12 && fx::control.xknob[0][0] == 35 &&
           fx::control.xknob[0][11] == 112 && fx::control.xknob[0][9] == 0);
     CHECK(fx::xknobs_follow() == 0);
-    {   // what the effect is handed: frames 3..14 = P5..P16 / 128
+    {   // what the effect is handed: frames 3..14 = P5..P16 / 128; frame 15: the host says so (RMP3_CAP_FX_P16)
       float x[16] = {0}, y[16][2] = {};
       uint8_t k[6] = {(uint8_t)id, 0, 0, 0, 0, 0};
-      fx::user_run(2, 0, x, 15, y, k);
+      fx::user_run(2, 0, x, 16, y, k);
       CHECK(std::fabs(y[0][0] - 0.5f) < 1e-4f && std::fabs(y[3][0] - 35 / 128.0f) < 1e-4f &&
-            std::fabs(y[14][0] - 112 / 128.0f) < 1e-4f && std::fabs(y[12][0]) < 1e-4f);
+            std::fabs(y[14][0] - 112 / 128.0f) < 1e-4f && std::fabs(y[12][0]) < 1e-4f && std::fabs(y[15][0] - 1.0f) < 1e-4f);
     }
     // a turn on the Rytm's page 2 (22 ver 3: FX 1, P7..P8): taken; past P16, or FX 3: not
     sysex({0xf0, 0x7d, 0x52, 0x54, 0x22, 0x03, 0x00, 0x07, 0x02, 99, 100, 0xf7});

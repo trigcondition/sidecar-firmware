@@ -2537,8 +2537,13 @@ void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t
     }
     float p[16];
     uint32_t ch = 0;
-    for (int j = 0; j < 16; ++j) {   // sendfx-pages (#15): P5..P16 are the Sidecar's (Control::xknob, the Rytm's pages 2 / 3)
-      p[j] = j < 4 ? (float)k[2 + j] : (float)core::fx::control.xknob[sl][j - 4];
+    // sendfx-pages (#15): P5..P16 are the Sidecar's (Control::xknob, the Rytm's pages 2 / 3) once they are this effect's
+    // (xknobs_follow, the control core's host link step); until then its manifest's defaults, never another's or 0
+    const bool own = core::fx::control.xtype[sl] == core::fx::kFirstUser + u;
+    const core::fx::KnobLabels* xl = own ? nullptr : fx_labels(u);
+    for (int j = 0; j < 16; ++j) {
+      p[j] = j < 4 ? (float)k[2 + j] : own ? (float)core::fx::control.xknob[sl][j - 4]
+                                           : (float)(xl && j - 4 < xl->nx ? xl->xdef[j - 4] : 0);
       if (p[j] != g_fx_p[u][sl][j]) ch |= 1u << j, g_fx_p[u][sl][j] = p[j];
     }
     // the transport: one snapshot for the whole call; its edges (START, STOP, JUMP) once for this state, in the first
@@ -2633,13 +2638,14 @@ void fx_faults() {
 // ---- API 3: the table checked, the arena, setup()
 uint32_t host_caps() {
   return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | RMP3_CAP_EFFECT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
-         (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u);
+         (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u) | RMP3_CAP_FX_P16;   // (sendfx-pages: fx_run's p[4..15])
 }
 void caps_names(uint32_t c, char* b, int cap) {
-  static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages"};
+  static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages",
+                                   "effect P5..P16"};
   b[0] = 0;
   int n = 0;
-  for (int k = 0; k < 9; ++k)
+  for (int k = 0; k < (int)(sizeof kN / sizeof kN[0]); ++k)
     if (c >> k & 1) n += sniprintf(b + n, cap - n, "%s%s", n ? ", " : "", kN[k]);
 }
 // The plugin's API 3 table (reserved[RMP_P_V3]) if it has one: inside its code part, its magic and size, every function

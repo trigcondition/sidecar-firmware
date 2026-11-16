@@ -425,11 +425,19 @@ CORE_COLD bool command(const char* p, char* r, int max) {
     show(r, max);
     return true;
   }
-  if (strncmp(p, "sendknob=", 9) == 0) {   // K:I:V, I 0 TYPE, 1 P1 (ROUTE), 2..5 P2..P5
+  if (strncmp(p, "sendknob=", 9) == 0) {   // K:I:V, I 0 TYPE, 1 P1 (ROUTE), 2..5 P2..P5, 6..17 a user effect's P5..P16
     const char* c = (a = slot_arg(p + 9, &s)) ? strchr(a, ':') : nullptr;
     int i = c ? num(a) : -1, v = c ? num(c + 1) : -1;
-    if (!c || i < 0 || i >= kKnobs || v < 0 || v > 127) {
-      put(r, max, 0, "sendknob=K:I:V (K 1|2, I 0 TYPE or 1..5, V 0..127)");
+    static const char kUse[] = "sendknob=K:I:V (K 1|2, I 0 TYPE, 1..5 P1..P5, 6..17 a user effect's P5..P16; V 0..127)";
+    if (!c || i < 0 || i >= kKnobs + kXKnobs || v < 0 || v > 127) {
+      put(r, max, 0, kUse);
+      return true;
+    }
+    if (i >= kKnobs) {   // sendfx-pages: as a turn on the Rytm's SEND FX page 2 / 3 (22 ver 3); a built-in TYPE has none
+      uint8_t x = (uint8_t)v;
+      xknobs_follow();
+      if (control.knob[s][0] < kFirstUser || !xknobs_in(s, i - 1, &x, 1)) put(r, max, 0, kUse);
+      else show(r, max);
       return true;
     }
     set_knob_base(s, i, (uint8_t)v);   // 0.5.0: through the knob filter (a live entry's base), a manual edit (spec-050 2.5)
