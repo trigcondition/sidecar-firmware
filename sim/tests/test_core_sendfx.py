@@ -83,6 +83,43 @@ class TestCoreSendFx(unittest.TestCase):
             self.assertEqual(P.decode_sendfx_labels(m[5:-1]), (i, list(labels), [tuple(z) for z in zones]))
         self.assertEqual(sorted(P.SENDFX_LABEL_SETS), sorted(set(P.SENDFX_BUILT)))
 
+    def test_full_names(self):
+        """0x51 SENDFX FULL NAMES: every labelled TYPE has full names (protocol.py SENDFX_FULL_NAME_SETS), sent as
+        P1..P4 with the 0x24's short labels; each fits 16 characters and decodes back; none for a TYPE without labels."""
+        b = (ctypes.c_uint8 * 256)()
+        LIB.core_c_sendfx_full_names.restype = ctypes.c_int
+        for i in range(128):
+            n = LIB.core_c_sendfx_full_names(b, i)
+            if i not in P.SENDFX_LABEL_SETS:
+                self.assertEqual(n, 0, f"id {i}")
+                continue
+            m = bytes(b[:n])
+            longs = P.SENDFX_FULL_NAME_SETS[i]
+            shorts = P.SENDFX_LABEL_SETS[i][0]
+            self.assertTrue(all(0 < len(x) <= P.LONG_CHARS for x in longs), f"id {i}")
+            self.assertEqual(m, P.sendfx_full_names(i, 1, list(zip(shorts, longs))), f"id {i}")
+            self.assertEqual(P.decode_sendfx_full_names(m[5:-1]), (i, 1, list(zip(shorts, longs))))
+        self.assertEqual(sorted(P.SENDFX_FULL_NAME_SETS), sorted(P.SENDFX_LABEL_SETS))
+
+    def test_xknobs(self):
+        """sendfx-pages (#15): no built-in TYPE has P5..P16, so none sends a 0x51 past P4 (chunks 1..3); 22 ver 3 encodes
+        and decodes back, and a malformed one (past P16, 13 values, FX 3) decodes to None."""
+        b = (ctypes.c_uint8 * 256)()
+        LIB.core_c_sendfx_full_names_chunk.restype = ctypes.c_int
+        for i in range(128):
+            for c in (1, 2, 3):
+                self.assertEqual(LIB.core_c_sendfx_full_names_chunk(b, i, c), 0, f"id {i} chunk {c}")
+        m = P.sendfx_xknobs(1, 5, list(range(100, 112)))
+        self.assertEqual(m[:9], bytes([0xF0, 0x7D, 0x52, 0x54, 0x22, 3, 1, 5, 12]))
+        self.assertEqual(P.decode_sendfx_xknobs(m[5:-1]), dict(fx=1, first=5, values=list(range(100, 112))))
+        self.assertEqual(P.decode_sendfx_xknobs(P.sendfx_xknobs(0, 13, [1, 2, 3, 4])[5:-1])["first"], 13)
+        self.assertIsNone(P.decode_sendfx_xknobs(bytes([3, 0, 14, 4, 1, 2, 3, 4])))
+        self.assertIsNone(P.decode_sendfx_xknobs(bytes([3, 0, 5, 13] + [0] * 13)))
+        self.assertIsNone(P.decode_sendfx_xknobs(bytes([3, 2, 5, 1, 0])))
+        self.assertIsNone(P.decode_sendfx_bw(P.sendfx_xknobs(0, 5, [1])[5:-1]))   # (ver 2's decoder refuses it)
+        with self.assertRaises(ValueError):
+            P.sendfx_xknobs(0, 16, [1, 2])
+
     def test_label_steps(self):
         """The step bit (0x24 zone byte bit 3): set on every zone of STUTTER ENG and LEN (pure selectors) and nowhere
         else (zones with a number inside stay continuous); a knob's zones agree; the stored values are the zones' lo,

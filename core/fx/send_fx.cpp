@@ -234,6 +234,38 @@ CORE_COLD const KnobLabels* labels(int id) {
   }
 }
 
+// ---- sendfx-pages (issue #15): a user effect's P5..P16, held here
+static CORE_COLD uint16_t slot_tag(int id) {
+  return id >= kFirstUser && id < kFirstUser + kUserSlots ? __atomic_load_n(&user[id - kFirstUser].tag, __ATOMIC_ACQUIRE) : 0;
+}
+CORE_COLD int xknobs_follow() {
+  int ch = 0;
+  for (int s = 0; s < kSlots; ++s) {
+    int id = control.knob[s][0];
+    uint16_t tag = slot_tag(id);
+    if (id == control.xtype[s] && tag == control.xtag[s]) continue;
+    const KnobLabels* l = id >= kFirstUser ? labels(id) : nullptr;
+    if (id >= kFirstUser && id < kFirstUser + kUserSlots && !l) continue;   // not loaded yet: its manifest has the defaults
+    for (int j = 0; j < kXKnobs; ++j) control.xknob[s][j] = l && j < l->nx ? l->xdef[j] : 0;
+    control.xn[s] = l ? l->nx : 0;
+    control.xtag[s] = tag;
+    control.xtype[s] = (uint8_t)id;
+    ch |= 1 << s;   // (not saved: the defaults come back from the manifest; a turn marks the file)
+  }
+  return ch;
+}
+CORE_COLD bool xknobs_in(int slot, int first, const uint8_t* v, int n) {
+  if (slot < 0 || slot >= kSlots || first < 5 || n < 1 || first + n - 1 > 16) return false;
+  if (control.xtype[slot] != control.knob[slot][0] || control.xtag[slot] != slot_tag(control.knob[slot][0])) return false;
+  bool ch = false;
+  for (int j = 0; j < n; ++j) {
+    uint8_t x = v[j] > 127 ? 127 : v[j];
+    if (control.xknob[slot][first - 5 + j] != x) control.xknob[slot][first - 5 + j] = x, ch = true;
+  }
+  if (ch && xknobs_changed) xknobs_changed();
+  return true;
+}
+
 CORE_COLD int sysex_labels(uint8_t* m, int id) {
   const KnobLabels* l = labels(id);
   if (!l) return 0;
@@ -246,6 +278,37 @@ CORE_COLD int sysex_labels(uint8_t* m, int id) {
     m[n++] = (uint8_t)(q.lo & 0x7F);
     m[n++] = (uint8_t)(q.base & 0x7F);
     n += name_n(m + n, q.name, kZoneChars);
+  }
+  m[n++] = 0xF7;
+  return n;
+}
+
+// 0x51 SENDFX FULL NAMES: F0 7D 52 54 51 01 <id> <first p 1..16> <n 1..4> {<short 4> <long 16>} x n F7. P counts as the
+// effect's own (P1 = the send slot's P2). chunk 0: P1..P4 (0 when none of them has a full name); chunk c (1..3): P(4c + 1)..
+// P(4c + 4) of a user effect's extra knobs (sendfx-pages, issue #15: the Rytm's pages 2 and 3 take their labels and full
+// names from these, and their count from the highest P sent), 0 past its last.
+CORE_COLD int sysex_full_names(uint8_t* m, int id, int chunk) {
+  const KnobLabels* l = labels(id);
+  if (!l || chunk < 0 || chunk > 3) return 0;
+  const char *const *sh = l->label, *const *lg = l->long_name;
+  int cnt = 4;
+  if (chunk) {
+    cnt = l->nx - 4 * (chunk - 1);
+    if (cnt <= 0) return 0;
+    if (cnt > 4) cnt = 4;
+    sh = l->xlabel + 4 * (chunk - 1), lg = l->xlong + 4 * (chunk - 1);
+  } else {
+    bool any = false;
+    for (int j = 0; j < 4; ++j) any |= l->long_name[j] && l->long_name[j][0];
+    if (!any) return 0;
+  }
+  int n = head(m, kCmdNames);
+  m[n++] = (uint8_t)id;
+  m[n++] = (uint8_t)(1 + 4 * chunk);
+  m[n++] = (uint8_t)cnt;
+  for (int j = 0; j < cnt; ++j) {
+    n += name_n(m + n, sh[j] ? sh[j] : "", kLabelChars);
+    n += name_n(m + n, lg[j] ? lg[j] : "", kLongChars);
   }
   m[n++] = 0xF7;
   return n;
@@ -362,11 +425,19 @@ CORE_COLD bool command(const char* p, char* r, int max) {
     show(r, max);
     return true;
   }
-  if (strncmp(p, "sendknob=", 9) == 0) {   // K:I:V, I 0 TYPE, 1 P1 (ROUTE), 2..5 P2..P5
+  if (strncmp(p, "sendknob=", 9) == 0) {   // K:I:V, I 0 TYPE, 1 P1 (ROUTE), 2..5 P2..P5, 6..17 a user effect's P5..P16
     const char* c = (a = slot_arg(p + 9, &s)) ? strchr(a, ':') : nullptr;
     int i = c ? num(a) : -1, v = c ? num(c + 1) : -1;
-    if (!c || i < 0 || i >= kKnobs || v < 0 || v > 127) {
-      put(r, max, 0, "sendknob=K:I:V (K 1|2, I 0 TYPE or 1..5, V 0..127)");
+    static const char kUse[] = "sendknob=K:I:V (K 1|2, I 0 TYPE, 1..5 P1..P5, 6..17 a user effect's P5..P16; V 0..127)";
+    if (!c || i < 0 || i >= kKnobs + kXKnobs || v < 0 || v > 127) {
+      put(r, max, 0, kUse);
+      return true;
+    }
+    if (i >= kKnobs) {   // sendfx-pages: as a turn on the Rytm's SEND FX page 2 / 3 (22 ver 3); a built-in TYPE has none
+      uint8_t x = (uint8_t)v;
+      xknobs_follow();
+      if (control.knob[s][0] < kFirstUser || !xknobs_in(s, i - 1, &x, 1)) put(r, max, 0, kUse);
+      else show(r, max);
       return true;
     }
     set_knob_base(s, i, (uint8_t)v);   // 0.5.0: through the knob filter (a live entry's base), a manual edit (spec-050 2.5)

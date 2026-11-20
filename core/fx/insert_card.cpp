@@ -11,6 +11,7 @@
 #include "fx/insert.h"
 #include "fx/master.h"
 #include "fx/out.h"
+#include "fx/send_fx.h"
 #include "platform.h"
 #include "pool/pool.h"
 #if CORE_MSAMP
@@ -102,6 +103,20 @@ bool from_line(const char* b) {
   }
   if (n >= 3 && same_ci(w[0], "ROUTE")) {
     set_route3(same_ci(w[2], "POST"));
+    return true;
+  }
+  // sendfx-pages (#15): XFX <FX 1|2> <first P 5..16> <TYPE> <tag 4 hex> <value> ... (at most 4 a line), a user effect's
+  // P5..P16 held for the Rytm's SEND FX pages 2 / 3 (send_fx.h Control::xknob)
+  if (n >= 6 && same_ci(w[0], "XFX")) {
+    int s = num(w[1]) - 1, first = num(w[2]), type = num(w[3]), tag = 0, v[4];
+    for (const char* p = w[4]; *p; ++p) {
+      int d = *p >= '0' && *p <= '9' ? *p - '0' : *p >= 'a' && *p <= 'f' ? *p - 'a' + 10 : *p >= 'A' && *p <= 'F' ? *p - 'A' + 10 : -1;
+      if (d < 0 || tag > 0xFFF) return false;
+      tag = tag * 16 + d;
+    }
+    if (s < 0 || s >= fx::kSlots || first < 5 || first > 16 || type < 0 || type > 127) return false;
+    for (int k = 0; k < 4; ++k) v[k] = 5 + k < n ? num(w[5 + k]) : -1;
+    fx::xknobs_load(s, type, (uint16_t)tag, first, v, n - 5 < 4 ? n - 5 : 4);
     return true;
   }
   if (n >= 3 && same_ci(w[0], "PEQ")) {   // ins1112: PEQ V1 40 0 64 70 (HPF LPF LOW HIGH; a missing one stays flat)
@@ -273,6 +288,14 @@ static bool save_text(bool queue) {
     if (!send_knob(v, 0) && !send_knob(v, 1) && !send_knob(v, 2)) continue;   // the knobs, never a modulation (core/mod)
     add(b, sniprintf(b, sizeof b, CORE_STR("SEND %s %d %d %d\n"), chain_name(v), send_knob(v, 0), send_knob(v, 1),
                      send_knob(v, 2)));
+  }
+  for (int s = 0; s < fx::kSlots; ++s) {   // sendfx-pages: a user effect's P5..P16 (as many as it has, 4 a line)
+    int ty = fx::control.xtype[s];
+    if (ty < fx::kFirstUser || ty >= fx::kFirstUser + fx::kUserSlots) continue;
+    for (int q = 0; q < fx::control.xn[s]; q += 4)
+      add(b, sniprintf(b, sizeof b, CORE_STR("XFX %d %d %d %04x %d %d %d %d\n"), s + 1, 5 + q, ty, (unsigned)fx::control.xtag[s],
+                       fx::control.xknob[s][q], fx::control.xknob[s][q + 1], fx::control.xknob[s][q + 2],
+                       fx::control.xknob[s][q + 3]));   // (q 0, 4, 8: within the 12)
   }
   if (control.route3) {
     static const char kR[] = "ROUTE B3 POST\n";
