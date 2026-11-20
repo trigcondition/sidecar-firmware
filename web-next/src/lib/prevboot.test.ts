@@ -16,6 +16,11 @@ describe("the crash report", () => {
     expect(await loadPrevBoot(api(() => new Response("", { status: 401 })))).toMatchObject({ kind: "error", text: expect.stringMatching(/Pair this device/) });
     expect(await loadPrevBoot(api(() => new Response("", { status: 500 })))).toMatchObject({ kind: "error" });
   });
+  it("tells to pair on the engine's real refusal, not showing it as a report", async () => {
+    const body = '{"ok":false,"code":401,"pair":true,"wait":0,"error":"not paired"}';
+    for (const mk of [() => new Response(body, { headers: { "X-Sidecar-Pair": "required" } }), () => new Response(body)])
+      expect(await loadPrevBoot(api(mk))).toMatchObject({ kind: "error", text: expect.stringMatching(/Pair this device/) });
+  });
   it("masks a fixed pairing code if a line ever has one", () => {
     expect(maskSecrets("cmdline sdport=0 paircode=12345678 x")).toBe("cmdline sdport=0 paircode=******** x");
     expect(maskSecrets("the pairing code is 12345678")).toBe("the pairing code is ********");
