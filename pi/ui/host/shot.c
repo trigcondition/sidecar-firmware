@@ -39,7 +39,16 @@
 static int W = 800, H = 480;			// the screen (./shot OUTDIR 1024x600: the wide layouts)
 static uint16_t s_Fb[WMAX * HMAX];
 static uint16_t s_Buf[WMAX * HMAX / 10];
-static uint16_t s_Dots[WMAX * 16 * SIDECAR_DOT];	// a band of expanded dots
+static uint16_t s_DotsStatic[WMAX * 16 * SIDECAR_DOT];	// a band of expanded dots
+static uint16_t *s_Dots = s_DotsStatic;	// fuzz: a malloc of exactly the Pi's m_pDotBuf size (W * DotRows * SIDECAR_DOT), so ASan sees an overrun
+int fz_blit (uint16_t *fb, unsigned fx, unsigned fy, unsigned w, unsigned h, const uint16_t *src, unsigned stride);
+static uint16_t *s_Panel;		// fuzz: the Pi 5 panel frame buffer, 720x1280 exact (rotation 270), written by dsirot::blit as PutFrame does
+static long s_nBlitMiss;
+static void panel_put (unsigned fx, unsigned fy, unsigned w, unsigned h, const uint16_t *src, unsigned stride)
+{
+	if (!s_Panel) return;
+	if (!fz_blit (s_Panel, fx, fy, w, h, src, stride)) s_nBlitMiss++;
+}
 
 // as CSidecarDisplay's flush: UI pixels straight through, or each dot expanded (sidecar_ui_dot)
 static void flush (lv_display_t *d, const lv_area_t *a, uint8_t *px)
@@ -51,6 +60,7 @@ static void flush (lv_display_t *d, const lv_area_t *a, uint8_t *px)
 	{
 		int ox, oy;
 		sidecar_ui_origin (&ox, &oy);
+		panel_put (ox + a->x1, oy + a->y1, aw, ah, p, aw);
 		for (int y = a->y1; y <= a->y2; y++)
 			for (int x = a->x1; x <= a->x2; x++) s_Fb[(oy + y) * W + ox + x] = *p++;
 		lv_display_flush_ready (d);
@@ -62,6 +72,7 @@ static void flush (lv_display_t *d, const lv_area_t *a, uint8_t *px)
 	{
 		int n = ah - y0 < 16 ? ah - y0 : 16;
 		sidecar_dot_expand (p + y0 * aw, a->x1, a->y1 + y0, aw, n, aw, s_Dots, aw * dot, 0, sidecar_ui_bright ());
+		panel_put (ox + a->x1 * dot, oy + (a->y1 + y0) * dot, aw * dot, n * dot, s_Dots, aw * dot);
 		for (int r = 0; r < n * dot; r++)
 		{
 			int fy = oy + (a->y1 + y0) * dot + r;
@@ -1595,11 +1606,33 @@ static void theme_run (int style, const char *pre)
 	tap (wlx, WG_BOX (5, 3)); EXPECT_CMD ("pool=smp:accept:A005");
 	tap (WG_SRC_X, WG_KY);			// DONE: back
 	EXPECT (sidecar_ui_page () == 7 && !sidecar_wgview_pool_page_shown () && !sidecar_wgview_list_shown ());
+	// the machine view's ALL POOLS, its JUNO tab (the PRESET page), DONE: back to the machine view (page 7), not POOL
+	tap (WG_MID_X, WG_KY); EXPECT (sidecar_ui_page () == 15 && sidecar_wgview_pool_page_shown ());
+	tap (tx0 + 3 * tw5 + tw5 / 2, WG_ROW (0)); EXPECT (sidecar_ui_page () == 18);
+	tap (WG_SRC_X, WG_KY);			// DONE
+	EXPECT (sidecar_ui_page () == 7);
 	sidecar_ui_show (1); run (2);
 	tap_raw (SUBX (6, 3), SUBY);	// Settings > Pool (the 4th of 6 pills)
 	EXPECT (sidecar_ui_page () == 15 && sidecar_wgview_pool_page_shown ());
 	tap (WG_SRC_X, WG_KY);			// DONE
 	EXPECT (sidecar_ui_page () == 1);
+	// Settings > Pool, its JUNO tab (the PRESET page), Settings > Pool again from there: POOL, and DONE back to Settings
+	// (0.5.1 stored PRESET as where POOL came from: page_sec recursed without end, and DONE looped POOL <-> PRESET)
+	tap_raw (SUBX (6, 3), SUBY); EXPECT (sidecar_ui_page () == 15);
+	tap (tx0 + 3 * tw5 + tw5 / 2, WG_ROW (0)); EXPECT (sidecar_ui_page () == 18);
+	tap_raw (SUBX (6, 3), SUBY); EXPECT (sidecar_ui_page () == 15 && sidecar_wgview_pool_page_shown ());
+	tap (WG_SRC_X, WG_KY);			// DONE
+	EXPECT (sidecar_ui_page () == 1);
+	// from the machine view: ALL POOLS, JUNO, then the SET key (its remembered pill is Pool: POOL again from PRESET), DONE:
+	// the machine view (page 7), not PRESET. (Settings > Pool first: it makes Pool the SET key's remembered pill)
+	tap_raw (SUBX (6, 3), SUBY); EXPECT (sidecar_ui_page () == 15);
+	sidecar_ui_show (7); run (2);
+	tap (WG_MID_X, WG_KY); EXPECT (sidecar_ui_page () == 15);
+	tap (tx0 + 3 * tw5 + tw5 / 2, WG_ROW (0)); EXPECT (sidecar_ui_page () == 18);
+	if (o) tap_raw (NAV_X, NAV_Y (7)); else tap_raw (CNAV_X (7), CNAV_Y (7));
+	EXPECT (sidecar_ui_page () == 15 && sidecar_wgview_pool_page_shown ());
+	tap (WG_SRC_X, WG_KY);			// DONE
+	EXPECT (sidecar_ui_page () == 7);
 	// the POOL page's JUNO / 6-OP tabs: the preset pages (sidecar_preset.c). The JUNO list, a slot's menu (REPLACE), the
 	// index aimed at the slot (a folder, a preset: preset=juno:set:..), an empty slot, ADD (the first empty slot), the FM
 	// list holding the built-ins, the index scrolled, the tabs back to the pool lists
@@ -3537,6 +3570,149 @@ static void a4_run (const char *dir)
 	printf (s_nFail ? "shot a4: %d checks FAILED\n" : "shot a4: all checks ok (both themes)\n", s_nFail);
 }
 
+
+// ---- fuzz: ./shot fuzz SEED N [WxH] [hc|hcg|viper|grid|sidecar]: Pi-like touch events at random ----
+// Build with the sanitizers (a clean obj/): make shot CXX="clang++ -fsanitize=address,undefined"
+//   CFLAGS="-O1 -w -I obj -I \$(LVGL) -DLV_CONF_INCLUDE_SIMPLE -fsanitize=address,undefined -fno-omit-frame-pointer"
+// then ./shot fuzz 0 0 1280x720 replay0|1|2 (the PRESET page, every object tapped: the POOL-from-PRESET recursion of
+// 0.5.1 overflowed the stack here) and ./shot fuzz 1 20000 1280x720 sidecar (seeds 1 3 5, every look).
+static uint64_t s_Rng;
+static unsigned rnd (unsigned n) { s_Rng ^= s_Rng << 13; s_Rng ^= s_Rng >> 7; s_Rng ^= s_Rng << 17; return (unsigned) ((s_Rng >> 11) % (n ? n : 1)); }
+static long s_nEv;
+static char s_Ev[64][96]; static int s_nEvI;
+static void evlog (const char *f, int a, int b, int c, int d)
+{
+	snprintf (s_Ev[s_nEvI & 63], 96, f, a, b, c, d); if (getenv ("FZ_TRACE")) fprintf (stderr, "EV#%ld %s\n", s_nEv, s_Ev[s_nEvI & 63]); s_nEvI++;
+}
+static void fz_dump (void) { fprintf (stderr, "fuzz: last events (event #%ld):\n", s_nEv); for (int i = s_nEvI > 64 ? s_nEvI - 64 : 0; i < s_nEvI; i++) fprintf (stderr, "  %s\n", s_Ev[i & 63]); }
+// the Pi's Update: the touch event reaches sidecar_ui_touch, LVGL runs
+static void fz_step (int ms)
+{
+	sidecar_ui_touch (s_Down, s_Px, s_Py, s_Px, s_Py);
+	lv_tick_inc (ms); lv_timer_handler ();
+}
+static lv_obj_t *s_Cand[4096]; static int s_nCand;
+static void fz_walk (lv_obj_t *o, int depth)
+{
+	if (depth > 12 || s_nCand >= 4096) return;
+	if (lv_obj_has_flag (o, LV_OBJ_FLAG_CLICKABLE) && !lv_obj_has_flag (o, LV_OBJ_FLAG_HIDDEN)) s_Cand[s_nCand++] = o;
+	uint32_t n = lv_obj_get_child_count (o);
+	for (uint32_t i = 0; i < n; i++) fz_walk (lv_obj_get_child (o, (int32_t) i), depth + 1);
+}
+static void fz_pick (int *x, int *y)		// UI coordinates: an object's middle (random point in it), or anywhere
+{
+	s_nCand = 0;
+	fz_walk (lv_layer_top (), 0); fz_walk (lv_screen_active (), 0);
+	if (s_nCand && rnd (10) < 8)
+	{
+		lv_area_t a; lv_obj_get_coords (s_Cand[rnd (s_nCand)], &a);
+		*x = a.x1 + (int) rnd ((unsigned) (a.x2 - a.x1 + 1)); *y = a.y1 + (int) rnd ((unsigned) (a.y2 - a.y1 + 1));
+	}
+	else { *x = (int) rnd ((unsigned) (W / sidecar_ui_dot ())); *y = (int) rnd ((unsigned) (H / sidecar_ui_dot ())); }
+}
+static void fz_set (int x, int y) { s_Px = sx (x); s_Py = sy (y); }
+static void fz_second (int on)			// the second finger (the Pi's m_nPointer2 -> sidecar_seqed_touch2: screen coordinates)
+{
+	int x = (int) rnd ((unsigned) W), y = (int) rnd ((unsigned) H);
+	sidecar_ui_to_ui (&x, &y);
+	sidecar_seqed_touch2 (on, x, y);
+}
+static void fz_event (void)
+{
+	int x, y, x1, y1;
+	unsigned k = rnd (100);
+	s_nEv++;
+	if (k < 25)			// tap
+	{
+		fz_pick (&x, &y); evlog ("tap %d,%d", x, y, 0, 0);
+		fz_set (x, y); s_Down = 1; for (unsigned i = rnd (4) + 1; i--; ) fz_step (10 + rnd (30));
+		s_Down = 0; for (unsigned i = rnd (3) + 1; i--; ) fz_step (10 + rnd (30));
+	}
+	else if (k < 40)		// long press (LVGL 400 ms), released at a random time
+	{
+		fz_pick (&x, &y); int ms = 100 + (int) rnd (1800); evlog ("hold %d,%d %dms", x, y, ms, 0);
+		fz_set (x, y); s_Down = 1; for (int t = 0; t < ms; t += 40) fz_step (40);
+		s_Down = 0; fz_step (10 + rnd (50));
+	}
+	else if (k < 65)		// drag, possibly ending anywhere, any speed
+	{
+		fz_pick (&x, &y); fz_pick (&x1, &y1); int steps = 2 + (int) rnd (30), ms = 5 + (int) rnd (60); evlog ("drag %d,%d > %d,%d", x, y, x1, y1);
+		evlog ("  steps %d ms %d", steps, ms, 0, 0);
+		fz_set (x, y); s_Down = 1; fz_step (ms);
+		for (int i = 1; i <= steps; i++) { fz_set (x + (x1 - x) * i / steps, y + (y1 - y) * i / steps); fz_step (ms); }
+		if (rnd (4)) { s_Down = 0; fz_step (ms); }	// 1 in 4: the release comes with the next event (a page change in between)
+	}
+	else if (k < 75)		// a second finger around a press
+	{
+		fz_pick (&x, &y); evlog ("two-finger %d,%d", x, y, 0, 0);
+		fz_set (x, y); s_Down = 1; fz_step (30); fz_second (1);
+		for (int i = rnd (8); i--; ) { fz_second (1); fz_set (x + (int) rnd (60) - 30, y + (int) rnd (60) - 30); fz_step (20); }
+		if (rnd (2)) { fz_second (0); s_Down = 0; } else { s_Down = 0; fz_second (0); }
+		fz_step (30);
+	}
+	else if (k < 90)		// a page change, with or without a finger down
+	{
+		int n = sidecar_ui_page_count (), pg = (int) rnd ((unsigned) n); evlog ("show %d", pg, 0, 0, 0);
+		sidecar_ui_show (pg); fz_step (20 + rnd (80));
+	}
+	else if (k < 95)		// status churn
+	{
+		evlog ("status", 0, 0, 0, 0);
+		s_St.transport = (int) rnd (2); s_St.pattern = (int) rnd (16); s_St.rec = (int) rnd (3); s_St.rec_secs = (int) rnd (900);
+		s_St.usb_mode = (int) rnd (2); sidecar_ui_status (&s_St); fz_step (20 + rnd (200));
+	}
+	else if (k < 97)		// idle
+	{
+		evlog ("idle", 0, 0, 0, 0); for (int i = rnd (30); i--; ) fz_step (40);
+	}
+	else				// a theme switch (the whole UI rebuilt), maybe with the finger still down
+	{
+		static const int st[3] = {THEME_OLED, THEME_SIDECAR, THEME_GRID};
+		int t = st[rnd (3)]; evlog ("style %d", t, 0, 0, 0);
+		sidecar_ui_style (t); for (int i = 0; i < 10; i++) fz_step (40);
+	}
+}
+static int fuzz_main (int argc, char **argv)
+{
+	unsigned long seed = strtoul (argv[2], 0, 10); long n = atol (argv[3]);
+	s_Rng = seed * 0x9E3779B97F4A7C15ull + 88172645463325252ull;
+	if (W != 1280 || H != 720) { fprintf (stderr, "fuzz: 1280x720 only\n"); return 2; }
+	s_Dots = (uint16_t *) malloc ((size_t) W * 16 * SIDECAR_DOT * sizeof (uint16_t));	// m_pDotBuf: m_nWidth * DotRows * SIDECAR_DOT
+	s_Panel = (uint16_t *) calloc ((size_t) 720 * 1280, sizeof (uint16_t));		// the 720x1280 panel frame buffer
+	const char *look = argc > 4 ? argv[4] : "plain";
+	int style = !strcmp (look, "grid") ? THEME_GRID : !strcmp (look, "sidecar") || !strcmp (look, "hc") || !strcmp (look, "hcg") || !strcmp (look, "viper") ? THEME_SIDECAR : THEME_OLED;
+	s_nContrastSt = !strcmp (look, "hc") ? 1 : !strcmp (look, "hcg") ? 2 : !strcmp (look, "viper") ? 3 : 0;
+	s_bQuiet = 1;
+	seqdemo_build ();
+	status_init (THEME_OLED);
+	sidecar_ui_status (&s_St);
+	if (style != THEME_OLED) { status_init (style); sidecar_ui_style (style); for (int i = 0; i < 10; i++) fz_step (40); }
+	if (!strcmp (look, "replay") || !strncmp (look, "replay", 6))	// ./shot fuzz 0 0 1280x720 replayN: theme N, PRESET page, then every clickable object in turn
+	{
+		int t = look[6] ? look[6] - '0' : 0; static const int st[3] = {THEME_OLED, THEME_SIDECAR, THEME_GRID};
+		status_init (st[t]); sidecar_ui_style (st[t]); for (int i = 0; i < 10; i++) fz_step (40);
+		sidecar_ui_show (18); fz_step (50);
+		s_nCand = 0; fz_walk (lv_layer_top (), 0); fz_walk (lv_screen_active (), 0);
+		for (int c = 0; c < s_nCand; c++)
+		{
+			lv_area_t a; lv_obj_get_coords (s_Cand[c], &a);
+			int x = (a.x1 + a.x2) / 2, y = (a.y1 + a.y2) / 2;
+			fprintf (stderr, "REPLAY theme %d: show 18; tap %d,%d (UI coordinates)\n", t, x, y);
+			fz_set (x, y); s_Down = 1; fz_step (30); fz_step (30); s_Down = 0; fz_step (30); fz_step (30);
+			sidecar_ui_show (18); fz_step (50); s_nCand = 0; fz_walk (lv_layer_top (), 0); fz_walk (lv_screen_active (), 0);
+		}
+		printf ("replay theme %d: %d objects tapped ok\n", t, s_nCand);
+		return 0;
+	}
+	for (long i = 0; i < n; i++)
+	{
+		fz_event ();
+		if ((i & 1023) == 1023) fprintf (stderr, "fuzz seed %lu %s: %ld events\n", seed, look, i + 1);
+	}
+	printf ("fuzz seed %lu %s: %ld events ok (blit rejects %ld)\n", seed, look, n, s_nBlitMiss);
+	return 0;
+}
+
 int main (int argc, char **argv)
 {
 	lv_init ();
@@ -3593,6 +3769,7 @@ int main (int argc, char **argv)
 		anim (argv[2], argc > 3 ? atoi (argv[3]) : 300);
 		return 0;
 	}
+	if (argc > 3 && !strcmp (argv[1], "fuzz")) return fuzz_main (argc, argv);
 	snprintf (s_Dir, sizeof s_Dir, "%s", argc > 1 ? argv[1] : "obj");
 	th_fit_report = fit_painted;
 	theme_run (THEME_OLED, "oled");

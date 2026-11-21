@@ -1601,8 +1601,9 @@ int th_meter_span (lv_obj_t *o)
 static void meter_ev (lv_event_t *e)
 {
 	lv_obj_t *o = lv_event_get_target_obj (e);
-	meter_t *m = (meter_t *) lv_obj_get_user_data (o);
 	lv_event_code_t code = lv_event_get_code (e);
+	if (code == LV_EVENT_DELETE) return;		// (meter_free ran first for this event: m is gone)
+	meter_t *m = (meter_t *) lv_obj_get_user_data (o);
 	if (!m->en || !m->cb) return;
 	if (code != LV_EVENT_PRESSED && code != LV_EVENT_PRESSING && code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST) return;
 	const int knob = m->kind == TH_METER_KNOB, dz = TH->touch / 4 > 0 ? TH->touch / 4 : 1;

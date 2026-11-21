@@ -22,7 +22,7 @@ UI_C := ../sidecar_ui.c ../sidecar_theme.c ../sidecar_dot.c ../sidecar_dotfont.c
 	../sidecar_scope.c ../sidecar_status.c ../sidecar_project.c ../sidecar_chop.c ../sidecar_sedit.c ../sidecar_preset.c ../touch_cal.c rytm_fake.c
 UI_O := $(addprefix obj/ui-,$(notdir $(UI_C:.c=.o)))
 FONT_O := $(patsubst %,obj/ui-sidecar_arb%.o,11 12 14 16 18 19 20 24 30 36 44) $(patsubst %,obj/ui-sidecar_ar%.o,13 18 28)
-SEQ_O := obj/seq_touch.o obj/seqdemo.o obj/seq_pattern.o obj/seq_music.o obj/seq_xcmd.o obj/poly.o obj/rytm_dump.o obj/inst_alloc.o
+SEQ_O := obj/fuzz_blit.o obj/seq_touch.o obj/seqdemo.o obj/seq_pattern.o obj/seq_music.o obj/seq_xcmd.o obj/poly.o obj/rytm_dump.o obj/inst_alloc.o
 UI_H := ../sidecar_ui.h ../sidecar_theme.h ../sidecar_dot.h ../sidecar_dotfont.h ../sidecar_seqed.h ../sidecar_rytmpat.h \
 	../rytm_pattern.h ../seq_touch.h ../sidecar_wgview.h ../sidecar_voice.h ../sidecar_insfx.h ../sidecar_mfx.h ../sidecar_morph.h ../sidecar_xy.h ../sidecar_song.h ../sidecar_rec.h \
 	../sidecar_scope.h ../sidecar_status.h ../sidecar_project.h ../sidecar_chop.h ../sidecar_sedit.h ../sidecar_preset.h ../touch_cal.h ../sidecar_logo.h
@@ -121,6 +121,8 @@ obj/ui-sidecar_arb%.o: ../fonts/sidecar_arb%.c obj/lv_conf.h
 	$(CC) $(CFLAGS) -c $< -o $@
 obj/ui-sidecar_ar%.o: ../fonts/sidecar_ar%.c obj/lv_conf.h
 	$(CC) $(CFLAGS) -c $< -o $@
+obj/fuzz_blit.o: fuzz_blit.cpp ../dsi_rotate.h
+	$(CXX) $(SEQFLAGS) -c $< -o $@
 obj/seq_touch.o: ../seq_touch.cpp ../seq_touch.h ../sidecar_seqed.h $(CORE)/seq/seq.h obj/lv_conf.h
 	$(CXX) $(SEQFLAGS) -c $< -o $@
 obj/seqdemo.o: seqdemo.cpp ../seq_touch.h $(CORE)/seq/seq.h $(CORE)/seq/rytm_dump.h $(CORE)/inst_alloc.h obj/lv_conf.h
