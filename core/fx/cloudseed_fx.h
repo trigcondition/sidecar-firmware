@@ -51,7 +51,7 @@ namespace fx {
 // Continuous (no step): a size step 0..31 inside each character.
 inline constexpr Zone kCloudSeedZones[] = {{0, 0, 0, 1, 0, "ROOM"}, {0, 32, 0, 1, 0, "HALL"}, {0, 64, 0, 1, 0, "PLATE"},
                                            {0, 96, 0, 1, 0, "AMBNC"}};
-inline constexpr KnobLabels kCloudSeedLabels = {{"CHAR", "DCY", "DAMP", "MOD"}, kCloudSeedZones, 4};
+inline constexpr KnobLabels kCloudSeedLabels = {{"CHAR", "DCY", "DAMP", "MOD"}, kCloudSeedZones, 4, {"Character", "Decay", "Damping", "Modulation"}};
 namespace cloudseed {
 
 constexpr float kPi = 3.14159265358979f;

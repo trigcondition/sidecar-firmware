@@ -45,7 +45,7 @@ namespace core {
 namespace fx {
 
 inline constexpr Zone kHaloZones[] = {{0, 127, 0, 0, 0, "FRZ"}};   // DECAY: the number up to 126, FRZ at 127
-inline constexpr KnobLabels kHaloLabels = {{"DCY", "MOD", "TONE", "SHIM"}, kHaloZones, 1};
+inline constexpr KnobLabels kHaloLabels = {{"DCY", "MOD", "TONE", "SHIM"}, kHaloZones, 1, {"Decay", "Modulation", "Tone", "Shimmer"}};
 
 // 2^x for the coefficients (x clamped to [-126, 126]): a 6th-order series on the fraction, the exponent by bits
 // (relative error ~2e-6); no libm

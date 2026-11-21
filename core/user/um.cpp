@@ -2242,6 +2242,7 @@ struct FxLabels {
   core::fx::Zone z[core::fx::kMaxZones];
   char lab[4][core::fx::kLabelChars + 1];
   char zn[core::fx::kMaxZones][core::fx::kZoneChars + 1];
+  char lng[4][core::fx::kLongChars + 1];   // the manifest's long names (0x51)
 };
 FxLabels g_fxl[kUfx][2];
 volatile uint8_t g_fxl_on;   // bit u: the loaded effect u has labels; bit 4 + u: they are in g_fxl[u][1]
@@ -2299,9 +2300,10 @@ void fx_labels_build(int u, int pkg) {
     int q = rmp_desc_find(&e.desc, j + 1);
     if (q < 0) continue;
     memcpy(L.lab[j], e.desc.knob[q].short_name, core::fx::kLabelChars);
+    strncpy(L.lng[j], e.desc.knob[q].long_name, core::fx::kLongChars);
     if (e.desc.knob[q].look == RMP_LOOK_LIST) fx_zones(e, q, j, L, &nz);
   }
-  for (int j = 0; j < 4; ++j) L.kl.label[j] = L.lab[j];
+  for (int j = 0; j < 4; ++j) L.kl.label[j] = L.lab[j], L.kl.long_name[j] = L.lng[j];
   L.kl.zones = L.z;
   L.kl.nzones = (uint8_t)nz;
   uint8_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);   // (only this core writes it)

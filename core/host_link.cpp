@@ -86,6 +86,7 @@ static CORE_COLD void sendfx_labels_out() {
     if (!label_id(id) || label_sent(id, sent, usent) || k >= rytm_label_tables()) return;
     if (int n = fx::sysex_labels(m, id)) {
       hooks.to_rytm(m, n), ++k;
+      if (int n2 = fx::sysex_full_names(m, id)) hooks.to_rytm(m, n2);   // its full names (0x51), right after
       if (id < fx::kFirstUser) sent |= 1ull << id;
       else usent |= (uint8_t)(1u << (id - fx::kFirstUser));
     }
