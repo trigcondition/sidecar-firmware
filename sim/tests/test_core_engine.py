@@ -56,7 +56,9 @@ class TestCoreEngine(unittest.TestCase):
         self.eng.report(P.assign(3, 0, 0, 1))
         a, b = [m for m in self.eng.take_sysex() if m[4] != P.FXIN]   # (the first message since boot asks the IN L/R source)
         self.assertEqual(P.decode_meta(P.parse(a)[1])["state"], 0)
-        self.assertEqual(P.decode_slots(P.parse(b)[1]), dict(gens=[1] * 5, installed=1, answer=(3, 1)))
+        d = P.decode_slots(P.parse(b)[1])
+        self.assertTrue(d.pop("caps") & P.HOST_CAPS_DELTA)   # (params-delta: the host's caps in every 1D)
+        self.assertEqual(d, dict(gens=[1] * 5, installed=1, answer=(3, 1)))
 
     def test_project_names_and_listing(self):
         self.eng.take_sysex()

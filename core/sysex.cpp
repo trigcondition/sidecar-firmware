@@ -118,4 +118,12 @@ CORE_COLD int sysex_slots(uint8_t* m, int answer_slot, int result) {
   return n;
 }
 
+CORE_COLD int sysex_slots_caps(uint8_t* m, int n, uint8_t caps) {
+  if ((n != 13 && n != 15) || m[4] != 0x1d || m[n - 1] != 0xf7) return n;
+  if (n == 13) m[12] = 0, m[13] = 0;
+  m[14] = caps & 0x7f;
+  m[15] = 0xf7;
+  return 16;
+}
+
 }  // namespace core

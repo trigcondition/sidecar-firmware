@@ -42,4 +42,11 @@ int sysex_slot_unchanged(uint8_t* m, int slot);
 int sysex_installed_empty(uint8_t* m);
 int sysex_slots(uint8_t* m, int answer_slot, int result);
 
+// The host's caps in a 1D (params-delta): a 13- or 15-byte 1D m of length n becomes the 16-byte form
+// ... <installed gen> <slot> <result> <caps> F7 (slot 0, result 0: no answer). A Rytm without it reads the 16 bytes as
+// a 1D whose answer names no slot. Returns 16 (n unchanged when m is not such a 1D).
+constexpr uint8_t kHostCapsDelta = 1;    // this host reads 56 PARAMS DELTA (core/host_link.h)
+constexpr uint8_t kHostCapsResync = 2;   // the Rytm sends each voice's next parameter-only report whole
+int sysex_slots_caps(uint8_t* m, int n, uint8_t caps);
+
 }  // namespace core
