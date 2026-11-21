@@ -139,6 +139,7 @@ class TapeFx {
     float hx = hp_x_, hy = hp_y_, lp = lp_;
     const float hc = hpc_;
     uint32_t w = w_, hr = rng_;
+    bool seen = seen_;   // the hiss seeds the runaway only once the tape has heard a signal
     const float hiss = c_g_ > 1.0f ? 1e-4f * (c_g_ - 1.0f) * (2.0f / 16777216.0f) : 0.0f;
     for (int i = 0; i < n; ++i) {
       d1 += sd1, g += sgf, lc += slc;
@@ -150,7 +151,8 @@ class TapeFx {
         }
       const float fb = wf[0] * r[0] + wf[1] * r[1] + wf[2] * r[2];
       float x = in[i] + g * fb;
-      if (hiss != 0.0f) hr = hr * 1664525u + 1013904223u, x += hiss * ((float)(hr >> 8) - 8388608.0f);
+      if (!seen && fabsf(in[i]) > kSeenIn) seen = true;
+      if (hiss != 0.0f && seen) hr = hr * 1664525u + 1013904223u, x += hiss * ((float)(hr >> 8) - 8388608.0f);
       hy = hc * (hy + x - hx), hx = x;   // 45 Hz high-pass
       lp += (hy - lp) * lc;             // AGE's loss per pass
       tape_[w & (kTape - 1)] = flush(soft_limit(lp, kCeiling));
@@ -166,7 +168,7 @@ class TapeFx {
       out[i][0] += yl;
       out[i][1] += yr;
     }
-    w_ = w, rng_ = hr;
+    w_ = w, rng_ = hr, seen_ = seen;
     hp_x_ = flush(hx), hp_y_ = flush(hy), lp_ = flush(lp);
     if (spring) FlushSpring();
   }
@@ -185,7 +187,7 @@ class TapeFx {
     ph_w_ = ph_f_ = drift_ = drift_t_ = 0.0f, drift_at_ = 0, rng_ = 12345u;
     have_word_ = false, word_ = 0, nstamp_ = 0, frame_ = 0, last_tick_ = 0;
     fpt_ = 1000.0f * (sr_ > 0.0f ? sr_ : 48000.0f) / 48000.0f;
-    key_ = -1, fresh_ = true, clear_at_ = -1, spring_on_ = false;
+    key_ = -1, fresh_ = true, clear_at_ = -1, spring_on_ = false, seen_ = false;
   }
   void ClearSpring() {
     for (Side& s : side_) {
@@ -289,7 +291,8 @@ class TapeFx {
   static constexpr int kStamps = 25;
   uint32_t stamp_[kStamps] = {}, nstamp_ = 0, frame_ = 0, last_tick_ = 0, word_ = 0;
   float fpt_ = 1000.0f;
-  bool have_word_ = false, fresh_ = true, spring_on_ = false;
+  static constexpr float kSeenIn = 1e-4f;   // an input above this arms the runaway's hiss (Clear disarms it)
+  bool have_word_ = false, fresh_ = true, spring_on_ = false, seen_ = false;
   int key_ = -1, clear_at_ = -1;
 };
 

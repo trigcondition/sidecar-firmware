@@ -150,7 +150,8 @@ wet only, soft-limited at -6 dBFS on the 2/3 return (the Rytm adds it at ~0.16) 
     tempo after it stops); a delay the tape cannot hold is clamped (H3 <= 2.72 s).
   - **The record path:** input + REPEAT x (the selected heads' sum / their count, so 100 % is the edge in every MODE)
     -> 45 Hz high-pass -> AGE's low-pass (the loss per pass) -> saturation (`soft_limit` toward 0.7). Above 100 % a
-    faint hiss (-80 dB x (REPEAT - 100 %)) seeds the runaway; at or below it silence in is silence out. A multi-head
+    faint hiss (-80 dB x (REPEAT - 100 %)) seeds the runaway, but only once the tape has heard a signal (a fresh or cleared tape with nothing in stays silent
+    even at 127; once SPACE has heard a signal the hiss stays armed until KILL, a clear or a TYPE change); at or below 100 % silence in is silence out. A multi-head
     runaway fades while TIME is swept (each head is pitched by its own delay's change) and builds again when TIME
     rests; H1 howls through a sweep (the dub siren).
   - **Wow and flutter:** 0.55 Hz sine + a slow random drift, and 6.4 Hz; the depth set from the pitch deviation (the
