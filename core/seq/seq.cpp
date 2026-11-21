@@ -82,7 +82,8 @@ struct Open {   // a recorded note waiting for its note-off
   int8_t track;
   uint8_t pitch;
   int idx;
-  double x;     // its start in steps
+  double x;     // its start in steps (as played)
+  double rx;    // its start as recorded (step + micro), in steps: the mono cut measures from here
 };
 
 Pattern* cur = nullptr;    // playing and edited
@@ -979,6 +980,13 @@ CORE_COLD void load_tracks() {
     pc.unison = (uint8_t)clampi(a[3], 0, kMaxUnison), pc.detune = (uint8_t)clampi(a[4], 0, 127);
     pc.spread = (uint8_t)clampi(a[5], 0, 127), pc.group = (uint8_t)clampi(a[6], 0, kPolyGroups);
     pc.oct = (int8_t)(c[-1] == ',' ? clampi(atoi(c), -kMaxPadOct, kMaxPadOct) : 0);   // 7g: the optional PAD OCT (signed)
+    pc.chord = 0;   // CHORD REC: the optional 9th number (a line without it: OFF)
+    if (c[-1] == ',') {
+      const char* o = c;
+      if (*o == '-' || *o == '+') ++o;
+      while (*o >= '0' && *o <= '9') ++o;
+      if (*o == ',') pc.chord = atoi(o + 1) ? 1 : 0;
+    }
   }
 }
 // tracks.txt's text (the mask, the latency, the pins, E0's default poly configs)
@@ -988,8 +996,8 @@ CORE_COLD int tracks_text(char* b, int cap) {
   for (int r = 0; r < kRytmTracks && n < cap - 40; ++r) {   // E0: the tracks' default poly configs (none: no line)
     const PolyCfg& pc = poly_def[r];
     if (!poly_default(pc))
-      n += sniprintf(b + n, cap - n, CORE_STR("poly=%d:%d,%d,%d,%d,%d,%d,%d\n"), r + 1, pc.voices, pc.alloc,
-                     pc.unison, pc.detune, pc.spread, pc.group, pc.oct);
+      n += sniprintf(b + n, cap - n, CORE_STR("poly=%d:%d,%d,%d,%d,%d,%d,%d,%d\n"), r + 1, pc.voices, pc.alloc,
+                     pc.unison, pc.detune, pc.spread, pc.group, pc.oct, pc.chord);
   }
   return n;
 }
@@ -1045,6 +1053,7 @@ CORE_COLD void mark_dirty() {
 // go to `sav` for idle().
 CORE_COLD void install(int index) {
   if (cur->index == index && pat_loaded == index) return;
+  for (Open& o : opens) o.used = false;   // (a held key's note belongs to the pattern it was recorded in)
   ne_cover_outside();   // round 3 (NB-3): an outside edit after a NOTE EDIT gesture becomes a level before its pattern goes
   int was_lock = lock_of(index);   // (the loaded project's lock of it, before a fill's stand-in replaces it: below)
   if (dirty && cur->index >= 0) {
@@ -2185,6 +2194,8 @@ CORE_COLD void on_state(const uint8_t* a, int n) {
     case kRec:
       if (n < 3) break;
       rec_live = a[1] != 0, rec_grid = a[2] != 0;
+      if (!rec_live)
+        for (Open& o : opens) o.used = false;   // (punch-out: a key still held is not rewritten at a later punch-in)
       return;
     case kQperf:     // 2D 01 0E <pos hi> <pos lo> <mask lo7> <mask hi5> <flags>: the QUICK PERF knob (core/mod/scene.h)
       if (n < 6) break;
@@ -3138,13 +3149,30 @@ CORE_COLD void note(int vi, bool on, int pitch, int vel, int track) {
     int micro = quant ? 0 : clampi((int)((x - (double)sa) * kSub + (x >= (double)sa ? 0.5 : -0.5)), -kSub / 2, kSub / 2);
     if (sa < 0) sa = 0;
     int idx = map_step(*cur, t, r, vstep(r, sa)).index;   // (the step heard there: SPD's offset)
+    // CHORD REC OFF (the default): live recording is a mono line. The note still held ends here (its recorded length
+    // is cut at this note's start) and its release later records nothing; a note that landed on this very step is
+    // replaced, so one pass of live rec never puts two notes on a step. Playing is not touched (poly's own notes).
+    if (!cfg_of(t, r).chord)
+      for (Open& o : opens) {
+        if (!o.used || o.track != r) continue;
+        o.used = false;
+        Step& s = t->step[o.idx];
+        if (o.idx == idx && o.pitch != pitch) {
+          remove_pitch(s, o.pitch);
+          continue;
+        }
+        // (from its recorded start to this note's recorded start: no overlap, no gap, whatever the quantise)
+        int l = clampi((int)(((double)sa + (double)micro / kSub - o.rx) * kSub + 0.5), 1, 16 * kSub);
+        for (int k = 0; k < s.n; ++k)
+          if (s.note[k].pitch == o.pitch) s.note[k].len = (uint16_t)l;
+      }
     Note n = new_note(*t, pitch, d2);
     n.micro = (int8_t)micro;
     n.fresh = sa >= planned[r] ? 1 : 0;   // its step is not planned yet: not again on top of the pad's own sound
     add_note(t->step[idx], n);
     for (Open& o : opens)
       if (!o.used) {
-        o = {true, (int8_t)r, (uint8_t)pitch, idx, x};
+        o = {true, (int8_t)r, (uint8_t)pitch, idx, x, (double)sa + (double)micro / kSub};
         break;
       }
     ++st.recorded;
@@ -4777,8 +4805,8 @@ CORE_COLD int poly_json(char* out, int cap) {
     inst::Resolved rs;
     int m = -1, vi = voice_of(r);
     if (vi >= 0 && inst::resolve_for(vi, c, &rs, &m)) inst::describe_short(rs, m, info, sizeof info);
-    n += sniprintf(out + n, cap - n, "%s{\"t\":%d,\"v\":%d,\"a\":%d,\"u\":%d,\"d\":%d,\"s\":%d,\"g\":%d,\"o\":%d,\"own\":%d,\"info\":\"%s\"}",
-                   first ? "" : ",", r + 1, c.voices, c.alloc, c.unison, c.detune, c.spread, c.group, c.oct,
+    n += sniprintf(out + n, cap - n, "%s{\"t\":%d,\"v\":%d,\"a\":%d,\"u\":%d,\"d\":%d,\"s\":%d,\"g\":%d,\"o\":%d,\"cr\":%d,\"own\":%d,\"info\":\"%s\"}",
+                   first ? "" : ",", r + 1, c.voices, c.alloc, c.unison, c.detune, c.spread, c.group, c.oct, c.chord,
                    t && !poly_default(t->poly) ? 1 : 0, info);
     first = false;
   }
@@ -5132,7 +5160,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     int r = atoi(p + 9) - 1;
     const char* q = strchr(p + 9, ':');
     if (r < 0 || r >= kRytmTracks)
-      return sniprintf(out, cap, CORE_STR("seq=poly:T[:auto|voices=0..8,alloc=reassign|rotate|reset,unison=1..8,detune=0..127,spread=0..127,group=0..4,oct=-3..3]")), true;
+      return sniprintf(out, cap, CORE_STR("seq=poly:T[:auto|voices=0..8,alloc=reassign|rotate|reset,unison=1..8,detune=0..127,spread=0..127,group=0..4,oct=-3..3,chord=0..1]")), true;
     Track* t = q ? slot_for(r) : track_of(*cur, r, false);
     PolyCfg c = cfg_of(t, r);
     if (q) {

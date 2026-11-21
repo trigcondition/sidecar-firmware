@@ -863,8 +863,24 @@ built since (rui1048, below, "E0 on the Rytm"); the RANDOM page waits for the se
   (`poly=bind`) and the sequencer's own playback are not shifted; steps already recorded do not move when OCT changes.
   Stored as a 8th byte of the pattern's poly block (written only when OCT is not 0, so a file without OCT stays byte for
   byte as before) and as the 8th number of `poly=` (optional).
+- **CHORD REC (encoder H, `seq=poly:T:chord=0|1`):** playing is poly as ever (the CHRM pads and a MIDI keyboard sound
+  every held note, recording or not). What changes is what live recording (REC + PLAY) writes. **OFF** (the default):
+  a mono line, last note wins, as when recording a mono synth: a note pressed while another is held ends the held
+  note's recorded length at that moment and records itself; releasing the newest while an older one is still held does
+  not resume the older one in the recording; two notes that land on one step leave only the later one, so a pass of
+  live recording never puts two notes on a step. Chords already in the pattern (step-entered, or recorded earlier with
+  ON) are untouched. **ON:** every held note is recorded with its own length (chords, overlapping lengths). It is one
+  rule in `seq.cpp note()`, the single entry of live recording: the pads (poly's channel binding, `seq::midi`), a
+  keyboard (`keys.cpp`, `seq::note`) and the Pi's bridge all end there. The Rytm-sequenced tracks are not covered
+  (the Rytm records one NOTE per trig anyway). Step and grid entry of several notes on a step is not live recording
+  and is unchanged. Two details of the OFF rule: the held note is cut at the new note's *recorded* start (step +
+  micro, so quantised or not there is no overlap and no gap), and a note that lands on the same step as the held one
+  replaces it by design (a grace note or a fast run inside one step keeps only its last note; with CHORD REC ON they
+  all stay). A held key does not carry over a punch-out (REC off) or a pattern switch: its note is left as recorded.
+  Stored as the 9th byte of the pattern's poly block (written only when ON, so a file with OFF stays
+  byte for byte as before; an older file reads as OFF) and as the 9th number of `poly=` (optional).
 - **Where it is stored (decided):** in the pattern (a v4 block per track), and as the Rytm track's **default** in
-  `tracks.txt` (`poly=T:V,A,U,D,S,G,O`; O, the PAD OCT, is optional when read): a track plays its pattern's config, else its default - the last one set on it in
+  `tracks.txt` (`poly=T:V,A,U,D,S,G,O,C`; O, the PAD OCT, and C, CHORD REC, are optional when read): a track plays its pattern's config, else its default - the last one set on it in
   this project. So a track keeps its voicing across patterns as an A4 keeps POLY CONFIG in its kit, a pattern may still
   differ, and nothing new is written to the card on the control core (the pattern's and the tracks' existing saves).
   Per kit was the alternative: the A4's place, but the Sidecar's seq data has no per-kit file, and a new per-kit card
@@ -1003,9 +1019,12 @@ core/ui/page_keys.h). An older host opens its SIDECAR page instead.
 | D DTUN | DETUNE | 0..127 (FUNC: by 8) |
 | E SPRD | SPREAD | 0..127 (FUNC: by 8) |
 | F GRP | GROUP | OFF, 1..4: stored, not played yet (POLYPHONY.md 7) |
+| G OCT | PAD OCT | -3..+3 |
+| H CHRD | CHORD REC | OFF (default), ON: live recording writes a mono line, or every held note |
 
 - Each turn is the console's `seq=poly:T:<key>=<value>` (`seq::command`): the pattern's config and the track's default
-  in `tracks.txt`, exactly as the console, the web page and the touchscreen's POLY tool. No core/seq change.
+  in `tracks.txt`, exactly as the console and the touchscreen's POLY tool (the web page has no poly controls). CHORD REC (H) is
+  reached from the console (`seq=poly:T:chord=0|1`, 0 and 1 only) and this encoder.
 - **The info line** under the title is what the config resolves to now (inst::resolve_for, describe_short's figures):
   `4 NOTES 4 INST 2.92%` (+ ` CUT` when the budget or the machine's maximum cut it); the machine is left out (the Rytm's
   line holds 25 characters; the touchscreen's says `PLAITS 4 INST ...`).

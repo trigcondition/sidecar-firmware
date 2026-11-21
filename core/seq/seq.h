@@ -202,10 +202,13 @@ struct PolyCfg {
   uint8_t group;    // 0 none; 1..kPolyGroups: a poly group across tracks (data model only: docs/POLYPHONY.md "E0")
   int8_t oct;       // -3..+3 (BACKLOG 7g PAD OCT): 12 x oct added to the pads' notes (CHRO) and the Rytm's pad 0x04 notes
                     // on this track's voice; steps record the shifted pitch; host keyboards and playback unshifted
+  uint8_t chord;    // CHORD REC: 0 OFF (the default): live recording writes a mono line (last note wins: a new note
+                    // cuts the held one's recorded length); 1 ON: every held note is recorded with its own length.
+                    // Playing (pads, keyboard) is poly either way
 };
 constexpr int kMaxPadOct = 3;
 inline bool poly_default(const PolyCfg& c) {
-  return !c.voices && !c.alloc && c.unison <= 1 && !c.detune && !c.spread && !c.group && !c.oct;
+  return !c.voices && !c.alloc && c.unison <= 1 && !c.detune && !c.spread && !c.group && !c.oct && !c.chord;
 }
 // seqtop P2 (docs/SEQ-IDEAS.md P2): a track's own speed, a ratio of the Rytm track's step clock (which already runs at
 // the Rytm track's SCALE). 0 FOLLOW = 1:1 (as before). Elektron's set (1/8 .. 2 with 3/4 and 3/2) and the free ratios
