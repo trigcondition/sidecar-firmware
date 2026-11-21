@@ -51,7 +51,7 @@ struct Job {
   bool now_valid = false;
   int nbuf = -1;
   int pat = -1;                       // the pattern read and written (rytm_dump::active_pattern() at the read)
-  uint32_t project = 0;               // project_gen() at the start: a project load since ends the job unwritten
+  uint32_t project = 0;               // project_id() at the start: a project load since ends the job unwritten
   Stats st_ = {};
 };
 Job J;
@@ -86,7 +86,7 @@ void end(State s, int why) {
 // user's pattern moved under us: never write anything back then.
 bool moved_since_write() {
   return rytm_dump::switch_count() != J.switchw || rytm_dump::dirty_count() - J.dirtyw != kOwnDirties ||
-         project_gen() != J.project;   // (a project load: pattern n is another project's now)
+         project_id() != J.project;   // (a project load: pattern n is another project's now)
 }
 void restore_or_leave(int why_restored, int why_left) {
   if (moved_since_write()) {
@@ -125,7 +125,7 @@ void on_answer(const uint8_t* m) {
     if (!memcmp(g_rec, g_before, kRecord)) { J.changed = false; end(kDone, kWhyNone); return; }   // nothing to write
     // a project load since the start (it keeps the pattern number, so the guard above does not see it): the pattern
     // read may be the old project's; written now it would land in the new project's stored pattern n
-    if (project_gen() != J.project) { end(kFailed, kWhyProject); return; }
+    if (project_id() != J.project) { end(kFailed, kWhyProject); return; }
     memcpy(g_out, g_orig, kAnswer);
     rytm_dump::repack(g_out, g_rec);
     J.dirtyw = rytm_dump::dirty_count(), J.switchw = rytm_dump::switch_count();   // (= the read's: checked above)
@@ -140,7 +140,7 @@ void on_answer(const uint8_t* m) {
     if (!rytm_dump::parse_id(m, kAnswer, kAnsN, g_tmp, nullptr)) return;
     ++J.st_.verifies;
     // another pattern's answer, or another project's pattern n now (a project load keeps the number)
-    if (rytm_dump::switch_count() != J.switchw || project_gen() != J.project) { end(kFailed, kWhyChanged); return; }
+    if (rytm_dump::switch_count() != J.switchw || project_id() != J.project) { end(kFailed, kWhyChanged); return; }
     if (lockfill::same(g_tmp, g_rec)) { end(kDone, kWhyNone); return; }   // (the Rytm re-sorts its lock list)
     // the pattern as it was before the write: a late answer to a read request, or the write not taken (yet): once more
     if (!J.reverified && !memcmp(g_tmp, g_before, kRecord)) {
@@ -171,7 +171,7 @@ CORE_COLD bool start(PatchFn fn, void* ctx) {
   if (rytm_dump::active_pattern() < 0) { J.why = kWhyNoPattern; return false; }
   alloc();
   J.fn = fn, J.ctx = ctx, J.why = kWhyNone, J.presult = 0, J.reads = 0, J.changed = false, J.have_before = false;
-  J.nbuf = -1, J.project = project_gen();
+  J.nbuf = -1, J.project = project_id();
   J.now = now_ms();
   rytm_dump::set_fill_hold(true);
   read_again();
@@ -184,7 +184,7 @@ CORE_COLD void tick(uint32_t ms) {
   // the song's own dumps or writes began meanwhile (M1): out of their way, nothing written back
   if (rytm_dump::hold_level() >= 2) { end(kFailed, kWhySong); return; }
   // H1: another pattern now, or a project load (pattern n is another project's): nothing written back, no DONE
-  if ((J.st == kSettle || J.st == kVerifying) && (rytm_dump::switch_count() != J.switchw || project_gen() != J.project)) {
+  if ((J.st == kSettle || J.st == kVerifying) && (rytm_dump::switch_count() != J.switchw || project_id() != J.project)) {
     log(CORE_STR("fill: the pattern changed after the write: nothing written back (check it)"));
     end(kFailed, kWhyChanged);
     return;

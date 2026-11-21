@@ -73,7 +73,7 @@ struct FillPage {
   lf::Saved pending, undo;        // the target as it was before the job's patch; the undo a done job leaves
   lf::Saved pafter, after;        // the target as the patch left it: the undo refuses once it changed (CHANGED SINCE)
   int undo_pattern = -1;          // the pattern the job read (patwrite::read_pattern): another active pattern ends the undo
-  uint32_t jproject = 0, undo_project = 0;   // core::project_gen() at the job's start: a project load ends it too
+  uint32_t jproject = 0, undo_project = 0;   // core::project_id() at the job's start: another project ends it too (a repeated report of the same one does not)
   // the job's own copy of what it writes (the page may change while the job runs)
   ft::Def jd;
   int jtrack = -1, jfrom = 0, jto = 0;
@@ -117,7 +117,7 @@ CORE_COLD int patch_undo(uint8_t* rec, void*) {
   // bound to the fill's own pattern and project, not to the content alone (a copy of the pattern holds the same)
   // (owner 2026-11-13: by the pattern's number, not the switch count: a Rytm hello's resync to the same pattern counted
   // as a switch and expired the undo right after a fill; the content check below guards a changed track)
-  if (patwrite::read_pattern() != P.undo_pattern || project_gen() != P.undo_project) return lf::kChanged;
+  if (patwrite::read_pattern() != P.undo_pattern || project_id() != P.undo_project) return lf::kChanged;
   lf::Saved now;   // M2 (fix round): the target edited since the fill (on the Rytm, by a take): not put back over that
   lf::save(rec, P.undo.track, P.undo.g, &now);
   if (!lf::equal(now, P.after)) return lf::kChanged;
@@ -167,7 +167,7 @@ CORE_COLD bool begin(uint8_t job) {
     if (!P.undo.valid) { note("NOTHING TO UNDO"); return false; }
     int ap = rytm_dump::active_pattern();
     if (ap >= 0 && ap != P.undo_pattern) { P.undo = lf::Saved(); note("UNDO EXPIRED (PATTERN)"); return false; }
-    if (project_gen() != P.undo_project) { P.undo = lf::Saved(); note("UNDO EXPIRED (PROJECT)"); return false; }
+    if (project_id() != P.undo_project) { P.undo = lf::Saved(); note("UNDO EXPIRED (PROJECT)"); return false; }
   } else if (!def()) {
     return false;
   }
@@ -175,7 +175,7 @@ CORE_COLD bool begin(uint8_t job) {
     P.jd = *def(), P.jtrack = P.track, P.jfrom = P.from[P.cur], P.jto = P.to[P.cur], P.jo = P.o;
     P.jo.order = P.order[P.cur];
   }
-  P.filled = 0, P.jproject = project_gen();
+  P.filled = 0, P.jproject = project_id();
   patwrite::PatchFn fn = job == kJobFill ? patch_fill : job == kJobClear ? patch_clear : patch_undo;
   if (!patwrite::start(fn, nullptr)) { note(patwrite::why_text(patwrite::why())); return false; }
   P.job = job, P.jobs_seen = patwrite::jobs();

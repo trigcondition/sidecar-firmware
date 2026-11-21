@@ -70,9 +70,12 @@ int pool_card_add(const char* path, int ch, int bits, uint32_t rate, uint32_t fr
 #endif
 void project_save();
 void set_project(const uint8_t* d, int len);   // 10's name bytes (up to F7)
-// 0.5.0 FILL (core/ui/page_fill.cpp): counts the Rytm's project loads (every 10, every slot switch): an undo made
-// before one is gone (the working pattern may be another project's now, under the same pattern number)
-uint32_t project_gen();
+// 0.5.0 FILL, the pattern writer and the pattern seed (core/ui/page_fill.cpp, core/seq/patwrite.cpp, seedtake.cpp): which project the Rytm is
+// in, as a number to remember and compare later ("the same project" or "another one": an undo, a job or a take made before is gone).
+// It is a hash of the project's key (`project`), of the last name the Rytm REPORTED (a 10, a slot switch: it moves when the Rytm names
+// another project even while the switch is held back, in slot mode or by the rename question) and of a reload count (a cleared slot
+// loaded again, a restore: project_switch_named with reload). A repeat of the same report leaves it as it was.
+uint32_t project_id();
 void project_switch(const char* name);         // the switch a 10 asked for once core/bundle/rename.h has its answer
 void project_switch_named(const char* key, const char* name, bool reload);   // core/bundle/prjslot.h's switch
 void project_load();

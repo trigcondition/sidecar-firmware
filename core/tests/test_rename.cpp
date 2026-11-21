@@ -114,11 +114,15 @@ int main() {
 
   // ---- renamed on the Rytm: asked; the switch waits (the old project stays)
   uint32_t asks = rename::asks();
+  const uint32_t id0 = project_id();
   name_project("SHARED SET 2");
   CHECK(rename::state() == rename::kAsk && rename::asks() == asks + 1);
+  const uint32_t id1 = project_id();
+  CHECK(id1 != id0);   // the Rytm has named another project, though the switch waits for the answer: what was made for the old one is gone
   CHECK(!strcmp(project, "SHARED SET") && !strcmp(rename::from(), "SHARED SET") && !strcmp(rename::to(), "SHARED SET 2"));
   CHECK(rename::files() == 7);   // (0.5.0: the scenes' and the XY pad's folders too)
   name_project("SHARED SET 2");   // the Rytm's repeat: still the one question
+  CHECK(project_id() == id1);   // ... and a repeat changes nothing
   CHECK(rename::state() == rename::kAsk && rename::asks() == asks + 1 && !strcmp(project, "SHARED SET"));
   // YES: every file and folder under the new key, none left under the old; then the switch
   CHECK(rename::answer(true) == 7);

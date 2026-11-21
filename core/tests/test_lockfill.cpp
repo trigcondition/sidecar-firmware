@@ -1311,12 +1311,55 @@ int main() {
       ui::kFillPage.draw(c, 0, 1, t + 40000);
       CHECK(strcmp(c.txt[ui::kSlotFoot].s, "UNDONE") != 0);
     }
+    // the Rytm repeating its report of the SAME project (10, again and again) is no project load: the undo stays
+    writer_reset(r);
+    cmd("fill=open:0");
+    project_switch_named("SAME", "SAME", false);
+    cmd("fill=yes");
+    pump(400);
+    CHECK(ui::fill_page_view().undo);
+    {
+      std::vector<uint8_t> same = {0xF0, 0x7D, 0x52, 0x54, 0x10};   // (the project as it is now)
+      for (const char* c = project; *c; ++c) same.push_back((uint8_t)*c);
+      same.push_back(0xF7);
+      send(same), send(same);
+    }
+    cmd("fill=undo");
+    pump(400);
+    CHECK(!strcmp(ui::fill_page_view().note, "UNDONE"));
+    // the Rytm naming ANOTHER project while its switch is held back (the test card is keyed by slot, no 4B yet: set_project returns
+    // early): the undo is gone, a job running ends, all the same; a project reloaded under its own key too
+    writer_reset(r);
+    cmd("fill=open:0");
+    project_switch_named("HELD", "HELD", false);
+    cmd("fill=yes");
+    pump(400);
+    CHECK(ui::fill_page_view().undo);
+    send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'H', 'E', 'L', 'D', '2', 0xF7});
+    CHECK(!strcmp(project, "HELD"));   // (held: the project is still the old one)
+    cmd("fill=undo");
+    CHECK(!strcmp(ui::fill_page_view().note, "UNDO EXPIRED (PROJECT)"));
+    writer_reset(r);
+    CHECK(patwrite::start(patch_set, nullptr));
+    send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'H', 'E', 'L', 'D', '3', 0xF7});   // (before the answer is taken)
+    pump(400);
+    CHECK(patwrite::why() == patwrite::kWhyProject && F.writes == 0);
+    writer_reset(r);
+    cmd("fill=open:0");
+    project_switch_named("RELOAD", "RELOAD", false);
+    cmd("fill=yes");
+    pump(400);
+    CHECK(ui::fill_page_view().undo);
+    project_switch_named("RELOAD", "RELOAD", true);   // (a cleared slot loaded again, a restore: the same key)
+    cmd("fill=undo");
+    CHECK(!strcmp(ui::fill_page_view().note, "UNDO EXPIRED (PROJECT)"));
     // a project load (the Rytm's 10, the same pattern number): expired
     writer_reset(r);
     cmd("fill=open:0");
     cmd("fill=yes");
     pump(400);
     CHECK(ui::fill_page_view().undo);
+    project_switch_named("OTHER", "OTHER", false);   // (another project: its key moves; the 10 below is held in the test card's mode)
     send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'O', 'T', 'H', 'E', 'R', 0xF7});
     cmd("fill=undo");
     CHECK(!strcmp(ui::fill_page_view().note, "UNDO EXPIRED (PROJECT)"));
@@ -1376,16 +1419,35 @@ int main() {
       F.answer = false;
       cmd("fill=undo");
       CHECK(patwrite::busy());
+      project_switch_named("PROJ2", "PROJ2", false);
       send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'P', 'R', 'O', 'J', '2', 0xF7});
       F.answer = true;
       pump(3000);
       CHECK(!patwrite::busy() && F.rec == filled && F.writes == wn1);
       CHECK(!strcmp(ui::fill_page_view().note, "CHANGED SINCE: NO UNDO"));
     }
+    // the Rytm repeating its report of the SAME project while a job reads / writes does not end it
+    writer_reset(r);
+    project_switch_named("PROJS", "PROJS", false);
+    CHECK(patwrite::start(patch_set, nullptr));
+    send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'P', 'R', 'O', 'J', 'S', 0xF7});   // (before the answer is taken)
+    project_switch_named("PROJS", "PROJS", false);
+    pump(400);
+    CHECK(patwrite::why() != patwrite::kWhyProject && patwrite::why() != patwrite::kWhyChanged && F.writes == 1);
+    CHECK(!patwrite::busy() && patwrite::state() == patwrite::kDone);
+    writer_reset(r);   // ... nor after the write (settling / verifying)
+    CHECK(patwrite::start(patch_set, nullptr));
+    pump(30);
+    CHECK(patwrite::state() == patwrite::kSettle && F.writes == 1);
+    send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'P', 'R', 'O', 'J', 'S', 0xF7});
+    project_switch_named("PROJS", "PROJS", false);
+    pump(400);
+    CHECK(!patwrite::busy() && patwrite::state() == patwrite::kDone && F.writes == 1);
     // fix round 1 (review M2): a project load between the read and the write: the pattern read may be the old
     // project's, the write would land in the new one's stored pattern: nothing written (PROJECT LOADED: STOPPED)
     writer_reset(r);
     CHECK(patwrite::start(patch_set, nullptr));
+    project_switch_named("PROJ3", "PROJ3", false);   // (another project: the key moves)
     send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'P', 'R', 'O', 'J', '3', 0xF7});   // (before the answer is taken)
     pump(400);
     CHECK(patwrite::why() == patwrite::kWhyProject && F.writes == 0 && F.rec == r && F.stored == r);
@@ -1396,6 +1458,7 @@ int main() {
     CHECK(patwrite::start(patch_set, nullptr));
     pump(30);
     CHECK(patwrite::state() == patwrite::kSettle && F.writes == 1);
+    project_switch_named("PROJ4", "PROJ4", false);   // (another project: the key moves)
     send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'P', 'R', 'O', 'J', '4', 0xF7});
     pump(400);
     CHECK(patwrite::why() == patwrite::kWhyChanged && F.writes == 1 && patwrite::stats().restores == 0);
@@ -1406,6 +1469,7 @@ int main() {
     cmd("fill=yes");
     pump(30);
     CHECK(patwrite::state() == patwrite::kSettle && F.writes == 1);
+    project_switch_named("PROJ5", "PROJ5", false);   // (another project: the key moves)
     send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'P', 'R', 'O', 'J', '5', 0xF7});
     pump(400);
     CHECK(patwrite::why() == patwrite::kWhyChanged && F.writes == 1 && patwrite::stats().restores == 0);
@@ -1416,6 +1480,7 @@ int main() {
     CHECK(patwrite::start(patch_set, nullptr));
     pump(200);
     CHECK(patwrite::state() == patwrite::kVerifying);
+    project_switch_named("PROJ6", "PROJ6", false);   // (another project: the key moves)
     send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'P', 'R', 'O', 'J', '6', 0xF7});
     {
       auto a = answer_of(F.rec, 0x54);   // a good verify answer arriving before a tick

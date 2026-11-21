@@ -479,16 +479,22 @@ CORE_COLD static void announce() {   // the Rytm's tables for the project (its f
   send_fm_names();
 }
 
-static uint32_t g_project_gen = 0;
-uint32_t project_gen() { return g_project_gen; }
+static uint32_t g_reported = 0;   // a hash of the last project name the Rytm reported (10, slot switch), even if its switch is held back
+static uint32_t g_epoch = 0;      // counts the reloads of a project (a cleared slot loaded again, a restore)
+static uint32_t name_hash(const char* c) {
+  uint32_t h = 2166136261u;   // FNV-1a
+  for (; *c; ++c) h = (h ^ (uint8_t)*c) * 16777619u;
+  return h;
+}
+CORE_COLD uint32_t project_id() { return (name_hash(project) * 16777619u + g_reported) * 16777619u + g_epoch; }
 
 CORE_COLD void set_project(const uint8_t* d, int len) {
-  ++g_project_gen;
   char n[24];
   int k = 0;
   for (int i = 0; i < len && k < 23 && d[i] != 0xf7 && d[i]; ++i) n[k++] = d[i] & 0x7f;
   n[k] = 0;
   if (is_slot_key(n)) n[0] = '_';   // 2026-10-27: a Rytm name never names a slot key (today's key for it)
+  g_reported = name_hash(n);   // before any early return below (slot mode, the rename question): the Rytm HAS named this project
 #if CORE_MSAMP
   if (prjslot::take_10(n)) return;   // slot mode (core/bundle/prjslot.h): the 4B reports switch, not the 10
   char rk[kKeyMax];
@@ -536,7 +542,8 @@ CORE_COLD void project_switch(const char* n) {
 // 2026-10-27 (core/bundle/prjslot.h): the switch to a slot key with the Rytm's name for it; reload: the same key again
 // (its files changed under it: a cleared slot reloaded, a restore). A new name for the same key only renames it.
 CORE_COLD void project_switch_named(const char* key, const char* name, bool reload) {
-  ++g_project_gen;
+  g_reported = name_hash(name ? name : key);
+  if (reload) ++g_epoch;
   project_seen = true;
   if (reload || strcmp(key, project) != 0) {
     sniprintf(g_next_name, sizeof g_next_name, "%s", name ? name : key);
