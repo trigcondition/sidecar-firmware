@@ -979,7 +979,8 @@ def sendfx_route_text(v):
 #                 39 <seq>          commit staging -> the screen (when seq is the 38s'); a partial frame never shows
 #                 3A <page> <on>    open (1) / close (0) the remote page
 #                 3C                keepalive: the Rytm leaves after 1 s without any valid 3x
-#   Rytm -> host  30 <page> <on> <reason>   0 user (TRK + YES), 1 host (3A), 2 timeout, 3 local escape (TRK + YES)
+#   Rytm -> host  30 <page> <on> <reason>   0 user (TRK + YES), 1 host (3A), 2 timeout, 3 local escape (TRK + YES),
+#                 4 ram (the page's DDR claim damaged: rytm-mods big-ram, RAM_REPORT below)
 #                 31 <code >> 7> <code & 0x7F> <down>   every key while the page is on (the firmware's key codes:
 #                                           YES 0x44, NO 0x45, FUNC 0x80, TRK 0x86, pads 0x90..0x9B)
 #                 32 <encoder> <delta + 64> <func>   turns summed per 50 ms tick, delta -63..63
@@ -1026,7 +1027,7 @@ RUI_SRC_DIAG = 0x2B
 #    closed (0: end it). Every key and knob stays the Rytm's (none reaches the host); transport and pads play under it,
 #    a navigation key (LEFT RIGHT UP DOWN YES NO) only ends it, any other key or a turn ends it and reaches the Rytm;
 #    1 s without a host message ends it too. Ignored while the page is open or before any commit.
-RUI_REASONS = ("user", "host", "timeout", "escape")
+RUI_REASONS = ("user", "host", "timeout", "escape", "ram")   # 4: rytm-mods big-ram, the frame's RAM damaged (RAM_REPORT)
 # The firmware's key codes the remote pages name (rytm-emu src/panel.rs RYTM_KEYS, measured there)
 RUI_KEYS = dict(T1=0x00, T2=0x01, T3=0x02, T4=0x03, T5=0x04, T6=0x05, T7=0x06, T8=0x07, T9=0x08, T10=0x09, T11=0x0A,
                 T12=0x0B, T13=0x0C, T14=0x0D, T15=0x0E, T16=0x0F, FX=0x10, MUTE=0x11, CHRO=0x12, SCNE=0x13, PERF=0x14,
@@ -1431,6 +1432,13 @@ def decode_qperf(b):
     if len(b) != 5:
         return None
     return dict(pos=b[0] << 7 | b[1], mask=b[2] | b[3] << 7, flags=b[4])
+
+
+# rytm-mods big-ram (core/host_link.cpp ram_report, logged only): Rytm -> host RAM_REPORT 01 00 <bits> <address 5x7>
+# <word 5x7>, a DDR claim's sentinel changed (bits 1 frame, 2 names, 4 param modulation, 8 SEND FX pages; once and after
+# each hello), and RAM_REPORT 01 01 <passes 5x7> <bad 5x7> <first address 5x7> <its word 5x7> <ram_ok> <ram_bad>, the
+# diagnostic image's DDR canary every 10 s.
+RAM_REPORT = 0x55
 SEQ_SILENT = 0x46
 SEQ_FLAG_NO_PIN = 4
 SEQ_EDIT_OPS = {1: "COPY PAT", 2: "PASTE PAT", 3: "CLEAR PAT", 4: "UNDO PAT", 5: "COPY TRK", 6: "PASTE TRK",

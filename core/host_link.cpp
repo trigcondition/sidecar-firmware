@@ -53,6 +53,31 @@ static CORE_COLD void freeze_probe_seen(int secs) {
 }
 #endif
 
+// The Rytm's RAM reports (0x55, rytm-mods big-ram: 0026 / 0029 keep their large buffers in DDR claims outside
+// elekloader's area, each with sentinels checked every tick), logged only: the Rytm stops using a damaged claim itself.
+//   55 01 00 <bits> <address 5x7> <word 5x7>   a claim's sentinel changed (bits 1 frame, 2 names, 4 param mod,
+//                                              8 SEND FX pages): once, and again after each hello
+//   55 01 01 <passes 5x7> <bad 5x7> <first address 5x7> <its word 5x7> <ram_ok> <ram_bad>   the diagnostic image's
+//                                              DDR canary, every 10 s
+static uint32_t u35(const uint8_t* p) {
+  return (uint32_t)p[0] << 28 | (uint32_t)p[1] << 21 | (uint32_t)p[2] << 14 | (uint32_t)p[3] << 7 | p[4];
+}
+static CORE_COLD void ram_report(const uint8_t* d, int len) {
+  if (d[6] == 0 && len >= 19) {
+    static const char* const kWhat[4] = {"the frames", "the source names", "the param modulation", "the SEND FX pages"};
+    char what[96];
+    int n = 0;
+    what[0] = 0;
+    for (int i = 0; i < 4; ++i)
+      if (d[7] >> i & 1) n += sniprintf(what + n, sizeof what - n, "%s%s", n ? ", " : "", kWhat[i]);
+    log(CORE_STR("rui: the Rytm's mod RAM is damaged: claims %02x, at %08x (found %08x); %s off until a reboot"), d[7],
+        (unsigned)u35(d + 8), (unsigned)u35(d + 13), n ? what : "nothing");
+  } else if (d[6] == 1 && len >= 30) {
+    log(CORE_STR("rui: DDR canary: %u passes, %u bad words (first at %08x: %08x), ram_ok %d ram_bad %d"),
+        (unsigned)u35(d + 7), (unsigned)u35(d + 12), (unsigned)u35(d + 17), (unsigned)u35(d + 22), d[27], d[28]);
+  }
+}
+
 // The send FX's TYPE list (0x21, 8 a message) and both FX states (0x22) to the Rytm.
 static CORE_COLD void sendfx_names_out() {
   if (!hooks.to_rytm) return;
@@ -378,6 +403,10 @@ __attribute__((noinline)) CORE_COLD void host_sysex(const uint8_t* d, int len) {
     }
     if (d[4] == 0x35 && len >= 10) prjslot::hello(d[8]);   // (its caps byte: bit 2 the 4B reports)
 #endif
+    if (d[4] == 0x55 && len >= 8 && d[5] == 1) {   // RAM REPORT (rytm-mods big-ram; above)
+      ram_report(d, len);
+      return;
+    }
     if (d[4] == 0x25) {   // SLOT PRINTS (user slots: which machines the project's sounds were made for)
       if (hooks.slot_prints) hooks.slot_prints(d, len);
       return;
