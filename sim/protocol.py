@@ -1402,7 +1402,14 @@ def decode_fxin_state(payload):
 #   host -> Rytm  2E 01 <mask lo7: tracks 0..6> <mask hi5: tracks 7..11> <flags> [<clock lo7> <clock hi5>]
 #                 the tracks the Sidecar sequences (their trig keys / LEDs in seq mode, live record writes no stock trig
 #                 on them; pads still send notes) and optionally clock-only tracks (ticked in 2C, nothing else); hi bytes
-#                 above 0x1F refused. flags bit 1: resync now (2D 08 01 02 05 06 07 09 at once), bit 0 reserved (0).
+#                 above 0x1F refused. flags bit 1: resync now (2D 08 01 02 05 06 07 09 at once), bit 0 reserved (0),
+#                 bit 3 (SEQ_MASK_NODIRTY) no 2D 0B DIRTY wanted: the Rytm does not walk its pattern at all (the walk
+#                 that finds any writer's edit: 85 KB a second on a CPU-starved Rytm); clear (an older host never sets
+#                 it) the walk and the 0Bs as before. Turned clear again: a fresh walk and one 0B at once (edits made
+#                 meanwhile were never summed: the host fetches the pattern). The host sets it whenever none of its own
+#                 needs the 0Bs - the touch view's pattern fetches off (rytmpat=off) and no pattern write running
+#                 (patwrite, whose guards count them; it waits for that 0B first) - in every 2E, which goes again on
+#                 each change of it and after each hello (the Rytm forgets it there: wanted). 2D 0A edits: unaffected.
 #                 Any 2E (mask 0 too) turns the reports on; the first after a hello gets a full resync. The Rytm forgets
 #                 it at its hello (35) and when the port drops: sent again after each 35.
 #                 (1033) 2E may carry <pin lo7> <pin hi5> after the clock bytes (7 bytes): more tracks whose voices are
@@ -1414,6 +1421,7 @@ def decode_fxin_state(payload):
 #                 34's, 7F stock's; honoured while seq mode is on or the remote page is open; only a 2F / 34 sent after
 #                 the host took the LEDs counts, seq mode keeps them across 3A open / close. The trig LEDs: 34.
 SEQ_TICK, SEQ_STATE, SEQ_MASK, SEQ_PAGE_LEDS = 0x2C, 0x2D, 0x2E, 0x2F
+SEQ_MASK_RESYNC, SEQ_MASK_NOPIN, SEQ_MASK_NODIRTY = 2, 4, 8   # 2E flags
 SEQ_TRANSPORT, SEQ_PATTERN, SEQ_SWITCH, SEQ_MUTES, SEQ_REC, SEQ_TEMPO, SEQ_SEQMODE, SEQ_POS = 1, 2, 3, 5, 6, 7, 8, 9
 SEQ_SCALE, SEQ_EDIT, SEQ_DIRTY, SEQ_FILL, SEQ_SOLO = 4, 0x0A, 0x0B, 0x0C, 0x0D
 # 0.5.0 (core/mod/rytm_out.h; rytm-mods 0026 design.md "0.5.0"): host -> Rytm HOST_CMD 01 <op> ... (01 MUTE <set lo7>

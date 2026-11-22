@@ -174,6 +174,10 @@ CORE_COLD bool start(PatchFn fn, void* ctx) {
   J.nbuf = -1, J.project = project_id();
   J.now = now_ms();
   rytm_dump::set_fill_hold(true);
+  if (!rytm_dump::dirty_reported()) {   // the Rytm walks its pattern only while 0Bs are wanted: on first (kArming)
+    J.st = kArming, J.at = J.now, J.dirty0 = rytm_dump::dirty_count();
+    return true;
+  }
   read_again();
   return true;
 }
@@ -187,6 +191,10 @@ CORE_COLD void tick(uint32_t ms) {
   if ((J.st == kSettle || J.st == kVerifying) && (rytm_dump::switch_count() != J.switchw || project_id() != J.project)) {
     log(CORE_STR("fill: the pattern changed after the write: nothing written back (check it)"));
     end(kFailed, kWhyChanged);
+    return;
+  }
+  if (J.st == kArming) {   // the 0B of the walk turned on (dirty_count moved), or an older Rytm's silence
+    if (rytm_dump::dirty_count() != J.dirty0 || ms - J.at >= kArmMs) read_again();
     return;
   }
   if (J.st == kSettle) {
@@ -233,7 +241,7 @@ CORE_COLD void byte(uint8_t b) {
 }
 
 CORE_COLD State state() { return J.st; }
-CORE_COLD bool busy() { return J.st == kReading || J.st == kSettle || J.st == kVerifying; }
+CORE_COLD bool busy() { return J.st == kArming || J.st == kReading || J.st == kSettle || J.st == kVerifying; }
 CORE_COLD int why() { return J.why; }
 CORE_COLD int patch_result() { return J.presult; }
 CORE_COLD bool changed() { return J.changed; }

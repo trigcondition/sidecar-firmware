@@ -52,7 +52,10 @@ constexpr uint32_t kOwnDirties = 2;   // the DIRTYs (2D 0B) a received 0x54 (as 
 // caller names (lockfill::Result), nothing written. ctx: the caller's.
 using PatchFn = int (*)(uint8_t* rec, void* ctx);
 
-enum State : uint8_t { kIdle = 0, kReading, kSettle, kVerifying, kDone, kFailed };
+enum State : uint8_t { kIdle = 0, kReading, kSettle, kVerifying, kDone, kFailed, kArming };
+// kArming: the Rytm reported no DIRTYs (the 2E's "none wanted"): busy() turns them on (seq's next 2E), the read waits for
+// the 0B the Rytm sends when they come on (its walk starts afresh) or kArmMs, so that 0B is not taken for an edit
+constexpr uint32_t kArmMs = 500;
 enum Why : int {
   kWhyNone = 0, kWhyPlaying = 1, kWhyBusy = 2, kWhySong = 3, kWhyNoAnswer = 4, kWhyVerify = 5, kWhyPatch = 6,
   kWhyPlayed = 7, kWhyRunning = 8, kWhyChanged = 9, kWhyUnconfirmed = 10, kWhyNotTaken = 11, kWhyNoPattern = 12, kWhyProject = 13,
@@ -65,7 +68,7 @@ bool start(PatchFn fn, void* ctx);
 void tick(uint32_t ms);
 void byte(uint8_t b);              // the Rytm -> host MIDI stream, every byte (beside rytm_dump::byte)
 State state();
-bool busy();                       // reading .. verifying
+bool busy();                       // arming, reading .. verifying (seq: DIRTYs wanted)
 int why();                         // the last job's kWhy*
 int patch_result();                // the patch's own number (kWhyPatch)
 bool changed();                    // the last done job wrote something (the patch changed the record)

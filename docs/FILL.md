@@ -118,6 +118,9 @@ engines writes type numbers those engines read as their own types.
   read-back equal to the pattern before the write is asked once more (a late answer); equal again, the job ends
   `NOT TAKEN` without writing anything back. A read-back that comes in while the SONG holds the dumps ends the job
   `SONG BUSY`.
+- DIRTYs wanted: with the touch view's fetches off the host's 2E says no 0B is wanted (flags bit 3: the Rytm walks
+  its pattern only for a consumer), so a job first turns them on (`kArming`): the Rytm walks afresh and sends one 0B,
+  and the job reads after that 0B (or 500 ms, an older Rytm).
 - `core/ui/page_fill.cpp`: the page, the undo (its pattern count from the job's read, the project count, and the
   target as the fill left it).
 - `core/seq/filltargets.*`: the registry.
