@@ -43,6 +43,15 @@ the Rytm for whole reports again (`kHostCapsResync`; also the first 1D after boo
 host sends carries the caps (the Pi's user machines, the Teensy's voiceloop, the boards without plugins): a 1D without
 them turns the Rytm back to 03s.
 
+The 1D's caps byte (`<caps>`, 7 bits; core/sysex.h `kHostCaps*`, sim/protocol.py `slots(caps=)`). A new feature takes
+the lowest free bit, in order; a bit is never reused or moved. An older Rytm reads a 13-byte 1D (no caps byte) as caps 0.
+
+| bit | name | set by the host when | the Rytm (0021) |
+|---|---|---|---|
+| 0 | `kHostCapsDelta` | it reads 56 PARAMS DELTA (every 1D of this host) | parameter-only reports as 56 |
+| 1 | `kHostCapsResync` | it wants whole reports again: the first 1D after boot and after `link_lost`, and after a 56 for a voice with no values | each voice's next parameter-only report as a whole 03 |
+| 2..6 | free | never (sent as 0) | ignored |
+
 The Teensy gets the core as a generated Arduino library: `teensy/setup_core_lib.sh` copies `core/` and
 `teensy/platform/` into `teensy/libraries/RytmCore` (git-ignored; `run_sketch.sh` runs it on every build).
 
