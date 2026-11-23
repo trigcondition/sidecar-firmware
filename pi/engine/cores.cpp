@@ -438,6 +438,7 @@ void CEngineCores::Control (void)
 	// a poll of core 0 away (1.2..3.3 ms measured on the TCP link): the FIFO then stayed empty and the link sent
 	// silence (docs/pi-engine.md "FIFO target").
 	EventStream ();
+	CGuard::SetupTimed ();		// the plugin draw's hard limit: this core's virtual timer interrupt (guard.h ControlCallTimed)
 	bridge::keys_set_forward (KeysToRytm);
 	bridge::asamp_set_midi_out (AsampMidiOut);
 	bridge::midim_set_out (MidimOut);
@@ -655,6 +656,10 @@ void CEngineCores::Command (const char *p)
 	{
 		g_Guard.ArmHang (atoi (p + 9) & 7);
 		L->Write (From, LogNotice, "guard: voice %d runs 30 ms long once (fatal: clean stop, reboot)", atoi (p + 9) & 7);
+	}
+	else if (strcmp (p, "timedtest") == 0)		// the timed guard (a plugin's draw): a 5 ms spin under a 1 ms limit
+	{
+		g_Guard.TimedTest (L);
 	}
 	else if (strncmp (p, "pool=", 5) == 0 || strncmp (p, "juno=", 5) == 0 || strncmp (p, "fm=", 3) == 0 || strncmp (p, "preset=", 7) == 0)
 	{

@@ -3,6 +3,12 @@
 
 #include <circle/multicore.h>
 #include <circle/synchronize.h>
+#if RASPPI >= 4
+#include <circle/bcm2711.h>
+#include <circle/interrupt.h>
+#include <circle/memio.h>
+#include <circle/memorymap.h>
+#endif
 
 #include "bridge.h"
 #include "crumb.h"
@@ -117,6 +123,121 @@ int CGuard::ControlCall (void (*pFunc) (void *), void *pParam, u64 *pPC)
 	return r;
 }
 
+// The timed call's limit (Exec::guard_timed): core 3's EL1 virtual timer. Circle's CTimer has the physical one (CNTP,
+// PPI 14) on core 0; nothing uses CNTV. Its PPI's enable and priority are banked per core, so SetupTimed runs on core 3.
+#if RASPPI >= 4
+static const unsigned kTimerIRQ = 16 + 11;		// GIC_PPI (11): CNTV
+static volatile boolean s_bTimedReady = FALSE;
+
+static void TimerStart (u32 nUs)
+{
+	u64 f;
+	asm volatile ("mrs %0, cntfrq_el0" : "=r" (f));
+	u64 n = (u64) nUs * f / 1000000;
+	if (n == 0) n = 1;
+	if (n > 0x7FFFFFFF) n = 0x7FFFFFFF;		// TVAL is a signed 32-bit down-count
+	asm volatile ("msr cntv_tval_el0, %0\n"
+		      "msr cntv_ctl_el0, %1\n"		// ENABLE, IMASK clear
+		      "isb" :: "r" (n), "r" ((u64) 1) : "memory");
+}
+
+static void TimerStop (void)
+{
+	asm volatile ("msr cntv_ctl_el0, xzr\n"
+		      "isb" ::: "memory");
+}
+
+// Core 3's CNTV interrupt, from Circle's InterruptHandler (IRQStub -> InterruptHandler -> CallIRQHandler), in EL1h on
+// the core's exception stack, IRQs masked (FIQ unmasked by IRQStub).
+static void TimerIRQ (void *)
+{
+	TimerStop ();			// first: the line is level-sensitive, it would come back after the EOI
+	const unsigned nCore = CMultiCoreSupport::ThisCore ();
+	if (nCore != 3) return;		// (the PPI is enabled on core 3 only)
+	// IRQStub's frame, from the top of SP_EL1 (startup64.S: core n's is MEM_EXCEPTION_STACK + n * EXCEPTION_STACK_SIZE,
+	// and an interrupt from EL1t finds it there, empty): stp x29, x30 at top - 16, then stp elr_el1, spsr_el1 at top - 32
+	// (elr the lower word); its x0..x28 (and the q registers with SAVE_VFP_REGS_ON_IRQ) below that
+	const u64 nTop = MEM_EXCEPTION_STACK + (u64) nCore * EXCEPTION_STACK_SIZE;
+	u64 nSP;
+	asm volatile ("mov %0, sp" : "=r" (nSP));
+	if (nSP >= nTop || nSP < nTop - EXCEPTION_STACK_SIZE) return;	// not the stack we think (SP_EL1 set elsewhere): go on
+	const volatile u64 *pFrame = (const volatile u64 *) (nTop - 32);
+	const u64 nELR = pFrame[0], nSPSR = pFrame[1];
+	if (!g_Guard.TakeTimeout (nCore, nELR, nSPSR)) return;	// a late one (the call returned) or not at task level: Circle EOIs
+	// Leave the call as Throw does after a fault: eret into ResumeControl in the interrupted mode and DAIF (EL1t, IRQs
+	// on), SP_EL1 back at its top; ResumeControl longjmps into ControlCallOn on SP_EL0. Circle's handler, which would EOI,
+	// is not returned to: EOI here. FIQs masked again first, as IRQStub does before its own eret: an FIQ between the
+	// msr's below and the eret would overwrite elr_el1 / spsr_el1 (FIQStub does not save them).
+	asm volatile ("msr daifset, #1" ::: "memory");
+	write32 (ARM_GICC_BASE + 0x010, kTimerIRQ);	// GICC_EOIR (a PPI: no CPU ID field)
+	DataSyncBarrier ();
+	asm volatile ("msr elr_el1, %0\n"
+		      "msr spsr_el1, %1\n"
+		      "mov sp, %2\n"
+		      "eret"
+		      :: "r" ((u64) &ResumeControl), "r" (nSPSR), "r" (nTop) : "memory");
+	__builtin_unreachable ();
+}
+
+void CGuard::SetupTimed (void)
+{
+	if (CMultiCoreSupport::ThisCore () != 3 || s_bTimedReady) return;
+	TimerStop ();			// (the firmware may leave it on: an interrupt before the first call would be a late one anyway)
+	// this core's banked priority of the PPI: Circle's default 0xA0, as CInterruptSystem::Initialize set core 0's bank
+	const uintptr nPrio = ARM_GICD_BASE + 0x400 + (kTimerIRQ / 4) * 4;
+	const unsigned nShift = (kTimerIRQ % 4) * 8;
+	write32 (nPrio, (read32 (nPrio) & ~(0xFFu << nShift)) | (0xA0u << nShift));
+	// the handler (one table for all cores) and the enable, in this core's bank of GICD_ISENABLER0 (written from here)
+	CInterruptSystem::Get ()->ConnectIRQ (kTimerIRQ, TimerIRQ, 0);
+	s_bTimedReady = TRUE;
+}
+
+int CGuard::ControlCallTimed (void (*pFunc) (void *), void *pParam, u64 *pPC, u32 nUs)
+{
+	const unsigned c = CMultiCoreSupport::ThisCore ();
+	if (c != 3 || !s_bTimedReady) return ControlCall (pFunc, pParam, pPC);
+	int r = ControlCallTimedOn (c, pFunc, pParam, pPC, nUs, TimerStart, TimerStop);
+	if (r)		// as ControlCall: back at task level, on SP_EL0?
+	{
+		u64 nSPSel;
+		asm volatile ("mrs %0, spsel" : "=r" (nSPSel));
+		m_bCtlResumedOK[3] = CurrentExecutionLevel () == TASK_LEVEL && nSPSel == 0;
+		if (r == 1) m_nCtlLastPC[3] = *pPC;	// (a stop is logged by its caller, um.cpp)
+	}
+	return r;
+}
+#else
+void CGuard::SetupTimed (void) {}
+int CGuard::ControlCallTimed (void (*pFunc) (void *), void *pParam, u64 *pPC, u32)
+{
+	return ControlCall (pFunc, pParam, pPC);
+}
+#endif
+
+static void SpinCall (void *pUs)	{ Spin (*(unsigned *) pUs); }
+
+void CGuard::TimedTest (CLogger *pLogger)
+{
+	struct { unsigned nSpin, nLimit; int nWant; } T[2] = {{5000, 1000, 2}, {200, 1000, 0}};
+	for (auto &t : T)
+	{
+		u64 nPC = 0;
+		u64 t0 = Ticks ();
+		int r = ControlCallTimed (SpinCall, &t.nSpin, &nPC, t.nLimit);
+		unsigned nUs = (unsigned) ((Ticks () - t0) / TicksPerUs ());
+		u64 nSPSel;
+		asm volatile ("mrs %0, spsel" : "=r" (nSPSel));
+		const boolean bTask = CurrentExecutionLevel () == TASK_LEVEL && nSPSel == 0;
+		if (r == 2)
+			pLogger->Write ("guard", LogNotice, "timedtest: a %u us spin, limit %u us: stopped after %u us at PC 0x%lx, "
+					"resumed at task level: %s (%s)", t.nSpin, t.nLimit, nUs, (unsigned long) nPC,
+					bTask ? "yes" : "no", r == t.nWant ? "ok" : "FAIL");
+		else
+			pLogger->Write ("guard", LogNotice, "timedtest: a %u us spin, limit %u us: returned %d after %u us, at task "
+					"level: %s (%s)", t.nSpin, t.nLimit, r, nUs, bTask ? "yes" : "no", r == t.nWant ? "ok" : "FAIL");
+	}
+}
+
 void CEngineExceptionHandler::Throw (unsigned nException, TAbortFrame *pFrame)
 {
 	unsigned nCore = CMultiCoreSupport::ThisCore ();
@@ -124,6 +245,9 @@ void CEngineExceptionHandler::Throw (unsigned nException, TAbortFrame *pFrame)
 	{
 		// a user plugin's guarded call faulted (API 3's guard): back into ControlCall, the slot muted by its caller
 		g_Guard.NoteControlFault (nCore, pFrame->elr_el1);
+#if RASPPI >= 4
+		if (g_Guard.TimedArmed (nCore)) TimerStop ();	// a timed call: its timer must not fire on the way back
+#endif
 		u64 nSPSR = pFrame->spsr_el1, nStack = pFrame->sp_el1;		// read before the frame is dropped
 		asm volatile ("msr elr_el1, %0\n"
 			      "msr spsr_el1, %1\n"

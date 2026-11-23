@@ -1,6 +1,6 @@
 // pi/engine/console.h - the serial console (921600 baud): 'w' a 10 s capture (spike3's: IN MAIN L/R, OUT MAIN L,
 // note-on markers; dumped as base64 for pi/circle/capture.py), 's' the stats now, ':<command>\n' a command for the
-// control core (cores.cpp: notemach=V:NAME drone=V|all|off notes=0|1 out=main|tracks fifo=N; the guard's unmute faulttest=V overtest=V hangtest=V),
+// control core (cores.cpp: notemach=V:NAME drone=V|all|off notes=0|1 out=main|tracks fifo=N; the guard's unmute faulttest=V overtest=V hangtest=V timedtest),
 // except ':selftest=on|off', which core 0 runs (selftest.h; while it is on, 'w' captures its output), ':wdtest'
 // (core 0's loop hangs: the watchdog test, kernel.cpp) and ':link=usb|tcp|tcp:IP:PORT' (the engine's host, kernel.cpp).
 #ifndef _console_h
