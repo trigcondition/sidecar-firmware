@@ -480,6 +480,29 @@ bytes 7-bit packed (14968 B), a 14-bit checksum (the sum of the bytes from `<pat
 byte. The record decoder is pi/ui/rytm_pattern; on the Pi, pi/engine/rytmpat_pi.cpp registers with rytm_dump::on_record,
 decodes on core 3 and hands the pattern to the PAT page (docs/TOUCH-EDITOR.md); the page open = rytm_dump active.
 
+**When the host wants the DIRTYs (2E flags bit 3).** The Rytm's walk (rytm-mods 0026 `dk_tick`, 85 KB a second) runs
+only while the host wants 2D 0B, so the host says so in every 2E (core/seq/seq.cpp `tick`; bit 3 set = none wanted):
+
+- **Wanted (bit 3 clear)** while either holds:
+  - the pattern mirror fetches: `rytm_dump::active()`, the touch view's PAT page (`rytmpat=on`), its VOICE page
+    (`rytmpat=voice`) or a fetch asked for (`rytmpat=fetch`, which leaves the fetches on);
+  - a pattern write runs: `patwrite::busy()`, from `start` to its end: arming, the read and its edit guard (a DIRTY
+    between the request and the answer reads again), the settle (the write's own two DIRTYs) and the verify, a restore
+    included. Every pattern write goes through patwrite: FILL's fills and its undo (core/ui/page_fill.cpp).
+- **Not wanted (bit 3 set)** otherwise: no view fetching and no write running. Nothing else reads 2D 0B: the SONG takes
+  the whole stream but not the DIRTYs, and the FILL page draws from the mirror's last record.
+- **When it changes:** the 2E goes out at seq's next tick after the state changes, and again after every hello (the
+  Rytm walks from its hello until that 2E, as for an older host). An older Rytm ignores the bit and always walks; an
+  older host never sets it.
+- **Turning it on:** the Rytm starts a fresh pass and sends one 0B at once. A pattern write started while none were
+  wanted waits for that 0B (`patwrite::kArming`, 500 ms at most: an older Rytm) before it reads, so the 0B is not taken
+  for an edit; the mirror fetches the pattern on it, as on any DIRTY.
+
+Tests: core/tests/test_seq.cpp ("dirty wanted": the bit follows rytmpat on / voice / fetch / off and the hello),
+core/tests/test_lockfill.cpp ("dirty wanted": against a fake Rytm that sends 0Bs only when wanted, a write started with
+none wanted turns them on, sees an edit made during its read, gets its own two DIRTYs and turns them off when it ends;
+it fails without `patwrite::busy()` in seq's rule), rytm-mods `tools/emu/sq_emu.py dirty`.
+
 Swing [code, not measured]: the swing menu (0x400676a6) shows `+50` of byte +5 of an object the pattern's vfunc 40
 returns (0x400aaf14); the 1.73 TEMPO screen in rytm-emu shows BPM only, and turning its encoders moved no pattern byte.
 Pattern +85691 is read with each track's +0x2c6 by trig_fire (0x4009aca4); its meaning is not established. So the host

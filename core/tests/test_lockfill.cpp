@@ -25,6 +25,7 @@
 #include "seq/lockfill.h"
 #include "seq/patwrite.h"
 #include "seq/rytm_dump.h"
+#include "seq/seq.h"
 #include "msamp/cardq.h"
 #include "song/song.h"
 #include "ui/extra.h"
@@ -122,14 +123,27 @@ struct Fake {
   int requests = 0, writes = 0;
   std::vector<uint8_t> in;        // a write being received (pieces)
   std::deque<uint8_t> q;          // bytes to the host
+  // rytm-mods 0026 dk_want: with gate on, the Rytm sends 2D 0B only while the host's last 2E wants them (flags bit 3
+  // clear), and one 0B when they are wanted again (its walk starts afresh)
+  bool gate = false, wanted = true;
+  int arm_dirties = 0;            // the 0Bs sent because the 2E turned them on
 };
 static Fake F;
 static std::vector<std::vector<uint8_t>> g_out;   // every message to the Rytm
+static void fake_dirty() {
+  if (!F.gate || F.wanted) rytm_dump::dirty();
+}
 static void out(const uint8_t* m, int n) {
   g_out.emplace_back(m, m + n);
+  if (n >= 10 && m[0] == 0xF0 && m[4] == 0x2E) {   // the host's 2E: flags bit 3 = no DIRTY wanted
+    bool w = !(m[8] & 8);
+    if (F.gate && w && !F.wanted) ++F.arm_dirties, rytm_dump::dirty();
+    F.wanted = w;
+    return;
+  }
   if (n == 15 && m[0] == 0xF0 && (m[6] == 0x6A || m[6] == 0x64)) {
     ++F.requests;
-    if (F.dirty_on_request > 0) --F.dirty_on_request, rytm_dump::dirty();
+    if (F.dirty_on_request > 0) --F.dirty_on_request, fake_dirty();
     if (F.answer && (F.writes == 0 || F.answer_after_write)) {
       bool stale = F.writes > 0 && F.stale_verify > 0;
       if (stale) --F.stale_verify;
@@ -168,7 +182,7 @@ static void out(const uint8_t* m, int n) {
       if (id == 0x54 && pat == F.active) F.stored = r;                  // ... and the stored one
       if (id == 0x54 && pat == F.other_n) F.other = r;                  // the other pattern's
       ++F.writes;
-      for (int k = 0; k < F.dirties_on_write; ++k) rytm_dump::dirty();
+      for (int k = 0; k < F.dirties_on_write; ++k) fake_dirty();
       F.in.clear();
     }
   }
@@ -185,6 +199,7 @@ static void pump(int ms) {   // the control loop: the Rytm's bytes in, ticks, ms
     g_us += 1000;
     host_fake_time(true, g_us);
     patwrite::tick((uint32_t)(g_us / 1000));
+    if (F.gate) seq::tick((uint32_t)(g_us / 1000));   // its 2E: DIRTY wanted or not
   }
 }
 static int patch_set(uint8_t* rec, void*) {   // a writer job's patch: one lock on track 1
@@ -785,6 +800,44 @@ int main() {
     CHECK(patwrite::start(patch_set, nullptr));
     pump(9000);
     CHECK(patwrite::why() == patwrite::kWhyUnconfirmed && F.writes == 1 && patwrite::stats().restores == 0);
+    // DIRTY wanted (2E flags bit 3): the Rytm (gate on) sends 0Bs only while the host wants them. With the touch view's
+    // fetches off (rytmpat=off) the host wants none; a pattern write (FILL's fills and undo go through patwrite) turns
+    // them on for its whole run - arming, the read, its edit guard, the settle's own two DIRTYs, the verify - and off
+    // again when it ends. Without patwrite::busy() in seq's rule the job reads blind: the edit meanwhile is never seen
+    // and the write's own DIRTYs never come (this block fails).
+    {
+      writer_reset(r);
+      F.gate = true;
+      pump(20);   // seq's first tick (its reset forgets the pattern seen): the 2E
+      sw(0);
+      CHECK(!F.wanted && !rytm_dump::dirty_reported());   // idle, no view: none wanted
+      uint32_t d0 = rytm_dump::dirty_count();
+      fake_dirty();
+      CHECK(rytm_dump::dirty_count() == d0);              // (an edit now: the Rytm sends no 0B)
+      F.dirty_on_request = 1;                            // the user edits while the job's read is out
+      CHECK(patwrite::start(patch_set, nullptr) && patwrite::state() == patwrite::kArming && patwrite::busy());
+      pump(5);
+      CHECK(F.wanted && F.arm_dirties == 1 && patwrite::state() != patwrite::kArming);   // on: one 0B, then the read
+      pump(400);
+      CHECK(patwrite::state() == patwrite::kDone && patwrite::stats().restarts == 1 && F.writes == 1 && F.rec == want);
+      CHECK(rytm_dump::dirty_count() - d0 == 1 + 1 + 2);  // the arming 0B, the edit, the write's own two
+      pump(5);
+      CHECK(!F.wanted && !rytm_dump::dirty_reported());   // the job over: none wanted again
+      // the touch view's fetches on: wanted, and a job reads at once (no arming)
+      char ob[120];
+      CHECK(rytm_dump::command("rytmpat=on", ob, sizeof ob));
+      pump(5);
+      CHECK(F.wanted && F.arm_dirties == 2);
+      CHECK(patwrite::start(patch_set, nullptr) && patwrite::state() == patwrite::kReading);
+      pump(400);
+      CHECK(patwrite::state() == patwrite::kDone && !patwrite::changed() && F.writes == 1);   // (the lock is there already)
+      CHECK(rytm_dump::command("rytmpat=off", ob, sizeof ob));
+      pump(5);
+      CHECK(!F.wanted);
+      F.gate = false, F.wanted = true;
+      rytm_dump::set_dirty_reported(true);   // (the rest of this file runs without seq's 2E: as an older host)
+      printf("  dirty wanted: a pattern write turns the 0Bs on for its run (arming, edit guard, own DIRTYs), off after\n");
+    }
     // the verify never answered, nothing changed: the read pattern written back (VERIFY FAILED: RESTORED)
     writer_reset(r);
     F.answer_after_write = false;
