@@ -17,6 +17,18 @@ CORE_COLD void Canvas::clear(bool on) {
   clear_text();
 }
 
+// A plugin's row-major frame (sdk/rmp/rmp_api3.h RMP3_CAP_DRAW) into the canvas layout (ui.h rows_to_fb)
+CORE_COLD void rows_to_fb(const uint8_t rows[kBytes], uint8_t fb[kBytes]) {
+  for (int x = 0; x < kW; ++x) {
+    const int col = x >> 3, bit = 7 - (x & 7);
+    for (int band = 0; band < kTilePages; ++band) {   // glass rows 8 band .. 8 band + 7: byte (7 - band) + 8 x
+      uint8_t b = 0;
+      for (int r = 0; r < 8; ++r) b |= (uint8_t)((rows[16 * (8 * band + r) + col] >> bit & 1) << r);
+      fb[(7 - band) + 8 * x] = b;
+    }
+  }
+}
+
 CORE_COLD void Canvas::clip(const Rect& r) {
   int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
   int x1 = r.x + r.w > kW ? kW : r.x + r.w, y1 = r.y + r.h > kH ? kH : r.y + r.h;

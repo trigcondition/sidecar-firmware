@@ -23,6 +23,7 @@ Branch `feature/plugin-api-3` off `dev` (0.4.0). For 0.5.0 ("the new ABI spec im
 | 11 | The signal bus | 6, routes UI | cross-slot signals | deferred |
 | 12 | Declared pages (RX31 `pages`, `view`) | packer, remote UI, touch UI | own pages | deferred |
 | 13 | Endless-loop recovery: core 0 watching core 3, the boot skip (`!CRASH`) | 3, kernel | robustness | deferred |
+| 14 | Drawn pages: `reserved[RMP3_P_DRAW]`, `RMP3_CAP_DRAW`, page 0 (the SRC view), under a hard time limit | 3, remote UI | a machine's own screen with no Rytm flash | built (page 0) |
 
 Why deferred: 8 to 12 each touch a subsystem the 0.5.0 work also changes (the INSERT chains, the looper's input ring,
 the modulation layer with morph scenes, the remote pages) and need the owner's choices first (the open questions on
@@ -130,6 +131,54 @@ Not yet: the INSERT, bus and master positions (part 8). (A fresh state on a TYPE
 Tests: core/tests/test_api3.cpp (the probe plugin plugins/api3_test in six variants, kept built in
 core/tests/api3_pkgs), core/tests/test_api3_compat.cpp (below), tools/tests/test_rmp_api.c,
 tools/tests/test_rmp_pack.py `Api3Flags`.
+
+### Drawn pages (`RMP3_CAP_DRAW`)
+
+A machine may draw a page itself: `int32_t draw(const void *state, int32_t page, const float *p, uint8_t *fb)` in
+`rmp3_plugin.reserved[RMP3_P_DRAW]` (`rmp3_draw_of`), asked for with `RMP3_CAP_DRAW` in `wants` or `needs`. The
+contract is in the header; in short:
+
+- **Page ids** are the manifest's page indices (`rmp3_page`, part 12): 0 is the SRC view, 1..7 the further pages of
+  the page ring. This engine calls page 0 only; 1..7 come with declared pages.
+- **P1..P16** only (`p[0..15]`, value + fraction / 128 as the page shows them: the Rytm's `2A`, else the voice's).
+- **Return 1:** `fb` (1024 B, row-major, 16 bytes a row, bit 7 the leftmost pixel) is the page. **Return 0** (or
+  anything else): the declared page if there is one, else the stock page. For a user machine today that is the
+  Rytm's stock SRC page with the manifest's labels (`3A 0 0`), as without a draw.
+- **Where it runs:** core 3 (the control core), from the remote UI's SRC view (`core/ui/remote.cpp drawn_frame`),
+  only while the view shows the track and only when an input changed (P1..P16, the slot, whether the voice plays it);
+  the last frame is kept otherwise. `state` is the track's voice state when it plays the slot, else NULL, read only.
+- **The hard limit:** 250 us (`RMP3_DRAW_LIMIT_US`), enforced, not measured afterwards: `Exec::guard_timed` arms a
+  timer before the call and leaves a call still running when it fires, the way a fault leaves a guarded call. On the
+  Pi it is core 3's own virtual timer interrupt (PPI 27, `pi/engine/guard.cpp ControlCallTimed`): the handler
+  returns from the interrupt into `ResumeControl`, as `Throw` does for a fault. On the Mac test host a watchdog
+  thread sends SIGUSR2 to the calling thread. So a draw that never returns costs the FIFO 250 us once and never stalls
+  the screen or the audio. Why 250 us: core 3 is also what refills the audio FIFO, which runs about 71 frames (1.5 ms)
+  ahead on a Pi 4 at its lowest. Measured there (an empty pattern): a whole-frame draw 9-12 us; a draw stopped at
+  1000 us took the FIFO from 77 frames to 21 (with the SRC view log on, to 8 and one underrun), at 500 us from 93 to
+  65, at 250-300 us about 14 frames. 250 us leaves the FIFO what a normal control pass leaves it. A stopped draw turns the slot's drawing off until it loads again (`um=reload:<n>`, a new
+  package, a project change); its sound plays on, since the draw only reads the state. A host without a hard limit
+  (`guard_timed` null: the Teensy, or any build without it) does not offer `RMP3_CAP_DRAW`, so no draw runs there.
+- **Faults and writes outside the frame:** the plugin draws into a host buffer with 4 KB of guard bytes on either
+  side, checked after each call. A write there, or a fault, mutes the slot (as any control call's fault: what it
+  damaged is not known), and the frame is not used. The host's own canvas is never handed to the plugin.
+- **Host services inside a draw do nothing:** `log` writes no line, `pool_info` / `pool_read` find nothing. A draw
+  can be stopped at any instruction, so it must never be stopped holding a host lock.
+- **Gating:** `RMP3_CAP_DRAW` in `rmp3_host.caps`; a host from before it never reads `reserved[0]` (NULL in every
+  table until now), and the table's size and layout are unchanged (the committed probe packages build byte-identical).
+  Machines only: an effect's draw is never called.
+- **Declared pages and the touchscreen:** a draw replaces a page's Rytm layout (`cells`) and nothing else: its
+  title, `enc` and labels stay the declared page's, and a turn goes the way a Rytm knob's does. The touchscreen never
+  shows the bitmap (128x64 has no touch layout and no hit targets): there the page is its declared `touch` cells, else
+  the default panel (the VOICE page's knobs), exactly as without a draw. A plugin should still declare its pages, so
+  an older host, a host without the limit, or a stopped draw has something better than stock to show.
+
+Tests: core/tests/test_draw.cpp (plugins/api3_test drawprobe.c in two variants, `api3_draw` and `api3_drawnw`, kept
+built in core/tests/api3_pkgs): a drawn frame and its inputs, redraws only on a change, return 0, a draw that never
+returns (stopped at the limit, sound on, back after a reload), one under the limit, writes past and before the frame,
+a fault, the log inside a draw, no draw without `wants`, without a draw, or on a host without `guard_timed`.
+pi/engine/tests/test_guard.cpp has the timed call's bookkeeping (stopped, returned, a fault inside, a late interrupt,
+nested, other cores). The interrupt itself only hardware can check: the serial console's `:timedtest` runs, on core 3,
+a 5 ms spin under a 1 ms limit (it must be stopped, back at task level) and a 200 us one (it must return).
 
 ## Proof that API 2 is unchanged
 

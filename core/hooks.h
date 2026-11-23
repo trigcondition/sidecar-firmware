@@ -23,6 +23,13 @@ struct Hooks {
   // voice vi's P(k+1) as its user slot's manifest labels it now (the short label, the set a list knob picks): into b,
   // "" when that knob has none (unused); null hook or a false return: no plugin on the voice (core/ui voice_label)
   bool (*user_label)(int vi, int k, char* b, int cap);
+  // Drawn pages (sdk/rmp/rmp_api3.h RMP3_CAP_DRAW), the control core; null without plugins. user_draw_key: nonzero
+  // while user slot `slot` (0..4) can draw for voice vi; it changes with anything the draw gets besides the page and P1..
+  // P16 (the plugin, whether vi plays it). user_draw: the slot's draw of page `page` (the manifest's page index, 0 the
+  // SRC view) with p16 = P1..P16 as the page shows them, into rows (1024 B, the plugin's row-major layout), under its
+  // hard limit; 1 drawn, 0 not (declined, stopped, faulted: the host's page then).
+  uint32_t (*user_draw_key)(int vi, int slot);
+  int (*user_draw)(int vi, int slot, int page, const float* p16, uint8_t* rows);
   void (*slot_ask)(const uint8_t* d, int len);      // 0x19 (null: core/slots.cpp)
   void (*slot_assign)(const uint8_t* d, int len);   // 0x1E (null: core/slots.cpp)
   void (*project_seen)();                     // any 0x10 arrived (null: core/slots.cpp's rate-limited 1D)

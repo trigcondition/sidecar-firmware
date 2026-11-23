@@ -7,10 +7,11 @@
 #   make V=stereo a64     api3_stereo.a64.rmp   out_channels 2 (R = -L on PRE / POST)
 #   make V=poly|polyarena|setupcrash|setupslow|setupmore|setuprefuse|attachcrash|fx a64: the other variants
 #                         (probe.c's and fxprobe.c's headers)
+#   make V=draw|drawnw a64  api3_draw / api3_drawnw: drawn pages (drawprobe.c's header; core/tests/test_draw.cpp)
 #   make all-variants     every one; make fixtures copies them for the tests, make check-fixtures compares
 # aarch64-none-elf-gcc from PATH, else the rytm-circle Docker image (sdk/rmp/plugin.mk).
 V ?= dual
-VARIANTS := dual only initcrash needs big stereo poly polyarena setupcrash setupslow setupmore setuprefuse attachcrash fx
+VARIANTS := dual only initcrash needs big stereo poly polyarena setupcrash setupslow setupmore setuprefuse attachcrash fx draw drawnw
 NAME_dual := api3_test
 NAME_only := api3_only
 NAME_initcrash := api3_initcrash
@@ -25,6 +26,8 @@ NAME_setupmore := api3_setupmo
 NAME_setuprefuse := api3_setupre
 NAME_attachcrash := api3_attachcr
 NAME_fx := api3_fx
+NAME_draw := api3_draw
+NAME_drawnw := api3_drawnw
 DEF_dual :=
 DEF_only := -DPROBE_ONLY=1
 DEF_initcrash := -DPROBE_INITCRASH=1
@@ -39,11 +42,13 @@ DEF_setupmore := -DPROBE_SETUP=3
 DEF_setuprefuse := -DPROBE_SETUP=4
 DEF_attachcrash := -DPROBE_ATTACHCRASH=1
 DEF_fx := 
+DEF_draw :=
+DEF_drawnw := -DDPROBE_NOWANT=1
 NAME := $(NAME_$(V))
 ifeq ($(NAME),)
 $(error V=$(V): one of $(VARIANTS))
 endif
-SRCS := $(if $(filter fx,$(V)),fxprobe.c,probe.c)
+SRCS := $(if $(filter fx,$(V)),fxprobe.c,$(if $(filter draw drawnw,$(V)),drawprobe.c,probe.c))
 BUILD := build/$(V)
 CFLAGS_EXTRA := $(DEF_$(V))
 MANIFEST := $(V).json
