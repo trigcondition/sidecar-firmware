@@ -58,10 +58,13 @@ class TestCoreSysex(unittest.TestCase):
         for slot in range(1, 6):
             self.assertEqual(call(LIB.core_c_slot_empty, slot), P.meta_messages(slot, 1, 0, fp=0)[0])
             self.assertEqual(call(LIB.core_c_slot_unchanged, slot), P.meta_unchanged(slot, 1))
-            self.assertEqual(call(LIB.core_c_slots, slot, P.RES_NOT_INSTALLED),
-                             P.slots([1] * 5, 1, slot, P.RES_NOT_INSTALLED))
+            m = call(LIB.core_c_slots, slot, P.RES_NOT_INSTALLED)   # 16 bytes: the host's caps (params-delta)
+            self.assertTrue(m[-2] & P.HOST_CAPS_DELTA)
+            self.assertEqual(m, P.slots([1] * 5, 1, slot, P.RES_NOT_INSTALLED, caps=m[-2]))
         self.assertEqual(call(LIB.core_c_installed_empty), P.list_messages(0, P.LIST_INSTALLED, 1, [])[0])
-        self.assertEqual(call(LIB.core_c_slots, 0, 0), P.slots([1] * 5, 1))
+        m = call(LIB.core_c_slots, 0, 0)
+        self.assertEqual(m, P.slots([1] * 5, 1, caps=m[-2]))
+        self.assertEqual(P.decode_slots(m[5:-1])["caps"] & P.HOST_CAPS_DELTA, P.HOST_CAPS_DELTA)
 
 
 class TestCoreNoCard(unittest.TestCase):

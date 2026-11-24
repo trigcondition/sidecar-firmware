@@ -34,11 +34,13 @@ console's `fxin` (docs/pi-engine.md, "IN L/R source").
 **Parameter deltas (56 PARAMS DELTA).** A parameter-only report from the Rytm is a whole 03 (41 bytes, all 16 values)
 unless the host's 1D says it reads 56 (`kHostCapsDelta`, core/sysex.h: the 16-byte 1D `... <slot> <result> <caps>`,
 slot 0 when it answers nothing; an older Rytm reads that as no answer). Then the Rytm sends only the values that
-changed, after a 16-bit mask (13 + 2n bytes; one value: 15), at most every 32 audio blocks a voice instead of 16; trigs
-(04), note-offs and the MIDI machine's 43 / 44 are unchanged. `host_link.cpp` keeps each voice's last 16 values from its
+changed, after a 16-bit mask (13 + 2n bytes; one value: 15), at 03's own rate (at most every 16 audio blocks a voice);
+trigs (04), note-offs and the MIDI machine's 43 / 44 are unchanged. A voice whose last report was a 56 sends a whole 03
+again about every 1.37 s (2048 blocks, staggered by voice), changed or not, so a 56 lost on the way is not stale until
+the next trig. `host_link.cpp` keeps each voice's last 16 values from its
 03 / 04 / 43 / 44 / 56 and plays a 56 as the 03 those values make, so the voice ends in the state an 03 would leave. A
-56 for a voice with no values yet (a host that started while the Rytm was sending deltas) is dropped and the next 1D asks
-the Rytm for whole reports again (`kHostCapsResync`; also the first 1D after boot and after `link_lost`). The bytes:
+56 for a voice with no values yet (a host that started while the Rytm was sending deltas), or one that came apart (its
+length not 13 + 2n, a byte above 0x7F), is dropped and the next 1D asks the Rytm for whole reports again (`kHostCapsResync`; also the first 1D after boot and after `link_lost`). The bytes:
 `sim/protocol.py` ("56"); tests: `core/tests/test_host_link.cpp`, `sim/tests/test_protocol_delta.py`. Every 1D a
 host sends carries the caps (the Pi's user machines, the Teensy's voiceloop, the boards without plugins): a 1D without
 them turns the Rytm back to 03s.

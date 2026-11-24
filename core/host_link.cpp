@@ -329,10 +329,16 @@ static CORE_COLD void params_delta(const uint8_t* d, int len) {
   if (len < 15 || d[5] != 1 || d[len - 1] != 0xF7 || d[9] > 3) return;
   uint32_t mask = d[7] | (uint32_t)d[8] << 7 | (uint32_t)d[9] << 14;
   int n = __builtin_popcount(mask);
-  if (!mask || len != 13 + 2 * n) return;
-  for (int i = 6; i < len - 1; ++i)
-    if (d[i] & 0x80) return;
+  bool bad = !mask || len != 13 + 2 * n;
+  for (int i = 6; !bad && i < len - 1; ++i)
+    if (d[i] & 0x80) bad = true;
   Rep& r = s_rep[d[6] & 7];
+  if (bad) {   // a 56 that came apart (a lost or cut USB message): this voice's values may be stale, ask for whole ones
+    r.ok = false;
+    if (!s_resync) log(CORE_STR("voice %d: a malformed 56: resync"), d[6] & 7);
+    s_resync = true;
+    return;
+  }
   if (!r.ok) {
     if (!s_resync) log(CORE_STR("voice %d: a 56 with no values to apply it to: resync"), d[6] & 7);
     s_resync = true;

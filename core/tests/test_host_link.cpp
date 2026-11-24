@@ -193,9 +193,19 @@ int main() {
       q[1] = 0;
       send(bad);
       CHECK(same(4, 5));
+      // ... and, the message having come apart on the way, voice 4's values may be stale: a resync owed in the next 1D
+      // (review of #67), and voice 4's next 56 waits for a whole report
+      CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == (kHostCapsDelta | kHostCapsResync));
+      q[1] = 5 << 7;
+      send(delta((uint8_t)(mach | 4), 1u << 1, q, 0));
+      CHECK(same(4, 5));   // (dropped: no baseline)
+      send(report(0x03, (uint8_t)(mach | 4), q, 0));
+      send(report(0x03, (uint8_t)(mach | 5), q, 0));
+      CHECK(same(4, 5));
     }
     // no values to apply a 56 to (another host's session, the link lost since): dropped, a resync owed in the next 1D
-    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == kHostCapsDelta);
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == (kHostCapsDelta | kHostCapsResync));   // (the 56s
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == kHostCapsDelta);   // voice 4 dropped meanwhile)
     link_lost();
     CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == (kHostCapsDelta | kHostCapsResync));
     CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == kHostCapsDelta);   // (taken)

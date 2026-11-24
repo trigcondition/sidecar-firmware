@@ -21,7 +21,7 @@ implemented 2026-10-08, P1..P8 only):
 
   cmd 0x03 PARAMS: P1..P16 changed (knob, LFO, slide); at most once every 16
   audio blocks (about 90/s) per voice (to a host that reads 56 PARAMS DELTA, the
-  changed values alone instead, at most every 32: below, "56"):
+  changed values alone instead, at the same rate: below, "56"):
 
     F0 7D 52 54 03 <voice 0..7> <P1..P16> F7                        = 39 bytes
 
@@ -793,9 +793,9 @@ def decode_params(payload):
 
 # ---- 56 PARAMS DELTA (params-delta, 2026-11-22; rytm-mods 0021 ext_render, C: core/host_link.h): Rytm -> host, a
 # parameter-only report with only the values that changed since the voice's last report, to a host whose 1D said
-# HOST_CAPS_DELTA (above); else 03. At most every 32 audio blocks per voice (about 21 ms; 03: 16), a value that jumped
-# (a whole step or more between two blocks) after 16 as an 03; trigs (04), note-offs and the MIDI machine's 43 / 44
-# as before. The values are 03's two bytes each, in P order; the tag as 03's:
+# HOST_CAPS_DELTA (above); else 03. At 03's rate (at most every 16 audio blocks per voice); a voice whose last report
+# was a 56 sends a whole 03 again in its slot of every 2048 blocks (~1.37 s), changed or not; trigs (04), note-offs and
+# the MIDI machine's 43 / 44 as before. The values are 03's two bytes each, in P order; the tag as 03's:
 #     F0 7D 52 54 56 01 <voice byte> <m0> <m1> <m2> {<hi> <lo>} x n <tag hi> <tag lo> F7      13 + 2n bytes
 # mask = m0 | m1 << 7 | m2 << 14, bit i = P(i+1) (m2 0..3). The host applies it to the voice's last values (its last
 # 03 / 04 / 43 / 44 / 56) and plays the 03 that makes. The Rytm's first parameter-only report of a voice after the host
