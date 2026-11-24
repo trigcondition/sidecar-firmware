@@ -2,7 +2,8 @@
 //   - the freeze probe (0x4E, rytm-mods 0026 fp_check, every ~5 s while the Rytm's UI task is stuck): the first probe of
 //     a freeze logged once with the uptime; the recent log copied to the card once a boot (hooks.log_snapshot, asked on
 //     the first probe of the first freeze); a probe after 15 s without one starts a new freeze (logged, no copy);
-//   - the xy console's set / clear / hold logged as they came (pos / up quiet: every 30 ms while a finger drags).
+//   - the xy console's set / clear / hold logged as they came (pos / up quiet: every 30 ms while a finger drags);
+//   - the Rytm's RAM reports (0x55, rytm-mods big-ram): a damaged DDR claim and the diagnostic image's DDR canary logged.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,14 @@ static void probe(int secs) {
   std::vector<uint8_t> m = {0xF0, 0x7D, 0x52, 0x54, 0x4E, 0x01, 1, (uint8_t)secs};
   m.resize(53, 0);
   m.push_back(0xF7);   // 54 bytes: 9 words of 5 bytes from d[8]
+  engine_sysex(m.data(), (int)m.size());
+}
+static void put35(std::vector<uint8_t>& m, uint32_t v) {   // 32 bits as 5 x 7, as the Rytm sends them
+  for (int i = 0; i < 5; ++i) m.push_back((uint8_t)(v >> (28 - 7 * i) & (i ? 0x7F : 0x0F)));
+}
+static void ram_msg(std::vector<uint8_t> m) {
+  m.insert(m.begin(), {0xF0, 0x7D, 0x52, 0x54, 0x55, 0x01});
+  m.push_back(0xF7);
   engine_sysex(m.data(), (int)m.size());
 }
 static int lines_with(const char* s) {
@@ -74,6 +83,36 @@ int main() {
   CHECK(lines_with("xy: clear:x:1") == 1 && lines_with("xy: hold:2 (refused)") == 1);
   CHECK(lines_with("xy: pos") == 0 && lines_with("xy: up") == 0);
   printf("diag: the xy console's set / clear / hold logged (pos / up quiet)\n");
+
+  // ---- the RAM reports (55 01 00 a damaged claim, 55 01 01 the DDR canary): logged, nothing sent back
+  g_log.clear();
+  {
+    std::vector<uint8_t> m = {0x00, 0x05};   // rui_frame and rui_pmo
+    put35(m, 0x47C00000u), put35(m, 0xDEADBEEFu);
+    ram_msg(m);
+    CHECK(lines_with("rui: the Rytm's mod RAM is damaged: claims 05, at 47c00000 (found deadbeef); the frames, the param "
+                     "modulation off until a reboot") == 1);
+    m = {0x00, 0x08};   // 0029's sfu_x
+    put35(m, 0x47C06A00u), put35(m, 0x12345678u);
+    ram_msg(m);
+    CHECK(lines_with("claims 08, at 47c06a00 (found 12345678); the SEND FX pages off until a reboot") == 1);
+    m = {0x00, 0x0F};
+    put35(m, 0x47C03200u), put35(m, 0);
+    ram_msg(m);
+    CHECK(lines_with("; the frames, the source names, the param modulation, the SEND FX pages off until a reboot") == 1);
+    m = {0x01};
+    put35(m, 12), put35(m, 1), put35(m, 0x47D00010u), put35(m, 0x12345678u);
+    m.push_back(7), m.push_back(0);
+    ram_msg(m);
+    CHECK(lines_with("rui: DDR canary: 12 passes, 1 bad words (first at 47d00010: 12345678), ram_ok 7 ram_bad 0") == 1);
+    size_t n = g_log.size();
+    m = {0x00, 0x01, 0x11, 0x22};   // too short: ignored
+    ram_msg(m);
+    m = {0x01, 0, 0, 0, 0, 12};
+    ram_msg(m);
+    CHECK(g_log.size() == n && lines_with("rui: DDR canary") == 1 && lines_with("mod RAM is damaged") == 3);
+  }
+  printf("diag: the RAM reports (0x55) logged: the claims damaged, the DDR canary\n");
 
   // ---- no plus flag in a format: the Pi's printf (pi/engine/platform_pi.cpp core_vsnprintf, Circle's CString) prints
   // "%+d" as it is; the sign is written by hand (fx/insert.cpp eq_value_text). The core's and the Pi engine's sources.
