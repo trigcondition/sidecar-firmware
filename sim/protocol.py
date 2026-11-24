@@ -1405,8 +1405,10 @@ def decode_fxin_state(payload):
 #                 above 0x1F refused. flags bit 1: resync now (2D 08 01 02 05 06 07 09 at once), bit 0 reserved (0),
 #                 bit 3 (SEQ_MASK_NODIRTY) no 2D 0B DIRTY wanted: the Rytm does not walk its pattern at all (the walk
 #                 that finds any writer's edit: 85 KB a second on a CPU-starved Rytm); clear (an older host never sets
-#                 it) the walk and the 0Bs as before. Turned clear again: a fresh walk and one 0B at once (edits made
-#                 meanwhile were never summed: the host fetches the pattern). The host sets it whenever none of its own
+#                 it) the walk and the 0Bs as before. Turned clear again: a fresh walk, and one 0B when its first pass has
+#                 summed the whole pattern (~1.05 s; every other 0B held until then and sent as that one), so an edit
+#                 in a part not yet walked cannot go unreported (edits made meanwhile were never summed: the host
+#                 fetches the pattern on that 0B). The host sets it whenever none of its own
 #                 needs the 0Bs - the touch view's pattern fetches off (rytmpat=off) and no pattern write running
 #                 (patwrite, whose guards count them; it waits for that 0B first) - in every 2E, which goes again on
 #                 each change of it and after each hello (the Rytm forgets it there: wanted). 2D 0A edits: unaffected.

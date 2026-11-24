@@ -494,12 +494,20 @@ only while the host wants 2D 0B, so the host says so in every 2E (core/seq/seq.c
 - **When it changes:** the 2E goes out at seq's next tick after the state changes, and again after every hello (the
   Rytm walks from its hello until that 2E, as for an older host). An older Rytm ignores the bit and always walks; an
   older host never sets it.
-- **Turning it on:** the Rytm starts a fresh pass and sends one 0B at once. A pattern write started while none were
-  wanted waits for that 0B (`patwrite::kArming`, 500 ms at most: an older Rytm) before it reads, so the 0B is not taken
-  for an edit; the mirror fetches the pattern on it, as on any DIRTY.
+- **Turning it on:** the Rytm starts a fresh pass and sends one 0B when that pass has summed the whole pattern (about
+  1.05 s, 21 UI ticks; longer while its UI task starves), not at once; every other 0B meanwhile (an edit report's, a
+  pattern switch's) waits and goes as that one. So an edit without its own 0A report (a p-lock, a parameter change) in a
+  part the fresh walk had not reached is in what the host reads after that 0B, and every edit after it raises a 0B. A
+  pattern write started while none were wanted waits for that 0B (`patwrite::kArming`) before it reads; the mirror
+  fetches the pattern on it, as on any DIRTY.
+- **An older Rytm** ignores the bit, walks on and sends no such 0B: the write reads after `kArmMs` (2.5 s: longer than
+  a pass on a busy Rytm, so the fallback cannot cut a new Rytm's pass short). With an older mod, FILL starts 2.5 s
+  after YES.
 
 Tests: core/tests/test_seq.cpp ("dirty wanted": the bit follows rytmpat on / voice / fetch / off and the hello),
-core/tests/test_lockfill.cpp ("dirty wanted": against a fake Rytm that sends 0Bs only when wanted, a write started with
+core/tests/test_lockfill.cpp ("dirty wanted again": a fake Rytm that sends its 0B at its pass's end, 1050 ms, holding an
+edit's meanwhile: a pattern write and a FILL wait in kArming until then, nothing read before; an older Rytm (no 0B):
+the read after kArmMs. "dirty wanted": against a fake Rytm that sends 0Bs only when wanted, a write started with
 none wanted turns them on, sees an edit made during its read, gets its own two DIRTYs and turns them off when it ends;
 it fails without `patwrite::busy()` in seq's rule), rytm-mods `tools/emu/sq_emu.py dirty`.
 

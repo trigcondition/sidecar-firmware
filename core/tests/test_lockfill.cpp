@@ -127,17 +127,27 @@ struct Fake {
   // clear), and one 0B when they are wanted again (its walk starts afresh)
   bool gate = false, wanted = true;
   int arm_dirties = 0;            // the 0Bs sent because the 2E turned them on
+  // pass_ms > 0: as 0026 since the review of #67 (dk_arm), that 0B goes when the fresh walk has summed a whole pass
+  // (~1.05 s on the unit), and every other 0B meanwhile waits and goes as that one; 0: at once (the first version)
+  int pass_ms = 0;
+  long arm_at = -1;               // when the pass's 0B goes (ms), -1 none owed
 };
 static Fake F;
 static std::vector<std::vector<uint8_t>> g_out;   // every message to the Rytm
+static long fake_now();
 static void fake_dirty() {
+  if (F.gate && F.arm_at >= 0) return;   // the pass not done: held, it goes as the pass's own 0B
   if (!F.gate || F.wanted) rytm_dump::dirty();
 }
 static void out(const uint8_t* m, int n) {
   g_out.emplace_back(m, m + n);
   if (n >= 10 && m[0] == 0xF0 && m[4] == 0x2E) {   // the host's 2E: flags bit 3 = no DIRTY wanted
     bool w = !(m[8] & 8);
-    if (F.gate && w && !F.wanted) ++F.arm_dirties, rytm_dump::dirty();
+    if (F.gate && w && !F.wanted) {
+      if (F.pass_ms > 0) F.arm_at = fake_now() + F.pass_ms;   // the fresh walk's pass, then its 0B (pump)
+      else ++F.arm_dirties, rytm_dump::dirty();
+    }
+    if (!w) F.arm_at = -1;                // off again: nothing held
     F.wanted = w;
     return;
   }
@@ -198,10 +208,12 @@ static void pump(int ms) {   // the control loop: the Rytm's bytes in, ticks, ms
     }
     g_us += 1000;
     host_fake_time(true, g_us);
+    if (F.arm_at >= 0 && fake_now() >= F.arm_at) F.arm_at = -1, ++F.arm_dirties, rytm_dump::dirty();   // the pass done
     patwrite::tick((uint32_t)(g_us / 1000));
     if (F.gate) seq::tick((uint32_t)(g_us / 1000));   // its 2E: DIRTY wanted or not
   }
 }
+static long fake_now() { return (long)(g_us / 1000); }
 static int patch_set(uint8_t* rec, void*) {   // a writer job's patch: one lock on track 1
   uint8_t steps[1] = {0};
   uint16_t v[1] = {lf::value(42)};
@@ -838,6 +850,49 @@ int main() {
       rytm_dump::set_dirty_reported(true);   // (the rest of this file runs without seq's 2E: as an older host)
       printf("  dirty wanted: a pattern write turns the 0Bs on for its run (arming, edit guard, own DIRTYs), off after\n");
     }
+    // DIRTY wanted again, the 0B at the walk's pass end (review of #67): the Rytm's fresh walk has to sum a whole pass
+    // (~1.05 s) before an edit anywhere raises a 0B, so a write that read at once could miss one and write over it. The
+    // Rytm sends its first 0B when the pass is done (an edit meanwhile waits and goes as that one), and the write stays
+    // in kArming until it comes: no read before. With kArmMs below a pass (the first version's 500 ms) the read goes
+    // early and this block fails.
+    {
+      writer_reset(r);
+      F.gate = true, F.pass_ms = 1050;
+      pump(20);
+      sw(0);
+      F.wanted = false;                       // (seq's last 2E, before the reset above, said none wanted)
+      rytm_dump::set_dirty_reported(false);
+      uint32_t d0 = rytm_dump::dirty_count();
+      CHECK(patwrite::start(patch_set, nullptr) && patwrite::state() == patwrite::kArming);
+      pump(5);
+      CHECK(F.wanted && F.arm_at >= 0 && F.requests == 0);   // the 2E turned them on; the pass runs
+      fake_dirty();                                          // the user edits during the pass: its 0B waits
+      CHECK(rytm_dump::dirty_count() == d0);
+      long t0 = fake_now() - 5;
+      pump(900);
+      CHECK(patwrite::state() == patwrite::kArming && F.requests == 0);   // 905 ms: still waiting, nothing read
+      while (patwrite::state() == patwrite::kArming && fake_now() - t0 < 4000) pump(1);
+      long armed = fake_now() - t0;
+      CHECK(F.arm_dirties == 1 && armed >= 1050 && armed <= 1060);   // the read went at the pass's 0B, not before
+      CHECK(rytm_dump::dirty_count() - d0 == 1);                      // (the edit's 0B went as that one)
+      pump(400);
+      CHECK(patwrite::state() == patwrite::kDone && F.writes == 1 && F.requests >= 1);
+      pump(5);
+      CHECK(!F.wanted);
+      // an older Rytm (its walk never stops: it ignores the bit, so no 0B comes when they turn on): kArmMs, then the read
+      writer_reset(r);
+      rytm_dump::set_dirty_reported(false);   // (the host's last 2E said none wanted; that Rytm walked on)
+      CHECK(patwrite::start(patch_set, nullptr) && patwrite::state() == patwrite::kArming);
+      pump((int)patwrite::kArmMs - 20);
+      CHECK(patwrite::state() == patwrite::kArming && F.requests == 0);
+      pump(40);
+      CHECK(patwrite::state() != patwrite::kArming && F.requests == 1);   // the fallback: read
+      pump(400);
+      CHECK(patwrite::state() == patwrite::kDone && F.writes == 1);
+      rytm_dump::set_dirty_reported(true);
+      printf("  dirty wanted again: a write waits in kArming for the pass's 0B (%d ms), an older Rytm's kArmMs (%u ms)\n",
+             1050, (unsigned)patwrite::kArmMs);
+    }
     // the verify never answered, nothing changed: the read pattern written back (VERIFY FAILED: RESTORED)
     writer_reset(r);
     F.answer_after_write = false;
@@ -1311,6 +1366,29 @@ int main() {
         CHECK(!ui::fill_page_view().on);
       }
       send(msg(0x30, {0, 0, 0}));
+    }
+    // DIRTY off, a FILL (the page's YES goes through patwrite, as its CLEAR and UNDO): it waits for the pass's 0B too,
+    // then fills (review of #67)
+    {
+      writer_reset(r);
+      F.gate = true, F.pass_ms = 1050;
+      pump(20);
+      sw(0);
+      F.wanted = false;                       // (seq's last 2E said none wanted)
+      rytm_dump::set_dirty_reported(false);
+      cmd("fill=open:0");
+      cmd("fill=yes");
+      CHECK(patwrite::state() == patwrite::kArming && !strcmp(ui::fill_page_view().note, "FILLING.."));
+      pump(900);
+      CHECK(patwrite::state() == patwrite::kArming && F.requests == 0 && F.wanted);
+      pump(1000);
+      CHECK(patwrite::state() == patwrite::kDone && F.writes == 1 && F.arm_dirties == 1);
+      CHECK(!strncmp(ui::fill_page_view().note, "FILLED", 6));
+      pump(5);
+      CHECK(!F.wanted);
+      F.gate = false, F.wanted = true, F.pass_ms = 0;
+      rytm_dump::set_dirty_reported(true);
+      cmd("fill=open:0");
     }
     // fix/fill-persist: no 2D 02 seen yet: the page says why nothing is written
     writer_reset(r, -1);
