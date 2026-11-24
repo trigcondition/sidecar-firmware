@@ -1403,7 +1403,7 @@ FLASHMEM bool plug_slots_pass() {
   }
   if (rmp_meta_take(&plug_meta)) {
     uint8_t m[RMP_MSG_MAX];
-    to_rytm(m, rmp_build_slots(m, plug_meta.gen, plug_meta.store_gen, 0, 0));
+    to_rytm(m, host_slots_caps(m, rmp_build_slots(m, plug_meta.gen, plug_meta.store_gen, 0, 0)));   // (the host's caps: params-delta)
     plug_1d_ms = plug_ms();
     plug_1d_owed = false;
     return true;
@@ -1423,7 +1423,7 @@ FLASHMEM bool plug_1d_pass() {
   if (age < (plug_1d_owed ? 1000u : 5000u)) return false;
   uint8_t m[RMP_MSG_MAX];
   plug_meta_poll(true);
-  to_rytm(m, rmp_build_slots(m, plug_meta.gen, plug_meta.store_gen, 0, 0));
+  to_rytm(m, host_slots_caps(m, rmp_build_slots(m, plug_meta.gen, plug_meta.store_gen, 0, 0)));   // (the host's caps: params-delta)
   plug_1d_ms = plug_ms();
   plug_1d_owed = false;
   return true;
@@ -1866,7 +1866,7 @@ FLASHMEM void plug_reply(int s, int result) {
   uint8_t m[RMP_MSG_MAX];
   plug_meta_poll(true);
   if ((plug_desc_todo >> s & 1) || (plug_scan_todo >> s & 1) || plug_scan_slot == s) rmp_meta_bump(&plug_meta, s);
-  to_rytm(m, rmp_build_slots(m, plug_meta.gen, plug_meta.store_gen, s + 1, result));
+  to_rytm(m, host_slots_caps(m, rmp_build_slots(m, plug_meta.gen, plug_meta.store_gen, s + 1, result)));   // (the host's caps: params-delta)
   rmp_meta_take(&plug_meta);
   plug_1d_ms = plug_ms();
   plug_1d_owed = false;

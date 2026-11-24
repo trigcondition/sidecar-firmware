@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core.h"
+#include "host_link.h"
 #include "poly.h"
 #include "inst.h"
 #include "seq/seq.h"
@@ -82,7 +83,10 @@ int core_c_listing(uint8_t* m, int folder, int parent, int first, int total, con
 int core_c_slot_empty(uint8_t* m, int slot) { return core::sysex_slot_empty(m, slot); }
 int core_c_slot_unchanged(uint8_t* m, int slot) { return core::sysex_slot_unchanged(m, slot); }
 int core_c_installed_empty(uint8_t* m) { return core::sysex_installed_empty(m); }
-int core_c_slots(uint8_t* m, int answer_slot, int result) { return core::sysex_slots(m, answer_slot, result); }
+// the 1D as the engine sends it (core/slots.cpp): with this host's caps byte (params-delta, host_link.h), 16 bytes
+int core_c_slots(uint8_t* m, int answer_slot, int result) {
+  return core::host_slots_caps(m, core::sysex_slots(m, answer_slot, result));
+}
 
 // One StreamVoice (core/engines/stream_voice.h) over the card `card_dir`: the file at card path `path`, STA
 // `start` (0..1), triggered, n frames rendered in kBlock pieces with a refill before each; returns frames made.

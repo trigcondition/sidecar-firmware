@@ -7,6 +7,7 @@
 
 #include "fmt/fmt.h"
 #include "hooks.h"
+#include "host_link.h"   // host_slots_caps (params-delta)
 #include "platform.h"
 #include "pool/pool.h"
 #include "lfo.h"
@@ -521,7 +522,7 @@ bool on_label(int vi, int k, char* b, int cap) {
 void send_1d(int slot, int result) {
   uint8_t m[RMP_MSG_MAX];
   meta_poll();
-  core::to_rytm(m, rmp_build_slots(m, g_meta.gen, g_meta.store_gen, slot, result));
+  core::to_rytm(m, core::host_slots_caps(m, rmp_build_slots(m, g_meta.gen, g_meta.store_gen, slot, result)));   // (params-delta)
   rmp_meta_take(&g_meta);
   g_1d_ms = core::now_ms();
   g_1d_owed = false;
@@ -3484,7 +3485,7 @@ bool idle() {
     meta_poll();
   }
   uint32_t age = core::now_ms() - g_1d_ms;
-  if (g_meta.dirty || (g_1d_owed && age >= 1000) || age >= 5000 || !g_1d_sent) { UMT("um.1d"); send_1d(0, 0); did = true; }
+  if (g_meta.dirty || (g_1d_owed && age >= 1000) || age >= 5000 || !g_1d_sent || core::host_resync_due()) { UMT("um.1d"); send_1d(0, 0); did = true; }
   if (core::now_ms() - g_cost_ms >= 1000) {   // the measured cost moves while something plays
     g_cost_ms = core::now_ms();
     uint32_t tot = 0;

@@ -202,6 +202,9 @@ CORE_COLD const uint8_t* record(int* p, uint32_t* g) {
 CORE_COLD void on_record(void (*fn)(const uint8_t*, int, int)) { consumer = fn; }
 const Stats& stats() { return st; }
 CORE_COLD uint32_t dirty_count() { return st.dirties; }
+static bool g_dirty_rep = true;   // (unknown: as reported - an older build, the tests without seq's 2E)
+CORE_COLD void set_dirty_reported(bool on) { g_dirty_rep = on; }
+CORE_COLD bool dirty_reported() { return g_dirty_rep; }
 CORE_COLD uint32_t switch_count() { return switches; }
 CORE_COLD int hold_level() { return hold; }
 CORE_COLD void set_fill_hold(bool on) { fill_hold = on; }

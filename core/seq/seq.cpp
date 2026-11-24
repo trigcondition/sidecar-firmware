@@ -130,6 +130,7 @@ uint16_t mask = 0;
 // an older build wrote it) so an older Sidecar reading the project plays it as it did
 uint16_t legacy_mask = 0;
 int mask_sent = -1;
+int nodirty_sent = -1;   // the last 2E's flags bit 3 (no DIRTY wanted), -1 none sent since the hello
 bool hello_due = true;          // 2E with a resync owed (boot, a hello)
 uint16_t mutes = 0;
 // fix1049 (hardware 2026-10-23: soloing a Rytm track left the Sidecar voices playing): 2D 0D SOLO, the soloed tracks
@@ -2851,7 +2852,7 @@ CORE_COLD void reset() {
   for (int r = 0; r < kRytmTracks; ++r)
     clk[r].reset(), restart[r] = true, planned[r] = 0, play_abs[r] = -1, voff[r] = 0, vq[r] = Ratio{0, 1};
   set_transport(kStop);   // a take recording through a project load / hello ends (FC), as at the Rytm's STOP
-  hframes = 0, transport_frame = INT64_MIN, bpm = 0, mask = 0, legacy_mask = 0, clock_now = 0, mask_sent = -1, hello_due = true, mutes = 0, solos = 0;
+  hframes = 0, transport_frame = INT64_MIN, bpm = 0, mask = 0, legacy_mask = 0, clock_now = 0, mask_sent = -1, nodirty_sent = -1, hello_due = true, mutes = 0, solos = 0;
   out::set_mutes(0);
   rec_live = rec_grid = false;
   pat_now = 0, pat_queued = -1, pat_loaded = 0, load_due = false;
@@ -2913,7 +2914,8 @@ CORE_COLD bool beat_map(double* origin, double* per16, int* lat) {
 CORE_COLD void hello(int up20) {
   if (!cur) reset();   // (before engine_begin: the tests that skip it)
   hello_due = true;
-  mask_sent = -1, pin_sent = -1, clock_sent = -1, silent_sent = 0xFFFF;
+  mask_sent = -1, pin_sent = -1, clock_sent = -1, silent_sent = 0xFFFF, nodirty_sent = -1;
+  rytm_dump::set_dirty_reported(true);   // (the Rytm forgets the 2E at its hello: it walks until the next one)
   ui.leds_sent = false, ui.pleds_sent = false;
   ui.func = false;   // rui1050: a FUNC release lost with the link
   // polyuser-4 F-b3: a Rytm restarted within ~10 s of its boot counts from 0 again, a step back the follower read as "a
@@ -4190,14 +4192,19 @@ CORE_COLD void tick(uint32_t ms) {
   }
   uint16_t pin_x = (uint16_t)(pin_extra | arp_pins);
   int pin_now = pin_x | (pin_seq ? 0 : 1 << 12);
-  if (hello_due || mask_sent != wm || pin_sent != pin_now || clock_sent != ck) {
+  // DIRTY wanted (rytm-mods 0026 dk_tick: the Rytm walks its pattern, 85 KB a second, only then): the touch view's
+  // pattern fetches (rytm_dump's page on) and a pattern write's guards (patwrite busy); else 2E flags bit 3
+  int nd = rytm_dump::active() || patwrite::busy() ? 0 : 1;
+  if (hello_due || mask_sent != wm || pin_sent != pin_now || clock_sent != ck || nodirty_sent != nd) {
     // the 7-byte form (rytm-mods 1033's pin part) only when it says more than the 3- / 5-byte one: older builds refuse it
-    uint8_t b[7] = {(uint8_t)(wm & 0x7F), (uint8_t)(wm >> 7 & 0x1F), (uint8_t)((hello_due ? 2 : 0) | (pin_seq ? 0 : 4)),
+    uint8_t b[7] = {(uint8_t)(wm & 0x7F), (uint8_t)(wm >> 7 & 0x1F), (uint8_t)((hello_due ? 2 : 0) | (pin_seq ? 0 : 4) | (nd ? 8 : 0)),
                     (uint8_t)(ck & 0x7F), (uint8_t)(ck >> 7 & 0x1F), (uint8_t)(pin_x & 0x7F),
                     (uint8_t)(pin_x >> 7 & 0x1F)};
     send_cmd(kMaskCmd, b, pin_now ? 7 : ck ? 5 : 3);
     if (wm != mask) ++st.mask_early;
     mask_sent = wm, hello_due = false, pin_sent = pin_now, clock_sent = ck, clock_now = ck;
+    nodirty_sent = nd;
+    rytm_dump::set_dirty_reported(!nd);
     silent_sent = 0xFFFF;   // the pin's silence again after every 2E
     ++st.masks;
   }

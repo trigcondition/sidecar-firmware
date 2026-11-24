@@ -52,7 +52,15 @@ constexpr uint32_t kOwnDirties = 2;   // the DIRTYs (2D 0B) a received 0x54 (as 
 // caller names (lockfill::Result), nothing written. ctx: the caller's.
 using PatchFn = int (*)(uint8_t* rec, void* ctx);
 
-enum State : uint8_t { kIdle = 0, kReading, kSettle, kVerifying, kDone, kFailed };
+enum State : uint8_t { kIdle = 0, kReading, kSettle, kVerifying, kDone, kFailed, kArming };
+// kArming: the Rytm reported no DIRTYs (the 2E's "none wanted"): busy() turns them on (seq's next 2E), and the read waits
+// for the Rytm's first 0B after that. rytm-mods 0026 sends it when its fresh walk has summed the whole pattern once
+// (about 1.05 s: 21 UI ticks of 4 KB; longer when the UI task starves), holding every other 0B until then, so an edit
+// made anywhere before the read is in what the read gets and every edit after it raises a 0B. kArmMs is the fallback
+// for an older Rytm, which ignores the bit, walks on and sends no such 0B: it has to be longer than a pass on a busy
+// Rytm, or a new Rytm's read could go before its pass is done. 2.5 s: about twice a pass at 50 ms ticks, and still
+// a pass when the UI tick has slowed to ~115 ms. (An older Rytm with a newer host: FILL starts 2.5 s after YES.)
+constexpr uint32_t kArmMs = 2500;
 enum Why : int {
   kWhyNone = 0, kWhyPlaying = 1, kWhyBusy = 2, kWhySong = 3, kWhyNoAnswer = 4, kWhyVerify = 5, kWhyPatch = 6,
   kWhyPlayed = 7, kWhyRunning = 8, kWhyChanged = 9, kWhyUnconfirmed = 10, kWhyNotTaken = 11, kWhyNoPattern = 12, kWhyProject = 13,
@@ -65,7 +73,7 @@ bool start(PatchFn fn, void* ctx);
 void tick(uint32_t ms);
 void byte(uint8_t b);              // the Rytm -> host MIDI stream, every byte (beside rytm_dump::byte)
 State state();
-bool busy();                       // reading .. verifying
+bool busy();                       // arming, reading .. verifying (seq: DIRTYs wanted)
 int why();                         // the last job's kWhy*
 int patch_result();                // the patch's own number (kWhyPatch)
 bool changed();                    // the last done job wrote something (the patch changed the record)

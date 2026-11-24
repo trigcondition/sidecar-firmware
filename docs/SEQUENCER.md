@@ -469,7 +469,7 @@ Pi and Mac (CORE_POLY builds). The Rytm half is rytm-mods 0026 "1033" (design.md
 | **Latency calibration** | (none) | `seq=cal[:T]`, automatic once when a pinned seq track exists, the Rytm's stream comes and the transport is stopped: 5 clicks (1 kHz, 2 ms, -9 dBFS) rendered into the track's voice, found again in the Rytm -> host stream of that voice; the median round trip (a spread under 480 frames) becomes the latency. Set by hand (`seq=lat`, the page's F): kept (`latset=1` in tracks.txt) |
 | **Swing** | not located (see below) | per track, `seq=swing:T:50..80` (Elektron's scale: every second step late by swing / 50 - 1 of a step), in the file's swing byte |
 | **Mutes, FILL** | 2D 05 (1032), 2D 0C FILL (the key, 0xb2) | a muted track starts no note and its notes end (1032); FILL kept in the view (no trig conditions yet) |
-| **Pattern dirty, the Rytm view** | 2D 0B DIRTY from a rolling checksum of the working pattern (4 KB a UI tick) and every edit report | core/seq/rytm_dump: the stock SysEx dump of the active pattern (its working buffer) on the consumer's request (`rytmpat=on`, rytm_dump::set_active), each pattern change (250 ms after the last of a run) and DIRTY, paced (stopped: 1 s after the last, at most 4 s after the first; playing: one every 4 s at most; not while a song take records, nor on the VOICE page while playing: docs/SONG.md "The touchscreen's PAT / VOICE pages"); the answer read beside the platform's MIDI parser (14988 B: longer than its SysEx buffer), checked (checksum, length), the 13101-byte record kept for the touch view's decoder |
+| **Pattern dirty, the Rytm view** | 2D 0B DIRTY from a rolling checksum of the working pattern (4 KB a UI tick) and every edit report; the walk only while the host wants the 0Bs (2E flags bit 3 clear: the view's fetches on, or a pattern write running; an older host: always), one 0B when they are wanted again | core/seq/rytm_dump: the stock SysEx dump of the active pattern (its working buffer) on the consumer's request (`rytmpat=on`, rytm_dump::set_active), each pattern change (250 ms after the last of a run) and DIRTY, paced (stopped: 1 s after the last, at most 4 s after the first; playing: one every 4 s at most; not while a song take records, nor on the VOICE page while playing: docs/SONG.md "The touchscreen's PAT / VOICE pages"); the answer read beside the platform's MIDI parser (14988 B: longer than its SysEx buffer), checked (checksum, length), the 13101-byte record kept for the touch view's decoder |
 
 The dump request [measured, rytm-emu]: `F0 00 20 3C 07 00 64 01 01 <n> 00 00 00 05 F7`, n = the active pattern (its answer
 is the working buffer, an unsaved edit included). The community's `0x80` working-buffer number answers the same, but
@@ -479,6 +479,37 @@ bytes 7-bit packed (14968 B), a 14-bit checksum (the sum of the bytes from `<pat
 (the message's size - 10), F7: 14988 bytes. sim/protocol.py's rytm_dump packs a record to the Rytm's own answer byte for
 byte. The record decoder is pi/ui/rytm_pattern; on the Pi, pi/engine/rytmpat_pi.cpp registers with rytm_dump::on_record,
 decodes on core 3 and hands the pattern to the PAT page (docs/TOUCH-EDITOR.md); the page open = rytm_dump active.
+
+**When the host wants the DIRTYs (2E flags bit 3).** The Rytm's walk (rytm-mods 0026 `dk_tick`, 85 KB a second) runs
+only while the host wants 2D 0B, so the host says so in every 2E (core/seq/seq.cpp `tick`; bit 3 set = none wanted):
+
+- **Wanted (bit 3 clear)** while either holds:
+  - the pattern mirror fetches: `rytm_dump::active()`, the touch view's PAT page (`rytmpat=on`), its VOICE page
+    (`rytmpat=voice`) or a fetch asked for (`rytmpat=fetch`, which leaves the fetches on);
+  - a pattern write runs: `patwrite::busy()`, from `start` to its end: arming, the read and its edit guard (a DIRTY
+    between the request and the answer reads again), the settle (the write's own two DIRTYs) and the verify, a restore
+    included. Every pattern write goes through patwrite: FILL's fills and its undo (core/ui/page_fill.cpp).
+- **Not wanted (bit 3 set)** otherwise: no view fetching and no write running. Nothing else reads 2D 0B: the SONG takes
+  the whole stream but not the DIRTYs, and the FILL page draws from the mirror's last record.
+- **When it changes:** the 2E goes out at seq's next tick after the state changes, and again after every hello (the
+  Rytm walks from its hello until that 2E, as for an older host). An older Rytm ignores the bit and always walks; an
+  older host never sets it.
+- **Turning it on:** the Rytm starts a fresh pass and sends one 0B when that pass has summed the whole pattern (about
+  1.05 s, 21 UI ticks; longer while its UI task starves), not at once; every other 0B meanwhile (an edit report's, a
+  pattern switch's) waits and goes as that one. So an edit without its own 0A report (a p-lock, a parameter change) in a
+  part the fresh walk had not reached is in what the host reads after that 0B, and every edit after it raises a 0B. A
+  pattern write started while none were wanted waits for that 0B (`patwrite::kArming`) before it reads; the mirror
+  fetches the pattern on it, as on any DIRTY.
+- **An older Rytm** ignores the bit, walks on and sends no such 0B: the write reads after `kArmMs` (2.5 s: longer than
+  a pass on a busy Rytm, so the fallback cannot cut a new Rytm's pass short). With an older mod, FILL starts 2.5 s
+  after YES.
+
+Tests: core/tests/test_seq.cpp ("dirty wanted": the bit follows rytmpat on / voice / fetch / off and the hello),
+core/tests/test_lockfill.cpp ("dirty wanted again": a fake Rytm that sends its 0B at its pass's end, 1050 ms, holding an
+edit's meanwhile: a pattern write and a FILL wait in kArming until then, nothing read before; an older Rytm (no 0B):
+the read after kArmMs. "dirty wanted": against a fake Rytm that sends 0Bs only when wanted, a write started with
+none wanted turns them on, sees an edit made during its read, gets its own two DIRTYs and turns them off when it ends;
+it fails without `patwrite::busy()` in seq's rule), rytm-mods `tools/emu/sq_emu.py dirty`.
 
 Swing [code, not measured]: the swing menu (0x400676a6) shows `+50` of byte +5 of an object the pattern's vfunc 40
 returns (0x400aaf14); the 1.73 TEMPO screen in rytm-emu shows BPM only, and turning its encoders moved no pattern byte.

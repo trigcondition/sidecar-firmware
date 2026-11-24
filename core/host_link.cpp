@@ -27,6 +27,7 @@
 #include "ui/remote.h"
 #include "poly.h"
 #include "seq/seq.h"
+#include "sysex.h"
 
 namespace core {
 
@@ -296,6 +297,62 @@ static CORE_COLD void contact() {
 }
 }  // namespace fxin
 
+// ---- params-delta (host_link.h): each voice's last 16 values as the Rytm last sent them, 03's bytes
+namespace {
+struct Rep {
+  uint8_t p[32];
+  bool ok;   // a whole 16-value report came since the link came up
+};
+Rep s_rep[kVoices];
+bool s_resync = true;     // owed: at boot (the Rytm may be in delta mode from another host's session)
+uint32_t s_resync_ms;     // the last 1D that carried it
+}  // namespace
+
+CORE_COLD int host_slots_caps(uint8_t* m, int n) {
+  uint8_t caps = kHostCapsDelta;
+  if (s_resync) caps |= kHostCapsResync;
+  int k = sysex_slots_caps(m, n, caps);
+  if (k == 16 && s_resync) s_resync = false, s_resync_ms = now_ms();
+  return k;
+}
+CORE_COLD bool host_resync_due() { return s_resync && now_ms() - s_resync_ms >= 250; }
+
+static CORE_COLD void report_keep(int cmd, const uint8_t* d, int len) {
+  Rep& r = s_rep[d[5] & 7];
+  if ((cmd == 0x03 || cmd == 0x43) && len >= 39) memcpy(r.p, d + 6, 32), r.ok = true;
+  else if ((cmd == 0x04 || cmd == 0x44) && len >= 41) memcpy(r.p, d + 8, 32), r.ok = true;
+  else if (cmd == 0x03 || cmd == 0x43 || cmd == 0x04 || cmd == 0x44) r.ok = false;   // P1..P8 only (an older Rytm)
+}
+
+// 56 -> the 41-byte 03 it stands for, then as that 03
+static CORE_COLD void params_delta(const uint8_t* d, int len) {
+  if (len < 15 || d[5] != 1 || d[len - 1] != 0xF7 || d[9] > 3) return;
+  uint32_t mask = d[7] | (uint32_t)d[8] << 7 | (uint32_t)d[9] << 14;
+  int n = __builtin_popcount(mask);
+  bool bad = !mask || len != 13 + 2 * n;
+  for (int i = 6; !bad && i < len - 1; ++i)
+    if (d[i] & 0x80) bad = true;
+  Rep& r = s_rep[d[6] & 7];
+  if (bad) {   // a 56 that came apart (a lost or cut USB message): this voice's values may be stale, ask for whole ones
+    r.ok = false;
+    if (!s_resync) log(CORE_STR("voice %d: a malformed 56: resync"), d[6] & 7);
+    s_resync = true;
+    return;
+  }
+  if (!r.ok) {
+    if (!s_resync) log(CORE_STR("voice %d: a 56 with no values to apply it to: resync"), d[6] & 7);
+    s_resync = true;
+    return;
+  }
+  const uint8_t* v = d + 10;
+  for (int i = 0; i < 16; ++i)
+    if (mask & 1u << i) r.p[2 * i] = v[0], r.p[2 * i + 1] = v[1], v += 2;
+  uint8_t m[41] = {0xF0, 0x7D, 0x52, 0x54, 0x03, d[6]};
+  memcpy(m + 6, r.p, 32);
+  m[38] = v[0], m[39] = v[1], m[40] = 0xF7;
+  voice_report(0x03, m, 41);
+}
+
 CORE_COLD void link_reset(const char* why) {
   for (int vi = 0; vi < kVoices; ++vi) voice_silence(vi);
   scene::qperf_rebase();   // the QPERF knob's next report a baseline, not a move (core/mod/scene.h)
@@ -306,6 +363,8 @@ CORE_COLD void link_reset(const char* why) {
 }
 
 CORE_COLD void link_lost() {
+  for (Rep& r : s_rep) r.ok = false;   // params-delta: the next Rytm session starts with whole reports (and asks again)
+  s_resync = true;
 #if CORE_MSAMP
   chop::release_gates();   // a GATE slice would hold to its end: the Rytm's 0x11 will not come
 #endif
@@ -466,6 +525,11 @@ __attribute__((noinline)) CORE_COLD void host_sysex(const uint8_t* d, int len) {
     voice_note_off(vi);
     return;
   }
+  if (cmd == 0x56) {   // PARAMS DELTA (params-delta, host_link.h)
+    params_delta(d, len);
+    return;
+  }
+  report_keep(cmd, d, len);
   voice_report(cmd, d, len);
 }
 

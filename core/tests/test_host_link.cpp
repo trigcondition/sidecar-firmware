@@ -1,5 +1,6 @@
 // core/tests/test_host_link.cpp - host_sysex on whole messages (sim/protocol.py's): 10 sets the project and,
-// without slot hooks, a 1D; 19 / 1E answered as empty slots; 0x04 / 0x11 reach the voices; others ignored.
+// without slot hooks, a 1D; 19 / 1E answered as empty slots; 0x04 / 0x11 reach the voices; others ignored; the
+// host's caps in its 1Ds and 56 PARAMS DELTA played as the 03 it stands for (params-delta).
 #include <cstring>
 #include <unistd.h>   // mkdtemp
 #include <vector>
@@ -10,6 +11,7 @@
 #include "fx/send_fx.h"
 #include "host_link.h"
 #include "rec/rec_names.h"
+#include "sysex.h"
 
 static std::vector<std::vector<uint8_t>> g_out;
 static void out(const uint8_t* m, int n) { g_out.emplace_back(m, m + n); }
@@ -67,7 +69,8 @@ int main() {
   send(msg({0x19, 1, 2, 1, 0, 0}));   // at generation 1: unchanged
   CHECK(g_out.size() == 2 && g_out[1].size() == 10);
   send(msg({0x1e, 1, 3, 0, 0, 1}));   // assign U3: NOT INSTALLED
-  CHECK(g_out.size() == 3 && g_out[2].size() == 15 && g_out[2][12] == 3 && g_out[2][13] == 1);
+  CHECK(g_out.size() == 3 && g_out[2].size() == 16 && g_out[2][12] == 3 && g_out[2][13] == 1);   // (+ the host's caps)
+  CHECK(g_out[2][14] == kHostCapsDelta);   // the boot's resync went with the 10's 1D
   send(msg({0x19, 1, 0, 0, 3, 0}));   // the slot menu's YES asks the installed list: empty (1B 0x21), maybe a 1D first
   CHECK(g_out.back().size() == 12 && g_out.back()[4] == 0x1b && g_out.back()[7] == 0x21 && g_out.back()[10] == 0);
   CHECK(!slots_1d(5000));             // the platform loop's 5 s 1D (pi bridge::tick): not again so soon
@@ -143,6 +146,86 @@ int main() {
   link_reset("test");                       // the platform's edge (USB MIDI gone / attached)
   render(400);
   CHECK(rms(1, 2400, 2400) == 0);
+  // ---- params-delta: 56 PARAMS DELTA (host_link.h) leaves what the 03 it stands for leaves
+  {
+    uint8_t m[16];
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[12] == 0 && m[13] == 0 && m[14] == kHostCapsDelta &&
+          m[15] == 0xf7);
+    CHECK(host_slots_caps(m, sysex_slots(m, 2, 3)) == 16 && m[12] == 2 && m[13] == 3 && m[14] == kHostCapsDelta);
+    CHECK(sysex_slots_caps(m, 12, 1) == 12);   // not a 1D: unchanged
+    auto report = [](uint8_t cmd, uint8_t vb, const int* ps, int tag) {   // 03 / 04 with 16 values (v << 7 | frac)
+      std::vector<uint8_t> b = {cmd, vb};
+      if (cmd == 0x04) b.insert(b.end(), {60, 100});
+      for (int i = 0; i < 16; ++i) { b.push_back((uint8_t)(ps[i] >> 7)); b.push_back((uint8_t)(ps[i] & 0x7f)); }
+      b.push_back((uint8_t)(tag >> 7)); b.push_back((uint8_t)(tag & 0x7f));
+      return msg(b);
+    };
+    auto delta = [](uint8_t vb, uint32_t mask, const int* ps, int tag) {
+      std::vector<uint8_t> b = {0x56, 1, vb, (uint8_t)(mask & 0x7f), (uint8_t)(mask >> 7 & 0x7f), (uint8_t)(mask >> 14)};
+      for (int i = 0; i < 16; ++i)
+        if (mask & 1u << i) { b.push_back((uint8_t)(ps[i] >> 7)); b.push_back((uint8_t)(ps[i] & 0x7f)); }
+      b.push_back((uint8_t)(tag >> 7)); b.push_back((uint8_t)(tag & 0x7f));
+      return msg(b);
+    };
+    auto same = [](int a, int b) {
+      for (int i = 0; i < 16; ++i)
+        if (v[a].p[i] != v[b].p[i]) return false;
+      return v[a].fm == v[b].fm && v[a].juno == v[b].juno && v[a].daisy == v[b].daisy && v[a].user == v[b].user;
+    };
+    int ps[16];
+    for (int i = 0; i < 16; ++i) ps[i] = (10 + 7 * i) << 7 | (3 * i);
+    for (uint8_t mach : {(uint8_t)0x00, (uint8_t)kJuno}) {   // PLAITS, JUNO (its 03 path: the patch's knobs)
+      int q[16];
+      memcpy(q, ps, sizeof q);
+      send(report(0x04, (uint8_t)(mach | 4), q, 0));   // voice 4: 04, then 56s
+      send(report(0x04, (uint8_t)(mach | 5), q, 0));   // voice 5: 04, then the 03s they stand for
+      CHECK(same(4, 5));
+      q[2] = 77 << 7 | 5, q[13] = 3 << 7;
+      send(delta((uint8_t)(mach | 4), 1u << 2 | 1u << 13, q, 0));
+      send(report(0x03, (uint8_t)(mach | 5), q, 0));
+      CHECK(same(4, 5) && v[4].p[2] == 77.f + 5.f / 128 && v[4].p[13] == 3.f);
+      q[2] = 78 << 7, q[15] = 127 << 7 | 127;
+      send(delta((uint8_t)(mach | 4), 1u << 2 | 1u << 15, q, 0));
+      send(report(0x03, (uint8_t)(mach | 5), q, 0));
+      CHECK(same(4, 5) && v[4].p[15] > 127.9f && v[4].p[0] == v[5].p[0]);
+      std::vector<uint8_t> bad = delta((uint8_t)(mach | 4), 1u << 1, q, 0);
+      bad.insert(bad.end() - 1, 0);   // a length that is not 13 + 2n: dropped
+      q[1] = 0;
+      send(bad);
+      CHECK(same(4, 5));
+      // ... and, the message having come apart on the way, voice 4's values may be stale: a resync owed in the next 1D
+      // (review of #67), and voice 4's next 56 waits for a whole report
+      CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == (kHostCapsDelta | kHostCapsResync));
+      q[1] = 5 << 7;
+      send(delta((uint8_t)(mach | 4), 1u << 1, q, 0));
+      CHECK(same(4, 5));   // (dropped: no baseline)
+      send(report(0x03, (uint8_t)(mach | 4), q, 0));
+      send(report(0x03, (uint8_t)(mach | 5), q, 0));
+      CHECK(same(4, 5));
+    }
+    // no values to apply a 56 to (another host's session, the link lost since): dropped, a resync owed in the next 1D
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == (kHostCapsDelta | kHostCapsResync));   // (the 56s
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == kHostCapsDelta);   // voice 4 dropped meanwhile)
+    link_lost();
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == (kHostCapsDelta | kHostCapsResync));
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == kHostCapsDelta);   // (taken)
+    float before4[16];
+    memcpy(before4, v[4].p, sizeof before4);
+    int q[16];
+    for (int i = 0; i < 16; ++i) q[i] = 1 << 7;
+    send(delta(4, 1u << 0, q, 0));
+    CHECK(!memcmp(before4, v[4].p, sizeof before4));
+    CHECK(host_slots_caps(m, sysex_slots(m, 0, 0)) == 16 && m[14] == (kHostCapsDelta | kHostCapsResync));
+    send(report(0x03, 4, q, 0));   // the Rytm's whole report: a baseline again
+    q[0] = 9 << 7;
+    send(delta(4, 1u << 0, q, 0));
+    CHECK(v[4].p[0] == 9.f && v[4].p[1] == 1.f);
+    std::vector<uint8_t> short8 = {0x03, 4};   // P1..P8 only (an older Rytm): no baseline from it
+    for (int i = 0; i < 8; ++i) { short8.push_back(2); short8.push_back(0); }
+    send(msg(short8));
+    send(delta(4, 1u << 0, q, 0));
+    CHECK(v[4].p[0] == 2.f);
+  }
   printf("test_host_link: PASS\n");
   return 0;
 }

@@ -27,6 +27,15 @@ int json(char* out, int cap);   // "\"fxin\":{\"want\":1,\"state\":\"on\",\"rytm
 }  // namespace fxin
 
 void host_sysex(const uint8_t* d, int len);
+// params-delta (rytm-mods 0021): a Rytm told so in the host's 1D (core/sysex.h kHostCapsDelta) sends a parameter-only
+// report as 56 PARAMS DELTA, only the values that changed since its last report of the voice:
+//   F0 7D 52 54 56 01 <voice byte> <m0 P1..P7> <m1 P8..P14> <m2 P15 P16> {<hi> <lo>} x n <tag hi> <tag lo> F7
+// (13 + 2n bytes; mask bit i = P(i+1), the values in P order, each as 03's two bytes). The host keeps each voice's last
+// 16 values from its 03 / 04 / 43 / 44 and 56s and plays a 56 as the 03 they make: the same state an 03 would leave.
+// A 56 for a voice with no such values (this host started after the Rytm's last whole report) is dropped and a resync
+// owed: the next 1D asks the Rytm for whole reports again (kHostCapsResync).
+int host_slots_caps(uint8_t* m, int n);   // a 1D (13 / 15 bytes) with this host's caps (16), an owed resync taken
+bool host_resync_due();                   // a resync is owed: send a 1D soon (its own rate limit: 250 ms)
 // The link to the Rytm went down or came up (the Rytm's hello 35, its USB MIDI attached or gone, the Overbridge
 // stream started or stopped): every voice silenced (CC 120's ramp, until its next trig) and the send FX's tails
 // cleared, as a double STOP does - a note-on whose note-off (or a STOP) was lost across the gap must not hang.

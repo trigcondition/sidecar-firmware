@@ -440,7 +440,7 @@ int main() {
   g_out.clear();
   seq::tick(1000);
   CHECK(g_out.size() >= 1 && g_out[0].size() == 10 && g_out[0][4] == 0x2E && g_out[0][6] == 1 && g_out[0][7] == 0 &&
-        g_out[0][8] == 2);
+        g_out[0][8] == (2 | 8));   // resync; no DIRTY wanted (no pattern view, no pattern write)
   g_out.clear();
   seq::tick(1010);
   for (auto& m : g_out) CHECK(m[4] != 0x2E);
@@ -448,7 +448,31 @@ int main() {
   engine_sysex(hello, sizeof hello);
   g_out.clear();
   seq::tick(1020);
-  CHECK(!g_out.empty() && g_out[0][4] == 0x2E && g_out[0][8] == 2);
+  CHECK(!g_out.empty() && g_out[0][4] == 0x2E && g_out[0][8] == (2 | 8));
+  {   // DIRTY wanted (2E flags bit 3 clear) follows the touch view's pattern fetches: rytmpat on / voice / fetch, not off;
+      // again in the 2E after a hello
+    auto flags_after = [&](const char* c) {
+      char ob[200];
+      if (c) CHECK(rytm_dump::command(c, ob, sizeof ob));
+      g_out.clear();
+      seq::tick(now_ms());
+      int f = -1;
+      for (auto& m : g_out) if (m.size() >= 10 && m[4] == 0x2E) f = m[8];
+      return f;
+    };
+    CHECK(flags_after("rytmpat=on") == 0 && rytm_dump::dirty_reported());
+    CHECK(flags_after(nullptr) == -1);                 // no change: no 2E
+    CHECK(flags_after("rytmpat=off") == 8 && !rytm_dump::dirty_reported());
+    CHECK(flags_after("rytmpat=voice") == 0);
+    CHECK(flags_after("rytmpat=off") == 8);
+    CHECK(flags_after("rytmpat=fetch") == 0);          // a fetch turns the view's fetches on (rytm_dump: pg kPagePattern)
+    engine_sysex(hello, sizeof hello);
+    CHECK(flags_after(nullptr) == (2 | 0) && rytm_dump::dirty_reported());   // the hello: again, still wanted
+    CHECK(flags_after("rytmpat=off") == 8);
+    engine_sysex(hello, sizeof hello);
+    CHECK(flags_after(nullptr) == (2 | 8));
+    printf("  dirty wanted: 2E bit 3 follows rytmpat on / voice / fetch / off and goes again after a hello\n");
+  }
 
   // ---- a pattern: C3 on step 0, E3 half a step late on 1, G3 a quarter early on 2, a strummed C MAJ7 on 4
   seq::Track* t = seq::edit_track(0, true);

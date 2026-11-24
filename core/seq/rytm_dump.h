@@ -78,6 +78,11 @@ const Stats& stats();
 // 0.5.0 FILL (core/seq/patwrite.h): the pattern writer's guard - the DIRTYs (2D 0B) and pattern changes seen so far, and
 // its own hold (no fetch of ours while it reads, writes and verifies; the song's set_hold is apart)
 uint32_t dirty_count();
+// dirty wanted (rytm-mods 0026: 2E flags bit 3 = none wanted - no pattern walk on the Rytm, no 0B): seq sends it with
+// each 2E; false while the last 2E said none wanted (an older Rytm ignores the bit: it reports anyway). A consumer that
+// needs the 0Bs (patwrite's guards) waits for the one the Rytm sends when wanted turns on (dirty_count moves).
+void set_dirty_reported(bool on);
+bool dirty_reported();
 uint32_t switch_count();
 int hold_level();                                   // set_hold's
 void set_fill_hold(bool on);

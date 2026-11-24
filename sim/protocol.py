@@ -20,7 +20,8 @@ implemented 2026-10-08, P1..P8 only):
     F0 7D 52 54 04 <voice 0..7> <note> <velocity> <P1..P16> F7      = 41 bytes
 
   cmd 0x03 PARAMS: P1..P16 changed (knob, LFO, slide); at most once every 16
-  audio blocks (about 90/s) per voice:
+  audio blocks (about 90/s) per voice (to a host that reads 56 PARAMS DELTA, the
+  changed values alone instead, at the same rate: below, "56"):
 
     F0 7D 52 54 03 <voice 0..7> <P1..P16> F7                        = 39 bytes
 
@@ -716,16 +717,31 @@ def decode_knobs(payload):
     return dict(voice=payload[1], slot=payload[2], knobs=[(payload[4 + 2 * i], payload[5 + 2 * i]) for i in range(n)])
 
 
-def slots(gens, installed_gen, slot=0, result=0):
-    """1D SLOTS: the five generations and the installed list's; slot 1..5 adds the answer pair to a 1E."""
-    return _msg(SLOTS, [g & 0x7F for g in gens] + [installed_gen & 0x7F] + ([slot & 0x7F, result & 0x7F] if slot else []))
+# The host's caps (params-delta, 2026-11-22): a 1D may end <slot> <result> <caps> (16 bytes; slot 0, result 0: no answer),
+# which a Rytm without it reads as an answer naming no slot. Bit 0 HOST_CAPS_DELTA: the host reads 56 PARAMS DELTA (below);
+# bit 1 HOST_CAPS_RESYNC: the Rytm sends each voice's next parameter-only report whole (a host that started without its
+# values). A shorter 1D says neither: the Rytm sends 03s.
+HOST_CAPS_DELTA, HOST_CAPS_RESYNC = 1, 2
+
+
+def slots(gens, installed_gen, slot=0, result=0, caps=None):
+    """1D SLOTS: the five generations and the installed list's; slot 1..5 adds the answer pair to a 1E; caps (not None)
+    the host's caps byte (16 bytes, the pair 0 0 without an answer)."""
+    tail = [slot & 0x7F, result & 0x7F] if slot or caps is not None else []
+    if caps is not None:
+        tail.append(caps & 0x7F)
+    return _msg(SLOTS, [g & 0x7F for g in gens] + [installed_gen & 0x7F] + tail)
 
 
 def decode_slots(payload):
-    if not _ok(payload, at_least=7) or len(payload) not in (7, 9):
+    """1D's payload -> dict gens, installed, answer ((slot, result) or None) and, in the 16-byte form, caps."""
+    if not _ok(payload, at_least=7) or len(payload) not in (7, 9, 10):
         return None
-    return dict(gens=list(payload[1:6]), installed=payload[6],
-                answer=(payload[7], payload[8]) if len(payload) == 9 else None)
+    d = dict(gens=list(payload[1:6]), installed=payload[6],
+             answer=(payload[7], payload[8]) if len(payload) == 9 or (len(payload) == 10 and payload[7]) else None)
+    if len(payload) == 10:
+        d["caps"] = payload[9]
+    return d
 
 
 # ---- the reports' sound tag (2026-10-10): the Rytm (rytm-mods 0021 ext_render) appends the owner track's
@@ -773,6 +789,51 @@ def decode_params(payload):
     if r is None:
         return None
     return dict(voice=payload[0] & 7, machine=payload[0] & MACHINE_MASK, params=r[0], tag=r[1])
+
+
+# ---- 56 PARAMS DELTA (params-delta, 2026-11-22; rytm-mods 0021 ext_render, C: core/host_link.h): Rytm -> host, a
+# parameter-only report with only the values that changed since the voice's last report, to a host whose 1D said
+# HOST_CAPS_DELTA (above); else 03. At 03's rate (at most every 16 audio blocks per voice); a voice whose last report
+# was a 56 sends a whole 03 again in its slot of every 2048 blocks (~1.37 s), changed or not; trigs (04), note-offs and
+# the MIDI machine's 43 / 44 as before. The values are 03's two bytes each, in P order; the tag as 03's:
+#     F0 7D 52 54 56 01 <voice byte> <m0> <m1> <m2> {<hi> <lo>} x n <tag hi> <tag lo> F7      13 + 2n bytes
+# mask = m0 | m1 << 7 | m2 << 14, bit i = P(i+1) (m2 0..3). The host applies it to the voice's last values (its last
+# 03 / 04 / 43 / 44 / 56) and plays the 03 that makes. The Rytm's first parameter-only report of a voice after the host
+# turned it on (or asked a resync) is a whole 03, so the host has those values; 14 or more changed: an 03 too.
+PARAMS_DELTA, PARAMS_DELTA_VER = 0x56, 1
+
+
+def params_delta(voice_byte, changed, tag=0):
+    """56: changed {p index 0..15: 14-bit value}."""
+    mask = sum(1 << i for i in changed)
+    vals = [b for i in sorted(changed) for b in (changed[i] >> 7 & 0x7F, changed[i] & 0x7F)]
+    return HDR + bytes([PARAMS_DELTA, PARAMS_DELTA_VER, voice_byte & 0x7F, mask & 0x7F, mask >> 7 & 0x7F, mask >> 14 & 3]
+                       + vals + _tag(tag) + [0xF7])
+
+
+def decode_params_delta(payload):
+    """56's payload -> dict voice, machine, vb, changed {index: value}, tag; None when malformed."""
+    if len(payload) < 8 or payload[0] != PARAMS_DELTA_VER or payload[4] > 3 or any(b > 0x7F for b in payload):
+        return None
+    vb = payload[1]
+    mask = payload[2] | payload[3] << 7 | payload[4] << 14
+    idx = [i for i in range(16) if mask >> i & 1]
+    if not idx or len(payload) != 7 + 2 * len(idx):
+        return None
+    v = payload[5:]
+    return dict(voice=vb & 7, machine=vb & MACHINE_MASK, vb=vb,
+                changed={i: v[2 * k] << 7 | v[2 * k + 1] for k, i in enumerate(idx)}, tag=v[-2] << 7 | v[-1])
+
+
+def apply_params_delta(last, payload):
+    """The 03 (whole message) a 56's payload stands for, given last = the voice's 16 values before it."""
+    d = decode_params_delta(payload)
+    if d is None or last is None or len(last) != 16:
+        return None
+    ps = list(last)
+    for i, x in d["changed"].items():
+        ps[i] = x
+    return params_report(d["vb"], ps, d["tag"])
 
 
 # ---- Sidecar send FX (2026-10-16): 20 SENDFX, Rytm -> host (rytm-mods 0025-sendfx-report) ----
@@ -1341,7 +1402,16 @@ def decode_fxin_state(payload):
 #   host -> Rytm  2E 01 <mask lo7: tracks 0..6> <mask hi5: tracks 7..11> <flags> [<clock lo7> <clock hi5>]
 #                 the tracks the Sidecar sequences (their trig keys / LEDs in seq mode, live record writes no stock trig
 #                 on them; pads still send notes) and optionally clock-only tracks (ticked in 2C, nothing else); hi bytes
-#                 above 0x1F refused. flags bit 1: resync now (2D 08 01 02 05 06 07 09 at once), bit 0 reserved (0).
+#                 above 0x1F refused. flags bit 1: resync now (2D 08 01 02 05 06 07 09 at once), bit 0 reserved (0),
+#                 bit 3 (SEQ_MASK_NODIRTY) no 2D 0B DIRTY wanted: the Rytm does not walk its pattern at all (the walk
+#                 that finds any writer's edit: 85 KB a second on a CPU-starved Rytm); clear (an older host never sets
+#                 it) the walk and the 0Bs as before. Turned clear again: a fresh walk, and one 0B when its first pass has
+#                 summed the whole pattern (~1.05 s; every other 0B held until then and sent as that one), so an edit
+#                 in a part not yet walked cannot go unreported (edits made meanwhile were never summed: the host
+#                 fetches the pattern on that 0B). The host sets it whenever none of its own
+#                 needs the 0Bs - the touch view's pattern fetches off (rytmpat=off) and no pattern write running
+#                 (patwrite, whose guards count them; it waits for that 0B first) - in every 2E, which goes again on
+#                 each change of it and after each hello (the Rytm forgets it there: wanted). 2D 0A edits: unaffected.
 #                 Any 2E (mask 0 too) turns the reports on; the first after a hello gets a full resync. The Rytm forgets
 #                 it at its hello (35) and when the port drops: sent again after each 35.
 #                 (1033) 2E may carry <pin lo7> <pin hi5> after the clock bytes (7 bytes): more tracks whose voices are
@@ -1353,6 +1423,7 @@ def decode_fxin_state(payload):
 #                 34's, 7F stock's; honoured while seq mode is on or the remote page is open; only a 2F / 34 sent after
 #                 the host took the LEDs counts, seq mode keeps them across 3A open / close. The trig LEDs: 34.
 SEQ_TICK, SEQ_STATE, SEQ_MASK, SEQ_PAGE_LEDS = 0x2C, 0x2D, 0x2E, 0x2F
+SEQ_MASK_RESYNC, SEQ_MASK_NOPIN, SEQ_MASK_NODIRTY = 2, 4, 8   # 2E flags
 SEQ_TRANSPORT, SEQ_PATTERN, SEQ_SWITCH, SEQ_MUTES, SEQ_REC, SEQ_TEMPO, SEQ_SEQMODE, SEQ_POS = 1, 2, 3, 5, 6, 7, 8, 9
 SEQ_SCALE, SEQ_EDIT, SEQ_DIRTY, SEQ_FILL, SEQ_SOLO = 4, 0x0A, 0x0B, 0x0C, 0x0D
 # 0.5.0 (core/mod/rytm_out.h; rytm-mods 0026 design.md "0.5.0"): host -> Rytm HOST_CMD 01 <op> ... (01 MUTE <set lo7>

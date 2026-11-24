@@ -507,7 +507,7 @@ int main() {
     g_out.clear();
     sysex({0xf0, 0x7d, 0x52, 0x54, 0x1e, 0x01, 3, RMP_OP_ASSIGN, 0, (uint8_t)(gen & 0x7f), 0xf7});   // U3 = the list's first
     CHECK(host_card_us(3) == c3 && !um::slot_view(2).id[0]);
-    for (auto& m : g_out) CHECK(m.size() < 15 || m[4] != 0x1d);   // (no answer yet)
+    for (auto& m : g_out) CHECK(m.size() < 15 || m[4] != 0x1d || !m[12]);   // (no answer yet; the caps' 1D: slot 0)
   }
   idle_all();
   CHECK(slurp(ups) == ums0);
@@ -517,7 +517,7 @@ int main() {
   CHECK(logged("um: rytm.nothere is not installed") == 1);
   {
     bool ans = false;
-    for (auto& m : g_out) ans = ans || (m.size() == 15 && m[4] == 0x1d && m[12] == 3);
+    for (auto& m : g_out) ans = ans || (m.size() == 16 && m[4] == 0x1d && m[12] == 3);   // (+ the host's caps)
     CHECK(ans);
   }
   CHECK(um::command("um=clear:3", o, sizeof o));
