@@ -37,7 +37,8 @@ using namespace core;
 #if defined(__aarch64__)
 static std::vector<std::string> g_log;
 static void sink(const char* s, int n) { g_log.emplace_back(s, (size_t)n); }
-static void out(const uint8_t*, int) {}
+static std::vector<std::vector<uint8_t>> g_out;   // what the host link sends the Rytm
+static void out(const uint8_t* m, int n) { g_out.emplace_back(m, m + n); }
 static std::string slurp(const std::string& p) {
   FILE* f = fopen(p.c_str(), "rb");
   CHECK(f);
@@ -168,7 +169,7 @@ int main() {
   Fs fs;
   CHECK(fs.begin() && fs.mkdir("/Samples") && fs.mkdir("/Plugins") && fs.mkdir("/.rytm/projects/UF"));
   put("/.rytm/project", "UF");
-  for (const char* n : {"ufx_phaser", "ufx_bbd"})
+  for (const char* n : {"ufx_phaser", "ufx_bbd", "api3_fx16"})
     put(std::string("/Plugins/") + n + ".rmp", slurp(std::string("tests/api3_pkgs/") + n + ".a64.rmp"));
   hooks.to_rytm = ::out;
   CHECK(engine_begin());
@@ -208,6 +209,12 @@ int main() {
     int n = fx::sysex_labels(m, fx::kFirstUser + 1);
     CHECK(n == 24 + 9 * 8 && memcmp(m + 7, "TIME", 4) == 0);
     CHECK((m[23] & 15) == (0 | 4) && memcmp(m + 26, "FREE", 4) == 0);   // knob 0, show, no step
+    // its manifest's long names as 0x51 SENDFX FULL NAMES (P1..P4 = the send's P2..P5)
+    CHECK(l && std::string(l->long_name[0]) == "Time" && std::string(l->long_name[2]) == "Wow/Flutter");
+    n = fx::sysex_full_names(m, fx::kFirstUser + 1);
+    CHECK(n == 90 && m[4] == 0x51 && m[6] == fx::kFirstUser + 1 && m[7] == 1 && m[8] == 4);
+    CHECK(memcmp(m + 9, "TIME", 4) == 0 && memcmp(m + 13, "Time\0", 5) == 0);
+    CHECK(memcmp(m + 9 + 2 * 20, "W/F\0", 4) == 0 && memcmp(m + 13 + 2 * 20, "Wow/Flutter\0", 12) == 0);
   }
 
   // ---- PHASER: the notches of 4 / 6 / 8 stages at 600 Hz (each stage -90 degrees there), the sweep held
@@ -458,6 +465,79 @@ int main() {
     printf("test_ufx: %s: %.2f us a 12-frame block of the whole send FX on this Mac (the effect and the host's mix)\n",
            u ? "BBD" : "PHASER", us);
     if (getenv("UFX_TIMING")) CHECK(us < 30.0f);   // (wall clock: only when asked, a busy machine would fail it)
+  }
+  // ---- sendfx-pages (rytm-mods 0029, issue #15): a user effect's P5..P16 (api3_fx16: P1..P16 but P14), held by the
+  // Sidecar for the Rytm's SEND FX pages 2 / 3 - their names (0x51 chunks), defaults, what the effect is handed, a turn
+  // on the Rytm (22 ver 3) and what the Rytm is told
+  {
+    cmd("um=fx:3:fx.api3_fx16");
+    CHECK(um::slot_view(7).state == RMP_SLOT_READY);
+    const int id = fx::kFirstUser + 2;
+    const fx::KnobLabels* l = fx::labels(id);
+    CHECK(l && l->nx == 12 && std::string(l->xlabel[0]) == "X5" && std::string(l->xlong[0]) == "Extra P5");
+    CHECK(l && std::string(l->xlong[11]) == "Extra P16" && l->xdef[0] == 35 && l->xdef[11] == 112);
+    CHECK(l && l->xlabel[9][0] == 0 && l->xdef[9] == 0);   // P14: not in the manifest
+    CHECK(fx::labels(fx::kFirstUser + 1) && fx::labels(fx::kFirstUser + 1)->nx == 0);   // BBD: P1..P4 only
+    uint8_t m[160];
+    int n = fx::sysex_full_names(m, id, 1);
+    CHECK(n == 90 && m[4] == 0x51 && m[6] == id && m[7] == 5 && m[8] == 4);
+    CHECK(memcmp(m + 9, "X5\0\0", 4) == 0 && memcmp(m + 13, "Extra P5\0", 9) == 0);
+    n = fx::sysex_full_names(m, id, 3);
+    CHECK(n == 90 && m[7] == 13 && m[8] == 4 && memcmp(m + 9 + 20, "\0\0\0\0", 4) == 0 && memcmp(m + 9 + 60, "X16\0", 4) == 0);
+    CHECK(fx::sysex_full_names(m, fx::kFirstUser + 1, 1) == 0 && fx::sysex_full_names(m, id, 4) == 0);
+    // the slot follows its effect: the manifest's defaults
+    memset((void*)&fx::control, 0, sizeof fx::control);
+    fx::control.knob[0][0] = (uint8_t)id;
+    {   // before the host link step follows it (a load, a kit change): the effect is handed its defaults, never 0
+      float x[16] = {0}, y[16][2] = {};
+      uint8_t k[6] = {(uint8_t)id, 0, 0, 0, 0, 0};
+      fx::user_run(2, 0, x, 16, y, k);
+      CHECK(std::fabs(y[3][0] - 35 / 128.0f) < 1e-4f && std::fabs(y[14][0] - 112 / 128.0f) < 1e-4f);
+    }
+    CHECK(fx::xknobs_follow() == 1 && fx::control.xn[0] == 12 && fx::control.xknob[0][0] == 35 &&
+          fx::control.xknob[0][11] == 112 && fx::control.xknob[0][9] == 0);
+    CHECK(fx::xknobs_follow() == 0);
+    {   // what the effect is handed: frames 3..14 = P5..P16 / 128; frame 15: the host says so (RMP3_CAP_FX_P16)
+      float x[16] = {0}, y[16][2] = {};
+      uint8_t k[6] = {(uint8_t)id, 0, 0, 0, 0, 0};
+      fx::user_run(2, 0, x, 16, y, k);
+      CHECK(std::fabs(y[0][0] - 0.5f) < 1e-4f && std::fabs(y[3][0] - 35 / 128.0f) < 1e-4f &&
+            std::fabs(y[14][0] - 112 / 128.0f) < 1e-4f && std::fabs(y[12][0]) < 1e-4f && std::fabs(y[15][0] - 1.0f) < 1e-4f);
+    }
+    // a turn on the Rytm's page 2 (22 ver 3: FX 1, P7..P8): taken; past P16, or FX 3: not
+    sysex({0xf0, 0x7d, 0x52, 0x54, 0x22, 0x03, 0x00, 0x07, 0x02, 99, 100, 0xf7});
+    CHECK(fx::control.xknob[0][2] == 99 && fx::control.xknob[0][3] == 100);
+    sysex({0xf0, 0x7d, 0x52, 0x54, 0x22, 0x03, 0x00, 0x10, 0x02, 1, 2, 0xf7});
+    sysex({0xf0, 0x7d, 0x52, 0x54, 0x22, 0x03, 0x02, 0x05, 0x01, 1, 0xf7});
+    CHECK(fx::control.xknob[0][11] == 112 && fx::control.xknob[0][0] == 35);
+    {
+      float x[16] = {0}, y[16][2] = {};
+      uint8_t k[6] = {(uint8_t)id, 0, 0, 0, 0, 0};
+      fx::user_run(2, 0, x, 15, y, k);
+      CHECK(std::fabs(y[5][0] - 99 / 128.0f) < 1e-4f && std::fabs(y[6][0] - 100 / 128.0f) < 1e-4f);
+    }
+    // what the Rytm is told after its ASK: the 0x51s of P5..P16 after the 0x24, and FX 1's P5..P16 (22 ver 3)
+    g_out.clear();
+    sysex({0xf0, 0x7d, 0x52, 0x54, 0x23, 0x01, 0xf7});
+    idle_all();
+    int names = 0, x3 = 0;
+    for (const auto& o : g_out) {
+      if (o.size() > 8 && o[4] == 0x51 && o[6] == id) names |= 1 << ((o[7] - 1) / 4);
+      if (o.size() == 22 && o[4] == 0x22 && o[5] == 3 && o[6] == 0 && o[7] == 5 && o[8] == 12) {
+        ++x3;
+        CHECK(o[9] == 35 && o[11] == 99 && o[12] == 100 && o[18] == 0 && o[20] == 112 && o[21] == 0xf7);
+      }
+    }
+    CHECK(names == 15 && x3 == 1);
+    // another effect in the slot (BBD: none of P5..): its values go, nothing more is sent for it
+    fx::control.knob[0][0] = (uint8_t)(fx::kFirstUser + 1);
+    CHECK(fx::xknobs_follow() == 1 && fx::control.xn[0] == 0 && fx::control.xknob[0][2] == 0);
+    sysex({0xf0, 0x7d, 0x52, 0x54, 0x22, 0x03, 0x00, 0x05, 0x01, 77, 0xf7});
+    CHECK(fx::control.xknob[0][0] == 77);   // (held as sent: BBD reads no P5, the Rytm shows no page 2 for it)
+    fx::control.knob[0][0] = (uint8_t)id;   // back: the defaults again (the values were BBD's)
+    CHECK(fx::xknobs_follow() == 1 && fx::control.xknob[0][0] == 35 && fx::control.xknob[0][2] == 49);
+    cmd("um=fx:3:-");
+    printf("test_ufx: sendfx-pages: P5..P16 names, defaults, the effect's p[4..15], 22 ver 3 both ways\n");
   }
   cmd("um=fx:1:-");
   cmd("um=fx:2:-");

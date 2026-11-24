@@ -5,12 +5,12 @@
 #   make V=needs a64      api3_needs.a64.rmp    needs a capability no host has yet (the signal bus)
 #   make V=big a64        api3_big.a64.rmp      an arena over the per-slot limit (64 MB a state)
 #   make V=stereo a64     api3_stereo.a64.rmp   out_channels 2 (R = -L on PRE / POST)
-#   make V=poly|polyarena|setupcrash|setupslow|setupmore|setuprefuse|attachcrash|fx a64: the other variants
+#   make V=poly|polyarena|setupcrash|setupslow|setupmore|setuprefuse|attachcrash|fx|fx16 a64: the other variants
 #                         (probe.c's and fxprobe.c's headers)
 #   make all-variants     every one; make fixtures copies them for the tests, make check-fixtures compares
 # aarch64-none-elf-gcc from PATH, else the rytm-circle Docker image (sdk/rmp/plugin.mk).
 V ?= dual
-VARIANTS := dual only initcrash needs big stereo poly polyarena setupcrash setupslow setupmore setuprefuse attachcrash fx
+VARIANTS := dual only initcrash needs big stereo poly polyarena setupcrash setupslow setupmore setuprefuse attachcrash fx fx16
 NAME_dual := api3_test
 NAME_only := api3_only
 NAME_initcrash := api3_initcrash
@@ -25,6 +25,7 @@ NAME_setupmore := api3_setupmo
 NAME_setuprefuse := api3_setupre
 NAME_attachcrash := api3_attachcr
 NAME_fx := api3_fx
+NAME_fx16 := api3_fx16
 DEF_dual :=
 DEF_only := -DPROBE_ONLY=1
 DEF_initcrash := -DPROBE_INITCRASH=1
@@ -39,11 +40,12 @@ DEF_setupmore := -DPROBE_SETUP=3
 DEF_setuprefuse := -DPROBE_SETUP=4
 DEF_attachcrash := -DPROBE_ATTACHCRASH=1
 DEF_fx := 
+DEF_fx16 := -DPROBE_FX16=1
 NAME := $(NAME_$(V))
 ifeq ($(NAME),)
 $(error V=$(V): one of $(VARIANTS))
 endif
-SRCS := $(if $(filter fx,$(V)),fxprobe.c,probe.c)
+SRCS := $(if $(filter fx fx16,$(V)),fxprobe.c,probe.c)
 BUILD := build/$(V)
 CFLAGS_EXTRA := $(DEF_$(V))
 MANIFEST := $(V).json

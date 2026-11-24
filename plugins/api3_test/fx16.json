@@ -1,0 +1,99 @@
+{
+  "id": "fx.api3_fx16",
+  "version": "1.0.0",
+  "name": "API3 FX16",
+  "short": "A3X",
+  "licence": "MIT",
+  "knobs": [
+    {
+      "p": 1,
+      "long": "Mode",
+      "short": "MOD",
+      "default": 0
+    },
+    {
+      "p": 2,
+      "long": "Level",
+      "short": "LEV",
+      "default": 100
+    },
+    {
+      "p": 3,
+      "long": "Three",
+      "short": "P3",
+      "default": 3
+    },
+    {
+      "p": 4,
+      "long": "Four",
+      "short": "P4",
+      "default": 4
+    },
+    {
+      "p": 5,
+      "long": "Extra P5",
+      "short": "X5",
+      "default": 35
+    },
+    {
+      "p": 6,
+      "long": "Extra P6",
+      "short": "X6",
+      "default": 42
+    },
+    {
+      "p": 7,
+      "long": "Extra P7",
+      "short": "X7",
+      "default": 49
+    },
+    {
+      "p": 8,
+      "long": "Extra P8",
+      "short": "X8",
+      "default": 56
+    },
+    {
+      "p": 9,
+      "long": "Extra P9",
+      "short": "X9",
+      "default": 63
+    },
+    {
+      "p": 10,
+      "long": "Extra P10",
+      "short": "X10",
+      "default": 70
+    },
+    {
+      "p": 11,
+      "long": "Extra P11",
+      "short": "X11",
+      "default": 77
+    },
+    {
+      "p": 12,
+      "long": "Extra P12",
+      "short": "X12",
+      "default": 84
+    },
+    {
+      "p": 13,
+      "long": "Extra P13",
+      "short": "X13",
+      "default": 91
+    },
+    {
+      "p": 15,
+      "long": "Extra P15",
+      "short": "X15",
+      "default": 105
+    },
+    {
+      "p": 16,
+      "long": "Extra P16",
+      "short": "X16",
+      "default": 112
+    }
+  ]
+}

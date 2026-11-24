@@ -52,7 +52,7 @@ namespace fx {
 // Continuous (no step): a structure step 0..31 inside each model.
 inline constexpr Zone kRingsZones[] = {{1, 0, 0, 1, 0, "MODAL"}, {1, 32, 0, 1, 0, "MONO"}, {1, 64, 0, 1, 0, "STRNG"},
                                        {1, 96, 0, 1, 0, "CHORD"}};
-inline constexpr KnobLabels kRingsLabels = {{"PTCH", "MODL", "BRIT", "DCY"}, kRingsZones, 4};
+inline constexpr KnobLabels kRingsLabels = {{"PTCH", "MODL", "BRIT", "DCY"}, kRingsZones, 4, {"Pitch", "Model", "Brightness", "Decay"}};
 namespace rings {
 
 constexpr float kPi = 3.14159265358979f;

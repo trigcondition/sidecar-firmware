@@ -32,6 +32,8 @@ enum {                           /* what a host has (rmp3_host.caps), a plugin n
   RMP3_CAP_BUS       = 1u << 6,  /* the signal bus */
   RMP3_CAP_BLOCK_P   = 1u << 7,  /* b->p, modulation without params() */
   RMP3_CAP_PAGES     = 1u << 8,  /* the manifest's pages */
+  RMP3_CAP_FX_P16    = 1u << 9,  /* an effect's b->p carries P5..P16 too, held by the host (the Rytm's SEND FX pages
+                                    2 / 3), started from the manifest's defaults; without it they are 0 there */
 };
 
 typedef struct rmp3_host {       /* 96 B on AArch64 */

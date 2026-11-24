@@ -49,7 +49,7 @@ inline constexpr Zone kStutterZones[] = {
     {0, 0, 0, 0, 1, "OFF"},    {0, 64, 0, 0, 1, "ON"},    {1, 0, 0, 0, 1, "1/64"},   {1, 19, 0, 0, 1, "1/32"},
     {1, 37, 0, 0, 1, "1/16"},  {1, 55, 0, 0, 1, "1/8"},   {1, 74, 0, 0, 1, "1/4"},   {1, 92, 0, 0, 1, "1/2"},
     {1, 110, 0, 0, 1, "1BAR"}, {2, 0, 0, 0, 0, "NONE"},   {2, 1, 1, 1, 0, "DCY"},    {2, 64, 1, 1, 0, "PTCH"}};
-inline constexpr KnobLabels kStutterLabels = {{"ENG", "LEN", "D/P", "GATE"}, kStutterZones, 12};
+inline constexpr KnobLabels kStutterLabels = {{"ENG", "LEN", "D/P", "GATE"}, kStutterZones, 12, {"Engage", "Length", "Decay / pitch", "Gate"}};
 
 // The MIDI clock word (Control::clock): bits 0..23 the song position of the latest tick + 1 (0: Start seen, no tick
 // yet), 24..30 the tick count mod 128, 31 running. One aligned word: a torn read cannot happen.
