@@ -46,7 +46,7 @@ inline constexpr Zone kTapeZones[] = {
     {0, 64, 0, 0, 0, "1/16"}, {0, 80, 0, 0, 0, "1/8T"}, {0, 96, 0, 0, 0, "1/8"},  {0, 112, 0, 0, 0, "1/8D"},
     {2, 0, 0, 0, 1, "H1"},    {2, 16, 0, 0, 1, "H2"},   {2, 32, 0, 0, 1, "H3"},   {2, 48, 0, 0, 1, "H1+2"},
     {2, 64, 0, 0, 1, "H2+3"}, {2, 80, 0, 0, 1, "H123"}, {2, 96, 0, 0, 1, "H23+S"}, {2, 112, 0, 0, 1, "H123S"}};
-inline constexpr KnobLabels kTapeLabels = {{"TIME", "RPT", "MODE", "AGE"}, kTapeZones, 12};
+inline constexpr KnobLabels kTapeLabels = {{"TIME", "RPT", "MODE", "AGE"}, kTapeZones, 12, {"Time", "Repeat", "Mode", "Age"}};
 
 class TapeFx {
  public:

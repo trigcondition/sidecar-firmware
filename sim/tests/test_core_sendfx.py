@@ -83,6 +83,24 @@ class TestCoreSendFx(unittest.TestCase):
             self.assertEqual(P.decode_sendfx_labels(m[5:-1]), (i, list(labels), [tuple(z) for z in zones]))
         self.assertEqual(sorted(P.SENDFX_LABEL_SETS), sorted(set(P.SENDFX_BUILT)))
 
+    def test_full_names(self):
+        """0x51 SENDFX FULL NAMES: every labelled TYPE has full names (protocol.py SENDFX_FULL_NAME_SETS), sent as
+        P1..P4 with the 0x24's short labels; each fits 16 characters and decodes back; none for a TYPE without labels."""
+        b = (ctypes.c_uint8 * 256)()
+        LIB.core_c_sendfx_full_names.restype = ctypes.c_int
+        for i in range(128):
+            n = LIB.core_c_sendfx_full_names(b, i)
+            if i not in P.SENDFX_LABEL_SETS:
+                self.assertEqual(n, 0, f"id {i}")
+                continue
+            m = bytes(b[:n])
+            longs = P.SENDFX_FULL_NAME_SETS[i]
+            shorts = P.SENDFX_LABEL_SETS[i][0]
+            self.assertTrue(all(0 < len(x) <= P.LONG_CHARS for x in longs), f"id {i}")
+            self.assertEqual(m, P.sendfx_full_names(i, 1, list(zip(shorts, longs))), f"id {i}")
+            self.assertEqual(P.decode_sendfx_full_names(m[5:-1]), (i, 1, list(zip(shorts, longs))))
+        self.assertEqual(sorted(P.SENDFX_FULL_NAME_SETS), sorted(P.SENDFX_LABEL_SETS))
+
     def test_label_steps(self):
         """The step bit (0x24 zone byte bit 3): set on every zone of STUTTER ENG and LEN (pure selectors) and nowhere
         else (zones with a number inside stay continuous); a knob's zones agree; the stored values are the zones' lo,
