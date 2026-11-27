@@ -1,0 +1,105 @@
+{
+  "id": "rytm.api3_draw",
+  "version": "1.0.0",
+  "name": "API3 DRAW",
+  "short": "A3D",
+  "licence": "MIT",
+  "knobs": [
+    {
+      "p": 1,
+      "long": "Draw mode",
+      "short": "MOD",
+      "default": 0
+    },
+    {
+      "p": 2,
+      "long": "Level",
+      "short": "LEV",
+      "default": 100
+    },
+    {
+      "p": 3,
+      "long": "Bar 3",
+      "short": "B3",
+      "default": 24
+    },
+    {
+      "p": 4,
+      "long": "Bar 4",
+      "short": "B4",
+      "default": 32
+    },
+    {
+      "p": 5,
+      "long": "Bar 5",
+      "short": "B5",
+      "default": 40
+    },
+    {
+      "p": 6,
+      "long": "Bar 6",
+      "short": "B6",
+      "default": 48
+    },
+    {
+      "p": 7,
+      "long": "Bar 7",
+      "short": "B7",
+      "default": 56
+    },
+    {
+      "p": 8,
+      "long": "Bar 8",
+      "short": "B8",
+      "default": 64
+    },
+    {
+      "p": 9,
+      "long": "Bar 9",
+      "short": "B9",
+      "default": 72
+    },
+    {
+      "p": 10,
+      "long": "Bar 10",
+      "short": "B10",
+      "default": 80
+    },
+    {
+      "p": 11,
+      "long": "Bar 11",
+      "short": "B11",
+      "default": 88
+    },
+    {
+      "p": 12,
+      "long": "Bar 12",
+      "short": "B12",
+      "default": 96
+    },
+    {
+      "p": 13,
+      "long": "Bar 13",
+      "short": "B13",
+      "default": 104
+    },
+    {
+      "p": 14,
+      "long": "Bar 14",
+      "short": "B14",
+      "default": 112
+    },
+    {
+      "p": 15,
+      "long": "Bar 15",
+      "short": "B15",
+      "default": 120
+    },
+    {
+      "p": 16,
+      "long": "Bar 16",
+      "short": "B16",
+      "default": 120
+    }
+  ]
+}

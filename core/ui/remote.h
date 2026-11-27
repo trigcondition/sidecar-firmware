@@ -203,6 +203,7 @@ struct RemoteStats {
   uint32_t machines;                   // 1025: the Rytm's 33s (the tracks' machines)
   uint32_t leds;                       // 1026: 34s sent (the trig keys' LEDs)
   uint32_t src_views, src_vals, src_frames;   // 1027: the Rytm's 29s and 2As, SRC view frames committed
+  uint32_t user_draws, user_drawn;     // drawn pages (RMP3_CAP_DRAW): plugin draws called, and those that drew
   uint32_t draw_us_max, draw_us_sum;   // the time a tick's draw + diff + send took (when it drew)
   uint8_t page, voice;                 // the current page: 0 SIDECAR, 1 a voice page (voice 0..7), 2 SYSTEM, 3 extra,
                                        // 4 the SRC view (voice = the track 0..11)

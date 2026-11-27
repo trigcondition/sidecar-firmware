@@ -335,9 +335,12 @@ uint32_t g_pub_ms = 0;
 
 rmp_host g_host1, g_host2;
 
+uint32_t host_caps();     // (below: what this host offers, RMP3_CAP_*)
+bool g_in_draw = false;   // inside a plugin's draw (the control core): the host's services do nothing (rmp_api3.h)
 // A plugin's log line: copied first, bounded (API 3: inside a guarded call a bad pointer faults here, before the log's
 // lock is taken, so the slot is muted and no host lock stays held)
 void plog(const char* m) {
+  if (g_in_draw) return;   // (a draw may be stopped at any instruction: never inside the log's lock)
   char b[128];
   int n = 0;
   if (m)
@@ -758,6 +761,71 @@ template <class F> bool gcall(int s, const char* what, F f) {
   return true;
 }
 bool muted(int s) { return s >= 0 && (__atomic_load_n(&g_muted, __ATOMIC_ACQUIRE) >> s & 1); }
+
+// ---- drawn pages (rmp_api3.h RMP3_CAP_DRAW; core/ui/remote.cpp asks for page 0, the SRC view)
+// The draw runs on the control core, guarded with a hard limit (Exec::guard_timed: a timer leaves a call still running
+// after RMP3_DRAW_LIMIT_US). Stopped there: the slot draws no more until it loads again (g_draw_off), its sound plays
+// on (the draw gets its state read only). A fault, or a write outside the frame (guard bytes around it), mutes the
+// slot as any control call's fault does: what it damaged is not known.
+uint32_t g_draw_off = 0;                        // bit s: slot s's draw was stopped at its limit
+constexpr uint32_t kDrawGuard = 4096;           // guard bytes either side of the plugin's frame
+constexpr uint8_t kDrawFill = 0xA5;
+alignas(64) uint8_t g_dbuf[kDrawGuard + RMP3_DRAW_BYTES + kDrawGuard];
+// slot s draws: a READY machine, not muted, not stopped, an API 3 table with a draw that wants it, the host able
+rmp3_draw_fn draw_fn(int s) {
+  if (s < 0 || s >= kSlots || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p || muted(s)) return nullptr;
+  if (__atomic_load_n(&g_draw_off, __ATOMIC_ACQUIRE) >> s & 1 || !(host_caps() & RMP3_CAP_DRAW)) return nullptr;
+  const rmp3_plugin* q = g_v3[s].p3;
+  if (!q || q->kind != RMP3_KIND_MACHINE || !rmp3_draw_of(q) || !((q->wants | q->needs) & RMP3_CAP_DRAW)) return nullptr;
+  return rmp3_draw_of(q);
+}
+// core::hooks.user_draw_key: nonzero while slot s draws; it changes with anything the draw gets besides page and p (the
+// plugin, the code epoch, whether voice vi plays it)
+uint32_t on_draw_key(int vi, int s) {
+  if (vi < 0 || vi >= core::kVoices || !draw_fn(s)) return 0;
+  uint32_t h = 2166136261u;
+  auto mix = [&](uint32_t x) { for (int i = 0; i < 4; ++i) h = (h ^ (x >> (8 * i) & 0xFF)) * 16777619u; };
+  mix((uint32_t)s), mix(g_slot[s].fp), mix((uint32_t)(uintptr_t)g_slot[s].p), mix(code_epoch()), mix(g_cur[vi] == s);
+  return h ? h : 1u;
+}
+// core::hooks.user_draw: slot s's draw of page `page` for voice vi with P1..P16, into rows (RMP3_DRAW_BYTES, the
+// plugin's row-major layout); 1 drawn, 0 not (declined, stopped, faulted, none)
+int on_draw(int vi, int s, int page, const float* p16, uint8_t* rows) {
+  rmp3_draw_fn f = vi >= 0 && vi < core::kVoices && page >= 0 && page < RMP3_DRAW_PAGES ? draw_fn(s) : nullptr;
+  if (!f || !rows || !p16) return 0;
+  float p[RMP_PARAMS];
+  for (int k = 0; k < RMP_PARAMS; ++k) p[k] = p16[k] < 0.0f ? 0.0f : p16[k] > 127.0f + 127.0f / 128.0f ? 127.0f + 127.0f / 128.0f : p16[k];
+  uint8_t* fb = g_dbuf + kDrawGuard;
+  memset(g_dbuf, kDrawFill, kDrawGuard), memset(fb, 0, RMP3_DRAW_BYTES), memset(fb + RMP3_DRAW_BYTES, kDrawFill, kDrawGuard);
+  const void* st = g_cur[vi] == s ? g_vstate[vi] : nullptr;
+  int32_t r = 0;
+  auto call = [&] { r = f(st, page, p, fb); };
+  uint64_t pc = 0;
+  char w[96], at[32];
+  VNow now(-1);   // (no voice: pool_info / pool_read find nothing)
+  g_in_draw = true;
+  const int g = ex->guard_timed(GThunk<decltype(call)>::run, &call, &pc, RMP3_DRAW_LIMIT_US);
+  g_in_draw = false;
+  bool out = false;
+  for (uint32_t i = 0; i < kDrawGuard && !out; ++i) out = g_dbuf[i] != kDrawFill || fb[RMP3_DRAW_BYTES + i] != kDrawFill;
+  if (g == 1 || out) {
+    if (g == 1) fault_where(s, pc, at, sizeof at), sniprintf(w, sizeof w, "muted: crashed in draw at %s", at);
+    else copy(w, "muted: its draw wrote outside the frame", sizeof w);
+    slot_mute(s, w);
+    return 0;
+  }
+  if (g == 2) {
+    __atomic_or_fetch(&g_draw_off, 1u << s, __ATOMIC_RELEASE);
+    fault_where(s, pc, at, sizeof at);
+    core::log("um: %s%d %s draw stopped at its %u us limit (at %s): its pages are the host's until it loads again",
+              slot_pfx(s), slot_no(s), entry_of(s).id, (unsigned)RMP3_DRAW_LIMIT_US, at);
+    g_pub = true;
+    return 0;
+  }
+  if (r != 1) return 0;
+  memcpy(rows, fb, RMP3_DRAW_BYTES);
+  return 1;
+}
 
 // ---- the calls themselves (null functions are allowed in an API 3 only table: nothing to call)
 // A state starts on slot s: zeroed, voice_init, then (API 3) voice_attach with its arena part. vi the voice, inst the
@@ -2644,14 +2712,16 @@ void fx_faults() {
 // ---- API 3: the table checked, the arena, setup()
 uint32_t host_caps() {
   return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | RMP3_CAP_EFFECT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
-         (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u);
+         (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u) |
+         (ex && ex->guard_timed ? (uint32_t)RMP3_CAP_DRAW : 0u);   // (a draw only with its hard limit)
 }
 void caps_names(uint32_t c, char* b, int cap) {
-  static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages"};
+  static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages",
+                                   "", "draw"};   // (bit 9: RMP3_CAP_FX_P16 once it lands)
   b[0] = 0;
   int n = 0;
-  for (int k = 0; k < 9; ++k)
-    if (c >> k & 1) n += sniprintf(b + n, cap - n, "%s%s", n ? ", " : "", kN[k]);
+  for (int k = 0; k < 11; ++k)
+    if (c >> k & 1 && kN[k][0]) n += sniprintf(b + n, cap - n, "%s%s", n ? ", " : "", kN[k]);
 }
 // The plugin's API 3 table (reserved[RMP_P_V3]) if it has one: inside its code part, its magic and size, every function
 // pointer of both tables inside the code, the counts in range, its needs met. False: refused (why).
@@ -2672,7 +2742,7 @@ bool v3_check(const rmp_plugin* p, const uint8_t* code, uint32_t bytes, const rm
   const void* fns[] = {(const void*)p->init, (const void*)p->voice_init, (const void*)p->note_on, (const void*)p->note_off,
                        (const void*)p->params, (const void*)p->render, p->reserved[RMP_P_LOAD_ENTRY], p->reserved[RMP_P_VOICE_ENTER],
                        p->reserved[RMP_P_VOICE_LEAVE], (const void*)q->setup, (const void*)q->voice_attach,
-                       (const void*)q->render, (const void*)q->view};
+                       (const void*)q->render, (const void*)q->view, (const void*)rmp3_draw_of(q)};
   for (const void* f : fns)
     if (!fn_ok(f)) { copy(why, "a function outside its code", cap); return false; }
   if (!q->render) { copy(why, "its rmp3_plugin has no render", cap); return false; }
@@ -2859,6 +2929,7 @@ bool job_begin(int s) {
   g_v3[s] = V3{};     // (a fresh start: no table, no arena, not muted)
   __atomic_and_fetch(&g_muted, ~(1u << s), __ATOMIC_RELEASE);
   g_late[s] = 0, g_late_n[s] = 0;
+  __atomic_and_fetch(&g_draw_off, ~(1u << s), __ATOMIC_RELEASE);   // (a draw stopped at its limit: tried again)
   if (!m.id[0]) { slot_set(s, RMP_SLOT_EMPTY, nullptr, -1); return false; }
   int k = find_slot(s);
   char b1[12], b2[12], b3[12];
@@ -3391,6 +3462,8 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_leave = on_leave;
   core::hooks.user_note_off = on_note_off;
   core::hooks.user_label = on_label;
+  core::hooks.user_draw_key = on_draw_key;   // drawn pages (RMP3_CAP_DRAW)
+  core::hooks.user_draw = on_draw;
   core::hooks.user_render = on_render;
   core::hooks.user_render2 = on_render2;
   core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)

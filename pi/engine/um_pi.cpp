@@ -133,7 +133,21 @@ static int GuardCall (void (*pFunc) (void *), void *pParam, uint64_t *pPC)
 	return r;
 }
 
-static um::Exec s_Exec = {Alloc, Reset, 0, Sync, Barrier, ArenaSize, QueueWrite, 0, PlugPool, GuardCall, RASPPI};
+#if RASPPI >= 4
+// the draw's hard limit (Exec::guard_timed): core 3's virtual timer through the GIC (guard.h ControlCallTimed)
+static int GuardTimed (void (*pFunc) (void *), void *pParam, uint64_t *pPC, uint32_t nUs)
+{
+	u64 nPC = 0;
+	int r = g_Guard.ControlCallTimed (pFunc, pParam, &nPC, nUs);
+	*pPC = nPC;
+	return r;
+}
+#define GUARD_TIMED GuardTimed
+#else
+#define GUARD_TIMED 0			// no GIC: no hard limit, no draw
+#endif
+
+static um::Exec s_Exec = {Alloc, Reset, 0, Sync, Barrier, ArenaSize, QueueWrite, 0, PlugPool, GuardCall, RASPPI, GUARD_TIMED};
 
 // The heap for the hosted um (the package buffer, the data arena, the voices' state): Circle's, at boot only.
 extern "C" void *um_heap (u32 nBytes) { return new u8[nBytes]; }

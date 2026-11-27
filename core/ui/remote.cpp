@@ -496,6 +496,13 @@ struct State {
   // since its 29 t 1, 0 none, -1 not decided yet), the Rytm's own values of each track's P1..P16 (2A; `src_known` which came), the one
   // changed last (2A n 1: the bottom bar names it)
   int8_t src_track = -1, src_told = -1, src_last = -1;
+  // Drawn pages (sdk/rmp/rmp_api3.h RMP3_CAP_DRAW): page 0 of the SRC view's track drawn by its user machine's plugin.
+  // The inputs of its last draw (dr_key, 0: none since the view's 29), its answer (1 drawn, 0 not), the frame in the
+  // canvas layout; dr_shown: the last frame sent was the plugin's (a switch either way is a whole new page)
+  uint32_t dr_key = 0;
+  int8_t dr_res = 0;
+  bool dr_shown = false;
+  uint8_t dr_fb[kBytes] = {};
   uint8_t srcv[12][16] = {};
   // 1027e: a track's sound values while a held step's (2A <t | 0x40>) are drawn: put back at its unflagged 2A or at
   // any 29 (the view gone or moved: the Rytm's release there sends nothing), so only the drawing ever saw the locks
@@ -1306,14 +1313,52 @@ CORE_COLD void src_draws(bool page) {
   s.src_told = (int8_t)(page ? 1 : 0);
 }
 
+#if CORE_MSAMP
+// Drawn pages: track t's SRC view (page 0) drawn by the plugin of the user slot it plays (hooks.user_draw), from P1..P16
+// as the view shows them (the 2A's value + fraction / 128, the voice's own until the 2A came). Called again only when
+// they, the slot or user_draw_key change; its frame kept in the canvas layout. True: the frame is the plugin's (dr_fb).
+// False (no draw, declined, stopped, faulted): the host's page for the machine, which for a user machine is none today
+// (the stock SRC page with the manifest's labels) and will be its declared page (rmp3_page 0) once those are built.
+CORE_COLD bool drawn_frame(int t) {
+  const int slot = user_slot_of(track_machine(t)), vi = kTrackVoice[t];
+  const uint32_t dk = slot >= 0 && hooks.user_draw && hooks.user_draw_key ? hooks.user_draw_key(vi, slot) : 0u;
+  if (!dk) {
+    s.dr_key = 0, s.dr_res = 0;
+    return false;
+  }
+  float p[16];
+  for (int k = 0; k < 16; ++k) p[k] = s.src_known[t] >> k & 1 ? s.srcv[t][k] + s.srcl[t][k] / 128.0f : (float)v_param(vi, k);
+  uint32_t h = 2166136261u;
+  auto mix = [&](uint32_t x) { for (int i = 0; i < 4; ++i) h = (h ^ (x >> (8 * i) & 0xFF)) * 16777619u; };
+  mix(dk), mix((uint32_t)t), mix((uint32_t)slot);
+  for (float x : p) mix((uint32_t)(x * 128.0f));
+  if (!h) h = 1;
+  if (h == s.dr_key) return s.dr_res == 1;
+  s.dr_key = h;
+  static uint8_t rows[kBytes];   // (the plugin's row-major frame)
+  s.stats.user_draws++;
+  s.dr_res = (int8_t)(hooks.user_draw(vi, slot, 0, p, rows) == 1 ? 1 : 0);
+  if (s.dr_res == 1) rows_to_fb(rows, s.dr_fb), s.stats.user_drawn++;
+  if (src_log) core::log("rui src: track %d page 0 drawn by U%d: %s", t, slot + 1, s.dr_res == 1 ? "yes" : "no");
+  return s.dr_res == 1;
+}
+#endif
+
 CORE_COLD void src_tick(uint32_t ms) {
   int t = s.src_track;
-  const Page* p = track_page(t);
-  if ((p ? 1 : 0) != s.src_told) {
-    src_draws(p != nullptr);
-    if (p) s.sent_valid = false, s.page_changed = true, s.clock_set = false;   // the Rytm's shadow: a whole frame
+  bool drawn = false;   // drawn pages: the plugin's frame
+#if CORE_MSAMP
+  if (s.input || !s.clock_set || s.src_told < 0 || ms - s.last_draw >= kTickMs) drawn = drawn_frame(t);   // (the draw rate)
+  else drawn = s.dr_key && s.dr_res == 1;
+  if (drawn != s.dr_shown) s.dr_shown = drawn, s.page_changed = true, s.input = true;
+#endif
+  const Page* p = drawn ? nullptr : track_page(t);
+  const bool ours = drawn || p;
+  if ((ours ? 1 : 0) != s.src_told) {
+    src_draws(ours);
+    if (ours) s.sent_valid = false, s.page_changed = true, s.clock_set = false;   // the Rytm's shadow: a whole frame
   }
-  if (!p) return;
+  if (!ours) return;
   const bool covered = src_covered(ms);   // (the engine follows the machine at once; only the drawing waits)
   if (covered) s.sent_valid = false;
   wave_idle(ms);   // the sample overview of the Rytm's SMP being read (one column at most)
@@ -1331,14 +1376,19 @@ CORE_COLD void src_tick(uint32_t ms) {
 #else
     sniprintf(right, sizeof right, "%s", kTrackName[t]);
 #endif
-    int drawn = 0;
-    const int e = enc_of_param(*p, s.src_last);   // -1: a parameter on no knob of this page (a CC, a lock): no knob named
-    const bool turned = e >= 0 && turn_live(ms, s.src_last_ms, kScreenTurnMs);
-    if (!voice_screen(work, view, *p, tsrc, right, 0, 0, turned ? e : -1, true, &drawn)) {
-      drawn = view.draw(work, *p, tsrc, right, 0, 0);
-      voice_footer(*p, kTrackName[t], tsrc, e < 0 ? 0 : e);
+    int widgets = 0;
+    if (drawn) {   // the plugin's frame: pixels only, no text items (the diff empties the Rytm's)
+      memcpy(work.fb, s.dr_fb, kBytes);
+      work.clear_text();
+    } else {
+      const int e = enc_of_param(*p, s.src_last);   // -1: a parameter on no knob of this page (a CC, a lock): no knob named
+      const bool turned = e >= 0 && turn_live(ms, s.src_last_ms, kScreenTurnMs);
+      if (!voice_screen(work, view, *p, tsrc, right, 0, 0, turned ? e : -1, true, &widgets)) {
+        widgets = view.draw(work, *p, tsrc, right, 0, 0);
+        voice_footer(*p, kTrackName[t], tsrc, e < 0 ? 0 : e);
+      }
     }
-    s.stats.widgets += (uint32_t)drawn;
+    s.stats.widgets += (uint32_t)widgets;
     uint32_t mask[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
     uint64_t texts = 0;
     wire = &work;   // (a box has no SRC view)
@@ -2003,6 +2053,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       s.stats.src_views++;
       src_unhold(-1);
       if (src_log) core::log("rui src: 29 %lu ms, track %d, %s", (unsigned long)now_ms(), b[0], b[1] ? "on" : "off");
+      s.dr_key = 0;   // drawn pages: the plugin draws again for the new view (once, then on a change)
       if (b[1]) {
         s.src_track = (int8_t)b[0];
         src_list_quiet();

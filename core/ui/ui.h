@@ -99,6 +99,11 @@ class Canvas {
   Rect clip_ = {0, 0, kW, kH};
 };
 
+// A row-major 1-bit frame (16 bytes a row, bit 7 of a byte the leftmost pixel, 1 lit: a plugin's draw, sdk/rmp/rmp_api3.h
+// RMP3_CAP_DRAW) into the canvas layout above: pixel (x, y) = rows[16 y + x / 8] bit (7 - x % 8) -> fb[(7 - y / 8) + 8 x]
+// bit y % 8. Every byte of fb written.
+void rows_to_fb(const uint8_t rows[kBytes], uint8_t fb[kBytes]);
+
 // ---- text (font.cpp)
 struct Font {
   uint8_t w, h, advance;   // glyph size, pixels to the next glyph

@@ -7,6 +7,9 @@
 // touchscreen, until :unmute or until the voice's machine changes (a new machine starts clean: Fresh). Anything fatal
 // (an exception elsewhere, a render core that does not finish a block) asks core 0 to stop the stream and reboot.
 // The Teensy-era rule (25 % of a block, three blocks in a row) muted voices on the Pi that had plenty of room.
+// Plugin API 3's guarded calls (ControlCall) come back from a plugin's fault the same way; the timed one
+// (ControlCallTimed, a plugin's draw) also from its time limit: core 3's own EL1 virtual timer (CNTV, PPI 11, used by
+// nothing else) is started inside the guarded call, and its interrupt leaves a call still running as a fault would.
 // The bookkeeping is inline and portable: tests/test_guard.cpp runs it on the Mac.
 #ifndef _guard_h
 #define _guard_h
@@ -136,7 +139,61 @@ public:
 	void NoteControlFault (unsigned nCore, u64 nPC)	{ m_nCtlPC[nCore & 3] = nPC; m_nCtlFaults++; }
 	unsigned ControlFaults (void) const		{ return m_nCtlFaults; }
 
+	// Plugin API 3, Exec::guard_timed (a plugin's draw, rmp_api3.h RMP3_CAP_DRAW): ControlCall with a hard limit. A call
+	// still running nUs after it began is left from core 3's virtual timer interrupt (TimerIRQ, guard.cpp) into
+	// ResumeControl, as from a fault: 2 then, *pPC the interrupted PC. 1 and 0 as ControlCall. On another core, nested,
+	// or before SetupTimed (or on a board without the GIC): ControlCall, never 2. Only while IRQs are on: a plugin that
+	// masks them (or a host call that does, a spin lock) is stopped when they are back on, not before.
+	int ControlCallTimed (void (*pFunc) (void *), void *pParam, u64 *pPC, u32 nUs);
+	static void SetupTimed (void);			// once, on core 3 itself (the timer's PPI is banked per core)
+	void TimedTest (CLogger *pLogger);		// console :timedtest, on core 3: a 5 ms spin under a 1 ms limit
+	// ControlCallTimed on core nCore with the timer's start and stop (its portable part: tests/test_guard.cpp stands in
+	// for the interrupt with TakeTimeout and a longjmp into ControlJumpBuffer, as TimerIRQ's eret into ResumeControl)
+	int ControlCallTimedOn (unsigned nCore, void (*pFunc) (void *), void *pParam, u64 *pPC, u32 nUs,
+				void (*pStart) (u32 nUs), void (*pStop) (void))
+	{
+		const unsigned c = nCore & 3;
+		if (c != 3 || m_bCtlArmed[c]) return ControlCallOn (nCore, pFunc, pParam, pPC);
+		m_pTimedFunc = pFunc, m_pTimedParam = pParam, m_nTimedUs = nUs, m_pTimedStart = pStart, m_pTimedStop = pStop;
+		m_bTimedOut = FALSE;
+		m_bDeadline = TRUE;
+		int r = ControlCallOn (c, TimedEntry, this, pPC);
+		pStop ();			// again: a fault's way back skipped TimedEntry's stop
+		m_bDeadline = FALSE;		// (after the stop: a late interrupt finds the guard disarmed and only stops the timer)
+		if (m_bTimedOut)		// ControlCallOn's jump path put the interrupted PC (m_nCtlPC) in *pPC
+		{
+			m_bTimedOut = FALSE;
+			return 2;
+		}
+		return r;
+	}
+	// the timer interrupt on core nCore, its frame's ELR and SPSR: whether to leave the call (TRUE: noted, the caller
+	// jumps). Not inside a timed call (it returned and ControlCallOn disarmed: a late interrupt), or interrupted
+	// elsewhere than at task level (EL1t: SPSR.M 0b0100, where a plugin runs): FALSE, the call goes on
+	boolean TakeTimeout (unsigned nCore, u64 nPC, u64 nSPSR)
+	{
+		const unsigned c = nCore & 3;
+		if (c != 3 || !m_bDeadline || !m_bCtlArmed[c] || (nSPSR & 0xF) != 0x4) return FALSE;
+		m_nCtlPC[c] = nPC;
+		m_bTimedOut = TRUE;
+		m_nCtlTimeouts++;
+		return TRUE;
+	}
+	boolean TimedArmed (unsigned nCore) const	{ return (nCore & 3) == 3 && m_bDeadline; }
+	unsigned ControlTimeouts (void) const		{ return m_nCtlTimeouts; }
+
 private:
+	// inside the guarded call (after ControlCallOn armed it): an interrupt before the call could not stop it, so the
+	// limit starts here; stopped as soon as the plugin returns (a call that returned is still reported as stopped,
+	// 2, only if the timer fires in the few instructions left before ControlCallOn disarms: it hit its limit anyway)
+	static void TimedEntry (void *pThis)
+	{
+		CGuard *g = (CGuard *) pThis;
+		g->m_pTimedStart (g->m_nTimedUs);
+		g->m_pTimedFunc (g->m_pTimedParam);
+		g->m_pTimedStop ();
+	}
+
 	void Mute (unsigned nVoice, const char *pWhy, const void *pMach, u32 nGen)
 	{
 		m_pWhy[nVoice] = pWhy;
@@ -170,6 +227,15 @@ private:
 	volatile u64 m_nCtlLastPC[4] = {0, 0, 0, 0};		// the last fault's PC, for LogNews (core 0)
 	volatile boolean m_bCtlResumedOK[4] = {FALSE, FALSE, FALSE, FALSE};	// after it: at task level, SP_EL0
 	volatile unsigned m_nCtlFaults = 0;
+	// the timed call (core 3 only, never nested: one set)
+	void (*volatile m_pTimedFunc) (void *) = 0;
+	void *volatile m_pTimedParam = 0;
+	volatile u32 m_nTimedUs = 0;
+	void (*m_pTimedStart) (u32) = 0;
+	void (*m_pTimedStop) (void) = 0;
+	volatile boolean m_bDeadline = FALSE;		// a timed call is under way: the interrupt may stop it
+	volatile boolean m_bTimedOut = FALSE;		// the interrupt stopped it
+	volatile unsigned m_nCtlTimeouts = 0;
 };
 
 extern CGuard g_Guard;

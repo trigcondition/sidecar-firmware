@@ -8,8 +8,11 @@
 #else
 #define MAP_JIT 0
 #endif
+#include <pthread.h>
+#include <errno.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/ucontext.h>
 
@@ -115,7 +118,69 @@ int guard(void (*fn)(void*), void* ctx, uint64_t* pc) {
   t_jb = was;
   return 0;
 }
-const um::Exec kExec = {alloc, reset, write_begin, sync, nullptr, kArena, nullptr, data_alloc, arena, guard, 0};
+// guard_timed: guard, and a call still running after limit_us is left by SIGUSR2 from a watchdog thread, sent to this
+// thread only (pthread_kill), through the same siglongjmp: 2 then, *pc where it was (the Pi's core 3 does this from its
+// virtual timer interrupt, pi/engine/guard.cpp). One watchdog thread, started at the first call.
+thread_local volatile sig_atomic_t t_timed = 0;   // inside a timed call (the SIGUSR2 is ours)
+thread_local volatile sig_atomic_t t_stopped = 0;
+pthread_mutex_t g_wd_mu = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_wd_cv = PTHREAD_COND_INITIALIZER;
+pthread_t g_wd_target;
+bool g_wd_armed = false;
+uint64_t g_wd_gen = 0;
+timespec g_wd_at;
+void on_stop(int, siginfo_t*, void* uc) {
+  if (!t_jb || !t_timed) return;   // late (the call returned): nothing to stop
+  t_stopped = 1;
+#ifdef __APPLE__
+  t_pc = (uint64_t)((ucontext_t*)uc)->uc_mcontext->__ss.__pc;
+#else
+  t_pc = (uint64_t)((ucontext_t*)uc)->uc_mcontext.pc;
+#endif
+  siglongjmp(*t_jb, 1);
+}
+void* watchdog(void*) {
+  pthread_mutex_lock(&g_wd_mu);
+  for (;;) {
+    while (!g_wd_armed) pthread_cond_wait(&g_wd_cv, &g_wd_mu);
+    const uint64_t gen = g_wd_gen;
+    int r = 0;
+    while (g_wd_armed && g_wd_gen == gen && r != ETIMEDOUT) r = pthread_cond_timedwait(&g_wd_cv, &g_wd_mu, &g_wd_at);
+    if (g_wd_armed && g_wd_gen == gen) pthread_kill(g_wd_target, SIGUSR2), g_wd_armed = false;
+  }
+  return nullptr;
+}
+int guard_timed(void (*fn)(void*), void* ctx, uint64_t* pc, uint32_t limit_us) {
+  static bool on = false;
+  if (!on) {
+    on = true;
+    struct sigaction sa = {};
+    sa.sa_sigaction = on_stop;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR2, &sa, nullptr);
+    pthread_t t;
+    pthread_create(&t, nullptr, watchdog, nullptr);
+    pthread_detach(t);
+  }
+  timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  const uint64_t ns = (uint64_t)now.tv_nsec + (uint64_t)limit_us * 1000u;
+  pthread_mutex_lock(&g_wd_mu);
+  g_wd_target = pthread_self(), g_wd_at.tv_sec = now.tv_sec + (time_t)(ns / 1000000000u);
+  g_wd_at.tv_nsec = (long)(ns % 1000000000u), g_wd_armed = true, ++g_wd_gen;
+  pthread_cond_signal(&g_wd_cv);
+  pthread_mutex_unlock(&g_wd_mu);
+  t_stopped = 0, t_timed = 1;
+  const int r = guard(fn, ctx, pc);
+  t_timed = 0;
+  pthread_mutex_lock(&g_wd_mu);
+  g_wd_armed = false;
+  pthread_cond_signal(&g_wd_cv);
+  pthread_mutex_unlock(&g_wd_mu);
+  return t_stopped ? 2 : r;
+}
+const um::Exec kExec = {alloc, reset, write_begin, sync, nullptr, kArena, nullptr, data_alloc, arena, guard, 0, guard_timed};
 }  // namespace
 
 namespace core {

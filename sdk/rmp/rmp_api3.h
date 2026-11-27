@@ -32,6 +32,7 @@ enum {                           /* what a host has (rmp3_host.caps), a plugin n
   RMP3_CAP_BUS       = 1u << 6,  /* the signal bus */
   RMP3_CAP_BLOCK_P   = 1u << 7,  /* b->p, modulation without params() */
   RMP3_CAP_PAGES     = 1u << 8,  /* the manifest's pages */
+  RMP3_CAP_DRAW      = 1u << 10, /* reserved[RMP3_P_DRAW]: a machine draws its own pages (see "Drawn pages" below) */
 };
 
 typedef struct rmp3_host {       /* 96 B on AArch64 */
@@ -176,8 +177,9 @@ typedef struct rmp3_plugin {     /* 136 B on AArch64 */
   void (*voice_attach)(void *state, const rmp3_voice *v); /* after voice_init */
   void (*render)(void *state, const rmp3_block *b);       /* replaces rmp_plugin.render */
   int32_t (*view)(void *state, int32_t id, rmp3_view *v); /* a page's live data */
-  void *reserved[4];
+  void *reserved[4];             /* [RMP3_P_DRAW] the draw (RMP3_CAP_DRAW, below); the rest NULL */
 } rmp3_plugin;
+#define RMP3_P_DRAW 0            /* rmp3_plugin.reserved[0]: rmp3_draw_fn, NULL none (RMP_FN(draw) in the table) */
 
 /* ---- modulation hints and declared pages (the manifest's RX31 block: not implemented by this engine yet) */
 enum { RMP3_MOD_CONT = 0, RMP3_MOD_STEP = 1, RMP3_MOD_TRIG = 2, RMP3_MOD_OFF = 3 };
@@ -210,6 +212,47 @@ typedef struct rmp3_page {       /* 64 B, then nrytm + ntouch cells */
   uint8_t enc[8];                /* encoder A..H -> P number 0..15, 255 none */
   char label[8][5];
 } rmp3_page;
+
+/* ---- drawn pages (RMP3_CAP_DRAW): a machine draws one of its pages itself, as a 128x64 1-bit bitmap
+
+   int32_t draw(const void *state, int32_t page, const float *p, uint8_t *fb)
+
+   page   the page's id: its index in the manifest's pages (rmp3_page), 0..RMP3_DRAW_PAGES - 1. Page 0 is the SRC view
+          (the frame over the Rytm's stock SRC page, its knobs A..H still P1..P8); 1.. are the further pages of the
+          Sidecar's page ring. This engine calls page 0 only, until declared pages are built (RMP3_CAP_PAGES).
+   p      P1..P16 as the page shows them (p[0] = P1): the value plus fraction / 128, 0..127.99; never NULL.
+   fb     RMP3_DRAW_BYTES, cleared by the host: row-major, 16 bytes a row, the top row first, bit 7 of a byte the
+          leftmost pixel, 1 lit. Pixel (x, y) is fb[y * 16 + x / 8] & (0x80 >> (x & 7)). Write only these bytes.
+   state  the track's voice state when that voice plays the machine, else NULL; read only (a draw may be stopped at
+          any instruction, so it must not leave anything half written that render reads).
+   return 1: fb is the page. 0 (or anything else): the host shows the declared page (rmp3_page) if there is one, else
+          the stock page; fb is ignored.
+
+   Where it runs: on the control core (the Pi's core 3), between blocks, only while the page shows and only when an
+   input changed (p, page, the slot). The host keeps the last frame otherwise.
+   The hard limit: RMP3_DRAW_LIMIT_US a call, measured by a timer on that core. That core also refills the audio FIFO
+   (about 1.5 ms ahead on a Pi 4), so the limit is what the audio can spare, not what a draw needs: a draw of the whole
+   frame takes about 10 us there. A draw still running then is stopped
+   (the host leaves it from the timer interrupt, as from a fault) and the slot draws no more until it is loaded again;
+   its sound plays on. A fault in a draw, or a write outside fb (the host checks guard bytes around it), mutes the slot,
+   as a fault in any control call does. Inside a draw the host's services do nothing: log() writes no line, pool_info()
+   and pool_read() find nothing.
+   Gating: the host offers the draw only when rmp3_host.caps has RMP3_CAP_DRAW, and calls it only for a plugin that
+   asks for it in wants (or needs) and has a draw in reserved[RMP3_P_DRAW]. A host from before it never reads that
+   slot (NULL in every table until now), and the table's size and layout are unchanged. A plugin that needs a drawn page to be usable should still declare its pages, so
+   an older host or a draw that is stopped shows them.
+   Machines only (RMP3_KIND_MACHINE): an effect's draw is never called.
+   The touchscreen never shows the bitmap: it has no touch layout. There the page is its declared `touch` cells, else
+   the default panel (the VOICE page's knobs), as without a draw. */
+#define RMP3_DRAW_W 128
+#define RMP3_DRAW_H 64
+#define RMP3_DRAW_BYTES 1024u
+#define RMP3_DRAW_PAGES 8          /* the manifest's pages at most */
+#define RMP3_DRAW_LIMIT_US 250u    /* the hard limit of one draw call (a whole frame: ~10 us on a Pi 4) */
+typedef int32_t (*rmp3_draw_fn)(const void *state, int32_t page, const float *p, uint8_t *fb);
+static inline rmp3_draw_fn rmp3_draw_of(const rmp3_plugin *q) {   /* the host reads it only through this */
+  return q ? (rmp3_draw_fn)q->reserved[RMP3_P_DRAW] : (rmp3_draw_fn)0;
+}
 
 typedef void (*rmp3_render_fn)(void *state, const rmp3_block *b);
 

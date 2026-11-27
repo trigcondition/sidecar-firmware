@@ -44,6 +44,10 @@ struct Exec {
   // is the board's, as before API 3).
   int (*guard)(void (*fn)(void*), void* ctx, uint64_t* pc);
   uint32_t board;                        // rmp3_host.board: 4 or 5 on a Pi, 0 elsewhere
+  // guard with a hard time limit (a plugin's draw, rmp_api3.h RMP3_CAP_DRAW): as guard, and a call still running after
+  // limit_us is left from a timer (the Pi: the core's own virtual timer interrupt; the Mac: a signal) as from a fault:
+  // 2 then, *pc where it was. Null: no hard limit on this host, so the draw is not offered (no RMP3_CAP_DRAW).
+  int (*guard_timed)(void (*fn)(void*), void* ctx, uint64_t* pc, uint32_t limit_us);
 };
 
 // API 2 pool_info / pool_read: the pool line (1..npool, bank * 127 + row) a plugin's slot argument names. Two spellings:
