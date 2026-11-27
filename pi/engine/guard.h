@@ -29,7 +29,7 @@ typedef void *TGuardJmp[5];
 class CGuard
 {
 public:
-	static const unsigned Voices = 8;
+	static const unsigned Voices = 16;	// bridge::kVoices: both slots' (masks are u32)
 	static const unsigned kOverBlocks = 200;	// blocks in a row over budget on an overloaded core: 50 ms
 	static const unsigned kHotPct = 80;
 	static_assert (kOverBlocks <= 255, "m_nOver is a u8");		// a core is overloaded when its block took this % of a block

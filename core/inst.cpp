@@ -548,12 +548,13 @@ const char* path_name(int p) {
 CORE_COLD int json(char* out, int cap) {
   int n = sniprintf(out, cap, "\"inst\":{\"total\":%d,\"bytes\":%u,\"noroom\":%u,\"v\":[", kTotal, (unsigned)inst_bytes(),
                     (unsigned)g_noroom);
-  for (int vi = 0; vi < kVoices && n < cap; ++vi) {
+  for (int k = 0; k < kBoxVoices && n < cap; ++k) {   // the web's: the base box's voices, its V1..V8
+    const int vi = device::base_voice(k);
     VoiceStat s = stat(vi);
     n += sniprintf(out + n, cap - n,
                    "%s{\"m\":\"%s\",\"path\":\"%s\",\"inst\":%d,\"lanes\":%d,\"uni\":%d,\"on\":%d,\"clamped\":%d,"
                    "\"cpu\":%d,\"meas\":%d,\"ram\":%u,\"notes\":%u,\"steals\":%u}",
-                   vi ? "," : "", s.machine >= 0 ? machine_short(s.machine) : "-", path_name(s.path), s.instances, s.lanes,
+                   k ? "," : "", s.machine >= 0 ? machine_short(s.machine) : "-", path_name(s.path), s.instances, s.lanes,
                    s.unison, s.sounding, s.clamped ? 1 : 0, s.cpu100, s.meas100, (unsigned)s.ram, (unsigned)s.notes,
                    (unsigned)s.steals);
   }

@@ -35,7 +35,7 @@ typedef struct
 	char		ip[20], host[40];		// "169.254.61.60", "sidecar.local" ("" until mDNS runs)
 	char		link[12], gadget[12];		// "usb", "sidecar"
 	char		build[48], circle[24];		// "0.1.0 (1332761)" (core/version.h), "Circle 51.1.1"
-	int		touch_hidden;			// 1: the home page's touch test is hidden (touchtest=0, /.rytm/display.txt)
+	int		touch_hidden;			// 1: the home page's touch test is hidden (touchtest=0, /.sidecar/display.txt)
 	int		screensaver;			// minutes without a touch until black (0: never), -1: not known
 	int		brightness;			// 10..100 %: the picture dimmed (the panel has no backlight control); 0: not known
 	// the user machines (core/user/um.h UiView): the Rytm's project and U1..U5 as the Rytm shows them
@@ -136,7 +136,7 @@ int sidecar_ui_touch_test_shown (void);				// HOME shows the touch test (until t
 void sidecar_ui_create (void);					// on lv_screen_active ()
 // The theme (THEME_OLED / THEME_SIDECAR): the screen is rebuilt and redrawn at once (core 0's loop only: a few ms of
 // object creation plus one full redraw; nothing on the audio cores). A tap on Settings > Display > UI style calls it
-// and sends "uistyle=oled|sidecar|guide" (GRID; stored in /.rytm/display.txt); a status with another ui_style calls it too.
+// and sends "uistyle=oled|sidecar|guide" (GRID; stored in /.sidecar/display.txt); a status with another ui_style calls it too.
 void sidecar_ui_style (int style);
 int sidecar_ui_get_style (void);
 int sidecar_ui_dot (void);					// physical pixels a UI pixel now: 1 or SIDECAR_DOT

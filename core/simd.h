@@ -7,6 +7,8 @@
 #pragma once
 #include <stdint.h>
 
+#include "machines.h"   // kVoices: the render ring's columns
+
 #if defined(__ARM_NEON) && defined(__aarch64__) && !defined(CORE_NO_NEON)
 #define CORE_NEON 1
 #include <arm_neon.h>
@@ -21,7 +23,7 @@ inline int16_t clip16(float y) { return (int16_t)(y > 32767 ? 32767 : y < -32768
 
 // A block into its column of the ring: ring[row[s]][i] = o[s] * 0.7 * 32767, clipped to int16 (the rows wrap at the
 // ring's end, so a stride store)
-inline void clip_rows_c(int16_t (*ring)[8], const int* row, int i, const float* o, int n) {
+inline void clip_rows_c(int16_t (*ring)[kVoices], const int* row, int i, const float* o, int n) {
   for (int s = 0; s < n; ++s) ring[row[s]][i] = clip16(o[s] * 0.7f * 32767.0f);
 }
 // The largest |o[s] * 0.7|: whether a block is under the soft limiter's knee (NaN: not over, as the C's compare)
@@ -145,7 +147,7 @@ inline void be32_neon(uint8_t* d, const int32_t* x, int n) {
   for (; i + 4 <= n; i += 4) vst1q_u8(d + 4 * i, vrev32q_u8(vreinterpretq_u8_s32(vld1q_s32(x + i))));
   if (i < n) be32_c(d + 4 * i, x + i, n - i);
 }
-inline void clip_rows_neon(int16_t (*ring)[8], const int* row, int i, const float* o, int n) {
+inline void clip_rows_neon(int16_t (*ring)[kVoices], const int* row, int i, const float* o, int n) {
   const float32x4_t k1 = vdupq_n_f32(0.7f), k2 = vdupq_n_f32(32767.0f), hi = vdupq_n_f32(32767.0f), lo = vdupq_n_f32(-32768.0f);
   int s = 0;
   for (; s + 4 <= n; s += 4) {
@@ -197,7 +199,7 @@ inline void mix2_neon(const float (*stems)[8], int n, float (*g)[8], const float
 #endif
 
 #if CORE_NEON
-inline void clip_rows(int16_t (*ring)[8], const int* row, int i, const float* o, int n) { clip_rows_neon(ring, row, i, o, n); }
+inline void clip_rows(int16_t (*ring)[kVoices], const int* row, int i, const float* o, int n) { clip_rows_neon(ring, row, i, o, n); }
 inline float peak07(const float* o, int n) { return peak07_neon(o, n); }
 inline void be32(uint8_t* d, const int32_t* x, int n) { be32_neon(d, x, n); }
 inline void mix2(const float (*stems)[8], int n, float (*g)[8], const float (*dg)[8], float* x0, float* x1) { mix2_neon(stems, n, g, dg, x0, x1); }
@@ -206,7 +208,7 @@ inline float wt_unison(uint32_t* ph, const uint32_t* inc, const float* w, int nu
   return wt_unison_neon(ph, inc, w, nu, warp, sr, lsz, A, B, ft);
 }
 #else
-inline void clip_rows(int16_t (*ring)[8], const int* row, int i, const float* o, int n) { clip_rows_c(ring, row, i, o, n); }
+inline void clip_rows(int16_t (*ring)[kVoices], const int* row, int i, const float* o, int n) { clip_rows_c(ring, row, i, o, n); }
 inline float peak07(const float* o, int n) { return peak07_c(o, n); }
 inline void be32(uint8_t* d, const int32_t* x, int n) { be32_c(d, x, n); }
 __attribute__((always_inline)) inline void mix2(const float (*stems)[8], int n, float (*g)[8], const float (*dg)[8], float* x0, float* x1) { mix2_c(stems, n, g, dg, x0, x1); }

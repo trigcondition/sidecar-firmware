@@ -241,8 +241,8 @@ int main() {
   fclose(f);
   unsetenv("CORE_SAMPLE_RAM_MB");
   CHECK(engine_begin());
-  for (int i = 0; i < 2000 && npool == 0; ++i) idle_stream();
-  CHECK(npool == 1 && pool[0].folder >= 0);
+  for (int i = 0; i < 2000 && prj().npool == 0; ++i) idle_stream();
+  CHECK(prj().npool == 1 && pool[0].folder >= 0);
   t_engine();
   CHECK(system(("rm -rf '" + card + "'").c_str()) == 0);
   printf("test_stream_rev: PASS\n");

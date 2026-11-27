@@ -33,7 +33,7 @@ static std::vector<uint8_t> msg(std::vector<uint8_t> body) {
 }
 static void ready() {
   char k[kKeyMax];
-  project_key(project, k, sizeof k);
+  project_key(prj().key, k, sizeof k);
   for (int i = 0; i < 20000 && (!pools::ready() || strcmp(pools::project(), k) || pools::saving()); ++i) {
     pools::step();
     card_core();
@@ -95,7 +95,7 @@ int main() {
     pool_sync();
     card_core();
   }
-  CHECK(npool == 2);
+  CHECK(prj().npool == 2);
   const std::vector<int> a0 = run(1, false), b0 = run(2, false);
   ui::wave_reset();
   host_card_model(true);
@@ -165,7 +165,7 @@ int main() {
       pool_sync();
       card_core();
     }
-    CHECK(npool == 9);
+    CHECK(prj().npool == 9);
     host_card_model(true);
     cardq::set_worker(true);
     for (int sl = 1; sl <= 8; ++sl) run(sl, true);

@@ -9,6 +9,7 @@
 #include "../presets/juno_lib.h"
 #include "card_index.h"
 #include "../project_key.h"
+#include "../machines.h"   // kVoiceSlots
 
 namespace core {
 
@@ -33,29 +34,49 @@ struct PoolEntry {
   char name[card::kName];
   char path[kPath];     // under /Samples; "" empty
 };
-extern PoolEntry pool[kPoolLines];     // RAM2 (26 KB a bank)
-// Each slot's file, opened the first time a voice plays it and kept open (a copy per voice that plays it),
+// Each slot's project has its own pool (docs/device-profiles.md "Several devices": nothing of one box's project is
+// another's): slot s's DSP SAMPLE slot k (1..kPoolLines) is pool line pool_line(s, k), in [s * kPoolLines, (s + 1) * kPoolLines).
+// The arrays below hold every slot's lines; a line is the same number everywhere (the open files, the sample RAM's keys).
+constexpr int kPoolAll = kVoiceSlots * kPoolLines;
+constexpr int pool_line(int s, int k) { return s * kPoolLines + k - 1; }
+extern PoolEntry pool[kPoolAll];     // RAM2 (26 KB a bank)
+// Each line's file, opened the first time a voice plays it and kept open (a copy per voice that plays it),
 // with its index record: a DSP SAMPLE voice switching samples then only reads the new head (RAM2, 19 KB).
 #ifdef CORE_HEAP_BUFFERS
 extern File* pool_files;   // heap_buffers_place (core/heap_buffers.h)
 #else
-extern File pool_files[kPoolLines];
+extern File pool_files[kPoolAll];
 #endif
-extern card::FileRec pool_recs[kPoolLines];
-extern bool pool_open[kPoolLines];
-extern int npool;                      // slots in use, empty ones included
+extern card::FileRec pool_recs[kPoolAll];
+extern bool pool_open[kPoolAll];
 // rui1045: DSP SAMPLE's SMP (P11 as the reports give it: the integer the row, the fraction's top 3 bits the bank) ->
 // its slot 1..kPoolLines (bank * 127 + row), 0 OFF (row 0 of any bank); without CORE_MSAMP the row (bank A)
 int pool_slot(float p11);
-extern char project[24];
-// 2026-10-27 (core/bundle/prjslot.h): the Rytm's name for the project - project itself in name mode, the name the Rytm
-// reports in slot mode (project is then the slot key, "@005"). For display and the sampler's /Samples/<name>/ folder.
-extern char project_name[24];
+
+// One slot's project: slot 0 the Rytm's, slot 1 another box's (core/device/device.h), each named by its own box and kept in
+// its own state folder. prj() is the slot in hand's (device::cur(): the box whose message, whose idle pass this is); prj(s)
+// slot s's. An engine with one voice slot (the Teensy's) has one project, whichever link is in hand.
+struct Project {
+  char key[24];    // the project (10 <name>): its files' key; in slot mode the slot key ("@005", core/bundle/prjslot.h)
+  // 2026-10-27: the box's name for it - key itself in name mode, the name the Rytm reports in slot mode. For display and the
+  // sampler's /Samples/<name>/ folder.
+  char name[24];
+  char next[24];   // project_switch_named's name for the coming switch
+  bool dirty;      // /.rytm/project to be written (between requests: idle_save)
+  bool seen;       // its box named it since boot
+  uint32_t reported;   // project_id(): a hash of the last project name its box reported (10, slot switch), even if held back
+  uint32_t epoch;      // project_id(): its reloads (a cleared slot loaded again, a restore)
+  int npool;       // its pool's slots in use, empty ones included
+  uint32_t pool_sig;   // (CORE_MSAMP) the SAMPLES list's signature its pool was built from
+  bool pool_locked;    // (no CORE_MSAMP) its pool file could not be read whole: never written over
+};
+extern Project g_projects[kVoiceSlots];
+int prj_slot();   // device::cur()'s slot (core/device/device.h), 0 on an engine with one
+inline Project& prj(int s) { return g_projects[s >= 0 && s < kVoiceSlots ? s : 0]; }
+inline Project& prj() { return g_projects[prj_slot()]; }
 void pool_forget(int line);
 
 // The project (10 <name>), its pool file and the card (moved from voiceloop.ino). Not real time: cold.
-extern bool project_dirty;   // /.rytm/project to be written (between requests: idle_save)
-extern bool project_seen;
 void pool_file(char* out, int max);   // "/.rytm/pools/<PROJECT>.txt", the name made safe for the card
 void folder_path(int f, char* out, int max);
 bool find_path(const char* path, int* folder, int* file);
@@ -72,13 +93,15 @@ void project_save();
 void set_project(const uint8_t* d, int len);   // 10's name bytes (up to F7)
 // 0.5.0 FILL, the pattern writer and the pattern seed (core/ui/page_fill.cpp, core/seq/patwrite.cpp, seedtake.cpp): which project the Rytm is
 // in, as a number to remember and compare later ("the same project" or "another one": an undo, a job or a take made before is gone).
-// It is a hash of the project's key (`project`), of the last name the Rytm REPORTED (a 10, a slot switch: it moves when the Rytm names
+// It is the slot in hand's (prj()): a hash of its project's key, of the last name the Rytm REPORTED (a 10, a slot switch: it moves when the Rytm names
 // another project even while the switch is held back, in slot mode or by the rename question) and of a reload count (a cleared slot
 // loaded again, a restore: project_switch_named with reload). A repeat of the same report leaves it as it was.
 uint32_t project_id();
 void project_switch(const char* name);         // the switch a 10 asked for once core/bundle/rename.h has its answer
 void project_switch_named(const char* key, const char* name, bool reload);   // core/bundle/prjslot.h's switch
 void project_load();
+// Slot s's project from its box's folder (slot 1 once a box says hello): one step from idle_save, true while it works
+bool project_attach_step(int s);
 #if CORE_MSAMP
 // 2026-10-26, the RAM store (core/store/store.h): a project load fills the whole store before the project counts as
 // loaded. project_fill_begin: the store emptied, the project's files wanted (the LFOs', the inserts'), the fill begun

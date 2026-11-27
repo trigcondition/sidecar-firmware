@@ -22,7 +22,13 @@ bool Command (const char *pCmd);	// rec, rec=start|stop|arm|ch:LIST|bits:16|24|n
 					// fix:VOL|del:TAKE (a drive's: del:USB:TAKE); play, play=start|stop|scan|take:N|ch:N|
 					// level:N|start:TAKE/NN (true: handled). A take on a drive is "USB:take_004" everywhere.
 void Status (CString *pOut);		// ,"rec":{...},"play":{...}
-void Transport (u8 nStatus, u16 nSPP);	// MIDI realtime (core 3): PLAY/STOP for an armed recorder; then the send FX's clock
+// Box slot's MIDI realtime (core 3), each box its own (decided 2026-11-26): the recorder arms on the base box's (the box
+// whose output stage it records); the bundles' and the storage bench's waits hold while any box plays; the sampler
+// keeps every box's clock and a take follows its own box's.
+void Transport (int nSlot, u8 nStatus, u16 nSPP);
+// The box the recorder records (decided 2026-11-26: either box alike): the one whose PLAY started the take (armed), else
+// the base box's at a manual start. Its output stage, FX and IN feed the recorder and its meters (ob_usb.cpp); core 0 reads.
+int Slot (void);
 int UiState (unsigned *pSecs);		// the display: 0 off, 1 armed, 2 recording (and its seconds)
 // The display's REC page (pi/ui/sidecar_rec.h), core 0: UiWant while it shows (the recorder's meters on, the takes
 // read again on the way in); UiFill at most 25 times a second (the meters' peaks since the last fill)
@@ -38,7 +44,7 @@ void ScopeWant (bool bOn);
 void ScopePeaks (uint32_t *pPeaks);
 void CardSpace (unsigned *pFreeMB, unsigned *pTotalMB);
 // a storage bench done (stor_pi.cpp): that volume's 64 KB write speed for the warning before a take (recorder.h
-// rate_warning), kept in SD:/.rytm/recspeed.txt
+// rate_warning), kept in SD:/.sidecar/recspeed.txt
 void BenchDone (int nVol, unsigned nWriteKBps);
 }
 

@@ -21,6 +21,8 @@
 #include "../lib/srclib.h"
 #include "../msamp/cardq.h"
 #include "../machines.h"
+#include "device/device.h"   // voice_in: a console voice V is the slot in hand's box voice (box=S: prefix)
+#include "../pool/pool.h"
 #include "../ui/remote.h"
 #include "../poly.h"
 #include "../voices.h"
@@ -52,6 +54,7 @@ struct Table {
 Table tables[kTables];
 struct Slot {
   int entry;               // the list entry it holds (-1 none)
+  int8_t ls;               // in that voice slot's list (a file shared by path serves both boxes)
   bool ready;
   uint32_t used_ms;
   char path[kPath];        // its file (compose finds its entry again by it)
@@ -61,14 +64,22 @@ Slot slots[kSlots];
 // built-in row plays its generated table (Entry::fixed 0..5), a sample row its file (loaded into a card slot on use);
 // OFF, empty and missing rows are silent.
 using Entry = srclib::Entry;
-Entry* list = nullptr;
-Entry* lbuf[2] = {nullptr, nullptr};
-int nlist = 0;              // srclib::kEntries once composed
-uint32_t composed_sig = 0;
+// One list per voice slot (its box's WAVETABLES pool, core/lib/pools.h at(s, ..)): a voice reads its own slot's
+// (LV(vi): slot_of_voice), the displays and the console the slot in hand's (LH()).
+struct Lists {
+  Entry* list = nullptr;
+  Entry* lbuf[2] = {nullptr, nullptr};
+  int nlist = 0;              // srclib::kEntries once composed
+  uint32_t composed_sig = 0;
+  uint8_t failed[srclib::kEntries];
+  uint8_t why[srclib::kEntries];   // 1 larger than 8 MB, 2 not a WAV / AIFF it reads, 3 cannot open, 4 no frame, 5 read failed
+  uint16_t nframes[srclib::kEntries];   // its frames once loaded
+};
+Lists g_ls[kVoiceSlots];
+inline int lh() { return prj_slot(); }
+inline Lists& LH() { return g_ls[lh()]; }
+inline Lists& LV(int vi) { return g_ls[slot_of_voice(vi)]; }
 volatile uint32_t g_list_gen = 1;
-uint8_t failed[srclib::kEntries];
-uint8_t why[srclib::kEntries];   // 1 larger than 8 MB, 2 not a WAV / AIFF it reads, 3 cannot open, 4 no frame, 5 read failed
-uint16_t nframes[srclib::kEntries];   // its frames once loaded
 // a preview (the touchscreen's pick): a short note once the table is in
 struct Preview {
   bool wait, on;
@@ -163,7 +174,7 @@ struct Job {
   File dir, f;
   char subs[64][40];
   int nsubs, sub;
-  int slot, entry;
+  int slot, entry, ls;     // ls: the voice slot whose list entry is loading
   uint8_t* raw;            // the file (kFileMax)
   uint32_t size, got;
   wavread::Info a;
@@ -185,9 +196,10 @@ CORE_COLD int count_active() {
 CORE_COLD uint32_t frand_u() { return rnd = rnd * 1664525u + 1013904223u; }
 
 // the table id an entry plays without a card slot: a built-in's 0..5; -1 a card file
-CORE_COLD int fixed_tab(int e) {
-  if (!list || e < 0 || e >= nlist) return -1;
-  const Entry& x = list[e];
+CORE_COLD int fixed_tab(int ls, int e) {
+  const Lists& L = g_ls[ls];
+  if (!L.list || e < 0 || e >= L.nlist) return -1;
+  const Entry& x = L.list[e];
   return x.fixed >= 0 && x.lib == srclib::kLibNone && x.fixed < kBuiltins ? x.fixed : -1;
 }
 
@@ -200,13 +212,16 @@ CORE_COLD bool table_busy(uint32_t t) {
       return true;
   return false;
 }
-CORE_COLD int resident(int e) {
-  if (e < 0 || e >= nlist) return -1;
-  int f = fixed_tab(e);
+CORE_COLD int resident(int ls, int e) {
+  const Lists& L = g_ls[ls];
+  if (e < 0 || e >= L.nlist) return -1;
+  int f = fixed_tab(ls, e);
   if (f >= 0) return f;
+  const Entry* list = L.list;
   if (!list[e].path[0]) return -1;
-  for (int s = 0; s < kSlots; ++s)   // by path: a file in the pool and in its folder is one slot
-    if (slots[s].ready && (slots[s].entry == e || (list[e].path[0] && !strcasecmp(slots[s].path, list[e].path)))) return kBuiltins + s;
+  for (int s = 0; s < kSlots; ++s)   // by path: a file in the pool and in its folder (both boxes) is one slot
+    if (slots[s].ready && ((slots[s].ls == ls && slots[s].entry == e) || (list[e].path[0] && !strcasecmp(slots[s].path, list[e].path))))
+      return kBuiltins + s;
   return -1;
 }
 // ---- the voice's selection and knobs (at every report)
@@ -236,15 +251,17 @@ CORE_COLD void set_knobs(int vi) {
 }
 CORE_COLD void select_a(int vi) {
   int e = srclib::code_of(vp[vi][0]);   // the pool row: bank * 128 + row
-  if (!list || e < 0 || e >= nlist) return;
+  const int ls = slot_of_voice(vi);
+  Lists& L = g_ls[ls];
+  if (!L.list || e < 0 || e >= L.nlist) return;
   if (!(v[vi].wt || force[vi])) return;   // not on WAVETABLE (left it: leave()): no selection, no card slot (a compose)
   pools::voice_on(pools::kTables, vi, e);
   // a table that failed to load, picked again (TBL away and back): tried again (the card was busy, the file is
   // fixed); the same TBL at every report or trig does not reload it
-  if (e != want[vi] && failed[e]) failed[e] = 0, why[e] = 0;
+  if (e != want[vi] && L.failed[e]) L.failed[e] = 0, L.why[e] = 0;
   want[vi] = (int16_t)e;
-  if (srclib::silent(list, e)) return;   // OFF / empty / missing: no sound (a trig skips it)
-  int t = resident(e);
+  if (srclib::silent(L.list, e)) return;   // OFF / empty / missing: no sound (a trig skips it)
+  int t = resident(ls, e);
   if (t >= kBuiltins) slots[t - kBuiltins].used_ms = now_ms();
   if (t >= 0) __atomic_store_n(&sel[vi], (uint32_t)t, __ATOMIC_SEQ_CST);   // else the old table plays on while it loads
   else if (__atomic_load_n(&sel[vi], __ATOMIC_SEQ_CST) >= (uint32_t)kTables)
@@ -255,15 +272,17 @@ CORE_COLD void select_a(int vi) {
 // read as TBL B rows at MIX 0: they claim no slot). A B that goes keeps its table kFadeMs more, for the render core's
 // fade out (b_fade_step); a table loading leaves the B it had (none: silent until it is in).
 CORE_COLD bool b_heard(int vi) {   // MIX above 0, or FM / RM using B as the modulator: B can be heard
-  vi &= 7;
+  vi = voice_wrap(vi);
   int wz = eng_zone(vp[vi][2], kWarps);
   return vp[vi][14] > 0 || wz == kWFm || wz == kWRm;
 }
 CORE_COLD void select_b(int vi) {
   int e = srclib::code_of(vp[vi][12]);
-  if (!list || e < 0 || e >= nlist) return;
+  const int ls = slot_of_voice(vi);
+  Lists& L = g_ls[ls];   // (the voice's own box's list)
+  if (!L.list || e < 0 || e >= L.nlist) return;
   if (!(v[vi].wt || force[vi])) return;
-  bool on = !srclib::silent(list, e) && b_heard(vi);
+  bool on = !srclib::silent(L.list, e) && b_heard(vi);
   if (!on) {
     wantb[vi] = -1;
     __atomic_store_n(&bwant[vi], 0u, __ATOMIC_SEQ_CST);
@@ -271,10 +290,10 @@ CORE_COLD void select_b(int vi) {
     return;
   }
   b_off[vi] = false;
-  if (e != wantb[vi] && failed[e]) failed[e] = 0, why[e] = 0;
+  if (e != wantb[vi] && L.failed[e]) L.failed[e] = 0, L.why[e] = 0;
   wantb[vi] = (int16_t)e;
   __atomic_store_n(&bwant[vi], 1u, __ATOMIC_SEQ_CST);
-  int t = resident(e);
+  int t = resident(ls, e);
   if (t >= kBuiltins) slots[t - kBuiltins].used_ms = now_ms();
   if (t >= 0) __atomic_store_n(&selb[vi], (uint32_t)t, __ATOMIC_SEQ_CST);
 }
@@ -347,7 +366,8 @@ CORE_COLD void release_note(Note& n) {
 CORE_COLD void trig(int vi, int note, int vel) {
   for (int k = 0; k < kPerVoice; ++k)   // the earlier trig notes: their tails go on
     if (!notes[vi][k].live) release_note(notes[vi][k]);
-  if (list && want[vi] >= 0 && srclib::silent(list, want[vi])) {   // rui1038: a bank's OFF / empty row
+  const Lists& L = LV(vi);
+  if (L.list && want[vi] >= 0 && srclib::silent(L.list, want[vi])) {   // rui1038: a bank's OFF / empty row
     ++st.trigs;
     return;
   }
@@ -356,14 +376,14 @@ CORE_COLD void trig(int vi, int note, int vel) {
   v[vi].live = true;
   int t = (int)__atomic_load_n(&sel[vi], __ATOMIC_SEQ_CST);
   log(CORE_STR("trig voice %d WAVETABLE %s note %d (%d now, peak %d)"), vi,
-      t < kTables && want[vi] >= 0 ? list[want[vi]].name : "-", note, st.active, st.peak);
+      t < kTables && want[vi] >= 0 && L.list ? L.list[want[vi]].name : "-", note, st.active, st.peak);
 }
 
 // ---- loading
 void compose();
 CORE_COLD void job_fail(const char* text, uint8_t code) {
   log(CORE_STR("wt: %s: %s"), slots[job->slot].path, text);
-  if (job->entry >= 0) failed[job->entry] = 1, why[job->entry] = code;
+  if (job->entry >= 0) g_ls[job->ls].failed[job->entry] = 1, g_ls[job->ls].why[job->entry] = code;
   ++st.load_fails;
   slots[job->slot].entry = -1;
   job->after = kIdle;
@@ -381,21 +401,22 @@ CORE_COLD int free_slot() {
 }
 CORE_COLD bool start_load() {
   if (!job->raw) return false;   // no memory for card tables
-  int e = -1;
+  int e = -1, ls = 0;
   for (int pass = 0; pass < 2 && e < 0; ++pass)   // every voice's A first, then the B tables (they never starve an A)
-    for (int vi = 0; vi < kVoices && e < 0; ++vi) {
-      int w = pass ? wantb[vi] : want[vi];
-      if (w >= 0 && fixed_tab(w) < 0 && list[w].path[0] && resident(w) < 0 && !failed[w]) e = w;
+    for (int vi = 0; vi < kVoices && e < 0; ++vi) {   // a voice's wanted table that is not resident (in its box's list)
+      int k = slot_of_voice(vi), w = pass ? wantb[vi] : want[vi];
+      const Lists& L = g_ls[k];
+      if (w >= 0 && w < L.nlist && fixed_tab(k, w) < 0 && L.list[w].path[0] && resident(k, w) < 0 && !L.failed[w]) e = w, ls = k;
     }
   if (e < 0) return false;
   int s = free_slot();
   if (s < 0) return false;   // every slot plays: later
   Slot& sl = slots[s];
   sl.ready = false;
-  sl.entry = e;
-  sniprintf(sl.path, sizeof sl.path, "%s", list[e].path);
+  sl.entry = e, sl.ls = (int8_t)ls;
+  sniprintf(sl.path, sizeof sl.path, "%s", g_ls[ls].list[e].path);
   st_rel(&tables[kBuiltins + s].frames, 0);
-  job->slot = s, job->entry = e;
+  job->slot = s, job->entry = e, job->ls = ls;
   job->rq.state = cardq::kFree;
   job->phase = kLoadOpen;
   return true;
@@ -473,11 +494,12 @@ CORE_COLD void step_norm() {
   st.last_frames = (uint32_t)job->frames, st.last_frame_size = (uint32_t)job->fs;
   log(CORE_STR("wt: %s: %d frames of %d samples (%lu Hz, %d-bit, %d ch%s)"), sl.path, job->frames, job->fs,
       (unsigned long)job->a.rate, job->a.bits, job->a.ch, job->a.clm_frame ? ", clm" : "");
-  if (job->entry >= 0) nframes[job->entry] = (uint16_t)job->frames;
+  if (job->entry >= 0) g_ls[job->ls].nframes[job->entry] = (uint16_t)job->frames;
   job->phase = kIdle;
   for (int vi = 0; vi < kVoices; ++vi) {   // the voices that wanted it: theirs now; a waiting trig plays
-    bool ma = want[vi] >= 0 && resident(want[vi]) == kBuiltins + job->slot;
-    bool mb = wantb[vi] >= 0 && resident(wantb[vi]) == kBuiltins + job->slot;
+    const int vs = slot_of_voice(vi);   // (either box's)
+    bool ma = want[vi] >= 0 && resident(vs, want[vi]) == kBuiltins + job->slot;
+    bool mb = wantb[vi] >= 0 && resident(vs, wantb[vi]) == kBuiltins + job->slot;
     if (!ma && !mb) continue;
     select(vi);
     if (ma && pend[vi].on) {
@@ -488,30 +510,39 @@ CORE_COLD void step_norm() {
   }
 }
 // The list composed from the WAVETABLES pool (srclib::compose): an entry's state stays with its code while its path is
-// the same, the resident tables stay where the list still has them, the voices select again.
-CORE_COLD void compose() {
-  Entry* old = list;
-  Entry* nl = list == lbuf[0] ? lbuf[1] : lbuf[0];
-  composed_sig = srclib::pool_sig(srclib::kWt);
-  int n = srclib::compose(srclib::kWt, nl);
+// the same, the resident tables stay where the list still has them, the voices select again. Voice slot ls's list
+// (its box's pool): a resident table no longer in it stays when another slot's list has the file (it moves there).
+CORE_COLD int find_path(const Entry* l, int n, const char* path) {
+  for (int i = 0; l && i < n; ++i)
+    if (l[i].path[0] && !strcasecmp(l[i].path, path)) return i;
+  return -1;
+}
+CORE_COLD void compose(int ls) {
+  Lists& L = g_ls[ls];
+  Entry* old = L.list;
+  Entry* nl = L.list == L.lbuf[0] ? L.lbuf[1] : L.lbuf[0];
+  L.composed_sig = srclib::pool_sig(ls, srclib::kWt);
+  int n = srclib::compose(ls, srclib::kWt, nl);
   for (int i = 0; i < n; ++i)
-    if (!old || strcasecmp(old[i].path, nl[i].path)) failed[i] = 0, why[i] = 0, nframes[i] = 0;
+    if (!old || strcasecmp(old[i].path, nl[i].path)) L.failed[i] = 0, L.why[i] = 0, L.nframes[i] = 0;
   bool loading = job->phase == kLoadOpen || job->phase == kLoadRead || job->phase == kBuild || job->phase == kNorm ||
                  (job->phase == kLoadClose && job->after == kBuild);
   for (int s = 0; s < kSlots; ++s) {
     if (!slots[s].ready && !(loading && job->slot == s)) continue;
-    int e = -1;
-    for (int i = 0; i < n && e < 0; ++i)
-      if (nl[i].path[0] && !strcasecmp(nl[i].path, slots[s].path)) e = i;
+    if (slots[s].ls != ls) continue;   // (another slot's entry: its own compose finds it)
+    int e = find_path(nl, n, slots[s].path);
+    for (int k = 0; e < 0 && k < kVoiceSlots; ++k)   // still another box's table?
+      if (k != ls && (e = find_path(g_ls[k].list, g_ls[k].nlist, slots[s].path)) >= 0) slots[s].ls = (int8_t)k;
     slots[s].entry = e;
-    if (loading && job->slot == s) job->entry = e;
+    if (loading && job->slot == s) job->entry = e, job->ls = slots[s].ls;
     else if (e < 0 && !table_busy(kBuiltins + s)) slots[s].ready = false, st_rel(&tables[kBuiltins + s].frames, 0);
   }
-  list = nl;
-  nlist = n;
-  st.listed = pools::count(pools::kTables);
+  L.list = nl;
+  L.nlist = n;
+  st.listed = pools::count(ls, pools::kTables);
   __atomic_store_n(&g_list_gen, g_list_gen + 1, __ATOMIC_RELEASE);
-  for (int vi = 0; vi < kVoices; ++vi) select(vi);
+  for (int vi = 0; vi < kVoices; ++vi)
+    if (slot_of_voice(vi) == ls) select(vi);
 }
 CORE_COLD void preview_step() {
   uint32_t now = now_ms();
@@ -520,8 +551,8 @@ CORE_COLD void preview_step() {
     if (q.on && now - q.ms >= kPreviewMs) q.on = false, live_off(vi, kPreviewCh, -1);
     if (!q.wait) continue;
     int e = want[vi];
-    if (e < 0 || failed[e] || now - q.ms >= kPreviewWaitMs) { q.wait = false; continue; }
-    if (resident(e) < 0) continue;
+    if (e < 0 || e >= LV(vi).nlist || LV(vi).failed[e] || now - q.ms >= kPreviewWaitMs) { q.wait = false; continue; }
+    if (resident(slot_of_voice(vi), e) < 0) continue;
     q.wait = false;
     select(vi);
     live_off(vi, kPreviewCh, -1);
@@ -542,9 +573,12 @@ CORE_COLD void begin(bool card) {
     job->x = new float[8192];
     job->c = new float[kSpec];
     job->scratch = new float[4 * 8192];
-    lbuf[0] = new Entry[srclib::kEntries];
-    lbuf[1] = new Entry[srclib::kEntries];
-    list = lbuf[0];
+    for (Lists& L : g_ls) {
+      L.lbuf[0] = new Entry[srclib::kEntries];
+      L.lbuf[1] = new Entry[srclib::kEntries];
+      L.list = L.lbuf[0];
+      memset(L.list, 0, sizeof(Entry) * srclib::kEntries);
+    }
     for (int i = 0; i <= kSine; ++i) sine[i] = sinf(2.0f * 3.14159265f * i / kSine);
     for (int b = 0; b < kBuiltins; ++b) {   // the built-ins: generated now (64 frames each)
       tables[b].data = (float*)msamp_ram_alloc((uint64_t)kBuiltinFrames * kFrameFloats * sizeof(float));
@@ -566,9 +600,10 @@ CORE_COLD void begin(bool card) {
     log(CORE_STR("wt: %d built-in tables, %d card slots of %lu KB"), kBuiltins, kSlots,
         (unsigned long)((size_t)kMaxFrames * kFrameFloats * 4 >> 10));
   }
-  for (int s = 0; s < kSlots; ++s) slots[s].ready = false, slots[s].entry = -1, slots[s].path[0] = 0, tables[kBuiltins + s].frames = 0;
-  composed_sig = 0;
-  compose();
+  for (int s = 0; s < kSlots; ++s)
+    slots[s].ready = false, slots[s].entry = -1, slots[s].ls = 0, slots[s].path[0] = 0, tables[kBuiltins + s].frames = 0;
+  job->ls = 0;
+  for (int k = 0; k < kVoiceSlots; ++k) g_ls[k].composed_sig = 0, compose(k);
   for (int vi = 0; vi < kVoices; ++vi) {
     want[vi] = wantb[vi] = -1, pend[vi].on = false, pv[vi].wait = pv[vi].on = false;
     sel[vi] = use[vi] = selb[vi] = useb[vi] = kTables;
@@ -582,8 +617,7 @@ CORE_COLD void begin(bool card) {
 
 CORE_COLD void rescan() {   // the card changed: failed files are tried again (the list itself is the pool's)
   if (!job) return;
-  memset(failed, 0, sizeof failed);
-  memset(why, 0, sizeof why);
+  for (Lists& L : g_ls) memset(L.failed, 0, sizeof L.failed), memset(L.why, 0, sizeof L.why);
 }
 
 CORE_COLD bool step() {
@@ -592,10 +626,11 @@ CORE_COLD bool step() {
   b_fade_step();
   switch (job->phase) {
     case kIdle:
-      if (srclib::pool_sig(srclib::kWt) != composed_sig) {   // the WAVETABLES pool changed (a row, a state)
-        compose();
-        return true;
-      }
+      for (int k = 0; k < kVoiceSlots; ++k)
+        if (srclib::pool_sig(k, srclib::kWt) != g_ls[k].composed_sig) {   // a WAVETABLES pool changed (a row, a state)
+          compose(k);
+          return true;
+        }
       return start_load();
     case kLoadOpen: return step_open();
     case kLoadRead: return step_read();
@@ -606,23 +641,25 @@ CORE_COLD bool step() {
   return false;
 }
 
-CORE_COLD bool forced(int vi) { return force[vi & 7]; }
+CORE_COLD bool forced(int vi) { return force[voice_wrap(vi)]; }
 
-CORE_COLD void set_fenv(int vi, float a) { fenv_amt[vi & 7] = a < -1 ? -1 : a > 1 ? 1 : a; }
-CORE_COLD float fenv_get(int vi) { return fenv_amt[vi & 7]; }
+CORE_COLD void set_fenv(int vi, float a) { fenv_amt[voice_wrap(vi)] = a < -1 ? -1 : a > 1 ? 1 : a; }
+CORE_COLD float fenv_get(int vi) { return fenv_amt[voice_wrap(vi)]; }
 
 CORE_COLD void report(int vi, int note, int vel, const float* p) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!job) return;
   for (int k = 0; k < 16; ++k) vp[vi][k] = p[k];
   set_knobs(vi);
   select(vi);
-  pools::seen(pools::kTables, srclib::code_of(vp[vi][0]));   // the used set
-  if (wantb[vi] >= 0 && !srclib::silent(list, wantb[vi])) pools::seen(pools::kTables, wantb[vi]);   // (table B's too)
+  const int ls = slot_of_voice(vi);
+  pools::seen_in(ls, pools::kTables, srclib::code_of(vp[vi][0]));   // the used set (its box's)
+  if (wantb[vi] >= 0 && g_ls[ls].list && !srclib::silent(g_ls[ls].list, wantb[vi])) pools::seen_in(ls, pools::kTables, wantb[vi]);   // (table B's too)
   v[vi].live = true;
   if (note < 0) return;
-  int t = resident(want[vi]);
-  if (t < 0 && !failed[want[vi]] && !srclib::silent(list, want[vi])) {   // its table loads: the trig waits (kLateMs)
+  const Lists& L = g_ls[ls];
+  int t = resident(ls, want[vi]);
+  if (t < 0 && L.list && want[vi] >= 0 && !L.failed[want[vi]] && !srclib::silent(L.list, want[vi])) {   // its table loads: the trig waits (kLateMs)
     pend[vi] = {true, (uint8_t)note, (uint8_t)vel, now_ms()};
     ++st.waits;
     return;
@@ -631,7 +668,7 @@ CORE_COLD void report(int vi, int note, int vel, const float* p) {
 }
 
 CORE_COLD void live_on(int vi, int key, int vel, int ch, int mnote) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!job || key < 0 || key > 127) return;
   if (__atomic_load_n(&sel[vi], __ATOMIC_SEQ_CST) >= (uint32_t)kTables) select(vi);
   cur_live = {true, (int8_t)ch, (uint8_t)mnote};
@@ -641,7 +678,7 @@ CORE_COLD void live_on(int vi, int key, int vel, int ch, int mnote) {
 }
 
 CORE_COLD void live_off(int vi, int ch, int mnote) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   for (int k = 0; k < kPerVoice; ++k) {
     Note& n = notes[vi][k];
     if (!n.live || n.ch != ch || (mnote >= 0 && n.mnote != mnote)) continue;
@@ -652,19 +689,19 @@ CORE_COLD void live_off(int vi, int ch, int mnote) {
 
 CORE_COLD int voice_notes(int vi) {
   int a = 0;
-  for (int k = 0; k < kPerVoice; ++k) a += !note_free(notes[vi & 7][k]);
+  for (int k = 0; k < kPerVoice; ++k) a += !note_free(notes[voice_wrap(vi)][k]);
   return a;
 }
 
 CORE_COLD void note_off(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   pend[vi].on = false;
   for (int k = 0; k < kPerVoice; ++k)
     if (!notes[vi][k].live) release_note(notes[vi][k]);
 }
 
 CORE_COLD void silence(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   pend[vi].on = false;
   for (int k = 0; k < kPerVoice; ++k) {
     Note& n = notes[vi][k];
@@ -674,7 +711,7 @@ CORE_COLD void silence(int vi) {
 }
 
 CORE_COLD void leave(int vi) {   // the voice left WAVETABLE: its notes end, its selection drops (its card table may go)
-  vi &= 7;
+  vi = voice_wrap(vi);
   silence(vi);
   want[vi] = wantb[vi] = -1;
   __atomic_store_n(&sel[vi], (uint32_t)kTables, __ATOMIC_SEQ_CST);
@@ -683,25 +720,35 @@ CORE_COLD void leave(int vi) {   // the voice left WAVETABLE: its notes end, its
   fenv_amt[vi] = 0;
 }
 
+// The displays' and the console's: the slot in hand's list (device::cur(), the box being served)
 CORE_COLD const char* entry_name(int e) {
-  if (!list || nlist <= 0) return "";
-  return list[e < 0 ? 0 : e >= nlist ? nlist - 1 : e].name;
+  const Lists& L = LH();
+  if (!L.list || L.nlist <= 0) return "";
+  return L.list[e < 0 ? 0 : e >= L.nlist ? L.nlist - 1 : e].name;
 }
-CORE_COLD int entries() { return nlist; }   // every code (bank * 128 + row)
-CORE_COLD const char* entry_group(int e) { return list && e >= 0 && e < nlist ? list[e].grp : ""; }
-CORE_COLD const char* entry_path(int e) { return list && e >= 0 && e < nlist ? list[e].path : ""; }
-CORE_COLD int entry_lib(int e) { return list && e >= 0 && e < nlist ? list[e].lib : srclib::kLibOff; }
-CORE_COLD int entry_state(int e) {   // as gr::entry_state: 0 none 1 card 2 loading 3 RAM 5 failed
-  if (!list || e < 0 || e >= nlist || !srclib::playable(list[e])) return 0;
-  if (fixed_tab(e) >= 0) return 3;
-  if (failed[e]) return 5;
-  if (resident(e) >= 0) return 3;
+CORE_COLD int entries() { return LH().nlist; }   // every code (bank * 128 + row)
+CORE_COLD const char* entry_group(int e) { const Lists& L = LH(); return L.list && e >= 0 && e < L.nlist ? L.list[e].grp : ""; }
+CORE_COLD const char* entry_path(int e) { const Lists& L = LH(); return L.list && e >= 0 && e < L.nlist ? L.list[e].path : ""; }
+CORE_COLD int entry_lib(int e) { const Lists& L = LH(); return L.list && e >= 0 && e < L.nlist ? L.list[e].lib : srclib::kLibOff; }
+CORE_COLD int entry_state(int e) { return entry_state_in(lh(), e); }
+CORE_COLD int entry_state_in(int ls, int e) {   // as gr::entry_state: 0 none 1 card 2 loading 3 RAM 5 failed
+  const Lists& L = g_ls[ls];
+  if (!L.list || e < 0 || e >= L.nlist || !srclib::playable(L.list[e])) return 0;
+  if (fixed_tab(ls, e) >= 0) return 3;
+  if (L.failed[e]) return 5;
+  if (resident(ls, e) >= 0) return 3;
   for (int vi = 0; vi < kVoices; ++vi)
-    if (want[vi] == e || wantb[vi] == e) return 2;
+    if (slot_of_voice(vi) == ls && (want[vi] == e || wantb[vi] == e)) return 2;
   return 1;
 }
 CORE_COLD const char* entry_note(int e, char* b, int cap) {
   if (cap < 1) return "";
+  const int ls = lh();
+  const Lists& L = g_ls[ls];
+  const Entry* list = L.list;
+  const int nlist = L.nlist;
+  const uint8_t* why = L.why;
+  const uint16_t* nframes = L.nframes;
   b[0] = 0;
   switch (entry_state(e)) {
     case 5:
@@ -710,7 +757,7 @@ CORE_COLD const char* entry_note(int e, char* b, int cap) {
       break;
     case 2: sniprintf(b, cap, "LOADING"); break;
     case 3:
-      if (fixed_tab(e) < 0 && nframes[e]) sniprintf(b, cap, "%d FRAMES", nframes[e]);
+      if (fixed_tab(ls, e) < 0 && nframes[e]) sniprintf(b, cap, "%d FRAMES", nframes[e]);
       break;
     default:
       if (list && e >= 0 && e < nlist && list[e].lib == srclib::kLibMissing) sniprintf(b, cap, "MISSING");
@@ -719,29 +766,34 @@ CORE_COLD const char* entry_note(int e, char* b, int cap) {
   return b;
 }
 uint32_t list_gen() { return __atomic_load_n(&g_list_gen, __ATOMIC_ACQUIRE); }
-CORE_COLD int src_entry(int vi, int v) { return !list || nlist <= 0 ? -1 : v < 0 ? 0 : v >= nlist ? nlist - 1 : v; }
+CORE_COLD int src_entry(int vi, int v) {   // (in the voice's own box's list)
+  const Lists& L = LV(voice_wrap(vi));
+  return !L.list || L.nlist <= 0 ? -1 : v < 0 ? 0 : v >= L.nlist ? L.nlist - 1 : v;
+}
 CORE_COLD bool voice_picked(int) { return false; }   // (no picks over TBL: a choice writes TBL)
 CORE_COLD bool pick(int vi, int e) {   // the touchscreen's choice: TBL written on the Rytm (48: the kit keeps it)
-  vi &= 7;
-  if (!job || !list || e < 0 || e >= nlist) return false;
+  vi = voice_wrap(vi);
+  const Lists& L = LV(vi);
+  if (!job || !L.list || e < 0 || e >= L.nlist) return false;
   ui::remote_param_write(vi, kWaveMachine, 0, e & 127, srclib::lo_of(e));
   vp[vi][0] = (float)(e & 127) + (float)srclib::lo_of(e) / 128.0f;
   select(vi);
-  log(CORE_STR("wt: voice %d: TBL %c%03d %s"), vi, 'A' + srclib::bank_of(e), e & 127, entry_name(e));
+  log(CORE_STR("wt: voice %d: TBL %c%03d %s"), vi, 'A' + srclib::bank_of(e), e & 127, L.list[e].name);
   return true;
 }
-CORE_COLD void kit_src(int vi, int e) {
-  vi &= 7;
-  if (!job || !list || e < 0 || e >= nlist) return;
+CORE_COLD void kit_src(int vi, int e) {   // the kit's TBL for the voice (its own box's list), as a report would set it
+  vi = voice_wrap(vi);
+  const Lists& L = LV(vi);
+  if (!job || !L.list || e < 0 || e >= L.nlist) return;
   vp[vi][0] = (float)(e & 127) + (float)srclib::lo_of(e) / 128.0f;
   select(vi);
-  pools::seen(pools::kTables, e);   // (the used set, as a report)
+  pools::seen_in(slot_of_voice(vi), pools::kTables, e);   // (the used set, as a report: its box's)
 }
 // 2026-11-24 TBLB: the touchscreen's choice for table B (P13): the Rytm's TBLB written (48, k = 12: the kit keeps it), table B
 // selected (select_b alone: table A is untouched). A row 000 is B off. B is silent at MIX 0 unless the warp is FM or RM (b_silent).
 CORE_COLD bool pick_b(int vi, int e) {
-  vi &= 7;
-  if (!job || !list || e < 0 || e >= nlist) return false;
+  vi = voice_wrap(vi);
+  if (!job || !LV(vi).list || e < 0 || e >= LV(vi).nlist) return false;
   ui::remote_param_write(vi, kWaveMachine, 12, e & 127, srclib::lo_of(e));
   vp[vi][12] = (float)(e & 127) + (float)srclib::lo_of(e) / 128.0f;
   select_b(vi);
@@ -749,25 +801,27 @@ CORE_COLD bool pick_b(int vi, int e) {
   return true;
 }
 CORE_COLD void kit_src_b(int vi, int e) {   // the Rytm's own P13 on an idle voice (kit_src's for table B)
-  vi &= 7;
-  if (!job || !list || e < 0 || e >= nlist) return;
+  vi = voice_wrap(vi);
+  if (!job || !LV(vi).list || e < 0 || e >= LV(vi).nlist) return;
   vp[vi][12] = (float)(e & 127) + (float)srclib::lo_of(e) / 128.0f;
   if (!b_heard(vi)) return;   // not audible by the voice's last values (they may be another sound's): no load, no "used" mark
   select_b(vi);
-  pools::seen(pools::kTables, e);
+  pools::seen_in(slot_of_voice(vi), pools::kTables, e);
 }
-CORE_COLD bool b_open(int vi) { return b_heard(vi & 7); }
-CORE_COLD int table_b_code(int vi) { return srclib::code_of(vp[vi & 7][12]); }
+CORE_COLD bool b_open(int vi) { return b_heard(voice_wrap(vi)); }
+CORE_COLD int table_b_code(int vi) { return srclib::code_of(vp[voice_wrap(vi)][12]); }
 CORE_COLD bool b_silent(int vi) {   // a table is set for B and MIX / the warp keep it from being heard
-  vi &= 7;
+  vi = voice_wrap(vi);
   int e = srclib::code_of(vp[vi][12]);
-  return list && e >= 0 && e < nlist && !srclib::silent(list, e) && !b_heard(vi);
+  const Lists& L = LV(vi);
+  return L.list && e >= 0 && e < L.nlist && !srclib::silent(L.list, e) && !b_heard(vi);
 }
 CORE_COLD void preview(int vi, int e) {
-  vi &= 7;
-  if (!job || !list || !(v[vi].wt || force[vi])) return;
+  vi = voice_wrap(vi);
+  const Lists& L = LV(vi);
+  if (!job || !L.list || !(v[vi].wt || force[vi])) return;
   if (e >= 0) {
-    if (e >= nlist || !srclib::playable(list[e])) return;
+    if (e >= L.nlist || !srclib::playable(L.list[e])) return;
     want[vi] = (int16_t)e;
   }
   pv[vi].wait = true, pv[vi].ms = now_ms();
@@ -996,7 +1050,7 @@ __attribute__((noinline)) void lanes_generic(Note& n, int nu, const uint32_t* iu
 }
 }  // namespace
 
-static float head_g[kVoices] = {1, 1, 1, 1, 1, 1, 1, 1};
+static PerVoice<float> head_g(1.0f);
 static float pos_s[kVoices];   // the render core's smoothed POS (0..1)
 static float posb_s[kVoices];  // ... and POS B
 static float mix_s[kVoices];   // ... and the A / B mix as played (0 until B is in and wanted: it fades in and out)
@@ -1318,7 +1372,7 @@ void render_add(int vi, float* out, int nfr) {
   for (int s = 0; s < nfr; ++s) out[s] += acc[s] * (g0 + dg * (float)(s + 1));
 }
 
-CORE_COLD float headroom(int vi) { return head_g[vi & 7]; }
+CORE_COLD float headroom(int vi) { return head_g[voice_wrap(vi)]; }
 
 CORE_COLD bool parse_num(const char** p, int* v) {
   const char* q = *p;
@@ -1343,8 +1397,9 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       return true;
     }
     bool on = strcmp(a + 7, ":off") != 0;
-    if (force[vi] && !on) silence(vi);
-    force[vi] = on;
+    const int ev = device::voice_in((uint8_t)vi);   // the slot in hand's box voice vi (box=S: on the console)
+    if (force[ev] && !on) silence(ev);
+    force[ev] = on;
     sniprintf(out, cap, "wt: voice %d %s", vi, on ? "plays WAVETABLE (any built-in machine the Rytm reports)" : "plays its own machine");
     return true;
   }
@@ -1370,8 +1425,9 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       sniprintf(out, cap, "wt: pick:V:ROW (V 0..7, ROW A001..H127)");
       return true;
     }
-    if (!pick(vi, e)) sniprintf(out, cap, "wt: no entry %d (%d listed)", e, nlist);
-    else sniprintf(out, cap, "wt: voice %d TBL %s", vi, entry_name(want[vi]));
+    const int ev = device::voice_in((uint8_t)vi);   // the slot in hand's box voice vi
+    if (!pick(ev, e)) sniprintf(out, cap, "wt: no entry %d (%d listed)", e, LV(ev).nlist);
+    else sniprintf(out, cap, "wt: voice %d TBL %s", vi, entry_name(want[ev]));
     return true;
   }
   if (!strncmp(a, "pickb:", 6)) {   // pickb:V:ROW (or a code): table B (TBLB, P13)
@@ -1382,11 +1438,15 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       sniprintf(out, cap, "wt: pickb:V:ROW (V 0..7, ROW A001..H127)");
       return true;
     }
-    if (!pick_b(vi, e)) sniprintf(out, cap, "wt: no entry %d (%d listed)", e, nlist);
+    if (!pick_b(vi, e)) sniprintf(out, cap, "wt: no entry %d (%d listed)", e, LH().nlist);
     else sniprintf(out, cap, "wt: voice %d TBLB %s%s", vi, entry_name(e), b_silent(vi) ? " (silent: MIX 0)" : "");
     return true;
   }
   if (!strcmp(a, "list")) {
+    const Lists& L = LH();
+    const Entry* list = L.list;
+    const int nlist = list ? L.nlist : 0;
+    const uint8_t* failed = L.failed;
     for (int i = 0; i < nlist; ++i)
       if (list[i].lib != srclib::kLibHole && list[i].lib != srclib::kLibOff)   // rui1038: banks' empty rows left out
       log(CORE_STR("wt: TBL %c%03d %s [%s]%s%s%s"), 'A' + srclib::bank_of(i), i & 127, list[i].name, list[i].grp, list[i].path[0] ? " (" : " (built in", list[i].path,
@@ -1398,7 +1458,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   stats();
   int n = sniprintf(out, cap, "wt: %d tables (%d built in), %d/%d card tables resident, %d/%d notes now (peak %d), "
                               "%lu trigs, %lu notes, %lu steals, %lu waits (%lu late), %lu loads (%lu failed)",
-                    nlist, kBuiltins, st.resident, kSlots, st.active, kTotal, st.peak, (unsigned long)st.trigs,
+                    LH().nlist, kBuiltins, st.resident, kSlots, st.active, kTotal, st.peak, (unsigned long)st.trigs,
                     (unsigned long)st.notes, (unsigned long)st.steals, (unsigned long)st.waits, (unsigned long)st.late,
                     (unsigned long)st.loads, (unsigned long)st.load_fails);
   bool any = false;
@@ -1417,18 +1477,19 @@ const Stats& stats() {
   return st;
 }
 int voice_entry(int vi) {
-  uint32_t t = __atomic_load_n(&sel[vi & 7], __ATOMIC_SEQ_CST);
+  uint32_t t = __atomic_load_n(&sel[voice_wrap(vi)], __ATOMIC_SEQ_CST);
   if (t >= (uint32_t)kTables) return -1;
-  int e = want[vi & 7];
-  if (t >= (uint32_t)kBuiltins && e >= 0 && resident(e) == (int)t) return e;
+  int e = want[voice_wrap(vi)];
+  const int ls = slot_of_voice(voice_wrap(vi));
+  if (t >= (uint32_t)kBuiltins && e >= 0 && resident(ls, e) == (int)t) return e;
   if (t >= (uint32_t)kBuiltins) return slots[t - kBuiltins].entry;
-  if (fixed_tab(e) == (int)t) return e;
-  for (int i = 0; i < nlist; ++i)   // a built-in meanwhile (BASIC while a table loads): the row that holds it
-    if (fixed_tab(i) == (int)t) return i;
+  if (fixed_tab(ls, e) == (int)t) return e;
+  for (int i = 0; i < g_ls[ls].nlist; ++i)   // a built-in meanwhile (BASIC while a table loads): the row that holds it
+    if (fixed_tab(ls, i) == (int)t) return i;
   return -1;
 }
 bool denormal_state(int vi) {
-  for (const Note& n : notes[vi & 7]) {
+  for (const Note& n : notes[voice_wrap(vi)]) {
     float x[] = {n.ic1, n.ic2, n.ic1p, n.ic2p, n.lin, n.ls[0][0], n.ls[0][1], n.ls[0][2], n.ls[1][0], n.ls[1][1], n.ls[1][2],
                  n.ls[2][0], n.ls[2][1], n.ls[2][2], n.ls[3][0], n.ls[3][1], n.ls[3][2]};
     for (float y : x)
@@ -1437,10 +1498,11 @@ bool denormal_state(int vi) {
   return false;
 }
 int voice_entry_b(int vi) {
-  uint32_t t = __atomic_load_n(&selb[vi & 7], __ATOMIC_SEQ_CST);
-  int e = wantb[vi & 7];
+  uint32_t t = __atomic_load_n(&selb[voice_wrap(vi)], __ATOMIC_SEQ_CST);
+  int e = wantb[voice_wrap(vi)];
   if (t >= (uint32_t)kTables || e < 0) return -1;
-  return resident(e) == (int)t || fixed_tab(e) == (int)t ? e : -1;
+  const int ls = slot_of_voice(voice_wrap(vi));
+  return resident(ls, e) == (int)t || fixed_tab(ls, e) == (int)t ? e : -1;
 }
 uint64_t ram_bytes(uint64_t* capacity) {   // the tables' mip frames in RAM (the pool RAM figure's "tables")
   uint64_t u = 0, c = 0;
@@ -1453,18 +1515,18 @@ uint64_t ram_bytes(uint64_t* capacity) {   // the tables' mip frames in RAM (the
   if (capacity) *capacity = c;
   return u;
 }
-int table_frames(int e) {
-  int t = e >= 0 && e < nlist ? resident(e) : -1;
+int table_frames(int e) {   // (the slot in hand's list: the views)
+  int t = e >= 0 && e < LH().nlist ? resident(lh(), e) : -1;
   return t >= 0 ? (int)tables[t].frames : 0;
 }
 const float* table_frame(int e, int f) {
-  int t = e >= 0 && e < nlist ? resident(e) : -1;
+  int t = e >= 0 && e < LH().nlist ? resident(lh(), e) : -1;
   if (t < 0 || f < 0 || f >= (int)tables[t].frames) return nullptr;
   return tables[t].data + (size_t)f * kFrameFloats;
 }
 // The display's (racy, drawing only): POS as the voice plays it, the table's frames
 CORE_COLD float viz_pos(int vi, int* frames) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   int e = voice_entry(vi);
   *frames = e >= 0 ? table_frames(e) : 0;
   return pos_s[vi] < 0 ? 0.0f : pos_s[vi] > 1 ? 1.0f : pos_s[vi];
@@ -1472,7 +1534,7 @@ CORE_COLD float viz_pos(int vi, int* frames) {
 CORE_COLD int viz_frame(int vi, float pos, int cols, float* y) {
   int nf = 0;
   viz_pos(vi, &nf);
-  int e = voice_entry(vi & 7);
+  int e = voice_entry(voice_wrap(vi));
   if (nf <= 0 || cols <= 0) return 0;
   float fp = (pos < 0 ? 0 : pos > 1 ? 1 : pos) * (float)(nf - 1);
   int f0 = (int)fp, f1 = f0 + 1 < nf ? f0 + 1 : f0;

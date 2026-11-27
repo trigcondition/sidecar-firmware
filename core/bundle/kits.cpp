@@ -38,22 +38,30 @@ constexpr int kNumFeatures = sizeof kFeatures / sizeof kFeatures[0];
 constexpr uint32_t kRecMax = 3 * fmt::kPostMax + 14 * 1024;
 
 struct Ev { uint8_t op, kit, src; uint32_t gen; };
-Ev g_q[kPending];
-int g_qn = 0;
-uint32_t g_gen = 0;      // the Rytm's project changes seen (project_changing): an event of an older one is stale
-uint32_t g_all[4];       // RELOAD ALL: the kits still to reload (a bit each), a few a pass
-int g_scan = -1;         // RELOAD ALL's look for records: the next kit (-1 none), kScanPass a pass
-uint32_t g_all_gen = 0;
-char g_name[24] = "";    // the Rytm's last 10 name (name_seen)
-Stats g_st;
-char g_rec[kRecMax];   // the record built
+// 3(c) step 9: each voice slot's kit reports (option A: nothing shared between the boxes). The slot in hand's (Sl():
+// device::cur() on the control core, core/pool/pool.h prj_slot): its box's reports wait in its own queue, its project
+// changes make only its own events stale, and tick() runs each slot's in its Scope (engine.cpp), so the records are
+// that box's project's, in its own folder (/.rytm/kits/<key>/ through state_path).
+struct Sl {
+  Ev q[kPending];
+  int qn = 0;
+  uint32_t gen = 0;      // the box's project changes seen (project_changing): an event of an older one is stale
+  uint32_t all[4] = {};  // RELOAD ALL: the kits still to reload (a bit each), a few a pass
+  int scan = -1;         // RELOAD ALL's look for records: the next kit (-1 none), kScanPass a pass
+  uint32_t all_gen = 0;
+  char name[24] = "";    // the box's last 10 name (name_seen)
+  Stats st = {};
+};
+Sl g_sl[kVoiceSlots];
+CORE_COLD Sl& L() { return g_sl[prj_slot()]; }
+char g_rec[kRecMax];   // the record built (scratch: every slot's, one operation at a time on the control core)
 char g_src[kRecMax];   // the record read (a copy: the store's bytes may move while puts run)
 char g_old[kRecMax];   // the .prv there before (a copy)
 constexpr int kScanPass = 16;
 const char kNone[] = "#none\n";   // a section: the kit had no file of its own (it inherits the project's default file)
 constexpr uint32_t kNoneLen = sizeof kNone - 1;
 
-CORE_COLD void key_now(char* k) { project_key(project, k, kKeyMax); }
+CORE_COLD void key_now(char* k) { project_key(prj().key, k, kKeyMax); }
 CORE_COLD void rec_path(const char* key, int kit, const char* ext, char* out, int cap) {
   sniprintf(out, cap, CORE_STR("/.rytm/kits/%s/k%03d.%s"), key, kit + 1, ext);
 }
@@ -128,7 +136,7 @@ CORE_COLD bool build(const char* key, int k, uint32_t* len, const char* sv = nul
     const char* ss;
     uint32_t ssn;
     if (sv && old && section(sv, svn, f.name, &ss, &ssn) && same(d, dn, ss, ssn) && section(old, oldn, f.name, &ss, &ssn))
-      d = (const uint8_t*)ss, dn = ssn, ++g_st.kept_aside;
+      d = (const uint8_t*)ss, dn = ssn, ++L().st.kept_aside;
     for (uint32_t i = 0; i < dn; ++i)   // (a line of its own starting with '=' would end the section early)
       if (d[i] == '=' && (i == 0 || d[i - 1] == '\n')) {
         log(CORE_STR("kits: kit %03d's %s has a line starting with '=': no record"), k + 1, f.name);
@@ -178,7 +186,7 @@ CORE_COLD void save(int t, int w) {
   key_now(key);
   if (live(w)) modules_again();   // (the edits of the kit saved into the store first: the record is the kit as it is)
   uint32_t n;
-  if (!build(key, w, &n)) { ++g_st.refused; return; }
+  if (!build(key, w, &n)) { ++L().st.refused; return; }
   rec_path(key, t, "sks", p, sizeof p);
   put(p, g_rec, n);
   if (t != w) {   // SAVE KIT to another kit: its working copy is the saved one now (and the Rytm's active kit)
@@ -190,7 +198,7 @@ CORE_COLD void save(int t, int w) {
     }
     if (live(t)) modules_again();
   }
-  ++g_st.saves;
+  ++L().st.saves;
   log(CORE_STR("kits: kit %03d saved (from kit %03d)"), t + 1, w + 1);
 }
 
@@ -203,13 +211,13 @@ CORE_COLD void reload(int k, bool restore) {
   uint32_t n;
   store::State s = store::get(p, &d, &n);
   if (s == store::kAbsent) {
-    ++g_st.kept;
+    ++L().st.kept;
     log(CORE_STR("kits: kit %03d %s on the Rytm: no %s Sidecar state, the working copy kept"), k + 1,
         restore ? "restored" : "reloaded", restore ? "kept-aside" : "saved");
     return;
   }
   if (s != store::kPresent || n > kRecMax) {
-    ++g_st.refused;
+    ++L().st.refused;
     log(CORE_STR("kits: %s %s: kit %03d not followed"), p, s == store::kPresent ? "too big" : "cannot be read", k + 1);
     return;
   }
@@ -221,7 +229,7 @@ CORE_COLD void reload(int k, bool restore) {
   if (live(k)) modules_again();   // (the edits into the store: they are what .prv keeps)
   uint32_t rn;   // the working copy kept aside first (a RESTORE too: a swap, so the copy it replaces is kept in turn)
   if (!(restore ? build(key, k, &rn) : build(key, k, &rn, g_src, n, on ? g_old : nullptr, on))) {
-    ++g_st.refused;   // (it could not be kept: nothing replaced)
+    ++L().st.refused;   // (it could not be kept: nothing replaced)
     return;
   }
   put(p, g_rec, rn);
@@ -231,18 +239,18 @@ CORE_COLD void reload(int k, bool restore) {
     if (section(g_src, n, f.name, &t, &tn)) apply(f, key, k, t, tn);   // (no section: a record from before it, kept)
   }
   if (live(k)) modules_again();
-  if (restore) ++g_st.restores;
-  else ++g_st.reloads;
+  if (restore) ++L().st.restores;
+  else ++L().st.reloads;
   log(CORE_STR("kits: kit %03d %s"), k + 1, restore ? "restored (the kept-aside copy)" : "reloaded (its saved copy)");
 }
 
 CORE_COLD void push(uint8_t op, int kit, int src) {
-  if (g_qn >= kPending) {
-    ++g_st.dropped;
-    log(CORE_STR("kits: %d kit reports waiting: op %d of kit %03d dropped"), g_qn, op, kit + 1);
+  if (L().qn >= kPending) {
+    ++L().st.dropped;
+    log(CORE_STR("kits: %d kit reports waiting: op %d of kit %03d dropped"), L().qn, op, kit + 1);
     return;
   }
-  g_q[g_qn++] = {op, (uint8_t)kit, (uint8_t)src, g_gen};
+  L().q[L().qn++] = {op, (uint8_t)kit, (uint8_t)src, L().gen};
 }
 
 }  // namespace
@@ -257,61 +265,64 @@ CORE_COLD void sysex(const uint8_t* d, int len) {
   push((uint8_t)op, kit, src >= 0 && src <= 127 ? src : kit);
 }
 
-CORE_COLD void project_changing() { ++g_gen; }
+CORE_COLD void project_changing() { ++L().gen; }
 CORE_COLD void name_seen(const uint8_t* n, int len) {
-  char b[sizeof g_name];
+  Sl& l = L();
+  char b[sizeof l.name];
   int k = 0;
   for (; k < len && k < (int)sizeof b - 1 && n[k] != 0xF7; ++k) b[k] = (char)n[k];
   b[k] = 0;
   // (round 6, N3: name mode only - in slot mode 0026's ACTIVE / LOAD mark every change, in order with the 4C; 0021's 10
-  // comes on its own path, maybe late, and a rename of the active project is no change of project)
-  if (g_name[0] && strcmp(b, g_name) && prjslot::mode() != prjslot::kSlot) project_changing();
-  memcpy(g_name, b, sizeof g_name);
+  // comes on its own path, maybe late, and a rename of the active project is no change of project. The slot reports
+  // are the Rytm's: another box's 10 is always a name)
+  if (l.name[0] && strcmp(b, l.name) && (prj_slot() != 0 || prjslot::mode() != prjslot::kSlot)) project_changing();
+  memcpy(l.name, b, sizeof l.name);
 }
 CORE_COLD void lost(int n) {
-  ++g_st.lost;
+  ++L().st.lost;
   log(CORE_STR("kits: the Rytm dropped %d reports: a SAVE / RELOAD KIT may be missed - the kits' saved copies may be "
                "older than the Rytm's (save the kit again to be sure)"), n);
 }
 
 CORE_COLD bool tick() {
   // the store is the project's and complete, nothing moves its files, no switch or question waits: the events are of
-  // the project now loaded - unless the Rytm changed projects after one came (its generation): dropped, never applied
+  // the project now loaded - unless the box changed projects after one came (its generation): dropped, never applied
   // to the next project (round 5, H1)
   if (!store::ready() || project_loading() || rename::moving() || rename::busy() || prjslot::busy()) return false;
-  if (g_scan >= 0 || (g_all[0] | g_all[1] | g_all[2] | g_all[3])) {
-    if (g_all_gen != g_gen) {
-      memset(g_all, 0, sizeof g_all), g_scan = -1, ++g_st.stale;
+  Sl& l = L();   // (the slot in hand's: engine.cpp ticks each slot in its Scope)
+  if (l.scan >= 0 || (l.all[0] | l.all[1] | l.all[2] | l.all[3])) {
+    if (l.all_gen != l.gen) {
+      memset(l.all, 0, sizeof l.all), l.scan = -1, ++l.st.stale;
       log(CORE_STR("kits: RELOAD ALL of the project before not finished: stopped (the Rytm is on another project)"));
       return true;
     }
-    if (g_scan >= 0) {   // (round 5, L1: kScanPass store lookups a pass, not 128 in one)
+    if (l.scan >= 0) {   // (round 5, L1: kScanPass store lookups a pass, not 128 in one)
       char key[kKeyMax], p[96];
       key_now(key);
       const uint8_t* d;
       uint32_t n;
-      int e = g_scan + kScanPass;
+      int e = l.scan + kScanPass;
       uint32_t looked = 0;
-      for (; g_scan < e && g_scan < 128; ++g_scan, ++looked) {
-        rec_path(key, g_scan, "sks", p, sizeof p);
-        if (store::get(p, &d, &n) == store::kPresent) g_all[g_scan >> 5] |= 1u << (g_scan & 31);
+      for (; l.scan < e && l.scan < 128; ++l.scan, ++looked) {
+        rec_path(key, l.scan, "sks", p, sizeof p);
+        if (store::get(p, &d, &n) == store::kPresent) l.all[l.scan >> 5] |= 1u << (l.scan & 31);
       }
-      if (looked > g_st.scan_max) g_st.scan_max = looked;   // (the store lookups this pass made: round 6, N5)
-      if (g_scan >= 128) g_scan = -1;
+      if (looked > l.st.scan_max) l.st.scan_max = looked;   // (the store lookups this pass made: round 6, N5)
+      if (l.scan >= 128) l.scan = -1;
       return true;
     }
     for (int i = 0, done = 0; i < 128 && done < 4; ++i)   // four kits a pass
-      if (g_all[i >> 5] >> (i & 31) & 1) g_all[i >> 5] &= ~(1u << (i & 31)), reload(i, false), ++done;
+      if (l.all[i >> 5] >> (i & 31) & 1) l.all[i >> 5] &= ~(1u << (i & 31)), reload(i, false), ++done;
     return true;
   }
-  if (!g_qn) return false;
-  Ev e = g_q[0];
-  for (int i = 1; i < g_qn; ++i) g_q[i - 1] = g_q[i];
-  --g_qn;
-  if (e.gen != g_gen) {
-    ++g_st.stale;
+  if (!l.qn) return false;
+  Ev e = l.q[0];
+  for (int i = 1; i < l.qn; ++i) l.q[i - 1] = l.q[i];
+  --l.qn;
+  if (e.gen != l.gen) {
+    ++l.st.stale;
     log(CORE_STR("kits: op %d of kit %03d came before the Rytm changed projects: dropped (not applied to %s)"), e.op,
-        e.kit + 1, project);
+        e.kit + 1, prj().key);
     return true;
   }
   switch (e.op) {
@@ -319,8 +330,8 @@ CORE_COLD bool tick() {
     case kReload: reload(e.kit, false); break;
     case kRestore: reload(e.kit, true); break;
     case kReloadAll:   // every kit with a saved record (the others keep their working copy, as a single reload's)
-      g_scan = 0, g_all_gen = g_gen;
-      ++g_st.reload_alls;
+      l.scan = 0, l.all_gen = l.gen;
+      ++l.st.reload_alls;
       log(CORE_STR("kits: every kit reloaded on the Rytm"));
       break;
     default: break;
@@ -337,13 +348,11 @@ CORE_COLD void want_files() {
   }
 }
 
-CORE_COLD void reset() {
-  g_qn = 0;
-  memset(g_all, 0, sizeof g_all);
-  g_scan = -1, g_name[0] = 0;
-  g_st = Stats();
+CORE_COLD void reset() {   // every slot's
+  for (Sl& l : g_sl) l = Sl();
 }
-CORE_COLD const Stats& stats() { return g_st; }
+CORE_COLD const Stats& stats() { return L().st; }
+CORE_COLD const Stats& stats(int slot) { return g_sl[slot > 0 && slot < kVoiceSlots ? slot : 0].st; }
 
 }  // namespace kits
 }  // namespace core

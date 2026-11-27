@@ -1,7 +1,7 @@
 // pi/engine/webnext_path.h - the next web UI (web-next/, docs/web-ws.md "Serving the new app from the Pi") is served from
-// the card, not built into the kernel: GET /next/<file> reads SD:/.rytm/www-next/<file>. This is the URL -> card path
+// the card, not built into the kernel: GET /next/<file> reads SD:/.sidecar/www-next/<file>. This is the URL -> card path
 // mapping (nothing outside that folder: no "..", no hidden names, a short safe alphabet) and the answer's headers.
-// /fs cannot reach /.rytm (fsweb.h), so nothing can be put there over the network; the folder is written by copying
+// /fs cannot reach /.sidecar (fsweb.h), so nothing can be put there over the network; the folder is written by copying
 // web-next's build onto the card. Portable, header only (tests/test_ws.cpp).
 #ifndef _webnext_path_h
 #define _webnext_path_h
@@ -11,7 +11,7 @@
 
 namespace webnext {
 
-static const char kRoot[] = "SD:/.rytm/www-next";
+static const char kRoot[] = "SD:/.sidecar/www-next";
 
 // true and the card path into pOut (max bytes) for "/next", "/next/" (index.html) and "/next/<a/b.c>"; false for anything
 // else or anything unsafe

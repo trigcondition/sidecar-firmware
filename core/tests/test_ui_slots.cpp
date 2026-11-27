@@ -550,12 +550,11 @@ static void test_um(bool a4) {
     sx({0x10, 'U', 'S', 'L'});   // the project "USL"
   } else {   // the A4's hello (its folder chosen already: no restart), its screen's 36; no project from it
     remove(host_path("/Plugins/a.rmp").c_str()), remove(host_path("/Plugins/b.rmp").c_str());
-    device::g_link.state = "/.a4";
     sx({0x4F, 1, (uint8_t)(device::kIdA4 >> 7), (uint8_t)(device::kIdA4 & 0x7F), 1});
     CHECK(device::foreign() && device::active().id == device::kIdA4 && device::active().voices == 4);
     CHECK(!(device::active().features & device::kProject) && extra_for_box("USER SLOTS") && !extra_for_box("PROJECT"));
     sx({0x36, 1, 0, 100, 1});
-    project[0] = 0;   // (the box names none: the default's map)
+    prj().key[0] = 0;   // (the box names none: the default's map)
     hooks.project_changed();
     CHECK(um::command("um=rescan", o, sizeof o));
   }

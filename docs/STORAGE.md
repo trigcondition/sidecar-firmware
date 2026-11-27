@@ -173,7 +173,7 @@ FatFs).
 
 Never runs by itself. Console (`:stor=bench:USB` on the serial console, or the web page's *Log & console* /
 `POST /cmd c=stor=bench:USB`), or the web page's Status tab, *Storage*, *Run bench*. Results: the serial log and the
-web log as a table, `/status` `stor.bench`, the web page, and `SD:/.rytm/storbench-<VOL>.txt`; `stor=last` prints the
+web log as a table, `/status` `stor.bench`, the web page, and `SD:/.sidecar/storbench-<VOL>.txt`; `stor=last` prints the
 last table again.
 
 - `VOL`: `SD` (default), `USB`, `USB2`, `USB3`, `NVME`. `MB`: the test file, default 256 (8..8192; shrunk to the free

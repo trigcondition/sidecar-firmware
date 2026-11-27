@@ -72,26 +72,27 @@ CORE_COLD int track_now() {
   if (ip.track < 0) ip.track = 0;
   return ip.track;
 }
-CORE_COLD int voice_now() {
+CORE_COLD int voice_now() {   // the track's voice's chain: its box voice (V1..V8)
   int vi = remote_track_voice(track_now());
-  return vi >= 0 && vi < ins::kVoices ? vi : 0;
+  return vi >= 0 ? box_voice(vi) : 0;
 }
 CORE_COLD int chain_now() { return ip.bus ? ins::kBus0 + ip.busel : voice_now(); }
 // 0.5.0: the BUS view's slot holds a send TYPE: G is its MIX
-CORE_COLD bool mix_on_g(int ch) { return ip.bus && master::send_type(ins::control.type[ch][ip.slot]); }
+CORE_COLD bool mix_on_g(int ch) { return ip.bus && master::send_type(ins::ctl(ch).type[ch][ip.slot]); }
 
 CORE_COLD void strip(Canvas& c, int ch) {
   // [A TYPE] > [B TYPE] > the sends (TRACK) / the return (BUS)
   for (int s = 0; s < ins::kSlots; ++s) {
     Rect r{(int16_t)(s * 41), (int16_t)kStripY, 38, (int16_t)kStripH};
-    int t = ins::control.type[ch][s];
+    int t = ins::ctl(ch).type[ch][s];
     bool sel = s == ip.slot;
     if (sel) c.fill(r, kOn);
     else c.rect(r, kOn);
     // an effect: its name alone (the box's place says the slot; "A TREMOLO" did not fit the 38 px box, 7 letters of
     // the Rytm's small font do); an empty slot keeps its letter
     char b[12];
-    if (t) sniprintf(b, sizeof b, "%s", ins::type_name(t));
+    if (t && ins::refused(ch, s)) sniprintf(b, sizeof b, "NO CPU");   // CPU admission: set, but plays dry (insert.h)
+    else if (t) sniprintf(b, sizeof b, "%s", ins::type_name(t));
     else sniprintf(b, sizeof b, CORE_STR("%c -"), 'A' + s);
     c.put_text(kSlotFree + s, kRSmall, r.x + 19, kStripY + 4, b, kAlignCentre | (sel ? kTextInvert : 0));
     c.hline(r.x + 38, r.x + 40, kStripY + kStripH / 2, kOn);   // the arrow's shaft
@@ -100,15 +101,15 @@ CORE_COLD void strip(Canvas& c, int ch) {
   if (!ip.bus) {   // the OUT box
     Rect r{83, (int16_t)kStripY, 45, (int16_t)kStripH};
     c.rect(r, kOn);
-    sniprintf(b, sizeof b, CORE_STR("OUT %s"), out::route_name(out::control.route[ch & 7]));
+    sniprintf(b, sizeof b, CORE_STR("OUT %s"), out::route_name(out::ctl().route[ch & 7]));
     c.put_text(kSlotFree + 2, kRSmall, r.x + 22, kStripY + 4, b, kAlignCentre);
     return;
   } else if (ip.busel < 2) {
     int k = ip.busel;
-    bool post = fx::control.route == fx::kRouteMain || (fx::control.route == fx::kRouteSlot && fx::control.knob[k][1] >= 64);
+    bool post = fx::cur().route == fx::kRouteMain || (fx::cur().route == fx::kRouteSlot && fx::cur().knob[k][1] >= 64);
     sniprintf(b, sizeof b, CORE_STR("%s"), post ? "POST" : "PRE");
   } else {
-    sniprintf(b, sizeof b, "%s", ins::control.route3 ? "POST" : "PRE");
+    sniprintf(b, sizeof b, "%s", ins::ctl(ins::kBus0).route3 ? "POST" : "PRE");
   }
   c.put_text(kSlotFree + 2, kRSmall, 127, kStripY + 4, b, kAlignRight);
 }
@@ -118,7 +119,7 @@ CORE_COLD bool dsp_sample_now() { return machine_of(remote_track_machine(track_n
 CORE_COLD void out_draw(Canvas& c, int page, int npages) {
   int vi = voice_now();
   header(c, "INSERT OUT", page, npages, voice_name(vi));
-  int r = out::control.route[vi];
+  int r = out::ctl().route[vi];
   c.put_text(kSlotFree, kRSmall, 64, kStripY + 4, r == out::kTrk ? "THROUGH THE RYTM'S TRACK" : "RYTM FLTR AMP DEL REV OFF",
              kAlignCentre);
   bool dec = dsp_sample_now();
@@ -153,7 +154,7 @@ CORE_COLD void out_draw(Canvas& c, int page, int npages) {
 CORE_COLD void eq_strip(Canvas& c, int ch) {
   for (int s = 0; s < ins::kSlots; ++s) {
     Rect r{(int16_t)(s * 17), (int16_t)kStripY, 14, (int16_t)kStripH};
-    bool set = ins::control.type[ch][s] != 0;
+    bool set = ins::ctl(ch).type[ch][s] != 0;
     if (set) c.fill(r, kOn);
     else c.rect(r, kOn);
     char b[4];
@@ -171,16 +172,16 @@ CORE_COLD void eq_strip(Canvas& c, int ch) {
   if (ch < ins::kVoices) {
     Rect r{82, (int16_t)kStripY, 46, (int16_t)kStripH};
     c.rect(r, kOn);
-    sniprintf(b, sizeof b, CORE_STR("OUT %s"), out::route_name(out::control.route[ch & 7]));
+    sniprintf(b, sizeof b, CORE_STR("OUT %s"), out::route_name(out::ctl().route[ch & 7]));
     c.put_text(kSlotFree + 3, kRSmall, r.x + 23, kStripY + 4, b, kAlignCentre);
     return;
   }
   int k = ch - ins::kBus0;
   if (k < 2) {
-    bool post = fx::control.route == fx::kRouteMain || (fx::control.route == fx::kRouteSlot && fx::control.knob[k][1] >= 64);
+    bool post = fx::cur().route == fx::kRouteMain || (fx::cur().route == fx::kRouteSlot && fx::cur().knob[k][1] >= 64);
     sniprintf(b, sizeof b, CORE_STR("FX%d %s"), k + 1, post ? "POST" : "PRE");
   } else {
-    sniprintf(b, sizeof b, CORE_STR("B3 %s"), ins::control.route3 ? "POST" : "PRE");
+    sniprintf(b, sizeof b, CORE_STR("B3 %s"), ins::ctl(ins::kBus0).route3 ? "POST" : "PRE");
   }
   c.put_text(kSlotFree + 3, kRSmall, 127, kStripY + 4, b, kAlignRight);
 }
@@ -227,7 +228,7 @@ CORE_COLD void sc_view_draw(Canvas& c, int page, int npages, int ch, const char*
   header(c, title, page, npages, right);
   for (int s = 0; s < ins::kSlots; ++s) {   // [A][B] > [SIDECH] > [POST EQ]
     Rect r{(int16_t)(s * 17), (int16_t)kStripY, 14, (int16_t)kStripH};
-    bool set = ins::control.type[ch][s] != 0;
+    bool set = ins::ctl(ch).type[ch][s] != 0;   // (the slot in hand's chains)
     if (set) c.fill(r, kOn);
     else c.rect(r, kOn);
     char b[4];
@@ -311,7 +312,7 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   }
   if (ip.eq) return eq_draw(c, page, npages);   // ins1112 (RIGHT)
   if (ip.out) return out_draw(c, page, npages);
-  int ch = chain_now(), t = ins::control.type[ch][ip.slot];
+  int ch = chain_now(), t = ins::ctl(ch).type[ch][ip.slot];
   const ins::Labels& L = ins::labels(t);
   char right[16];
   int tr = track_now();
@@ -331,7 +332,7 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   sniprintf(val[5], 8, "%.7s", ins::type_name(t));
   if (mix_on_g(ch)) {
     sniprintf(lab[6], 6, "MIX");
-    sniprintf(val[6], 8, CORE_STR("%d"), master::control.mix[master::slot_index(ch, ip.slot)]);
+    sniprintf(val[6], 8, CORE_STR("%d"), master::cur().mix[master::slot_index(ch, ip.slot)]);
   } else {
     sniprintf(lab[6], 6, "BUS");
     sniprintf(val[6], 8, CORE_STR("%d"), ip.busel + 1);
@@ -341,7 +342,7 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
     sniprintf(val[7], 8, CORE_STR("%d"), ins::send_knob(ch, ip.busel));
   } else {
     sniprintf(lab[7], 6, "ROUT");
-    if (ip.busel == 2) sniprintf(val[7], 8, "%s", ins::control.route3 ? "POST" : "PRE");
+    if (ip.busel == 2) sniprintf(val[7], 8, "%s", ins::ctl(ins::kBus0).route3 ? "POST" : "PRE");
     else sniprintf(val[7], 8, CORE_STR("FX%d P1"), ip.busel + 1);
   }
   for (int e = 0; e < 8; ++e) {
@@ -361,13 +362,13 @@ CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
     sniprintf(b, sizeof b, CORE_STR("%s SEND BUS %d:%d"), voice_name(ch), ip.busel + 1, ins::send_knob(ch, ip.busel));
     footer(c, b, ins::send_knob(ch, ip.busel));
   } else if (e == 6 && mix_on_g(ch)) {
-    const int m = master::control.mix[master::slot_index(ch, ip.slot)];
+    const int m = master::cur().mix[master::slot_index(ch, ip.slot)];
     sniprintf(b, sizeof b, CORE_STR("%s %c MIX:%d"), ins::chain_name(ch), 'A' + ip.slot, m);
     footer(c, b, m);
   } else if (e == 5 && ip.full) {
     sniprintf(b, sizeof b, CORE_STR("SEND FX INSERTS: %d IN USE"), master::kFxSlots);
     footer(c, b);
-  } else if (ip.bus && ip.busel < 2 && master::send_type(t) && fx::control.knob[ip.busel][0] == fx::kOff) {
+  } else if (ip.bus && ip.busel < 2 && master::send_type(t) && fx::cur().knob[ip.busel][0] == fx::kOff) {
     // bus 1 / 2's chain runs in its send FX's return: that send FX OFF, the send TYPE is silent (and holds its room)
     sniprintf(b, sizeof b, CORE_STR("SEND FX %d OFF: SILENT"), ip.busel + 1);
     footer(c, b);
@@ -397,7 +398,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
   }
   if (ip.out) {   // A OUT, B LEV, C PAN, D WID, E DEC (DSP SAMPLE)
     int vi = voice_now();
-    if (e == 0) out::set_route(vi, clampi(out::control.route[vi] + l, 0, out::kRoutes - 1));
+    if (e == 0) out::set_route(vi, clampi(out::ctl().route[vi] + l, 0, out::kRoutes - 1));
     else if (e <= 3 || (e == 4 && dsp_sample_now())) {
       const int cur = out::param(vi, e - 1), st = d * (func ? 8 : 1);   // C PAN: 64 is the centre, the detent
       out::set_param(vi, e - 1, e == 2 ? detent_step(e, detent_tag(0x200 + vi), cur, st, 64, func) : cur + st);
@@ -405,7 +406,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
     }
     return;
   }
-  int ch = chain_now(), t = ins::control.type[ch][ip.slot];
+  int ch = chain_now(), t = ins::ctl(ch).type[ch][ip.slot];
   if (e < 4) {
     if (t) {
       const int cur = ins::param(ch, ip.slot, e), st = d * (func ? 8 : 1);   // AMP / SAT TONE (P3): 64 is flat, the detent
@@ -443,7 +444,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
         ip.track = clampi(track_now() + l, 0, 11), ip.manual = true;
       } else if (!func && mix_on_g(ch)) {   // a bus slot's send TYPE: G its MIX (FUNC + G the bus)
         const int i = master::slot_index(ch, ip.slot);
-        master::set_mix(i, master::control.mix[i] + d);
+        master::set_mix(i, master::cur().mix[i] + d);
       } else {
         ip.busel = clampi(ip.busel + l, 0, ins::kBuses - 1);
       }
@@ -462,7 +463,7 @@ CORE_COLD uint16_t ins_enc_tid(int e) {
   if (ip.eq) return e < ins::kEqParams ? mod::tid(mod::kIns, chain_now(), 8 + e) : 0;
   if (ip.out) return e >= 1 && e <= 3 ? mod::tid(mod::kOut, voice_now(), e - 1) : 0;
   int ch = chain_now();
-  if (e < 4) return ins::control.type[ch][ip.slot] ? mod::tid(mod::kIns, ch, ip.slot * 4 + e) : 0;
+  if (e < 4) return ins::ctl(ch).type[ch][ip.slot] ? mod::tid(mod::kIns, ch, ip.slot * 4 + e) : 0;
   if (e == 7 && !ip.bus) return mod::tid(mod::kIsnd, ch, ip.busel);
   return 0;
 }

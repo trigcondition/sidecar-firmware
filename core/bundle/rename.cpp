@@ -278,7 +278,7 @@ bool moving() { return s.phase == kMove || s.phase == kUndo || (s.phase == kChec
 CORE_COLD void back() {
   if (s.phase == kNone || s.phase == kFlush || s.phase == kMove || s.phase == kUndo) return;   // (a move runs to its end)
   if (!cardq::idle(&req)) cardq::cancel(&req);
-  log(CORE_STR("rename: the Rytm is back on %s: no question about %s"), project, s.to);
+  log(CORE_STR("rename: the Rytm is back on %s: no question about %s"), prj().key, s.to);
   s.state = kIdle, s.phase = kNone, s.from[0] = s.to[0] = 0;
 }
 CORE_COLD void reset() {

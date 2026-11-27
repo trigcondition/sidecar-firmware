@@ -6,18 +6,24 @@
 
 #include "loop_plan.h"
 
+namespace core { namespace out { struct Device; } }
+
 namespace loop_pi {
 
 // Boot, before the pool RAM takes what is left (bridge::begin): loopram=MB (default by the board's RAM, loop_plan.h),
-// the ring and the store from the heap, core::loop::init. Logs "loop ring 32 MB, grabs N MB" or why it is off.
+// a ring for each slot and the store split between them (one looper per box, core/loop/loop.h), core::loop::init for each.
+// Logs "loop ring 32 MB x 2, grabs N MB x 2" or why it is off.
 void Initialize();
-bool WantsIn();   // the ring exists (a Rytm's IN completion hands its MAIN over)
-// The IN completion: n frames of MAIN L / R, interleaved, that arrived with render frame `arrival` for the last of them,
-// `lost` frames missing before them (the Overbridge counter's gap)
-void InBlock(const int32_t* lr, unsigned n, unsigned lost, uint64_t arrival);
-// FillOut, after the master FX: the loop onto F[f][0..1]; renderFrame the first frame's (Output::PulledFrame)
-void OutMix(int32_t (*F)[12], unsigned n, uint64_t renderFrame);
-void Poll();      // core 0's idle loop: a KEEP job's next piece
+bool WantsIn(unsigned nSlot);   // slot nSlot's ring exists (its box's IN completion hands its MAIN over)
+// slot nSlot's IN completion: n frames of its box's MAIN L / R, interleaved, that arrived with render frame `arrival` for the
+// last of them, `lost` frames missing before them (the Overbridge counter's gap)
+void InBlock(unsigned nSlot, const int32_t* lr, unsigned n, unsigned lost, uint64_t arrival);
+// slot nSlot's FillOut, after the master FX: its loop onto its box's returns in F; renderFrame the first frame's
+void OutMix(unsigned nSlot, int32_t (*F)[12], unsigned n, uint64_t renderFrame);
+// a box's stream starts in slot nSlot (CObUsb): its looper plays on that box's returns (its device row's POST / PRE; none: POST only)
+// with that box's make-ups (the Rytm's measured POST / PRE; another box: 1 until loop=cal measures its POST return)
+void SetBox(unsigned nSlot, const core::out::Device* pDev);
+void Poll();      // core 0's idle loop: a KEEP job's next piece (each slot's in turn, one at a time)
 bool Busy();      // a KEEP is being written
 
 }  // namespace loop_pi

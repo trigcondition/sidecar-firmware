@@ -45,8 +45,11 @@ static void play_adds(int32_t (*F)[12], unsigned n) { for (unsigned f = 0; f < n
 static void test_hooks() {
   g_Output.SetMode(Output::kMain);
   loop_pi::g_wants = true;
+  loop_pi::g_box_slots.clear();
   Bus b(g_rytm, 0x0b48);
   CHECK(b.ob && b.ob->Configure());
+  const unsigned slot = static_cast<CObUsb*>(b.ob)->Slot();
+  CHECK(loop_pi::g_box_slots.size() == 1 && loop_pi::g_box_slots[0] == slot);   // its looper told its box at the stream's start
   uint16_t c = 0;
   // capture_aligned_to_render_frames: channels 0 / 1 of every block, the arrival stamped with the render frame counter
   loop_pi::g_in.clear();
@@ -59,6 +62,7 @@ static void test_hooks() {
   CHECK(loop_pi::g_in.size() == 3);
   const auto& a = loop_pi::g_in[0];
   CHECK(a.lr.size() == 14 && a.arrival == 1000 && a.lost == 0);
+  for (const auto& x : loop_pi::g_in) CHECK(x.slot == slot);   // its own slot's looper
   for (int f = 0; f < 7; ++f) CHECK(a.lr[2 * f] == 100 + f && a.lr[2 * f + 1] == -(100 + f));
   CHECK(loop_pi::g_in[1].arrival == 1007 && loop_pi::g_in[1].lr[0] == 107);
   CHECK(loop_pi::g_in[2].lost == 21 && loop_pi::g_in[2].arrival == 1014 && loop_pi::g_in[2].lr[0] == 114);
@@ -75,7 +79,7 @@ static void test_hooks() {
   g_play_hook = play_adds;
   int16_t fr[7][8] = {};
   for (int k = 0; k < 8; ++k) g_Output.Push(fr, 7);   // 56 render frames in the FIFO
-  loop_pi::g_out_frames.clear();
+  loop_pi::g_out_frames.clear(), loop_pi::g_out_slots.clear();
   uint64_t first = g_Output.PulledFrame();
   while (!b.host.out.empty()) b.out_done();
   for (int k = 0; k < 4; ++k) {
@@ -87,6 +91,7 @@ static void test_hooks() {
     }
   }
   CHECK(loop_pi::g_out_frames.size() == 4);
+  for (unsigned x : loop_pi::g_out_slots) CHECK(x == slot);
   for (int k = 0; k < 4; ++k) CHECK(loop_pi::g_out_frames[k] == first + 7 * (uint64_t)k);
   masterfx_pi::g_process_hook = nullptr;
   loop_pi::g_out_hook = nullptr;

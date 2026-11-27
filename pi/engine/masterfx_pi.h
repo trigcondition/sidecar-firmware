@@ -12,8 +12,20 @@
 // come to it unclipped; what was on 0/1 before them (POST voices, the OUT, POST returns) is integer and may have saturated. It adds its 48 frames (1 ms)
 // to all of 0/1, both sides of the chain's crossfade alike, and comes in before them and leaves after them. 2/3 and 4..11
 // keep their timing; take playback, after it, is not limited. Hosted (no Circle headers): ob_usb.cpp and cores.cpp call it.
+//
+// Two links (phase 3(d), decided 2026-11-14: the boxes work independently and identically): one instance per box (slot),
+// each its own rings, crossfades, limiter and stats, its own settings (core::master::control_of(box)) and chain
+// (ins::engine(box)), rendered after that box's render pass (box 0's on core 3 during RenderBlock's wait, core 2 on an 8-voice engine; box 1's on core 1: cores.cpp MasterCore, 2026-11-22), processed in that box's own stream's OUT fill on its
+// device row's pairs (a box without a PRE pair of its own, pre == post, has only POST). SRC MIX and stereo=measure are the
+// Rytm's (box 0). The calls without a box are box 0's on the Rytm's pairs.
 #pragma once
 #include <stdint.h>
+
+namespace core {
+namespace out {
+struct Device;
+}
+}  // namespace core
 
 namespace masterfx_pi {
 const unsigned kRing = 1024, kPrime = 96, kMaxPerRender = 96, kFadeFrames = 480;   // frames; the crossfade 10 ms
@@ -28,15 +40,24 @@ const unsigned kGainFrames = 512;   // a stem's pan or its coming off main: at m
 const unsigned kLimFade = 240;      // the limiter in and out, 5 ms: the direct signal against itself kLook frames later
 // core 0, the OUT fill, after AddReturn and before take playback: out[n] as about to be sent
 void Process(int32_t (*out)[12], unsigned n);
+void Process(int box, const core::out::Device& dev, int32_t (*out)[12], unsigned n);   // box's, on dev's pairs
 // SRC MIX: core 0, the IN completion: the Rytm's stems IN 2..9 while it is asked for (WantStems): each stem panned as the
-// Rytm reports it (master::report), none that is still on main; no report: all of them, centred
+// Rytm reports it (master::report), none that is still on main; no report: all of them, centred. box: the Rytm's slot
+// (its stream's, slot 0 or 1: its slot's SRC, TRIM and report, master::rytm()); Process mixes them on its stream only
+// (dev == core::out::kRytmMk2). The calls without a box are box 0's.
 bool WantStems();
+bool WantStems(int box);
 void Stems(const int32_t (*stems)[8], unsigned n);
-void Render();          // core 2, after the send FX: the frames queued
-bool Command(const char* p);   // core 3: mfx=stats (logged): since the last one, core 2's load, underruns, drops
+void Stems(int box, const int32_t (*stems)[8], unsigned n);
+void Render();          // box 0's render core (cores.cpp MasterCore), after its pass: the frames queued
+void Render(int box);   // ... box's, after its own send FX
+bool Command(const char* p);   // core 3: mfx=stats (logged): since the last one, its render core's load, underruns, drops
 // The stats, for the display (any core, plain reads)
 struct Stats { uint32_t frames, under, drop_in, drop_out, stem_under; };
 Stats Read();
+Stats Read(int box);
 float Wet();            // the crossfade's position, 0 direct .. 1 the chain's output (core 0 writes)
+float Wet(int box);
 void Reset();           // a new stream (core 0): the rings' frames forgotten; tests
+void Reset(int box);    // box's stream (re)started
 }  // namespace masterfx_pi

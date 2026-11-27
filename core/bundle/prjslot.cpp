@@ -317,7 +317,7 @@ const char* name_of(const char* key) {   // the index's name for a key ("" none)
   return e ? e->rytm : "";
 }
 void drop_index(const char* key) {   // a key whose files went: its index entry too (a stale name asks nothing later)
-  if (strcmp(key, project)) projects::drop(key);
+  if (strcmp(key, prj().key)) projects::drop(key);
 }
 
 // ---- the per-project modules' keys: every module that keeps unsaved edits keyed by the project in RAM, re-pointed at
@@ -376,7 +376,7 @@ bool req(cardq::Kind k, const char* path, uint64_t off = 0, uint8_t* buf = nullp
 // SONG RECORD writes its folder itself (not through idle_save): no move or copy of the project's songs while it runs
 bool song_busy(const char* key) {
 #if CORE_POLY
-  if (strcmp(key, project)) return false;
+  if (strcmp(key, prj().key)) return false;
   int st = song::status().state;
   return st == song::kArming || st == song::kArmed || st == song::kRec || st == song::kSaving || st == song::kReplayReady ||
          st == song::kReplaying;
@@ -393,7 +393,7 @@ bool song_busy(const char* key) {
 Res quiet(const char* key, uint32_t ms) {
   if (!s.qst) {
     s.t0 = ms, s.logged = false, s.qst = 1;
-    if (!strcmp(key, project)) {
+    if (!strcmp(key, prj().key)) {
 #if CORE_POLY
       seq::project_leaving();
       ins::settings_due();
@@ -412,7 +412,7 @@ Res quiet(const char* key, uint32_t ms) {
     log(CORE_STR("prjslot: %s: SONG RECORD runs: its songs folder is left out of this job"), key);
   }
   bool waiting = project_loading() || fmt::post_busy() || pools::saving() || (songs && !s.skip_songs) ||
-                 (dirty && !strcmp(key, project) && ms - s.t0 < kFlushMs);
+                 (dirty && !strcmp(key, prj().key) && ms - s.t0 < kFlushMs);
   if (waiting) {
     if (!s.logged && ms - s.t0 >= kFlushMs)
       s.logged = true, log(CORE_STR("prjslot: %s: still waiting for its saves (loading %d, posted %d, song %d)"), key,
@@ -556,7 +556,7 @@ enum { kPhStart = 0, kPhQuiet, kPhScanA, kPhScanB, kPhScanS, kPhList, kPhPurge, 
 // (the target of the switch the queue ends on is the Rytm's current project too)
 bool current_or_next(const char* key) {
   Job* w = last_switch();
-  return !strcmp(key, project) || (w && !strcmp(w->b, key));
+  return !strcmp(key, prj().key) || (w && !strcmp(w->b, key));
 }
 
 Res step_trash(Job& j, uint32_t ms) {
@@ -724,7 +724,7 @@ Res step_move(Job& j, uint32_t ms) {
         if (j.mark) mark_renamed(j.mark);
         unsuspect(j.b);
         // no files under the name key: its index entry goes (it brought this move back at every connect's list)
-        if (!s.skip_songs && !s.scan_err && strcmp(j.a, project) && !is_slot_key(j.a)) projects::drop(j.a);
+        if (!s.skip_songs && !s.scan_err && strcmp(j.a, prj().key) && !is_slot_key(j.a)) projects::drop(j.a);
         return kDone;
       }
       s.ph = kPhScanB, s.i = 0;
@@ -764,7 +764,7 @@ Res step_move(Job& j, uint32_t ms) {
         return kMore;
       }
       log(CORE_STR("prjslot: %d files / folders of %s moved to %s"), s.nops, j.a, j.b);
-      if (!strcmp(j.a, project)) rekey_all(j.a, j.b);   // the project in memory is b's now (its files moved)
+      if (!strcmp(j.a, prj().key)) rekey_all(j.a, j.b);   // the project in memory is b's now (its files moved)
       if (!projects::rekey(j.a, j.b) && j.name[0]) projects::note(j.b, j.name);
       if (j.mark) mark_renamed(j.mark);
       unsuspect(j.b);
@@ -937,7 +937,7 @@ Res step_copy(Job& j, uint32_t ms) {
         return kMore;
       }
       s.moving = false;
-      if (j.rekey && !strcmp(j.a, project)) rekey_all(j.a, j.b);   // SAVE AS from the current project: its held edits
+      if (j.rekey && !strcmp(j.a, prj().key)) rekey_all(j.a, j.b);   // SAVE AS from the current project: its held edits
       const char* nm = j.name[0] ? j.name : name_of(j.a);
       if (nm[0]) projects::note(j.b, nm);
       if (j.mark) mark_renamed(j.mark);
@@ -1240,9 +1240,9 @@ Res step_recover(Job& j, uint32_t ms) {
         char stage[kKeyMax + 2];
         stage_of(b, stage, sizeof stage);
         s.cur.k = kJNone;
-        if (!strcmp(b, project) && slot_of(b) >= 0)   // (the Sidecar booted on it: loaded again once it is whole)
+        if (!strcmp(b, prj().key) && slot_of(b) >= 0)   // (the Sidecar booted on it: loaded again once it is whole)
           if (Job* w = push(kJSwitch, true)) w->slot = slot_of(b), w->reload = true, sniprintf(w->b, sizeof w->b, "%s", b),
-                                             sniprintf(w->name, sizeof w->name, "%s", project_name);
+                                             sniprintf(w->name, sizeof w->name, "%s", prj().name);
         job_two(kJCopy, a, b, name_of(a), slot_of(b), true);
         job_trash(stage, "failed", "", 0, true);
         s.jline[0] = 0, s.dirty = true;
@@ -1298,8 +1298,8 @@ Res step_recover(Job& j, uint32_t ms) {
       }
       // the project the Sidecar booted on was moved / placed / trashed / restored under it: loaded again (its RAM state
       // was filled from the card before the recovery)
-      if (!strcmp(kind, "move") && !strcmp(a, project)) project_switch_named(b, project_name, true);
-      else if (!strcmp(a, project) || !strcmp(b, project)) project_switch_named(project, project_name, true);
+      if (!strcmp(kind, "move") && !strcmp(a, prj().key)) project_switch_named(b, prj().name, true);
+      else if (!strcmp(a, prj().key) || !strcmp(b, prj().key)) project_switch_named(prj().key, prj().name, true);
       if (!strcmp(kind, "restore")) { s.ph = kPhEntryList; return kMore; }
       s.ph = kPhClear;
       return kMore;
@@ -1352,17 +1352,17 @@ void on_active(int slot, const char* name) {
   char key[kKeyMax];
   slot_key(slot, key, sizeof key);
   Job* w = last_switch();
-  const char* target = w ? w->b : project;
-  const char* tname = w ? w->name : project_name;
+  const char* target = w ? w->b : prj().key;
+  const char* tname = w ? w->name : prj().name;
   if (!strcmp(key, target)) {
     if (!strcmp(name, tname)) {   // (the Rytm's repeat; the boot's first: its tables announced, as a 10's)
-      if (!w && !project_seen) project_switch_named(key, name, false), host_project_changed();
+      if (!w && !prj().seen) project_switch_named(key, name, false), host_project_changed();
       return;
     }
     if (s.pend.kind && s.pend.slot == slot) { pend_resolve(true, slot, name); return; }   // reloaded from the card
     if (w && w != &s.cur) { sniprintf(w->name, sizeof w->name, "%s", name); return; }    // (renamed meanwhile)
     if (w) { job_switch(slot, name, false); return; }
-    log(CORE_STR("prjslot: slot %d renamed %s -> %s"), slot, project_name, name);
+    log(CORE_STR("prjslot: slot %d renamed %s -> %s"), slot, prj().name, name);
     take_renamed(slot);
     project_switch_named(key, name, false);   // (the same key: the name and the index only)
     return;
@@ -1390,7 +1390,7 @@ void on_event(int op, int a, int b) {
       suspect(kb);   // (persisted until the copy is placed: a failure on the way asks at b's switch)
       if (Job* t = job_trash(kb, "saveto", name_of(kb)))
         if (a > 0) sniprintf(t->pair, sizeof t->pair, "%s", ka);   // (one journaled operation: trash, then copy)
-      if (Job* j = job_two(a > 0 ? kJCopy : kJMove, ka, kb, a > 0 ? name_of(ka) : project_name, b))
+      if (Job* j = job_two(a > 0 ? kJCopy : kJMove, ka, kb, a > 0 ? name_of(ka) : prj().name, b))
         j->rekey = a == s.rytm_slot;   // (the edits held during the copy are b's: the Rytm is on b once it ends)
       return;
     case 2:   // PASTE a -> b
@@ -1859,7 +1859,7 @@ CORE_COLD int status_json(char* out, int cap) {
   o.begin(out, (uint32_t)cap);
   o.raw("{\"mode\":"), o.str(s.mode == kSlot ? "slot" : s.mode == kName ? "name" : "undecided");
   o.raw(",\"migrated\":"), o.raw(s.card_slot ? "true" : "false");
-  o.raw(",\"active\":"), o.str(project), o.raw(",\"name\":"), o.str(project_name);
+  o.raw(",\"active\":"), o.str(prj().key), o.raw(",\"name\":"), o.str(prj().name);
   o.raw(",\"busy\":"), o.raw(busy() ? "true" : "false"), o.raw(",\"ask\":"), o.num((uint64_t)s.ask);
   o.raw(",\"last\":"), o.str(s.last), o.raw(",\"failures\":"), o.num(s.failures);
   o.raw(",\"journal\":"), o.str(s.jline), o.raw(",\"trash_next\":"), o.num(s.next), o.raw("}");

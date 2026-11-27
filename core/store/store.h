@@ -32,6 +32,10 @@ State get(const char* path, const uint8_t** d, uint32_t* n);
 uint32_t bytes();   // total bytes held (for /status and the memory test)
 int entries();      // entries held, in any state
 int present();      // entries held as kPresent (the files there)
+// One store per voice slot (each box's project its own: core/pool/pool.h): every call above and below is the slot in
+// hand's (device::cur(), the control core's); these name slot s (another core's /status)
+uint32_t bytes(int s);
+int present(int s);
 
 #if CORE_MSAMP
 // The fill (the Pi and the Mac core; the Teensy has no card queue): the control core registers the paths it wants and
@@ -47,6 +51,7 @@ void want(const char* path);   // a path the coming fill reads (repeats ignored)
 void fill_begin();
 bool fill_step();   // one bounded step (at most one cardq::async call); true when the fill is complete
 bool ready();       // the last fill_begin()'s fill is complete (false after clear(), before any fill_begin())
+bool ready(int s);  // slot s's
 #endif
 
 }  // namespace store

@@ -4,8 +4,14 @@
 #pragma once
 #include <stdint.h>
 
+namespace core { namespace out { struct Device; } }   // (sidechain_in's: the box's row)
 namespace bridge {
-const int kVoices = 8, kBlock = 12, kMachines = 7;   // core::kVoices, kBlock, kMachines (bridge.cpp checks)
+const int kVoices = 16, kBlock = 12, kMachines = 7;   // core::kVoices, kBlock, kMachines (bridge.cpp checks)
+// Two boxes' voices: slot 0's (the Rytm's) 0..7, slot 1's 8..15 (core/machines.h). The output stage carries one box's
+// eight (kBoxVoices), the base box's: out_base() is its first engine voice.
+const int kBoxVoices = 8, kVoiceSlots = kVoices / kBoxVoices;
+int out_base();              // the base box's first engine voice (core/device/device.h base_voice_base), any core
+bool slot_renders(int slot);  // the slot's voices render: slot 0 always (a lone Rytm as ever), slot 1 while a box has it
 // Before begin(): /Samples/pi-test/sine440.wav (2 s, 440 Hz, 16-bit mono, 48 kHz) and, if the project's pool file
 // is missing, /.rytm/pools/_default.txt naming it as slot 1; nothing that exists is touched. False: no card.
 bool selftest_content();
@@ -16,6 +22,11 @@ unsigned long heap_bytes();
 void heap_place(void* mem);
 bool begin(void (*to_host)(const uint8_t* m, int n));   // core::hooks.to_rytm = to_host; core::engine_begin()
 void sysex(const uint8_t* d, int len);                  // core::engine_sysex
+void sysex_link(int link, const uint8_t* d, int len);    // core::engine_sysex_link: the second box's (link1.h)
+void sysex_self(const uint8_t* d, int len);             // core::engine_sysex_self: the Pi's own (self-check, bench)
+void sysex_self_slot(int slot, const uint8_t* d, int len);   // the same as slot's box's (the load test's notes)
+bool in_slot(int slot, void (*fn)(void*), void* arg);        // fn in slot's Scope (the load test's slot=S:); false: no such slot
+bool admit_command(const char* p);                           // admit=report|enforce, loadtest=on|off
 uint32_t render(int16_t (*block)[kVoices], int v0, int v1, uint64_t* mach,   // one block of voices v0..v1-1
                 int16_t (*block_r)[kVoices] = nullptr, uint8_t* st = nullptr);  // (R, real-stereo bytes: core/voices.h)
 bool idle_prepare();
@@ -31,6 +42,7 @@ bool take_restart();                       // another box needs its state folder
 void tick();
 // The Sidecar sequencer (core/seq/seq.h): before each render block, on the control core (its due notes start / end)
 void seq_block();
+void seq_block_side(int slot);   // the side stage's pass: slot's sequencer block (core/seq/seq.h pre_block_side)
 // The remote UI (core/ui/remote.h): its tick runs in tick(); the status for its SIDECAR page (core 0's stats, once a
 // second: plain words); the console's rui=on|off (the page opened / closed from here) and rui (its numbers, logged).
 // The rest of the remote UI's SIDECAR page (1021): the recorder (1 idle, 2 armed, 3 recording, 4 off), the network
@@ -89,6 +101,7 @@ int scene_json(char* out, int cap);
 bool loop_command(const char* p, char* out, int cap);
 int loop_json(char* out, int cap);
 uint64_t render_frames();
+uint64_t render_frames(int slot);   // slot s's own pass's count (seq::frames(s)): each box's looper stamps its IN blocks with it
 // Poly FM (core/poly.h): the Rytm's channel messages (its pads' notes: live chords), the console's `poly` (its stats;
 // false: not a poly command)
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2);
@@ -103,7 +116,17 @@ void midim_set_out(bool (*f)(int dest, const uint8_t* m, int n));   // the MIDI 
 void rytm_gone();                                                   // the Rytm's USB MIDI removed: the MIDI machine's USB notes off, the arpeggios end
 void rytm_resync();                                                 // records for the Rytm were lost: the remote UI sends what it owes again (remote_resync), DIN's recent note-offs too
 void rytm_link(bool up);                                            // records can reach the Rytm (core 0's word, each control pass)
-void midim_realtime(uint8_t status);                                // the Rytm's realtime bytes, the control core
+void midim_realtime(int slot, uint8_t status);                      // box slot's realtime bytes (USB-A: while its voices alone send there), the control core
+// 3(c) step 10: transport t's realtime byte / song position (F8 FA FB FC F2, spp in 16ths) into its box's slot's clock
+// (core::engine_realtime_link: its LFOs, its send FX's STUTTER grid); the slot, -1 none. The control core.
+int realtime_link(int t, uint8_t status, uint16_t spp);
+int base_slot();                                                    // the base box's slot (core::device::g_base)
+// The console's box selector (core/device/device.h box_prefix): "box=S:<command>" runs <command> through run(ctx, command)
+// inside slot S's Scope (S 0..1, or rytm / a4 / dt). False: no selector (p is the base box's, as ever). A selector naming
+// no box attached is logged and taken. The control core (CEngineCores::Command).
+bool box_command(const char* p, void (*run)(void* ctx, const char* cmd), void* ctx);
+int transport_slot(int t);                                          // the slot transport t's box is (core::device::slot_of), -1 none
+int slot_in_hand();                                                 // the slot the console's command works on (box=S: sets it; else the base box's)
 void asamp_set_midi_out(bool (*f)(int port, const uint8_t* m, int n));   // the auto-sampler's EXT outputs (core/samp/autosamp.h)
 bool keys_computer_on();
 const char* keys_line(char* b, int cap);   // "KEYS MPKMINI > SD POLY", null: no keyboard
@@ -132,11 +155,12 @@ void going_down();
 // the OUT fill), the card side (core 0's loop: true when it did a step), /status's ,"samp":{...},"asamp":{...}.
 // Their control-core tick runs in tick().
 bool samp_command(const char* p, char* out, int cap);
-void samp_transport(uint8_t st);
+void samp_transport(int slot, uint8_t st);   // box slot's realtime byte: the sampler keeps every box's clock, a take follows its own
 bool samp_wants_in();
+int samp_slot();   // the box whose IN the sampler takes (its take's box: core::samp::clock_slot)
 void samp_in(const int32_t* f, int n, int stride);
 bool samp_wants_voices();
-void samp_voices(const int16_t (*v)[kVoices], int n, const int16_t (*lr)[2 * kVoices] = nullptr, const float (*fx)[4] = nullptr);   // fx: the send FX returns (CHOP RESAMPLE)
+void samp_voices(const int16_t (*v)[kBoxVoices], int n, const int16_t (*lr)[2 * kBoxVoices] = nullptr, const float (*fx)[4] = nullptr);   // fx: the send FX returns (CHOP RESAMPLE)
 void pool_mono(bool on);   // poolmono=1 (cmdline): stereo files summed at load (core/pool/pcache.h set_mono)
 void stereo_trim(int pair, int db10);   // trimpre= / trimpost= (cmdline): the OUT route's pair trims (core/fx/out.h)
 // the storage bench's result for volume vol (stor_pi.cpp): its 64 KB sequential reads (MB/s x 100) and 64 KB random
@@ -165,16 +189,22 @@ bool livein_on();
 void livein_in(const int32_t* f, int n, int stride);
 // 0.5.0 SIDECHAIN (core/fx/sidechain.h): sidechain_on() while an insert chain's stage reads a stem or AUDIO IN, then each IN block's
 // frames (as livein_in's) into the key bus
-bool sidechain_on();
-void sidechain_in(const int32_t* f, int n, int stride);
+bool sidechain_on(int slot);   // (each slot's chains key from their own box's IN)
+void sidechain_in(int slot, const core::out::Device* d, const int32_t* f, int n, int stride);
 void livein_fifo(unsigned frames);
 int livein_status(int vi, char* b, int cap);
 // seq-p2 (core/seq/seq.h, rytm_dump.h): cal_on() while the sequencer's latency click is due or on its way back, then each
 // IN block's frames as tap_in's (an interrupt: the calibration only compares and stores); every byte of the Rytm's USB
 // MIDI, as it comes (core 3), to the pattern dump's reader (its answer is longer than MidiIn's SysEx buffer).
 bool cal_on();
+int cal_slot();    // the box whose IN the latency click comes back on (the Rytm's slot: seq=cal is its; else the base box)
 void cal_in(const int32_t* f, int n, int stride);
-void rytm_byte(uint8_t b);
+void rytm_byte(uint8_t b);   // transport 0's (g_MidiIn): rytm_byte(0, b) and SONG RECORD's link_byte(0, b)
+// transport t's byte to the pattern dump's reader and FILL's writer while t carries the Rytm, whichever slot it holds: transport 0
+// unless it is routed to another box's slot, transport 1 only while it is routed to its slot (core::device::rytm_at). Read in its
+// slot's Scope (what it sends back goes to it). One parser each: only its transport feeds them.
+void rytm_byte(int transport, uint8_t b);
+void link_byte(int transport, uint8_t b);   // SONG RECORD's tap of a transport's whole MIDI stream (its slot's song)
 // The remote UI's REC page (core/ui/extra.h RecInfo): the recorder's state from core 0 (rec_pi.cpp), and the page's
 // request for it taken there: 0 none, 1 start, 2 stop, 3 arm, 4 disarm. state 0: no recorder (the page hidden).
 struct RuiRec {
@@ -220,6 +250,8 @@ uint64_t mfx_bench(uint32_t* worst_block);   // the master chain without AMP (co
 // 0.5.0: 4 send TYPE inserts at once across B1 / B2 / B3 / M1 (core/fx/master.h sfx_bench), set 0.. while its name is not null
 uint64_t sfxins_bench(int set, uint32_t* worst_block);
 const char* sfxins_bench_name(int set);
+int sfxins_bench_type(int set);   // the send TYPE a set runs on all four slots, -1 a mixed set
+uint64_t box_bench(uint32_t* worst_block);   // one box's chains as one row (core/fx/master.h box_bench): CPU admission
 unsigned poly_voices();
 int rytm_bpm10();                  // the Rytm's tempo x 10 (core/seq's last report), 0: not known
 int rytm_pattern(int* transport);   // UX review T1: the Rytm's pattern (-1 not known) and transport (core/seq's view)   // UX review S1: bit vi - a Rytm track on voice vi is a poly track (the Sidecar sequences it)

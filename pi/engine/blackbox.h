@@ -2,7 +2,7 @@
 // so that the last seconds before a Rytm link drop or a reboot are still there afterwards. The crash breadcrumb's RAM
 // (crumb.h) does not survive a reset on the Pi 4's sdboot path and /log keeps ~25 s; this keeps hours.
 // The source is the crumb's log ring (every line any core logs, crumb::Log); core 0's loop takes the bytes logged since
-// its last write (take, below) and blackbox_pi.cpp appends them to /.rytm/blackbox.log every ~2 s (sooner when 16 KB
+// its last write (take, below) and blackbox_pi.cpp appends them to /.sidecar/blackbox.log every ~2 s (sooner when 16 KB
 // wait), the SD's streams first. Rotated to blackbox.1.log past kRotate bytes. Lines that fell out of the ring before
 // they were written (the card busy for more than ~30 s) are replaced by one "[blackbox: N bytes not kept]" line.
 #pragma once

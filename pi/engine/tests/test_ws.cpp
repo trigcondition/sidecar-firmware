@@ -452,6 +452,10 @@ static void test_cmd_policy ()
 	CHECK (webcmd::refused ("seqed=nsel:0:4:60:1", true, false) == 0 && webcmd::refused ("seqed=nedit:0:0:1", true, false) == 0);	// NOTE EDIT from the page
 	CHECK (webcmd::refused ("wifi=join:a:b", true, false) == 0);
 	CHECK (webcmd::refused ("wifi=join:a:b", false, false) != 0);
+	// box=S:<command> (the console's box selector) is judged by its command: no way round the list
+	CHECK (webcmd::refused ("box=a4:wt=voice:1", true, false) == 0 && webcmd::refused ("box=1:box=0:lfo", true, false) == 0);
+	CHECK (webcmd::refused ("box=a4:usbmidi=os:on", true, false) != 0 && webcmd::refused ("box=0:box=1:midibridge=on", true, false) != 0);
+	CHECK (webcmd::refused ("box=rytm:wifi=join:a:b", false, false) != 0 && webcmd::refused ("box=0:", true, false) != 0);
 	CHECK (webcmd::refused ("midibridge=on", true, false) != 0);
 	CHECK (webcmd::refused ("usbmidi=os:on", true, false) != 0);
 	CHECK (webcmd::refused ("osupdate=1", true, false) != 0);
@@ -580,9 +584,9 @@ static void test_voices_and_next ()
 
 	// /next from the card
 	char p[160];
-	CHECK (webnext::path ("/next", p, sizeof p) && std::string (p) == "SD:/.rytm/www-next/index.html");
-	CHECK (webnext::path ("/next/", p, sizeof p) && std::string (p) == "SD:/.rytm/www-next/index.html");
-	CHECK (webnext::path ("/next/assets/index-Ab_9.js", p, sizeof p) && std::string (p) == "SD:/.rytm/www-next/assets/index-Ab_9.js");
+	CHECK (webnext::path ("/next", p, sizeof p) && std::string (p) == "SD:/.sidecar/www-next/index.html");
+	CHECK (webnext::path ("/next/", p, sizeof p) && std::string (p) == "SD:/.sidecar/www-next/index.html");
+	CHECK (webnext::path ("/next/assets/index-Ab_9.js", p, sizeof p) && std::string (p) == "SD:/.sidecar/www-next/assets/index-Ab_9.js");
 	const char *bad[] = {"/nextx", "/nex", "/next/../x", "/next/a/../b", "/next/.hidden", "/next/a//b", "/next/a/", "/next//a",
 			     "/next/a b", "/next/a%2e", "/next/a?x=1", "/next/a\\b", "/fs/x", "/"};
 	for (const char *b : bad) CHECK (!webnext::path (b, p, sizeof p));

@@ -28,10 +28,12 @@ const Profile kA4 = {
     0x04, 0x03, 0x11,
     kUserSlots | kRemoteUi,   // U1..U5 on its SIDECAR page; the web's User machines tab fills them, in /.a4/slots. Remote UI: the pages on its screen, text drawn here
     0, 0, {}, {},
-    {0, 1u << (0x36 - 32) | 1u << (0x37 - 32) | 1u << (0x38 - 32) | 1u << (0x39 - 32) | 1u << (0x3A - 32) | 1u << (0x3C - 32)},   // the pages alone: 36 37 38 39 3A 3C, and the hello's answer
+    {0, 1u << (0x2E - 32) | 1u << (0x2F - 32) | 1u << (0x34 - 32) |   // 3(c): its sequencer's 2E mask, 2F PAGE LEDs, 34 trig LEDs (sidecar-a4 0.14)
+            1u << (0x36 - 32) | 1u << (0x37 - 32) | 1u << (0x38 - 32) | 1u << (0x39 - 32) | 1u << (0x3A - 32) | 1u << (0x3C - 32)},   // the pages alone: 36 37 38 39 3A 3C, and the hello's answer
     nullptr,
     "/.a4",
-    {1u << 0x03 | 1u << 0x04 | 1u << 0x11, 1u << (0x30 - 32) | 1u << (0x31 - 32) | 1u << (0x32 - 32) | 1u << (0x3B - 32)},   // 3B its kit; 30 31 32 its screen
+    {1u << 0x03 | 1u << 0x04 | 1u << 0x11, 1u << (0x2C - 32) | 1u << (0x2D - 32) |   // 3(c): 2C step ticks, 2D state (companion 0.3.0, sidecar-a4 0.14)
+            1u << (0x30 - 32) | 1u << (0x31 - 32) | 1u << (0x32 - 32) | 1u << (0x3B - 32)},   // 3B its kit; 30 31 32 its screen
     kBracketFull, &kA4Audio, nullptr,
     true, true,
     180,   // +18 dB: the insert point's gain rests at 0.25 [on a unit: MAIN peaks 0.17-0.36 at +12 with two tracks, still under the A4's own oscillators by ear; +18 set live, the owner's ear]; peaks past full scale go through Own's knee

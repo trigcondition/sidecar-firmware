@@ -115,7 +115,9 @@ the echo, the first echo on the left at the tempo's 1/8, the feedback's on the r
 The effect's budget (as the voices' guard): its render is timed on core 2; 16 calls of one state (send slot) in a row
 over 120 us a 12-frame block (scaled by n), or one call over 2 ms, mute it ("muted: render ran 2400 us, over its
 budget"). All of core 2's effect calls in a block are summed too: 16 blocks in a row over 150 us mute the dearest
-effect of the last one. `um=fxbudget:<call>:<total>` sets both (tests, a bench on the Pi). A state not called for
+effect of the last one. `um=fxbudget:<call>:<total>` sets both (tests, a bench on the Pi). Since 2026-11-23 the
+built-in effects are timed the same way, and a core hot 16 blocks in a row mutes its dearest effect, user or built-in
+(docs/fx-measured-mute.md). A state not called for
 more than two blocks (its slot played another TYPE) takes no older edges. The send FX's
 transport snapshot is read once a call; its edges (START, STOP, JUMP) reach each of an effect's states exactly once,
 in the first sub-block, however core 2's send FX falls against the blocks (each snapshot carries the edges' running

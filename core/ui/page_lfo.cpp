@@ -65,7 +65,7 @@ CORE_COLD const char* machine_label(int m, int k) {
 CORE_COLD const char* voice_label(int vi, int k, char* b, int cap) {
   if (cap <= 0) return b;
   b[0] = 0;
-  vi &= 7, k &= 15;
+  vi = voice_wrap(vi), k &= 15;
   const int m = remote_voice_machine(vi);
   if (m >= 0x50 && m <= 0x70 && !(m & 7)) {   // U1..U5
     if (!hooks.user_label || !hooks.user_label(vi, k, b, cap)) b[0] = 0;

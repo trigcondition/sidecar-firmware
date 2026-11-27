@@ -438,12 +438,12 @@ What replaces it for now:
   risk to that system's boot partition. `make-sd-dual.sh` refuses a kernel with the test mode (`testsecs=`). Build:
   `PI5_GADGET=1 PI5_TESTMODE=1 RASPPI=5 pi/engine/build.sh` (same Circle tree; switching the flag rebuilds the objects).
   `testcard=1` with `testsecs=`: the engine uses the card as usual, so projects, presets and plugins can be tested on a tryboot.
-  The watchdog and the reboot stay, `/usbtest.log` goes on, and the black box writes `/.rytm/blackbox.log` (besides the stats lines it carries the lag diagnostics: `lag-marker`, `lag-snap`, `rxrep`, `txacc`; docs/pi-engine.md "Lag diagnostics"). FatFs's name-changing
+  The watchdog and the reboot stay, `/usbtest.log` goes on, and the black box writes `/.sidecar/blackbox.log` (besides the stats lines it carries the lag diagnostics: `lag-marker`, `lag-snap`, `rxrep`, `txacc`; docs/pi-engine.md "Lag diagnostics"). FatFs's name-changing
   calls go through a gate in these kernels only (`card_guard.h`, `--wrap`): on the card only `/.rytm` and fsweb's content folders
   may change. `config.txt`, `cmdline.txt`, the kernels, `overlays/` and anything else at the root are refused with `FR_DENIED`
   and a `cardguard: testcard: ...` log line, whichever path asks: port 7310's PUT and DEL, the Wi-Fi import `sidecar-wifi.txt`,
   and the pairing recourse `sidecar-paircode.txt`. So a boot with no display writes no code down: use the Rytm's screen, the
-  serial console, or devices already paired in `/.rytm/pair.txt`. `/.rytm` is readable under Linux, Wi-Fi key and paired hashes
+  serial console, or devices already paired in `/.sidecar/pair.txt`. `/.rytm` is readable under Linux, Wi-Fi key and paired hashes
   included. Unlike the mode without it this writes FATs: a reset during a write can damage that partition, and it is small.
   `uac2test=1` starts the test source (`:uac2test=on`: tones on IN 1-10, IN 11 / 12 the loopback of OUT 1 / 12, the generic
   timer the clock), `midifake=1` the MIDI loop. In the test source each second logs every OUT channel's rising zero

@@ -87,6 +87,7 @@ enum : int { kStateNone, kStateCard, kStateLoading, kStateRam, kStateCut, kState
 const char* entry_group(int e);
 const char* entry_path(int e);
 int entry_state(int e);
+int entry_state_in(int ls, int e);   // in voice slot ls's list (entry_state: the slot in hand's)
 const char* entry_note(int e, char* b, int cap);
 uint32_t list_gen();
 int src_entry(int vi, int v);   // the entry SRC value v plays (the code itself)

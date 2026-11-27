@@ -55,16 +55,36 @@ struct Xchg {
   volatile uint32_t offer, done;
 };
 // voices 0..7, buses (nothing: AMP's dry form), the master's chains, then one more row a master chain: the R side of an
-// L/R pair, slot for slot
+// L/R pair, slot for slot. Each box its own rows (decided 2026-11-26: slot 0 and slot 1 the same): box b's chain c is
+// b * kRows + c, its settings ins::control_of(b), its voices' and master's chains in its slot's ins::Engine.
+constexpr int kBoxes = kVoiceSlots;
 constexpr int kRows = ins::kChains + ins::kMasters;
-inline bool row_on(int c) { return (c >= 0 && c < kVoices) || (c >= ins::kM0 && c < kRows); }
-inline bool is_pair_row(int c) { return c >= ins::kChains && c < kRows; }
-inline int parent(int c) { return is_pair_row(c) ? ins::kM0 + (c - ins::kChains) : c; }   // the chain whose knobs it follows
-inline bool wanted(int c, int s) {   // the row's slot is an AMP that should hold an instance
-  int pc = parent(c);
-  return ins::control.type[pc][s] == ins::kAmp && (!is_pair_row(c) || ins::control.mpair[pc - ins::kM0][s]);
+constexpr int kAllRows = kBoxes * kRows;
+inline int bx(int r) { return r / kRows; }
+inline int ch(int r) { return r % kRows; }
+inline int row(int b, int c) { return b * kRows + c; }
+inline bool box_ok(int b) { return b >= 0 && b < kBoxes; }
+inline bool row_on(int r) {
+  const int c = ch(r);
+  return r >= 0 && r < kAllRows && ((c >= 0 && c < kVoices) || (c >= ins::kM0 && c < kRows));
 }
-Xchg g_x[kRows][kSlots];
+inline bool is_pair_row(int r) { return ch(r) >= ins::kChains; }
+inline int parent(int r) { return is_pair_row(r) ? ins::kM0 + (ch(r) - ins::kChains) : ch(r); }   // the chain whose knobs it follows
+// the settings row r plays by: its box's (its voice and its master chains alike)
+inline const ins::Control& ctl(int r) { return ins::control_of(bx(r)); }
+inline bool wanted(int r, int s) {   // the row's slot is an AMP that should hold an instance
+  int pc = parent(r);
+  return ctl(r).type[pc][s] == ins::kAmp && (!is_pair_row(r) || ctl(r).mpair[pc - ins::kM0][s]);
+}
+Xchg g_x[kAllRows][kSlots];
+// the cap's count: one box's AMP slots (kCapBoxes = kBoxes: each box its own kMaxRunning), or every box's (kCapBoxes = 1:
+// one kMaxRunning shared, first come first served)
+inline int cap_box(int r) { return kCapBoxes > 1 ? bx(r) : -1; }
+// "box1:" in front of a second box's chain in the log and the console (box 0's as ever)
+inline const char* box_word(int r) {
+  static const char* const k[] = {"", "box1:", "box2:", "box3:"};
+  return bx(r) > 0 && bx(r) < 4 ? k[bx(r)] : "";
+}
 
 // the render core's per slot (bus chains included: they run AMP's dry form)
 struct Audio {
@@ -74,7 +94,7 @@ struct Audio {
   bool ran = false;
   float lp = 0, dcx = 0, dcy = 0;
 };
-Audio g_a[kRows][kSlots];
+Audio g_a[kAllRows][kSlots];
 
 // the control core's per slot
 struct Ctl {
@@ -84,9 +104,10 @@ struct Ctl {
   uint32_t fail_gen = 0;
   Status fail_st = kIdle;
   bool refused = false;      // the cap's refusal counted once
+  bool shed = false;         // shed(): stop at the next step, NO CPU until there is room again
   char pending[kNameMax];    // the card's AMP line, resolved once listed
 };
-Ctl g_k[kRows][kSlots];
+Ctl g_k[kAllRows][kSlots];
 
 // the /NAM/ list: two buffers, the readers (any core: texts) take the published one
 struct List {
@@ -173,7 +194,7 @@ inline float db_gain(float db) { return ins::fast_exp2(db * 0.16609640f); }   //
 // ---------------------------------------------------------------------------------------------------- texts
 
 const char* status_short(int s) {
-  static const char* const t[kStatuses] = {"", "", "LOADING", "NO NAM", "NOTLITE", "BADFILE", "NOT 48K", "MAX 6", "NO RAM", "MAX 2"};
+  static const char* const t[kStatuses] = {"", "", "LOADING", "NO NAM", "NOTLITE", "BADFILE", "NOT 48K", "MAX 6", "NO RAM", "MAX 2", "NO CPU"};
   static_assert(kMaxRunning == 6 && kMaxMaster == 2, "the MAX texts name the caps");
   return s >= 0 && s < kStatuses ? t[s] : "";
 }
@@ -188,7 +209,8 @@ const char* status_long(int s) {
       "the capture is not 48 kHz (no resampler)",
       "6 AMP inserts play already (the CPU cap)",
       "no memory for the AMP engines",
-      "2 AMP instances play on the master already (its own cap)"};
+      "2 AMP instances play on the master already (its own cap)",
+      "no CPU room on its render core (CPU admission: each under 80 %)"};
   return s >= 0 && s < kStatuses ? t[s] : "?";
 }
 Status parse_status(Parse p) {
@@ -452,12 +474,12 @@ inline void model(int i, const float* u, float* o, int m) {
 }
 }  // namespace
 
-void fresh(int c, int s) {
-  if (c < 0 || c >= ins::kChains || s < 0 || s >= kSlots) return;
-  Audio& a = g_a[c][s];
+void fresh(int box, int c, int s) {
+  if (!box_ok(box) || c < 0 || c >= ins::kChains || s < 0 || s >= kSlots) return;
+  Audio& a = g_a[row(box, c)][s];
   a.lp = a.dcx = a.dcy = 0;
   if (c >= ins::kM0) {
-    Audio& b = g_a[ins::kChains + (c - ins::kM0)][s];   // the pair's R side
+    Audio& b = g_a[row(box, ins::kChains + (c - ins::kM0))][s];   // the pair's R side
     b.lp = b.dcx = b.dcy = 0;
   }
 }
@@ -466,7 +488,7 @@ namespace {
 // one capture over u[m] (mono) into y: row c's instance, GAIN in front, DC block, TONE, LEV after it
 void one(int c, int s, const float* p, const float* u, float* y0, int m) {
   float o[NAM_A2LITE_MAX_BUFFER_SIZE];
-  Audio& a = g_a[c < 0 ? 0 : c >= kRows ? kRows - 1 : c][s & 1];
+  Audio& a = g_a[c < 0 ? 0 : c >= kAllRows ? kAllRows - 1 : c][s & 1];
   if (row_on(c) && g_pool) {
     a.ran = true;
     take(c, s, a, true);
@@ -511,37 +533,44 @@ void one(int c, int s, const float* p, const float* u, float* y0, int m) {
 }
 }  // namespace
 
-void run(int c, int s, const float* p, const float* x, const float* r, float* y0, float* y1, int m) {
+void run(int box, int c, int s, const float* p, const float* x, const float* r, float* y0, float* y1, int m) {
   if (m > NAM_A2LITE_MAX_BUFFER_SIZE) m = NAM_A2LITE_MAX_BUFFER_SIZE;
+  if (!box_ok(box)) box = 0;
   float u[NAM_A2LITE_MAX_BUFFER_SIZE];
-  if (r && c >= ins::kM0 && c < ins::kChains && ins::control.mpair[c - ins::kM0][s & 1]) {   // the master's L/R pair
+  if (r && c >= ins::kM0 && c < ins::kChains && ins::control_of(box).mpair[c - ins::kM0][s & 1]) {   // the master's L/R pair
     for (int i = 0; i < m; ++i) u[i] = ins::flush(x[i]);
-    one(c, s, p, u, y0, m);
+    one(row(box, c), s, p, u, y0, m);
     for (int i = 0; i < m; ++i) u[i] = ins::flush(r[i]);
-    one(ins::kChains + (c - ins::kM0), s, p, u, y1, m);
+    one(row(box, ins::kChains + (c - ins::kM0)), s, p, u, y1, m);
     return;
   }
   for (int i = 0; i < m; ++i) u[i] = ins::flush(r ? 0.5f * (x[i] + r[i]) : x[i]);   // AMP is mono
-  one(c, s, p, u, y0, m);
+  one(c >= 0 && c < kRows ? row(box, c) : -1, s, p, u, y0, m);
   if (r) memcpy(y1, y0, sizeof(float) * m);
 }
 
 // voice_out's (insert.cpp) every block, before the chain: an offer to a slot that did not run AMP last block is taken
 // at once (nothing plays it: no fade), a fade left half-way finishes
-void service(int vi) {
-  if (!row_on(vi) || !g_pool) return;
+namespace {
+void service_row(int r) {
+  if (!row_on(r) || !g_pool) return;
   for (int s = 0; s < kSlots; ++s) {
-    Audio& a = g_a[vi][s];
+    Audio& a = g_a[r][s];
     if (!a.ran) {
-      if (a.fade > 0) a.fade = 0, a.from = -1, rel(&g_x[vi][s].done, a.seen);
-      take(vi, s, a, false);
+      if (a.fade > 0) a.fade = 0, a.from = -1, rel(&g_x[r][s].done, a.seen);
+      take(r, s, a, false);
     }
     a.ran = false;
   }
 }
+}  // namespace
+void service(int box, int vi) {
+  if (box_ok(box) && vi >= 0 && vi < kVoices) service_row(row(box, vi));
+}
 
-void service_master() {
-  for (int c = ins::kM0; c < kRows; ++c) service(c);
+void service_master(int box) {
+  if (!box_ok(box)) return;
+  for (int c = ins::kM0; c < kRows; ++c) service_row(row(box, c));
 }
 
 // ---------------------------------------------------------------------------------------------------- the list
@@ -577,8 +606,11 @@ int find_model(const char* f) {
 // the list being built (control core) into the unpublished buffer
 namespace {
 List& building() { return g_list[(__atomic_load_n(&g_pub, __ATOMIC_RELAXED) & 1) ^ 1]; }
+bool g_synth = false;   // amp=synthetic:on (the load test): a synthetic A2-Lite capture listed beside /NAM/'s files
+constexpr const char* kSynthFile = "~TSYNTH.namb";   // (never read: its weights are synthetic_weights(seed 1), the bench's)
 void publish() {
   List& b = building();
+  if (g_synth && b.n < kMaxModels) sniprintf(b.file[b.n++], kNameMax, "%s", kSynthFile);
   for (int i = 1; i < b.n; ++i)   // sorted by name, case ignored (insertion: 64 at most)
     for (int j = i; j > 0 && cmp_ci(b.file[j - 1], b.file[j]) > 0; --j) {
       char t[kNameMax];
@@ -592,10 +624,12 @@ void publish() {
 
 // ---------------------------------------------------------------------------------------------------- the control side
 
-Status status(int c, int s) { return row_on(c) && s >= 0 && s < kSlots ? g_k[c][s].st : kIdle; }
-void knob_text(int c, int s, int v, char* b, int cap) {
-  Status st = status(c, s);
-  if (!row_on(c)) {
+Status status(int box, int c, int s) {
+  return box_ok(box) && c >= 0 && c < kRows && row_on(row(box, c)) && s >= 0 && s < kSlots ? g_k[row(box, c)][s].st : kIdle;
+}
+void knob_text(int box, int c, int s, int v, char* b, int cap) {
+  Status st = status(box, c, s);
+  if (!box_ok(box) || c < 0 || c >= kRows || !row_on(row(box, c))) {
     sniprintf(b, cap, "V ONLY");
     return;
   }
@@ -612,25 +646,50 @@ void knob_text(int c, int s, int v, char* b, int cap) {
   }
   sniprintf(b, cap, "%s", status_short(st));
 }
-void want_file(int c, int s, const char* f) {
-  if (!row_on(c) || s < 0 || s >= kSlots) return;
-  sniprintf(g_k[c][s].pending, kNameMax, "%s", f ? f : "");
+void want_file(int box, int c, int s, const char* f) {
+  if (!box_ok(box) || c < 0 || c >= kRows || !row_on(row(box, c)) || s < 0 || s >= kSlots) return;
+  sniprintf(g_k[row(box, c)][s].pending, kNameMax, "%s", f ? f : "");
 }
-const char* slot_file(int c, int s) {
-  if (!row_on(c) || s < 0 || s >= kSlots) return "";
-  if (g_k[c][s].pending[0]) return g_k[c][s].pending;   // not listed yet: kept as the card has it
-  return model_file(model_for_knob(ins::param(c, s, 0)));
+const char* slot_file(int box, int c, int s) {
+  if (!box_ok(box) || c < 0 || c >= kRows || !row_on(row(box, c)) || s < 0 || s >= kSlots) return "";
+  const int r = row(box, c);
+  if (g_k[r][s].pending[0]) return g_k[r][s].pending;   // not listed yet: kept as the card has it
+  return model_file(model_for_knob(ins::param_in(box, c, s, 0)));
 }
-int running_master() {
+static bool (*g_cpu_fits)(int row) = nullptr;
+void set_cpu_check(bool (*fits)(int row)) { g_cpu_fits = fits; }
+int rows() { return kAllRows; }
+int row_box(int r) { return bx(r); }
+int row_chain(int r) { return ch(r); }
+int refused_cpu() {
   int n = 0;
-  for (int c = ins::kM0; c < kRows; ++c)
-    for (int s = 0; s < kSlots; ++s) n += g_k[c][s].cur >= 0;
+  for (int c = 0; c < kAllRows; ++c)
+    for (int s = 0; s < kSlots; ++s) n += g_k[c][s].st == kCpu;
   return n;
 }
-int running() {
+int master_row() { return ins::kM0; }
+bool slot_playing(int row, int s) {
+  return row >= 0 && row < kAllRows && s >= 0 && s < kSlots && g_k[row][s].cur >= 0 && !g_k[row][s].shed;
+}
+bool shed(int row, int s) {
+  if (!slot_playing(row, s)) return false;
+  g_k[row][s].shed = true;
+  return true;
+}
+int running_master(int box) {
   int n = 0;
-  for (int c = 0; c < kVoices; ++c)
-    for (int s = 0; s < kSlots; ++s) n += g_k[c][s].cur >= 0;
+  for (int b = 0; b < kBoxes; ++b)
+    if (box < 0 || b == box)
+      for (int c = ins::kM0; c < kRows; ++c)
+        for (int s = 0; s < kSlots; ++s) n += g_k[row(b, c)][s].cur >= 0;
+  return n;
+}
+int running(int box) {
+  int n = 0;
+  for (int b = 0; b < kBoxes; ++b)
+    if (box < 0 || b == box)
+      for (int c = 0; c < kVoices; ++c)
+        for (int s = 0; s < kSlots; ++s) n += g_k[row(b, c)][s].cur >= 0;
   return n;
 }
 
@@ -675,7 +734,7 @@ void job_fail(Parse p) {
   Ctl& k = g_k[j.c][j.s];
   k.fail_model = j.model, k.fail_gen = j.gen, k.fail_st = parse_status(p), k.st = k.fail_st;
   free_inst(j.inst);
-  log(CORE_STR("amp: %s %c: %s: %s"), ins::chain_name(parent(j.c)), 'A' + j.s, j.path, status_long(k.fail_st));
+  log(CORE_STR("amp: %s%s %c: %s: %s"), box_word(j.c), ins::chain_name(parent(j.c)), 'A' + j.s, j.path, status_long(k.fail_st));
 }
 
 bool job_step() {
@@ -813,7 +872,7 @@ bool job_step() {
       j.ph = kNone;
       // still wanted? (the knob / a lock moved on, the TYPE changed: the instance is kept for a later reuse)
       Ctl& k = g_k[j.c][j.s];
-      bool want = wanted(j.c, j.s) && model_for_knob(ins::control.play[parent(j.c)][j.s][0]) == j.model &&
+      bool want = wanted(j.c, j.s) && model_for_knob(ctl(j.c).play[parent(j.c)][j.s][0]) == j.model &&
                   j.gen == g_gen;
       if (!want || acq(&g_x[j.c][j.s].done) != g_x[j.c][j.s].offer) {
         free_inst(j.inst);
@@ -822,7 +881,7 @@ bool job_step() {
       __atomic_thread_fence(__ATOMIC_RELEASE);
       offer(j.c, j.s, j.inst);
       k.st = kPlaying, k.refused = false;
-      log(CORE_STR("amp: %s %c: %s"), ins::chain_name(parent(j.c)), 'A' + j.s, model_file(j.model));
+      log(CORE_STR("amp: %s%s %c: %s"), box_word(j.c), ins::chain_name(parent(j.c)), 'A' + j.s, model_file(j.model));
       return true;
     }
     default: break;
@@ -865,7 +924,7 @@ bool step() {
     publish();
   }
   bool did = false;
-  for (int c = 0; c < kRows; ++c)
+  for (int c = 0; c < kAllRows; ++c)   // (c: a row, each box's in turn)
     for (int s = 0; s < kSlots; ++s) {
       if (!row_on(c)) continue;
       Ctl& k = g_k[c][s];
@@ -878,8 +937,8 @@ bool step() {
       if (k.prev >= 0) free_inst(k.prev), k.prev = -1;
       if (k.pending[0] && g_listed) {   // the card's AMP line, now that /NAM/ is listed
         int i = find_model(k.pending);
-        if (i >= 0) ins::set_param(c, s, 0, knob_for_model(i));
-        else log(CORE_STR("amp: %s %c: %s is not in %s"), ins::chain_name(c), 'A' + s, k.pending, kFolder);
+        if (i >= 0) ins::set_param_in(bx(c), ch(c), s, 0, knob_for_model(i));
+        else log(CORE_STR("amp: %s%s %c: %s is not in %s"), box_word(c), ins::chain_name(ch(c)), 'A' + s, k.pending, kFolder);
         k.pending[0] = 0;
       }
       if (!is_amp) {
@@ -895,10 +954,18 @@ bool step() {
         k.st = kLoading;
         continue;
       }
-      const int want = model_for_knob(ins::control.play[parent(c)][s][0]);
+      const int want = model_for_knob(ctl(c).play[parent(c)][s][0]);
       if (want < 0) {
         k.st = kNoFiles;
         if (k.cur >= 0) offer(c, s, -1), did = true;
+        continue;
+      }
+      if (k.shed) {   // shed for CPU (the clock lowered: device.cpp shed_over): dry, NO CPU, admitted again when it fits
+        k.shed = false;
+        if (!k.refused) ++g_stats.refused, k.refused = true;
+        k.st = kCpu;
+        if (k.cur >= 0) offer(c, s, -1), did = true;
+        log(CORE_STR("amp: %s %c: NO CPU (shed: its render core over 80 %% at the clock now)"), ins::chain_name(parent(c)), 'A' + s);
         continue;
       }
       if (k.cur >= 0 && g_meta[k.cur].model == want && g_meta[k.cur].gen == g_gen) {
@@ -910,9 +977,14 @@ bool step() {
         if (k.cur >= 0) offer(c, s, -1), did = true;
         continue;
       }
-      if (k.cur < 0 && (c < kVoices ? running() >= kMaxRunning : running_master() >= kMaxMaster)) {
+      if (k.cur < 0 && (ch(c) < kVoices ? running(cap_box(c)) >= kMaxRunning : running_master(cap_box(c)) >= kMaxMaster)) {
         if (!k.refused) ++g_stats.refused, k.refused = true;
-        k.st = c < kVoices ? kCap : kCapM;
+        k.st = ch(c) < kVoices ? kCap : kCapM;
+        continue;
+      }
+      if (k.cur < 0 && g_cpu_fits && !g_cpu_fits(c)) {   // CPU admission: the AMPs already playing on its core first
+        if (!k.refused) ++g_stats.refused, k.refused = true;
+        k.st = kCpu;
         continue;
       }
       int i = pick_inst(want);
@@ -926,6 +998,10 @@ bool step() {
       sniprintf(j.path, sizeof j.path, "%s/%s", kFolder, model_file(want));
       k.st = kLoading;
       j.ph = g_meta[i].model == want && g_meta[i].gen == g_gen ? kInit : kNone;
+      if (j.ph == kNone && g_synth && same_ci(model_file(want), kSynthFile)) {   // the load test's: no card, the bench's weights
+        synthetic_weights(g_w, 1);
+        j.ph = kInit;
+      }
 #if CORE_MSAMP
       if (j.ph == kNone) j.rq.state = cardq::kFree, j.ph = kOpen;
 #endif
@@ -943,47 +1019,59 @@ bool step() {
 
 bool command(const char* p, char* o, int cap) {
   if (strncmp(p, "amp", 3) != 0 || (p[3] && p[3] != '=')) return false;
+  if (p[3] == '=' && (same_ci(p + 4, "synthetic:on") || same_ci(p + 4, "synthetic:off"))) {
+    g_synth = same_ci(p + 4, "synthetic:on");
+    rescan();
+    sniprintf(o, cap, "amp: synthetic capture %s (%s), listing %s again", g_synth ? "listed" : "off", kSynthFile, kFolder);
+    return true;
+  }
   if (p[3] == '=' && same_ci(p + 4, "rescan")) {
     rescan();
     sniprintf(o, cap, "amp: listing %s again", kFolder);
     return true;
   }
   if (p[3]) {
-    sniprintf(o, cap, "amp (the AMP inserts), amp=rescan (list %s again)", kFolder);
+    sniprintf(o, cap, "amp (the AMP inserts), amp=rescan (list %s again), amp=synthetic:on|off (a test capture listed)", kFolder);
     return true;
   }
   int n = sniprintf(o, cap, "amp: %d captures in %s, %d of %d playing, loads %u reuses %u refused %u",
-                   models(), kFolder, running(), kMaxRunning, (unsigned)g_stats.loads, (unsigned)g_stats.reuses,
+                   models(), kFolder, running(), kMaxRunning * kCapBoxes, (unsigned)g_stats.loads, (unsigned)g_stats.reuses,
                    (unsigned)g_stats.refused);
-  for (int c = 0; c < ins::kChains && n < cap; ++c)
-    for (int s = 0; s < kSlots && n < cap; ++s) {
-      if (g_k[c][s].st == kIdle) continue;
-      int k = sniprintf(o + n, cap - n, "; %s %c %s: %s", ins::chain_name(c), 'A' + s, slot_file(c, s),
-                       status_long(g_k[c][s].st));
-      if (k < 0) break;
-      n += k;
-    }
+  for (int b = 0; b < kBoxes; ++b)
+    for (int c = 0; c < ins::kChains && n < cap; ++c)
+      for (int s = 0; s < kSlots && n < cap; ++s) {
+        const int r = row(b, c);
+        if (g_k[r][s].st == kIdle) continue;
+        int k = sniprintf(o + n, cap - n, "; %s%s %c %s: %s", box_word(r), ins::chain_name(c), 'A' + s, slot_file(b, c, s),
+                          status_long(g_k[r][s].st));
+        if (k < 0) break;
+        n += k;
+      }
   return true;
 }
 
 int json(char* o, int cap) {
   if (cap <= 0) return 0;
-  int n = sniprintf(o, cap, "\"amp\":{\"models\":%d,\"running\":%d,\"cap\":%d,\"slots\":[", models(), running(), kMaxRunning);
+  int n = sniprintf(o, cap, "\"amp\":{\"models\":%d,\"running\":%d,\"cap\":%d,\"slots\":[", models(), running(),
+                    kMaxRunning * kCapBoxes);
   bool first = true;
-  for (int c = 0; c < ins::kChains; ++c)
-    for (int s = 0; s < kSlots; ++s) {
-      if (n >= cap) return cap;
-      if (g_k[c][s].st == kIdle) continue;
-      char f[kNameMax];
-      int q = 0;
-      for (const char* p = slot_file(c, s); *p && q < kNameMax - 1; ++p)
-        if (*p != '"' && *p != '\\' && (unsigned char)*p >= 32) f[q++] = *p;
-      f[q] = 0;
-      int k = sniprintf(o + n, cap - n, "%s{\"c\":\"%s\",\"s\":\"%c\",\"file\":\"%s\",\"st\":\"%s\"}", first ? "" : ",",
-                        ins::chain_name(c), 'A' + s, f, g_k[c][s].st == kPlaying ? "PLAYING" : status_short(g_k[c][s].st));
-      if (k < 0 || k >= cap - n) return cap;
-      n += k, first = false;
-    }
+  for (int b = 0; b < kBoxes; ++b)
+    for (int c = 0; c < ins::kChains; ++c)
+      for (int s = 0; s < kSlots; ++s) {
+        if (n >= cap) return cap;
+        const int r = row(b, c);
+        if (g_k[r][s].st == kIdle) continue;
+        char f[kNameMax];
+        int q = 0;
+        for (const char* p = slot_file(b, c, s); *p && q < kNameMax - 1; ++p)
+          if (*p != '"' && *p != '\\' && (unsigned char)*p >= 32) f[q++] = *p;
+        f[q] = 0;
+        int k = sniprintf(o + n, cap - n, "%s{\"box\":%d,\"c\":\"%s\",\"s\":\"%c\",\"file\":\"%s\",\"st\":\"%s\"}",
+                          first ? "" : ",", b, ins::chain_name(c), 'A' + s, f,
+                          g_k[r][s].st == kPlaying ? "PLAYING" : status_short(g_k[r][s].st));
+        if (k < 0 || k >= cap - n) return cap;
+        n += k, first = false;
+      }
   int k = sniprintf(o + n, n < cap ? cap - n : 0, "]}");
   return n + (k > 0 ? k : 0);
 }
@@ -991,14 +1079,15 @@ int json(char* o, int cap) {
 const Stats& stats() { return g_stats; }
 
 void reset() {
-  for (int c = 0; c < kRows; ++c)
+  for (int c = 0; c < kAllRows; ++c)
     for (int s = 0; s < kSlots; ++s) {
       g_k[c][s] = Ctl();
       g_x[c][s].inst = -1, g_x[c][s].offer = 0, g_x[c][s].done = 0;
     }
-  for (int c = 0; c < kRows; ++c)
+  for (int c = 0; c < kAllRows; ++c)
     for (int s = 0; s < kSlots; ++s) g_a[c][s] = Audio();
   for (int i = 0; i < kInstances; ++i) g_meta[i].busy = false;
+  g_synth = false;
   bool lw = g_job.list_wanted || (g_job.ph == kList);
   g_job = Job();
   g_job.list_wanted = lw;   // a listing asked for (or under way) is still made

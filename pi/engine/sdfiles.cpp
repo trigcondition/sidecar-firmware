@@ -464,9 +464,9 @@ void CSdFiles::Put (const char *pName, unsigned nSize, u32 nCRC, const char *pCa
 	char PNew[208], P[208], PBak[208], PPrev[208];
 	if (pCard != 0)
 	{
-		// a web app file: its folders first (SD:/.rytm/www-next and below; one that exists is fine)
+		// a web app file: its folders first (SD:/.sidecar/www-next and below; one that exists is fine)
 		strcpy (P, pCard);
-		for (size_t i = sizeof "SD:/.rytm/" - 1; P[i]; i++)
+		for (size_t i = sizeof "SD:/" - 1; P[i]; i++)
 			if (P[i] == '/') { P[i] = 0; f_mkdir (P); P[i] = '/'; }
 		strcpy (PNew, pCard);
 		strcat (PNew, ".new");

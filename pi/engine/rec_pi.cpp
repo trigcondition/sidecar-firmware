@@ -15,7 +15,7 @@
 #include "rec/rec_wav.h"
 #include "sendfx_pi.h"
 #include "bridge.h"
-#include "hooks.h"	// core::hooks.transport: the mods' PLAY / STOP arm the recorder too
+#include "hooks.h"	// core::hooks.transport_box: the mods' PLAY / STOP arm the recorder too
 #include "ui/tap_names.h"	// tap_source_name: the stems' names, as SCOPE has them (not ui/extra.h: it pulls <new> in, which the kernel build has not)
 #include "voice_name.h"	// the voices' names for the user
 #include "lib/library.h"	// the sample library: a take indexed (not hashed: docs/LIBRARY.md)
@@ -255,7 +255,7 @@ bool BPatch (const char *p, uint64_t nOff, const void *pBuf, uint32_t n)
 void BLog (const char *pLine) { CLogger::Get ()->Write (From, LogNotice, "%s", pLine + (strncmp (pLine, "rec: ", 5) ? 0 : 5)); }
 bool BCardBusy (void) { return bridge::card_busy (); }	// the streams need the card (core/msamp/cardq.h)
 // the take's name (recorder.h): the wall clock's local time, the Rytm project's name. ProjectName is the one place
-// that knows where the core keeps the current project (core::project, the Rytm's 10 name, written by the control core:
+// that knows where the core keeps the current project (core::prj().key, the Rytm's 10 name, written by the control core:
 // copied a byte at a time up to its NUL, 23 characters at most)
 bool BClock (uint32_t *pLocal) { int nSrc; return core::projects::clock_local (pLocal, &nSrc); }
 void ProjectName (char *pOut, unsigned nCap)
@@ -554,10 +554,10 @@ void HoldDest (void)
 bool DestOk (const char *pRoot) { return !pRoot[0] || (s_pBounce && stor::mounted (stor::parse_vol (pRoot))); }
 
 // The destinations' write speeds for the warning before a take (recorder.h rate_warning): stor=bench's sequential
-// 64 KB writes (BenchDone), kept in SD:/.rytm/recspeed.txt; 0: not measured (the volume's default then)
+// 64 KB writes (BenchDone), kept in SD:/.sidecar/recspeed.txt; 0: not measured (the volume's default then)
 uint32_t s_Speed[stor::kVols];
 const char *s_VolNames[stor::kVols];
-const char kSpeedFile[] = "SD:/.rytm/recspeed.txt";
+const char kSpeedFile[] = "SD:/.sidecar/recspeed.txt";
 void SpeedNames (void) { for (int v = 0; v < stor::kVols; v++) s_VolNames[v] = stor::name (v); }
 void SpeedLoad (void)
 {
@@ -576,7 +576,7 @@ void SpeedSave (void)
 	char t[256];
 	int n = rec::format_speeds (t, sizeof t, s_VolNames, stor::kVols, s_Speed);
 	FIL f;
-	f_mkdir ("SD:/.rytm");
+	f_mkdir ("SD:/.sidecar");
 	if (f_open (&f, kSpeedFile, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return;
 	UINT w;
 	f_write (&f, t, (UINT) n, &w);
@@ -612,13 +612,39 @@ void ClockSync (void)
 namespace rec_pi {
 const rec::Backend *CardBackend (void) { return &s_Card; }	// the card through FatFs, for KEEP (loop_keep.h)
 
+// The recorder's box (decided 2026-11-26: slot 0 and slot 1 the same): armed, the first box whose PLAY comes takes it;
+// recording, only that box's PLAY / STOP reach the recorder (the other box's transport is its own business). A manual
+// start records the base box (the console's, as ever).
+static volatile int s_nRecSlot = 0;
+int Slot (void) { return s_nRecSlot; }
+static void RecTransport (int nSlot, u8 nStatus)
+{
+	if (nStatus != 0xFA && nStatus != 0xFB && nStatus != 0xFC) return;
+	if (nStatus != 0xFC && g_Rec.state () == rec::Recorder::kArmed)
+	{
+		if (nSlot != s_nRecSlot)
+			CLogger::Get ()->Write (From, LogNotice, "armed: slot %d's PLAY: recording that box", nSlot);
+		s_nRecSlot = nSlot;
+	}
+	if (nSlot == s_nRecSlot) g_Rec.transport (nStatus);
+}
+
 // the mods' transport report (core/seq: whatever the Rytm's MIDI TRANSPORT SEND is): the recorder's arm only - the
-// other Transport () users keep the MIDI messages (the sampler's PLAY starts, the send FX's clock)
-static void ModsTransport (uint8_t nStatus) { g_Rec.transport (nStatus); }
+// other Transport () users keep the MIDI messages (the sampler's PLAY starts, the send FX's clock). 3(c): every box's
+// sequencer reports its own; the recorder (one) takes the box whose PLAY started it (RecTransport)
+static void ModsTransport (int nSlot, uint8_t nStatus)
+{
+	RecTransport (nSlot, nStatus);
+	if (nStatus == 0xFC)	// a box stopped or left (seq::slot_left): its PLAY no longer holds the card's waits
+	{
+		bundle_pi::transport (nSlot, nStatus);
+		stor_pi::Transport (nSlot, nStatus);
+	}
+}
 
 void Init (void)
 {
-	core::hooks.transport = ModsTransport;
+	core::hooks.transport_box = ModsTransport;
 	CLogger *L = CLogger::Get ();
 	// recbuf=MB (cmdline), else sized from the free heap (memalign's: the low heap), 64..256 MB (recorder.h recbuf_mb)
 	unsigned nFreeMB = (unsigned) (CMemorySystem::Get ()->GetHeapFreeSpace (HEAP_LOW) >> 20);
@@ -735,7 +761,7 @@ static void RuiPoll (void)
 		char err[64] = "";
 		bool ok = true;
 		if ((nReq == 1 || nReq == 3) && g_Play.active ()) g_Play.stop ();	// never play while recording
-		if (nReq == 1) ok = g_Rec.start (err, sizeof err);
+		if (nReq == 1) s_nRecSlot = bridge::base_slot (), ok = g_Rec.start (err, sizeof err);
 		else if (nReq == 3) ok = g_Rec.arm (err, sizeof err);
 		else if (nReq == 2 || nReq == 4) g_Rec.stop ();
 		static const char *Name[] = {"", "start", "stop", "arm", "disarm"};
@@ -953,7 +979,7 @@ bool Command (const char *p)
 	{
 		const char *v = p + 4;
 		if ((strcmp (v, "start") == 0 || strcmp (v, "arm") == 0)) g_Play.stop ();	// never both (a pause's position goes too)
-		if (strcmp (v, "start") == 0) ok = g_Rec.start (err, sizeof err);
+		if (strcmp (v, "start") == 0) s_nRecSlot = bridge::base_slot (), ok = g_Rec.start (err, sizeof err);
 		else if (strcmp (v, "arm") == 0) ok = g_Rec.arm (err, sizeof err);
 		else if (strcmp (v, "stop") == 0) g_Rec.stop ();
 		else if (strncmp (v, "ch:", 3) == 0)
@@ -1054,13 +1080,13 @@ void Status (CString *pOut)
 	pOut->Append (t);
 }
 
-void Transport (u8 nStatus, u16 nSPP)
+void Transport (int nSlot, u8 nStatus, u16 nSPP)
 {
-	if (nStatus == 0xFA || nStatus == 0xFB || nStatus == 0xFC) g_Rec.transport (nStatus);
-	bundle_pi::transport (nStatus);	// project bundles: card writes wait while the Rytm plays (bundle_pi.h)
-	stor_pi::Transport (nStatus);		// the storage bench is refused while the Rytm plays (stor_pi.h)
-	bridge::samp_transport (nStatus);	// the sampler: PLAY / next-bar starts, the tempo (core/samp/sampler.h)
-	sendfx_pi::Clock (nStatus, nSPP);
+	RecTransport (nSlot, nStatus);	// the recorder records the box whose PLAY started it: its output stage, its transport
+	bundle_pi::transport (nSlot, nStatus);	// project bundles: card writes slow while any box plays (bundle_pi.h)
+	stor_pi::Transport (nSlot, nStatus);	// the storage bench is refused while any box plays (stor_pi.h)
+	bridge::samp_transport (nSlot, nStatus);	// the sampler: its take's box's PLAY / next-bar starts, tempo (core/samp/sampler.h)
+	(void) nSPP;	// (STUTTER's grid: the box's own clock, cores.cpp RealtimeIn -> bridge::realtime_link, 3(c) step 10)
 }
 
 bool TakeBusy (const char *pPath)

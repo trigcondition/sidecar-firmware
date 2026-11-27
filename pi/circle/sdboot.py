@@ -28,7 +28,7 @@ put in place; the replaced file is kept as <name>.prev, and config.txt/cmdline.t
   sdboot.py pi5-commit                 sdboot-try.img -> kernel_2712.img (the old one kept as kernel_2712.img.prev)
   sdboot.py pi5-previous               kernel_2712.img.prev back as kernel_2712.img (the two swap)
   sdboot.py web [DIR]                  the new web app (default web-next/dist, `npm run build` there) -> the card's
-                                       /.rytm/www-next, served at http://<sidecar>/next/: every file, with a .gz
+                                       /.sidecar/www-next, served at http://<sidecar>/next/: every file, with a .gz
                                        of each text file beside it (the Pi sends the .gz when there is one); old
                                        hashed assets stay (harmless, small). Needs firmware with PUT www-next/.
   sdboot.py usbreset                   a USB reset of the FT232R serial adapter (0403:6001; needs Homebrew's libusb):
@@ -49,7 +49,7 @@ because this is the port that replaces the firmware. The first time per Pi:
   no terminal, e.g. in a script).
 - after that it is remembered: the Pi hands out a client id and a secret, kept in ~/.config/sidecar/pair.json
   (0600; SIDECAR_PAIR_FILE moves it), one entry per host, and later runs authenticate with those and never send the
-  code again. `pair=revoke` on the Pi, or deleting /.rytm/pair.txt from the card, makes it ask for the code once more.
+  code again. `pair=revoke` on the Pi, or deleting /.sidecar/pair.txt from the card, makes it ask for the code once more.
 - cmdline.txt paircode=0 on a card turns the gate off entirely (a dev card: the engine says so loudly at boot, on
   the STATUS page and in /status).
 - the serial link is never gated: whoever has the serial header has the board, and it is the way back in if the

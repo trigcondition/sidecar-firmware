@@ -6,23 +6,34 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "device/device.h"
 #include "fx/insert.h"
 #include "fx/master.h"
 #include "fx/out.h"
 #include "fx/send_fx.h"
+#include "machines.h"
 #include "ui/remote.h"
 
 namespace insfx_pi {
 
+// 10b: both pages follow the slot the touchscreen follows (core::ui::remote_display_slot: the box whose page or display
+// report came last). Off the control core every settings reader (param, send_knob, the master's) is that slot's
+// (core/pool/pool.cpp fx_slot) and the remote_* readers too; the structures read here directly are named by it.
 void Fill(sidecar_insfx_view_t* o, const float (*peaks)[2]) {
   using namespace core::ins;
+  const int sl = core::ui::remote_display_slot();
+  const Control& control = control_of(sl);
+  const core::fx::Control& fxc = core::fx::control_of(sl);
+  const core::out::Control& oc = core::out::control_of(sl);
+  // the meters are the base box's output stage's (kernel.cpp g_Output): another slot's voices show none
+  if (sl != core::slot_of_voice(core::device::base_voice_base())) peaks = nullptr;
   sidecar_insfx_view_t v;
   memset(&v, 0, sizeof v);
   v.valid = 1;
   int t = core::ui::remote_selected_track(nullptr);
   v.track = t;
   int vi = t >= 0 ? core::ui::remote_track_voice(t) : -1;
-  v.voice = vi >= 0 && vi < kVoices ? vi : -1;
+  v.voice = vi >= 0 ? core::box_voice(vi) : -1;   // the track's voice's chain (its box's V1..V8)
   for (int c = 0; c < kChains && c < SIF_CHAINS; ++c)
     for (int s = 0; s < kSlots; ++s) {
       sidecar_insfx_slot_t& x = v.slot[c][s];
@@ -52,16 +63,15 @@ void Fill(sidecar_insfx_view_t* o, const float (*peaks)[2]) {
   for (int i = 0; i < kVoices; ++i)
     for (int b = 0; b < kBuses; ++b) v.send[i][b] = (uint8_t)send_knob(i, b);
   for (int k = 0; k < 2; ++k) {
-    const char* n = core::fx::type_name(core::fx::control.knob[k][0], k);
+    const char* n = core::fx::type_name(fxc.knob[k][0], k);
     strncpy(v.bus_fx[k], n ? n : "?", sizeof v.bus_fx[k] - 1);
-    v.bus_post[k] = core::fx::control.route == core::fx::kRouteMain ||
-                    (core::fx::control.route == core::fx::kRouteSlot && core::fx::control.knob[k][1] >= 64);
+    v.bus_post[k] = fxc.route == core::fx::kRouteMain || (fxc.route == core::fx::kRouteSlot && fxc.knob[k][1] >= 64);
   }
   v.bus_post[2] = control.route3;
   v.out_def[0] = 100, v.out_def[1] = 64, v.out_def[2] = 64;   // LEV unity, PAN centre, WID as rendered (core/fx/out.h)
   for (int i = 0; i < kVoices; ++i) {   // the OUT route
-    v.out_route[i] = core::out::control.route[i];
-    const uint8_t pv[3] = {core::out::control.lev[i], core::out::control.pan[i], core::out::control.wid[i]};
+    v.out_route[i] = oc.route[i];
+    const uint8_t pv[3] = {oc.lev[i], oc.pan[i], oc.wid[i]};
     for (int k = 0; k < 3; ++k) {
       v.out_v[i][k] = pv[k], v.out_base[i][k] = (uint8_t)core::out::param(i, k);
       core::out::value_text(k, core::out::param(i, k), v.out_val[i][k], sizeof v.out_val[i][k]);
@@ -81,13 +91,17 @@ void Fill(sidecar_insfx_view_t* o, const float (*peaks)[2]) {
 void FillMaster(sidecar_mfx_view_t* o) {
   using namespace core::ins;
   namespace m = core::master;
+  const int sl = core::ui::remote_display_slot();   // (10b: as Fill)
+  const Control& control = control_of(sl);
+  const m::Control& mc = m::control_of(sl);
   float in, out;
-  m::take_peaks(&in, &out);
+  m::take_peaks(sl, &in, &out);
   sidecar_mfx_view_t v;
   memset(&v, 0, sizeof v);
-  v.valid = 1, v.on = m::on(), v.byp = m::control.byp, v.mix = m::control.src == m::kMix, v.lev = m::control.lev;
+  v.valid = 1, v.on = m::on(sl), v.byp = mc.byp, v.mix = mc.src == m::kMix, v.lev = mc.lev;
   v.lev_def = m::kLevUnity;
-  v.rep = m::control.known, v.onmain = (unsigned char)m::stems_on_main();
+  // the stems' report is the Rytm's (its slot's master: m::rytm(); known is set there only)
+  v.rep = mc.known, v.onmain = (unsigned char)(mc.known ? m::stems_on_main() : 0);
   v.in = (unsigned char)(in >= 1.0f ? 127 : in * 127.0f), v.out = (unsigned char)(out >= 1.0f ? 127 : out * 127.0f);
   for (int i = 0; i < m::kSlots; ++i) {
     const int c = m::chain(i), s = m::slot(i), ty = control.type[c][s];
@@ -104,7 +118,7 @@ void FillMaster(sidecar_mfx_view_t* o) {
       if (ty) slot_value_text(c, s, k, param(c, s, k), x.val[k], sizeof x.val[k]);
     }
     x.mixdef = m::kMixDef;
-    x.send = m::send_type(ty), x.mix = m::control.mix[i], x.amp = ty == kAmp, x.pair = m::pair(i);
+    x.send = m::send_type(ty), x.mix = mc.mix[i], x.amp = ty == kAmp, x.pair = m::pair(i);
   }
   if (eq_on(m::kEqChain)) {
     const Labels& L = eq_labels();

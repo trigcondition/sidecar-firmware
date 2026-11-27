@@ -18,6 +18,9 @@ inline const char *refused (const char *Cmd, bool bBody, bool bOsUpdate)
 {
 	// (named Cmd as in web.cpp: pi/engine/tests/page_pair.test.mjs reads these conditions)
 	if (Cmd == 0 || Cmd[0] == 0) return "an empty command";
+	while (strncmp (Cmd, "box=", 4) == 0 && strchr (Cmd, ':'))	// box=S:<command> (core/device/device.h box_prefix): the command's own text is judged
+		Cmd = strchr (Cmd, ':') + 1;
+	if (Cmd[0] == 0) return "an empty command";
 	if (strcmp (Cmd, "wdtest") == 0) return "wdtest is the serial console's only";
 	if ((!bBody && strncmp (Cmd, "wifi=", 5) == 0) || strncmp (Cmd, "midibridge=", 11) == 0
 	    || strncmp (Cmd, "usbmidi=", 8) == 0 || strncmp (Cmd, "osupdate=", 9) == 0

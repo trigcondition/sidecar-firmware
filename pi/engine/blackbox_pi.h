@@ -1,11 +1,12 @@
 // pi/engine/blackbox_pi.h - the black box's card side (blackbox.h): core 0's loop appends the log to
-// /.rytm/blackbox.log (blackbox.1.log the file before). /status "blackbox" has its counts; GET /blackbox reads them
+// /.sidecar/blackbox.log (blackbox.1.log the file before). /status "blackbox" has its counts; GET /blackbox reads them
 // (?old=1 the one before, ?off=N from N, else the last 64 KB; the first line "SIZE FROM").
 #pragma once
 
 namespace blackbox_pi {
 void Poll (void);			// core 0's loop: starts 5 s into the boot, then writes when due (blackbox.h)
 void Flush (void);			// a planned reboot (StopAndReboot): the last lines out first
+void PanicFlush (void);			// a panic (kernel.cpp CrumbPanic): Flush, if it is safe here (core 0, no write under way)
 #ifdef SIDECAR_PI5_TESTMODE
 void TestLog (bool bMounted);		// testsecs= (kernel.cpp): the new lines into /usbtest.log, if that file exists; bMounted: testcard=1, the card is the engine's (blackbox_pi.cpp)
 #endif

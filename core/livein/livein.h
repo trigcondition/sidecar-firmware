@@ -31,10 +31,12 @@
 #pragma once
 #include <stdint.h>
 
+#include "machines.h"
+
 namespace core {
 namespace livein {
 
-constexpr int kVoices = 8;
+constexpr int kVoices = core::kVoices;   // the engine's voices (machines.h)
 constexpr int kRing = 2048;   // frames of AUDIO IN held (42 ms at 48 kHz)
 constexpr int kSlack = 24;    // a backlog over this for a whole second is cut back
 enum { kInL = 0, kInR, kInMono, kInStereo, kInputs };   // P1 INPT's zones
@@ -79,7 +81,7 @@ int latency_ms10(int vi, bool* measured);
 void render(int vi, const float* p, float* l, float* r, bool stereo, int n);
 // After the voice's INSERT chain: the guard (probe / mute gain), the limiter, the measure's clicks; the rows as
 // render_voices writes them (ring_r null: mono)
-void post(int vi, int16_t (*ring)[8], int16_t (*ring_r)[8], const int* row, int n);
+void post(int vi, int16_t (*ring)[kVoices], int16_t (*ring_r)[kVoices], const int* row, int n);
 
 struct Stats {
   uint32_t frames_in;          // frames the IN side wrote (all voices share them)

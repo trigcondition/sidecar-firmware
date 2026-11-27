@@ -9,7 +9,7 @@
 // (1026: the Rytm's own sound parameters as MIDI CC targets are gone: a CC sets the Rytm's stored value, so an LFO on
 // one changed the instrument's state. A Rytm-side SysEx modulation path may come later.)
 // Waves SINE TRI SAW+ SAW- SQR S&H RND (random, smooth) and DESIGN (16 steps drawn by the user: a value and a shape
-// each, HOLD / RAMP to the next / SMOOTH). Rate: free (0.02..20 Hz) or synced to the Rytm's MIDI clock (1/32 .. 8 bars,
+// each, HOLD / RAMP to the next / SMOOTH). Rate: free (0.02..20 Hz) or synced to its box's MIDI clock (1/32 .. 8 bars,
 // triplets and dotted; with no clock or stopped it runs on at the last tempo). Retrig: FREE, TRIG (the target's trig:
 // the voice's 0x04; FX: any trig, a voice's or a Rytm track's note), PLAY (the Rytm's Start).
 // Settings per kit (1026; the Rytm's own LFOs are per kit): /.rytm/lfo/<project>/kNNN.txt (kit 1..128, a line per
@@ -17,6 +17,11 @@
 // without its own file starts from the project's /.rytm/lfo/<project>.txt (the pre-1026 per-project file), which is
 // also what is used while the Rytm has not named a kit (a build without the kit report).
 // Everything runs on the control side (where engine_sysex runs), between blocks: tick() from the platform's loop.
+// 3(c) (option A, decided 2026-11-14): every voice slot has LFOs of its own - settings, runs, its project's and kit's
+// files in its own folder - and V1..V8 are its own box's voices. Everything below without a slot is the slot in hand's
+// (device::cur(), prj_slot()); voice_params is the voice's slot's; midi_in (the Rytm's notes) slot 0's. The clock is
+// each slot's too (3(c) step 10): its box's realtime bytes, its tempo, PLAY and position, so a synced LFO follows its own
+// box. Each slot's LFOs tick in their slot's pass of mod::tick.
 #pragma once
 #include <stdint.h>
 
@@ -78,7 +83,7 @@ struct Settings {
   uint8_t param;           // the target's parameter: P1..P16 (0..15), FX P2..P5 (0..3)
   uint8_t wave;            // Wave
   uint8_t rate;            // free: 0..127 (0.02 Hz x 1000^(rate / 127)); synced: 0..kDivs-1
-  uint8_t sync;            // 0 free, 1 the Rytm's clock
+  uint8_t sync;            // 0 free, 1 its box's clock
   uint8_t retrig;          // Retrig
   int8_t depth;            // -64..63: the swing around the base, in parameter steps
   uint8_t base;            // unused since 1026 (the Rytm's CC targets' base; kept in the file's lines)
@@ -111,7 +116,8 @@ const char* preset_name(int which);
 void tick(uint32_t us);
 void waves(uint32_t us, uint32_t dus);                  // mod::tick's source: the clock position, each LFO's offset
 mod::Tid tid_of(int target, int param);                 // an LFO target's id on the layer (0: OFF)
-void clock(uint8_t status, uint16_t spp);               // fx::clock_in's MIDI realtime / SPP (F8 FA FB FC F2)
+void clock(int slot, uint8_t status, uint16_t spp);     // fx::clock_in's MIDI realtime / SPP (F8 FA FB FC F2) of box slot
+void clock(uint8_t status, uint16_t spp);               // slot 0's (the Rytm's)
 void midi_in(uint8_t status, uint8_t d1, uint8_t d2);   // the Rytm's channel messages: its notes (an FX target's TRIG)
 void voice_params(int vi, float* p, int np, bool trig); // voice_report: the bases (mod::voice_params), a trig's retrig
 uint8_t fx_knob(int slot, int knob, uint8_t v);         // take_sendfx: knob 0..5 of FX slot reported v (mod::fx_knob)
@@ -163,14 +169,16 @@ float wave_at(const Settings& s, float ph, uint32_t seed);   // -1..1 at phase p
 float design_at(const Settings& s, float ph);
 float phase(int i);                  // the LFO's phase now, 0..1
 // The Sidecar's clock as the LFOs run on it (any core may read it: GRANULAR's ANIM): the position in 24 ppqn ticks
-// (mod 2304, locked to the Rytm's song position while it plays, else on at the last tempo) and a tick's length in us.
+// (mod 2304, locked to its box's song position while it plays, else on at the last tempo) and a tick's length in us.
 // False until tick() first ran (tests without the control loop).
-bool clock_now(float* ticks, float* tick_us);
+bool clock_now(int slot, float* ticks, float* tick_us);   // slot's clock (a voice's reader: slot_of_voice)
+bool clock_now(float* ticks, float* tick_us);             // slot 0's
 // Plugin API 3's transport (core/user/um.cpp pre_block): the clock as clock() keeps it - running (FA / FB .. FC), ticking
 // (an F8 seen), the latest tick's song position (24 ppqn since Start or an F2, -1 none) and when it came, the tempo, the
 // position tick() keeps (clock_now's), and counts of Start / Continue, Stop and song position messages since boot.
 struct ClockState { bool run, ticking; int32_t pos; uint32_t last_us; float tick_us, tp; uint32_t starts, stops, jumps; };
-void clock_state(ClockState* out);
+void clock_state(ClockState* out);             // the slot in hand's
+void clock_state(int slot, ClockState* out);
 float out(int i);                    // its wave now, -1..1
 bool active(int i);                  // on a target with a nonzero depth
 
@@ -181,6 +189,7 @@ bool command(const char* p, char* out, int cap);
 // "\"lfo\":{\"n\":26,\"pt\":1,\"kit\":K,\"full\":0,\"trk\":T,\"l\":[...]}" (K 1..128, 0 unknown; pt 1: two a track, l[i] track
 // i / 2's A or B; full: link_full; trk: the Rytm's selected track 0..12 (12 FX), -1 none named - the web follows it)
 int json(char* out, int cap);
+int json(char* out, int cap, int slot);   // slot's (/status on the Pi's core 0: names the slot, never the slot in hand)
 // The /status buffer json() writes into on the Pi (pi/engine/kernel.cpp): every LFO with its params' 16 names ("pns"),
 // sized for 26 LFOs (the owner, 2026-11: 2 per Rytm track T1..T12 and 2 for the FX track; test_param_names checks it)
 constexpr int kJsonCap = 12288;
@@ -190,7 +199,8 @@ const Stats& stats();
 void reset();                        // tests: defaults, no targets, the clock forgotten
 
 // core/bundle/rename (UX review B1): the unsaved edits due now (the next save() writes them), and whether any wait
-void save_due();
-bool dirty();
+void save_due();   // every slot's
+bool dirty();      // the slot in hand's
+bool dirty_any();  // any slot's (the idle pass's settled)
 }  // namespace lfo
 }  // namespace core

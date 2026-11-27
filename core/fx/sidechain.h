@@ -50,50 +50,62 @@ struct Bus {
   volatile uint32_t wanted;            // key rings some chain reads (bit per ring): a writer skips the others
   volatile uint32_t wanted_trig;
 };
-inline Bus g_bus;
-inline Bus& bus() { return g_bus; }
+// One bus per voice slot (two boxes: each slot's chains key from its own box's stems, AUDIO IN, voices and trigs; slot 0 on a
+// one-box build). The calls without a slot are slot 0's.
+constexpr int kBuses = 2;
+inline Bus g_bus[kBuses];
+inline Bus& bus(int s = 0) { return g_bus[(unsigned)s < (unsigned)kBuses ? s : 0]; }
 
 // ---- the writers (any core; one writer per ring)
 // One ring's frames (floats), published after they are in
-inline void write(int key, const float* x, int n) {
+inline void write(int s, int key, const float* x, int n) {
   if (key < 0 || key >= kKeys) return;
-  Bus& b = bus();
+  Bus& b = bus(s);
   const uint32_t w = b.w[key];
   float* r = b.ring[key];
   for (int i = 0; i < n; ++i) r[(w + (uint32_t)i) & (kRing - 1)] = x[i];
   b.ms[key] = now_ms();
   __atomic_store_n(&b.w[key], w + (uint32_t)n, __ATOMIC_RELEASE);
 }
-// The Overbridge IN side: n frames, channel c of frame i at f[i * stride + c]. `stem0` the first stem's channel (IN 2),
-// `ain` the AUDIO IN L / R channels (the device table: fx/out.h Device::audio_in). Only the rings a chain reads.
-inline void in_block(const int32_t* f, int n, int stride, int stem0, const uint8_t* ain) {
-  const uint32_t want = bus().wanted;
+inline void write(int key, const float* x, int n) { write(0, key, x, n); }
+// The Overbridge IN side of slot s's box: n frames, channel c of frame i at f[i * stride + c]. `stem0` the first stem's
+// channel (IN 2; -1: a box with no Rytm track stems), `ain` the AUDIO IN L / R channels (the device table: fx/out.h
+// Device::audio_in). Only the rings a chain reads.
+inline void in_block(int s, const int32_t* f, int n, int stride, int stem0, const uint8_t* ain) {
+  const uint32_t want = bus(s).wanted;
   float x[16];
   while (n > 0) {
     const int m = n < 16 ? n : 16;
     for (int k = 0; k < kStems + 2; ++k) {
-      if (!(want >> k & 1u)) continue;
+      if (!(want >> k & 1u) || (k < kStems && stem0 < 0)) continue;
       const int ch = k < kStems ? stem0 + k : ain[k - kStems];
       for (int i = 0; i < m; ++i) x[i] = (float)f[i * stride + ch] * (1.0f / 2147483648.0f);
-      write(k, x, m);
+      write(s, k, x, m);
     }
     f += m * stride, n -= m;
   }
 }
-inline void trig_track(int t) {
-  if (t >= 0 && t < kTracks && (bus().wanted_trig >> t & 1u)) __atomic_fetch_add(&bus().trig[t], 1u, __ATOMIC_RELEASE);
+inline void in_block(const int32_t* f, int n, int stride, int stem0, const uint8_t* ain) { in_block(0, f, n, stride, stem0, ain); }
+// a trig of track t of slot s's box (the Rytm's tracks: its note-out), of box voice vi (0..7) of slot s
+inline void trig_track(int s, int t) {
+  Bus& b = bus(s);
+  if (t >= 0 && t < kTracks && (b.wanted_trig >> t & 1u)) __atomic_fetch_add(&b.trig[t], 1u, __ATOMIC_RELEASE);
 }
-inline void trig_voice(int vi) {
+inline void trig_voice(int s, int vi) {
+  Bus& b = bus(s);
   vi &= 7;
-  if (bus().wanted_trig >> (kTracks + vi) & 1u) __atomic_fetch_add(&bus().trig[kTracks + vi], 1u, __ATOMIC_RELEASE);
+  if (b.wanted_trig >> (kTracks + vi) & 1u) __atomic_fetch_add(&b.trig[kTracks + vi], 1u, __ATOMIC_RELEASE);
 }
-inline bool wants_in() { return bus().wanted & ((1u << (kStems + 2)) - 1u); }
-inline bool wants_voice(int vi) { return bus().wanted >> (kStems + 2 + (vi & 7)) & 1u; }
+inline void trig_track(int t) { trig_track(0, t); }
+inline void trig_voice(int vi) { trig_voice(0, vi); }
+inline bool wants_in(int s = 0) { return bus(s).wanted & ((1u << (kStems + 2)) - 1u); }
+inline bool wants_voice(int s, int vi) { return bus(s).wanted >> (kStems + 2 + (vi & 7)) & 1u; }
+inline bool wants_voice(int vi) { return wants_voice(0, vi); }
 // The reader (the stage): the newest m frames of ring `key` into out. False (and zeros) when the ring is missing: no write
 // for kStale frames of the reader's own time (*since counts them, *last_w is the counter last seen, ~0 before the first
 // look). `late`: frames the stage is behind the ring's newest (a call longer than one chunk; m + late <= 240)
-inline bool read(int key, float* out, int m, uint32_t* last_w, uint32_t* since, int late = 0) {
-  Bus& b = bus();
+inline bool read(int s, int key, float* out, int m, uint32_t* last_w, uint32_t* since, int late = 0) {
+  Bus& b = bus(s);
   const uint32_t w = __atomic_load_n(&b.w[key], __ATOMIC_ACQUIRE);
   if (*last_w == ~0u) *last_w = w, *since = (uint32_t)kStale;   // the first look: a ring that is not seen moving is stale
   if (w != *last_w) *last_w = w, *since = 0;
@@ -106,6 +118,7 @@ inline bool read(int key, float* out, int m, uint32_t* last_w, uint32_t* since, 
   for (int i = 0; i < m; ++i) out[i] = r[(w - (uint32_t)late - (uint32_t)m + (uint32_t)i) & (kRing - 1)];
   return true;
 }
+inline bool read(int key, float* out, int m, uint32_t* last_w, uint32_t* since, int late = 0) { return read(0, key, out, m, last_w, since, late); }
 
 // ---- DUCK's key band-pass (0.5.2): the knobs' scales. KBAS (knob 4): 0 OFF, else 20 Hz .. 19.6 kHz, log (knob 1 .. 127). KWID
 // (knob 5): 0 OFF, else 0.5 .. 9.9 octaves (linear in the knob) above KBAS (above 20 Hz while KBAS is OFF)

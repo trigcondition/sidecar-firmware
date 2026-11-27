@@ -11,7 +11,7 @@ for all three sizes ("Sizes" below):
 
 **Switching:** Settings > Display > **UI style: OLED / SIDECAR / GRID**, or the console / web command `uistyle=oled|sidecar|guide`. SIDECAR has a high-contrast option, Settings > Display > **Contrast** ([High contrast](#high-contrast-sidecar-051)).
 - Applied at once, no reboot (`sidecar_ui_style`).
-- Stored as `uistyle=oled|sidecar|guide` in `/.rytm/display.txt`, with the screensaver, brightness and touch test settings.
+- Stored as `uistyle=oled|sidecar|guide` in `/.sidecar/display.txt`, with the screensaver, brightness and touch test settings.
 - **From CLASSIC:** SIDECAR took CLASSIC's id 1, so a card or cmdline.txt that says `uistyle=classic` (or `1`) comes up in SIDECAR, and the next save of the display settings writes `uistyle=sidecar`. `classic` stays accepted by the command as well. A build from before SIDECAR does not know `sidecar`, and one from before GRID does not know `guide`: they fall back to OLED, the default. **SQUARE is gone** (it was in the 0.5.1 test build only): a stored or commanded `uistyle=square` (or its number, `2`) loads as GRID, and so does the old GRID number `3`; the next save writes `uistyle=guide` (`ui_style.h`, `tests/test_ui_style.cpp`). The ids are now OLED 0, SIDECAR 1, GRID 2. **GUIDE was renamed GRID** (what the Display page and these docs show); the stored word stays `guide` (so a saved `uistyle=guide` still loads GRID and a save writes `guide`), `uistyle=grid` is accepted too. The words and the file's line are `pi/engine/ui_style.h` (`tests/test_ui_style.cpp`).
 - `uistyle=` in cmdline.txt overrides the file. It is also the only way to give the boot screen the SIDECAR look (`uistyle=sidecar` or `guide`: the logo over the wordmark on the night blue; GRID has no boot screen of its own), because the boot screen is drawn before the card is read.
 
@@ -196,7 +196,7 @@ layouts, fonts and sizes, only colours, border widths and a few treatments chang
 
 **The setting:** Settings > Display > **Contrast: Standard / High blue / High green / Viper** (a row of the SIDECAR Display page only;
 the OLED page has none), the console / web command `uicontrast=off|blue|green|viper`, stored as `uicontrast=off|blue|green|viper` in
-`/.rytm/display.txt` (default `off`; a card without the key, or a word not known, reads as `off`; the OLED theme ignores it and keeps
+`/.sidecar/display.txt` (default `off`; a card without the key, or a word not known, reads as `off`; the OLED theme ignores it and keeps
 the stored value). The status carries it (`ui_contrast`, 0 / 1 / 2 / 3 (viper), -1 not known; the numbers of the older looks keep their meaning), like `ui_look`. A change rebuilds and redraws
 the screen as a theme change does (`sidecar_theme_contrast`, then `rebuild`). The words and the file's line are
 `pi/engine/ui_contrast.h` (`tests/test_ui_contrast.cpp`). The Rytm's SIDECAR MENU does not list the theme or the OLED look, so it has no
@@ -710,7 +710,7 @@ At **1024x600** (1.6x the pixels) a full redraw costs about 1.3x (the text and k
 
 ## STAGE look and the alert grammar (UX review L1, L2)
 
-- **Display > LOOK: STUDIO / STAGE** (OLED; `uilook=studio|stage`, stored in `/.rytm/display.txt`). STUDIO is the dot
+- **Display > LOOK: STUDIO / STAGE** (OLED; `uilook=studio|stage`, stored in `/.sidecar/display.txt`). STUDIO is the dot
   look above and stays the default (the review asks for the setting, not a new default). STAGE draws every dot as its
   whole 2x2 cell (no grid lines) and lifts every grey a step (`v -> 0x30 + v x 0xD0 / 0xFF`, `sidecar_dot_look`), for a
   stage and an angle. The bold face of the review is not in STAGE yet: every layout is measured for the regular face and

@@ -14,7 +14,7 @@
 namespace chopview_pi {
 
 namespace {
-bool shows(int vi) { return vi >= 0 && vi < 8 && (core::v[vi].cp || core::chop::forced(vi)); }
+bool shows(int vi) { return vi >= 0 && vi < core::kVoices && (core::v[vi].cp || core::chop::forced(vi)); }
 uint32_t mix(uint32_t h, uint32_t x) { return (h ^ x) * 16777619u; }
 float g_mn[SCH_COLS], g_mx[SCH_COLS];
 }  // namespace

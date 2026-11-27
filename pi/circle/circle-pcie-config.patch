@@ -1,0 +1,73 @@
+diff -ruN a/include/circle/bcmpciehostbridge.h b/include/circle/bcmpciehostbridge.h
+--- a/include/circle/bcmpciehostbridge.h	2026-11-24 13:17:49.743454585 +0000
++++ b/include/circle/bcmpciehostbridge.h	2026-11-24 13:17:49.865682353 +0000
+@@ -83,6 +83,13 @@
+ 	void DumpStatus (unsigned nSlot, unsigned nFunc);
+ #endif
+ 
++	// circle-pcie-config: one config space dword (nWhere & ~3, up to 0xffc) of the root complex (nBus 0) or of the device
++	// at nSlot/nFunc behind it (nBus 1), read (~0 when there is no host bridge) or written (FALSE then); main loop only
++	static u32 ConfigRead (unsigned nBus, unsigned nSlot, unsigned nFunc, unsigned nWhere);
++	static boolean ConfigWrite (unsigned nBus, unsigned nSlot, unsigned nFunc, unsigned nWhere, u32 nValue);
++	// the offset of a capability in that config space (0: none)
++	static unsigned FindCapability (unsigned nBus, unsigned nSlot, unsigned nFunc, unsigned nCapID);
++
+ private:
+ 	int pcie_probe(void);
+ 	int pcie_setup(void);
+@@ -157,6 +164,7 @@
+ 	TPCIeMSIData		*m_msi;
+ 
+ 	static u64		 s_nDMAAddress[PCIE_BUS_NUM];
++	static CBcmPCIeHostBridge *s_pConfig;	// circle-pcie-config: the first bridge whose device was enabled
+ };
+ 
+ #endif
+diff -ruN a/lib/bcmpciehostbridge.cpp b/lib/bcmpciehostbridge.cpp
+--- a/lib/bcmpciehostbridge.cpp	2026-11-24 13:17:49.833546868 +0000
++++ b/lib/bcmpciehostbridge.cpp	2026-11-24 13:17:49.866954204 +0000
+@@ -346,7 +346,43 @@
+ 
+ boolean CBcmPCIeHostBridge::EnableDevice (u32 nClassCode, unsigned nSlot, unsigned nFunc)
+ {
+-	return !enable_device (nClassCode, nSlot, nFunc);
++	const boolean bOK = !enable_device (nClassCode, nSlot, nFunc);
++	if (bOK && s_pConfig == 0) s_pConfig = this;	// circle-pcie-config
++	return bOK;
++}
++
++// circle-pcie-config (the index register is written for a bus 1 access, as at init)
++CBcmPCIeHostBridge *CBcmPCIeHostBridge::s_pConfig = 0;
++
++u32 CBcmPCIeHostBridge::ConfigRead (unsigned nBus, unsigned nSlot, unsigned nFunc, unsigned nWhere)
++{
++	CBcmPCIeHostBridge *p = s_pConfig;
++	if (p == 0 || nBus > 1 || nSlot >= 32 || nFunc >= 8 || nWhere > 0xffc) return ~0U;
++	const uintptr conf = p->pcie_map_conf (nBus, PCI_DEVFN (nSlot, nFunc), nWhere & ~3U);
++	return conf == 0 ? ~0U : read32 (conf);
++}
++
++boolean CBcmPCIeHostBridge::ConfigWrite (unsigned nBus, unsigned nSlot, unsigned nFunc, unsigned nWhere, u32 nValue)
++{
++	CBcmPCIeHostBridge *p = s_pConfig;
++	if (p == 0 || nBus > 1 || nSlot >= 32 || nFunc >= 8 || nWhere > 0xffc) return FALSE;
++	const uintptr conf = p->pcie_map_conf (nBus, PCI_DEVFN (nSlot, nFunc), nWhere & ~3U);
++	if (conf == 0) return FALSE;
++	write32 (conf, nValue);
++	return TRUE;
++}
++
++unsigned CBcmPCIeHostBridge::FindCapability (unsigned nBus, unsigned nSlot, unsigned nFunc, unsigned nCapID)
++{
++	if (!((ConfigRead (nBus, nSlot, nFunc, 4) >> 16) & PCI_STATUS_CAP_LIST)) return 0;
++	unsigned nPtr = ConfigRead (nBus, nSlot, nFunc, PCI_CAPABILITY_LIST) & 0xfc;
++	for (unsigned n = 0; nPtr >= 0x40 && n < 48; n++)
++	{
++		const u32 nHead = ConfigRead (nBus, nSlot, nFunc, nPtr);
++		if ((nHead & 0xff) == nCapID) return nPtr;
++		nPtr = (nHead >> 8) & 0xfc;
++	}
++	return 0;
+ }
+ 
+ #if 0

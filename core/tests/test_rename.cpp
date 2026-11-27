@@ -110,7 +110,7 @@ int main() {
   // ---- the first name: no question (nothing before it)
   fixture("SHARED SET");
   name_project("SHARED SET");
-  CHECK(!strcmp(project, "SHARED SET") && rename::state() == rename::kIdle);
+  CHECK(!strcmp(prj().key, "SHARED SET") && rename::state() == rename::kIdle);
 
   // ---- renamed on the Rytm: asked; the switch waits (the old project stays)
   uint32_t asks = rename::asks();
@@ -119,45 +119,45 @@ int main() {
   CHECK(rename::state() == rename::kAsk && rename::asks() == asks + 1);
   const uint32_t id1 = project_id();
   CHECK(id1 != id0);   // the Rytm has named another project, though the switch waits for the answer: what was made for the old one is gone
-  CHECK(!strcmp(project, "SHARED SET") && !strcmp(rename::from(), "SHARED SET") && !strcmp(rename::to(), "SHARED SET 2"));
+  CHECK(!strcmp(prj().key, "SHARED SET") && !strcmp(rename::from(), "SHARED SET") && !strcmp(rename::to(), "SHARED SET 2"));
   CHECK(rename::files() == 7);   // (0.5.0: the scenes' and the XY pad's folders too)
   name_project("SHARED SET 2");   // the Rytm's repeat: still the one question
   CHECK(project_id() == id1);   // ... and a repeat changes nothing
-  CHECK(rename::state() == rename::kAsk && rename::asks() == asks + 1 && !strcmp(project, "SHARED SET"));
+  CHECK(rename::state() == rename::kAsk && rename::asks() == asks + 1 && !strcmp(prj().key, "SHARED SET"));
   // YES: every file and folder under the new key, none left under the old; then the switch
   CHECK(rename::answer(true) == 7);
-  CHECK(!strcmp(project, "SHARED SET 2") && rename::state() == rename::kIdle);
+  CHECK(!strcmp(prj().key, "SHARED SET 2") && rename::state() == rename::kIdle);
   CHECK(has_all("SHARED SET 2", "SHARED SET") && has_none("SHARED SET"));
   CHECK(!strcmp(rename::last(), "MOVED 7 TO SHARED SET 2"));
   settle();
 
   // ---- NO: a new project, nothing moved
   name_project("NEW ONE");
-  CHECK(rename::state() == rename::kAsk && !strcmp(project, "SHARED SET 2"));
+  CHECK(rename::state() == rename::kAsk && !strcmp(prj().key, "SHARED SET 2"));
   CHECK(rename::answer(false) == 0);
-  CHECK(!strcmp(project, "NEW ONE") && has_all("SHARED SET 2", "SHARED SET") && has_none("NEW ONE"));
+  CHECK(!strcmp(prj().key, "NEW ONE") && has_all("SHARED SET 2", "SHARED SET") && has_none("NEW ONE"));
   settle();
 
   // ---- no question: the new name has files of its own; the old one has none; both are one key
   fixture("JAM");
   name_project("JAM");   // NEW ONE (nothing) -> JAM
-  CHECK(rename::state() == rename::kIdle && !strcmp(project, "JAM"));
+  CHECK(rename::state() == rename::kIdle && !strcmp(prj().key, "JAM"));
   fixture("LIVE");
   name_project("LIVE");   // JAM (files) -> LIVE (files)
-  CHECK(rename::state() == rename::kIdle && !strcmp(project, "LIVE"));
+  CHECK(rename::state() == rename::kIdle && !strcmp(prj().key, "LIVE"));
   name_project("LIVE.");  // the same key ("LIVE")
-  CHECK(rename::state() == rename::kIdle && !strcmp(project, "LIVE."));
+  CHECK(rename::state() == rename::kIdle && !strcmp(prj().key, "LIVE."));
   settle();
 
   // ---- the Rytm names yet another project meanwhile, or the old one again: the question goes, nothing moved
   name_project("LIVE 2");
   CHECK(rename::state() == rename::kAsk);
   name_project("JAM");   // another (with files): switched to it, LIVE's files where they were
-  CHECK(rename::state() == rename::kIdle && !strcmp(project, "JAM") && has_all("LIVE", "LIVE"));
+  CHECK(rename::state() == rename::kIdle && !strcmp(prj().key, "JAM") && has_all("LIVE", "LIVE"));
   name_project("JAM 2");
   CHECK(rename::state() == rename::kAsk);
   name_project("JAM");   // back: no question, nothing switched
-  CHECK(rename::state() == rename::kIdle && !strcmp(project, "JAM") && has_all("JAM", "JAM") && has_none("JAM 2"));
+  CHECK(rename::state() == rename::kIdle && !strcmp(prj().key, "JAM") && has_all("JAM", "JAM") && has_none("JAM 2"));
   settle();
 
   // ---- a move that fails half way is undone: nothing lost, the switch goes on as NO
@@ -166,7 +166,7 @@ int main() {
   host_power_cut(2);   // two more changes, then the card refuses
   CHECK(rename::answer(true) == 0);
   host_power_cut(-1);
-  CHECK(!strcmp(project, "JAM 3") && !strcmp(rename::last(), "MOVE INCOMPLETE: 2 UNDER JAM 3"));   // (the undo cut too: said so)
+  CHECK(!strcmp(prj().key, "JAM 3") && !strcmp(rename::last(), "MOVE INCOMPLETE: 2 UNDER JAM 3"));   // (the undo cut too: said so)
   // the two that moved went back? (the card refused every change after the cut, the undo too): whatever moved is under
   // one of the two keys - every file is still on the card
   bool all = true;
@@ -189,7 +189,7 @@ int main() {
   CHECK(rename::state() == rename::kAsk);
   put("/.rytm/songs/JAM 4/take-009.json", "{}");   // a file under the new key meanwhile: never written over
   CHECK(rename::answer(true) == 0);
-  CHECK(!strcmp(project, "JAM 4") && has_all("JAM", "JAM") && slurp("/.rytm/songs/JAM 4/take-009.json") == "{}");
+  CHECK(!strcmp(prj().key, "JAM 4") && has_all("JAM", "JAM") && slurp("/.rytm/songs/JAM 4/take-009.json") == "{}");
   settle();
 
   // ---- with a card core: the looks and the moves are card-queue requests, none on the control core
@@ -201,7 +201,7 @@ int main() {
   uint32_t posted0 = cardq::stats().posted;
   name_project("JAM 5");
   for (int i = 0; i < 8; ++i) idle_save();   // looks posted, none run here
-  CHECK(rename::state() != rename::kAsk && !strcmp(project, "JAM"));
+  CHECK(rename::state() != rename::kAsk && !strcmp(prj().key, "JAM"));
   for (int k = 0; k < 200 && rename::state() != rename::kAsk; ++k) {
     host_card_core(0);
     while (cardq::service()) {}
@@ -210,13 +210,13 @@ int main() {
   }
   CHECK(rename::state() == rename::kAsk && rename::files() == 7);
   rename::answer(true);
-  for (int k = 0; k < 200 && strcmp(project, "JAM 5"); ++k) {
+  for (int k = 0; k < 200 && strcmp(prj().key, "JAM 5"); ++k) {
     host_card_core(0);
     while (cardq::service()) {}
     host_card_core(3);
     idle_save();
   }
-  CHECK(!strcmp(project, "JAM 5") && has_all("JAM 5", "JAM") && has_none("JAM"));
+  CHECK(!strcmp(prj().key, "JAM 5") && has_all("JAM 5", "JAM") && has_none("JAM"));
   // every look (both keys' paths) and every move went through the queue: at least the 5 moves and 10 looks
   CHECK(cardq::stats().posted - posted0 >= 15);
   for (int k = 0; k < 100000 && project_loading(); ++k) {   // the new name's RAM store fill, through the card core too
@@ -241,9 +241,9 @@ int main() {
     name_project("LFOP 2");
     CHECK(rename::state() == rename::kAsk);
     rename::answer(true);
-    for (int i = 0; i < 400 && strcmp(project, "LFOP 2"); ++i) { host_fake_time(true, (uint64_t)(i + 1) * 20000 + 9000000000ull); idle_save(); }
+    for (int i = 0; i < 400 && strcmp(prj().key, "LFOP 2"); ++i) { host_fake_time(true, (uint64_t)(i + 1) * 20000 + 9000000000ull); idle_save(); }
     host_fake_time(false, 0);
-    CHECK(!strcmp(project, "LFOP 2") && !strncmp(rename::last(), "MOVED", 5));
+    CHECK(!strcmp(prj().key, "LFOP 2") && !strncmp(rename::last(), "MOVED", 5));
     std::string l = slurp("/.rytm/lfo/LFOP 2.txt");
     CHECK(l != "<missing>" && l != "lfo LFOP" && !is_file("/.rytm/lfo/LFOP.txt"));   // the saved edit, under the new key
     settle();
@@ -261,8 +261,8 @@ int main() {
     CHECK(rename::state() == rename::kAsk);
     rename::answer(true);
     uint64_t t = 9100000000ull;
-    for (int i = 0; i < 400 && strcmp(project, "RNA 2"); ++i) host_fake_time(true, t += 20000), idle_save();
-    CHECK(!strcmp(project, "RNA 2") && !strncmp(rename::last(), "MOVED", 5) && project_loading());
+    for (int i = 0; i < 400 && strcmp(prj().key, "RNA 2"); ++i) host_fake_time(true, t += 20000), idle_save();
+    CHECK(!strcmp(prj().key, "RNA 2") && !strncmp(rename::last(), "MOVED", 5) && project_loading());
     char o[200];
     CHECK(lfo::command("lfo=2:dep:55", o, sizeof o) && lfo::dirty());
     ins::set_type(1, 0, ins::kEq);
@@ -279,7 +279,7 @@ int main() {
     settle();
     name_project("LFOP 2");   // (back where the next part expects: both names have files, no question)
     settle();
-    CHECK(!strcmp(project, "LFOP 2"));
+    CHECK(!strcmp(prj().key, "LFOP 2"));
   }
 
   // ---- final review (Minor): the Rytm changing kit while the files move (after FLUSH, before the re-key): the kit is
@@ -305,15 +305,15 @@ int main() {
     CHECK(rename::state() == rename::kAsk);
     rename::answer(true);
     for (int k = 0; k < 400 && !rename::moving(); ++k) pump(), idle_save();
-    CHECK(rename::moving() && !strcmp(project, "KMV"));
+    CHECK(rename::moving() && !strcmp(prj().key, "KMV"));
     char o[200];
     CHECK(lfo::command("lfo=3:dep:44", o, sizeof o) && lfo::dirty());
     ins::set_type(2, 0, ins::kEq);
     int kit1 = kit0 == 5 ? 6 : 5;
     lfo::kit_changed(kit1);   // (ui/remote.cpp's 2D kit message: both)
     ins::kit_changed(kit1);
-    for (int k = 0; k < 400 && strcmp(project, "KMV 2"); ++k) pump(), idle_save();
-    CHECK(!strcmp(project, "KMV 2") && !strncmp(rename::last(), "MOVED", 5));
+    for (int k = 0; k < 400 && strcmp(prj().key, "KMV 2"); ++k) pump(), idle_save();
+    CHECK(!strcmp(prj().key, "KMV 2") && !strncmp(rename::last(), "MOVED", 5));
     for (int k = 0; k < 100000 && project_loading(); ++k) pump(), idle_save();
     for (int k = 0; k < 200; ++k) pump(), idle_save();
     cardq::set_worker(false);
@@ -326,7 +326,7 @@ int main() {
     printf("  rename: a kit change while the files move is taken at the switch (its edits under the new name)\n");
     name_project("LFOP 2");
     settle();
-    CHECK(!strcmp(project, "LFOP 2"));
+    CHECK(!strcmp(prj().key, "LFOP 2"));
   }
 
   // ---- the Rytm's PROJECT page asks it: the page shown, its text (fits: check.h), YES / NO answer
@@ -345,7 +345,7 @@ int main() {
     ui::preview_sent(fb); CHECK(rui_png(rui_png_dir("RUI_PAGES", "build/rui_pages"), "project_rename_prompt.png", fb));
     uint8_t no_key[] = {0xF0, 0x7D, 0x52, 0x54, 0x31, 0x01, 0x00, 0x45, 0x01, 0xF7};
     ui::remote_sysex(no_key, sizeof no_key);
-    CHECK(rename::state() == rename::kIdle && !strcmp(project, "JAM 6") && has_all("JAM 5", "JAM"));
+    CHECK(rename::state() == rename::kIdle && !strcmp(prj().key, "JAM 6") && has_all("JAM 5", "JAM"));
   }
   printf("test_rename: ok\n");
   return 0;

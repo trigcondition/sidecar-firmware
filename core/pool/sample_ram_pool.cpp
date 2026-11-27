@@ -18,7 +18,7 @@ namespace {
 CORE_COLD bool path_of(card::Index* cards, int folder, int file, char* out, int cap) {
   if (folder <= SampleRamPool::kSlotKey) {
     int line = SampleRamPool::kSlotKey - folder;
-    if (line < 0 || line >= core::kPool || core::pool[line].path[0] != '/') return false;
+    if (line < 0 || line >= core::kPoolAll || core::pool[line].path[0] != '/') return false;
     return sniprintf(out, cap, "%s", core::pool[line].path) < cap;
   }
   card::FileRec r;

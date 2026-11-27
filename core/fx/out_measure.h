@@ -37,8 +37,10 @@ struct Result {
   bool trk;                             // the TRK phases ran
 };
 
-// control core: start (trk: the voice's track channel too, voice 0..7); stop
-void start(bool trk, int voice = 0);
+// control core: start (trk: the voice's track channel too, voice 0..7; slot: the box measured, its own output stage and
+// stream, either slot alike: decided 2026-11-26); stop
+void start(bool trk, int voice = 0, int slot = 0);
+int slot();                             // the box being (or last) measured
 void stop();
 Phase phase();
 const Result& result();

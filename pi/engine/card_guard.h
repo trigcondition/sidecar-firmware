@@ -9,10 +9,10 @@
 
 namespace cardguard {
 
-// Sidecar's folders at the root: /.rytm, /.digitakt, /.a4 and fsweb.cpp's kContent; add a folder there and here
+// Sidecar's folders at the root: /.rytm, /.sidecar, /.dt, /.a4 and fsweb.cpp's kContent; add a folder there and here
 inline const char *const *folders (unsigned *pCount)
 {
-	static const char *const k[] = {".rytm", ".digitakt", ".a4", "Bundles", "CHOP", "DX7", "GRANULAR", "JUNO", "MACHINES", "MULTISAMPLE",
+	static const char *const k[] = {".rytm", ".sidecar", ".dt", ".a4", "Bundles", "CHOP", "DX7", "GRANULAR", "JUNO", "MACHINES", "MULTISAMPLE",
 					"NAM", "PRESETS", "Plugins", "Recordings", "Samples", "WAVETABLES"};
 	*pCount = sizeof k / sizeof k[0];
 	return k;

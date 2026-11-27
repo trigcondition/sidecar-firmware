@@ -4,6 +4,8 @@
 class CSidecarGadget {   // no gadget in the test
  public:
   static CSidecarGadget* Get() { return nullptr; }
+  boolean Mirror() const { return FALSE; }
+  boolean MirrorShown() const { return FALSE; }
   void ToRytm(s32 (*)[12], const s16 (*)[8], unsigned, boolean) {}
   void FromRytmBlock(const u8*) {}
   void RytmMIDIConnected(bool) {}

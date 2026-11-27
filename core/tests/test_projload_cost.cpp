@@ -89,7 +89,7 @@ static Cost switch_cost(const char* name) {
   sx(project_msg(name));
   c.sysex_us = pi_us(timing_cpu_us() - t0);
   c.total_us = c.sysex_us;
-  for (int i = 0; i < 20000 && (strcmp(core::project, name) || core::project_loading()); ++i) {
+  for (int i = 0; i < 20000 && (strcmp(core::prj().key, name) || core::project_loading()); ++i) {
     uint64_t t = timing_cpu_us(), c3 = core::host_card_us(3);
     core::idle_save();
     uint64_t d = pi_us(timing_cpu_us() - t) + (core::host_card_us(3) - c3);
@@ -147,9 +147,9 @@ int main() {
   // PA has files of its own (a project with none, named while PB has some, makes the Rytm's rename question - rename.h)
   CHECK(system(("mkdir -p '" + g_card + "/.rytm/seq/PA' && cp '" + g_card + "/.rytm/lfo/PB.txt' '" + g_card + "/.rytm/lfo/PA.txt' && cp '" + g_card + "/.rytm/seq/PB/p000.sqp' '" + g_card + "/.rytm/seq/PA/p000.sqp'").c_str()) == 0);
   sx(project_msg("PA"));
-  for (int i = 0; i < 400 && strcmp(core::project, "PA"); ++i) pass();
+  for (int i = 0; i < 400 && strcmp(core::prj().key, "PA"); ++i) pass();
   settle();
-  CHECK(!strcmp(core::project, "PA"));
+  CHECK(!strcmp(core::prj().key, "PA"));
 
   // the first step of every load: the wanted paths (project_fill_begin), one call in one pass
   CHECK(timing_retry("project_fill_begin", [] {

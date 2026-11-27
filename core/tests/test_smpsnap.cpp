@@ -476,8 +476,8 @@ int main(int argc, char** argv) {
   setenv("CORE_POOL_RAM_MB", "64", 1);
   setenv("CORE_SAMPLE_RAM_MB", "16", 1);
   CHECK(engine_begin() && card_ok && psram && engines);
-  for (int i = 0; i < 2000 && npool < 3; ++i) idle_stream();
-  CHECK(npool == 3);
+  for (int i = 0; i < 2000 && prj().npool < 3; ++i) idle_stream();
+  CHECK(prj().npool == 3);
 
   struct T {
     const char* name;

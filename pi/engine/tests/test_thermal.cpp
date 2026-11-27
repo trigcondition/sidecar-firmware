@@ -102,6 +102,34 @@ int main ()
 		popup_text (a, b, 123456789, 1234567890);			// never past 32
 		CHECK (strlen (a) <= 32 && strlen (b) <= 32);
 	}
+	// the step-down for a Pi without cooling (step): 1200 from 74 C, 1000 from 76, the minimum from 78; up one step
+	// after 30 readings in a row at or below 70
+	{
+		Step st;
+		CHECK (!step (st, 73, 1500, 600) && st.cap_mhz == 0);
+		CHECK (step (st, 74, 1500, 600) && st.cap_mhz == 1200 && st.steps == 1);
+		CHECK (!step (st, 75, 1500, 600) && st.cap_mhz == 1200);			// no flicker between steps
+		CHECK (step (st, 76, 1500, 600) && st.cap_mhz == 1000);
+		CHECK (!step (st, 74, 1500, 600) && st.cap_mhz == 1000);			// cooling a little: stays down
+		CHECK (step (st, 78, 1500, 600) && st.cap_mhz == 600);			// the cliff, only at 78
+		CHECK (!step (st, 0, 1500, 600) && st.cap_mhz == 600);			// a failed reading: nothing
+		for (int i = 0; i < 29; i++) CHECK (!step (st, 70, 1500, 600));
+		CHECK (step (st, 70, 1500, 600) && st.cap_mhz == 1000);			// 30 s at 70: one step up
+		for (int i = 0; i < 20; i++) CHECK (!step (st, 70, 1500, 600));
+		CHECK (!step (st, 71, 1500, 600));						// one warm reading starts the count again
+		for (int i = 0; i < 29; i++) CHECK (!step (st, 69, 1500, 600));
+		CHECK (step (st, 69, 1500, 600) && st.cap_mhz == 1200);
+		for (int i = 0; i < 29; i++) CHECK (!step (st, 60, 1500, 600));
+		CHECK (step (st, 60, 1500, 600) && st.cap_mhz == 0);			// back to the setting
+		CHECK (!step (st, 60, 1500, 600) && st.cap_mhz == 0);
+		Step lo;									// a setting of 1000: 74 and 76 change nothing
+		CHECK (!step (lo, 74, 1000, 600) && !step (lo, 77, 1000, 600) && lo.cap_mhz == 0);
+		CHECK (step (lo, 78, 1000, 600) && lo.cap_mhz == 600);
+		for (int i = 0; i < 29; i++) CHECK (!step (lo, 65, 1000, 600));
+		CHECK (step (lo, 65, 1000, 600) && lo.cap_mhz == 0);			// 1000 is the setting itself: no cap
+		Step one;									// a jump straight to 77 from cool: 1000 at once
+		CHECK (step (one, 77, 1500, 600) && one.cap_mhz == 1000 && one.steps == 1);
+	}
 	puts ("thermal: PASS");
 	return 0;
 }

@@ -260,7 +260,7 @@ int main() {
     uint64_t c3 = host_card_us(3);
     link(msg({0x10, 'D', 'E', 'M', 'O', ' ', '1'}));
     CHECK(!sendfx_step() && user[1].tag == 0 && count(0x21) == 0);
-    fx::slots_load(project);
+    fx::slots_load(prj().key);
     CHECK(!sendfx_step());
     host_card_core(0);
     while (cardq::service()) {}

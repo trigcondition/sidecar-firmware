@@ -71,7 +71,7 @@ const BODY = {
   "/pair/forget": {}, "/pair/revoke": {}, "/midibridge/set": { on: "1" },
 };
 const QUERY = {
-  "/fs/ls": "?path=/", "/fs/get": "?path=/.rytm/wifi.txt", "/fs/del": "?path=/Samples/Kit/kick.wav",
+  "/fs/ls": "?path=/", "/fs/get": "?path=/.sidecar/wifi.txt", "/fs/del": "?path=/Samples/Kit/kick.wav",
   "/fs/mkdir": "?path=/Bundles", "/fs/mv": "?path=/Samples/Kit/tom.wav&to=/Samples/Kit/tom2.wav", "/fs/put": "?path=/x.bin&off=0&total=1&crc=0",
   "/bundle/zip": "?off=0&len=64", "/bundle/list": "?src=card",
 };
@@ -267,8 +267,8 @@ test("unpaired, wrong codes, pairing, and what stays open", async (t) => {
   assert.ok(readFileSync(join(card, "sidecar-paircode.txt"), "utf8").includes(code.slice(0, 4)));
 
   // ---- the two that mattered: the card's credentials are not readable without the code
-  for (const bad of ["/fs/get?path=/.rytm/wifi.txt", "/fs/get?path=/sidecar-paircode.txt", "/fs/ls?path=/.rytm",
-                     "/fs/get?path=/cmdline.txt", "/fs/get?path=/.rytm/pair.txt"]) {
+  for (const bad of ["/fs/get?path=/.sidecar/wifi.txt", "/fs/get?path=/sidecar-paircode.txt", "/fs/ls?path=/.rytm",
+                     "/fs/get?path=/cmdline.txt", "/fs/get?path=/.sidecar/pair.txt"]) {
     const { r, text } = await pi.get(bad);
     assert.equal(refusal(text).code, 401, bad);
     assert.equal(r.headers.get("x-sidecar-pair"), "required", bad);
@@ -359,7 +359,7 @@ test("unpaired, wrong codes, pairing, and what stays open", async (t) => {
   const kick = await pi.get("/fs/get?path=/Samples/Kit/kick.wav", tok);
   assert.equal(kick.r.status, 200, "a paired client reads the content folders as before");
   // ---- and the confinement holds even for a paired client: /fs/* is content, 7310 is firmware, /.rytm is neither
-  for (const p of ["/.rytm/wifi.txt", "/.rytm/pair.txt", "/config.txt", "/cmdline.txt", "/engine.img",
+  for (const p of ["/.sidecar/wifi.txt", "/.sidecar/pair.txt", "/config.txt", "/cmdline.txt", "/engine.img",
                    "/sidecar-paircode.txt", "/overlays/x.dtbo"]) {
     const g = await pi.get(`/fs/get?path=${encodeURIComponent(p)}`, tok);
     assert.match(g.text, /^404 no such path/, `paired /fs/get ${p}`);

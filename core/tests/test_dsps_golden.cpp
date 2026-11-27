@@ -130,8 +130,8 @@ static void phase(bool ram, FILE* out) {
   setenv("CORE_POOL_RAM_MB", "64", 1);
   CHECK(engine_begin() && card_ok);
   CHECK(ram == (psram != nullptr));
-  for (int i = 0; i < 4000 && npool < 2; ++i) tick();
-  CHECK(npool == 2 && pool[0].folder >= 0 && pool[1].folder >= 0);
+  for (int i = 0; i < 4000 && prj().npool < 2; ++i) tick();
+  CHECK(prj().npool == 2 && pool[0].folder >= 0 && pool[1].folder >= 0);
   for (const Case& c : kCases) fprintf(out, "%s/%s %016llx\n", ram ? "ram" : "card", c.name, (unsigned long long)play(c, ram));
 }
 

@@ -982,7 +982,7 @@ int main() {
         static device::Screen sc = {{"A", "B", "C", "D", "E", "F", "G", "H"}, ""};
         static device::Profile pf;
         pf.screen = &sc;
-        device::g_link.box = &pf;
+        device::g_links[0].box = &pf;
         g_out.clear();
         const std::vector<uint8_t> m = msg(0x49, {4, 0});
         ui::remote_sysex(m.data(), (int)m.size());
@@ -990,7 +990,7 @@ int main() {
         ui::remote_tick(t0 + 43000);
         ui::remote_sysex(m.data(), (int)m.size());
         CHECK(!sent(claim));
-        device::g_link.box = nullptr;
+        device::g_links[0].box = nullptr;
       }
       ui::remote_reset();
     }
@@ -1082,13 +1082,13 @@ int main() {
         static device::Screen sc = {{"A", "B", "C", "D", "E", "F", "G", "H"}, ""};
         static device::Profile pf;
         pf.screen = &sc;
-        device::g_link.box = &pf;
+        device::g_links[0].box = &pf;
         g_out.clear();
         const std::vector<uint8_t> m = msg(0x49, {4, 0});
         ui::remote_sysex(m.data(), (int)m.size());
         ui::remote_tick(t0 + 90000);
         CHECK(!sent(ask));
-        device::g_link.box = nullptr;
+        device::g_links[0].box = nullptr;
       }
       ui::remote_reset();
       ui::remote_going_down();
@@ -1555,7 +1555,7 @@ int main() {
     CHECK(ui::fill_page_view().undo);
     {
       std::vector<uint8_t> same = {0xF0, 0x7D, 0x52, 0x54, 0x10};   // (the project as it is now)
-      for (const char* c = project; *c; ++c) same.push_back((uint8_t)*c);
+      for (const char* c = prj().key; *c; ++c) same.push_back((uint8_t)*c);
       same.push_back(0xF7);
       send(same), send(same);
     }
@@ -1571,7 +1571,7 @@ int main() {
     pump(400);
     CHECK(ui::fill_page_view().undo);
     send({0xF0, 0x7D, 0x52, 0x54, 0x10, 'H', 'E', 'L', 'D', '2', 0xF7});
-    CHECK(!strcmp(project, "HELD"));   // (held: the project is still the old one)
+    CHECK(!strcmp(prj().key, "HELD"));   // (held: the project is still the old one)
     cmd("fill=undo");
     CHECK(!strcmp(ui::fill_page_view().note, "UNDO EXPIRED (PROJECT)"));
     writer_reset(r);

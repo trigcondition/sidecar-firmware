@@ -5,6 +5,7 @@
 #include "fmt.h"
 #if CORE_MSAMP
 #include "../msamp/cardq.h"
+#include "../device/device.h"
 #endif
 
 namespace core {
@@ -164,7 +165,7 @@ int sweep(const char* root) {
   if (fixed) log(CORE_STR("fmt: boot sweep %s: %d files"), root, fixed);
   return fixed;
 }
-int sweep_boot() { return sweep("/.rytm") + sweep("/CHOP") + sweep("/Samples"); }
+int sweep_boot() { return sweep("/.rytm") + sweep("/.sidecar") + sweep("/CHOP") + sweep("/Samples"); }
 #endif
 
 void AtomicWriter::begin(const char* path, const uint8_t* data, uint32_t len, uint32_t piece) {
@@ -253,6 +254,7 @@ char g_ptext[kPostMax];
 // 160 is well under cardq::kPathMax (192), which is where a posted path would otherwise be cut short - the longest of
 // these is "/.rytm/ins/" + a 23-character project key + "/kNNN.txt" = 43. post_end refuses anything longer.
 char g_ppath[160];
+int8_t g_plink = 0;   // the slot's box link: g_ppath is in its folder (core/device/device.h)
 uint32_t g_plen = 0, g_pstart = 0;   // g_pstart: since the slot took it (now_us), for the held count below
 uint32_t g_pat = 0;                  // when the slot's write was first wanted (now_us): g_pstart, or its queue entry's
 bool g_pbusy = false, g_pok = true;
@@ -280,6 +282,7 @@ cardq::Req g_prq;
 struct Queued {
   Queued* next;
   char path[sizeof g_ppath];
+  int8_t link;   // whose folder path is in: the same path of two boxes is two files
   char* text;
   uint32_t len;
   bool rm;       // post_remove's
@@ -296,9 +299,9 @@ void note_oldest() {
   for (const Queued* q = g_qh; q; q = q->next)
     if (q == g_qh || now - q->at > best) best = now - q->at, g_qoldest = q->at;
 }
-Queued* queued(const char* path) {   // the oldest queued write (path null), or that path's
+Queued* queued(const char* path, int link = device::cur().index) {   // the oldest queued write (path null), or that path's
   for (Queued* q = g_qh; q; q = q->next)
-    if (!path || !strcmp(q->path, path)) return q;
+    if (!path || (q->link == link && !strcmp(q->path, path))) return q;
   return nullptr;
 }
 #endif
@@ -311,8 +314,9 @@ void post_done() {
   if (!g_pok) log(CORE_STR("cannot write %s (the file before it is kept)"), g_ppath);
 }
 // the slot taken for the text in g_ptext (posted by post_step; with no card core, written by it at once)
-void take_slot(const char* path, uint32_t len, uint32_t id) {
+void take_slot(const char* path, uint32_t len, uint32_t id, int link = device::cur().index) {
   sniprintf(g_ppath, sizeof g_ppath, "%s", path);
+  g_plink = (int8_t)link;
   g_pid = id;
   g_prm = false;
   g_pdata = g_ptext;
@@ -326,7 +330,7 @@ void take_slot(const char* path, uint32_t len, uint32_t id) {
 // the slot free: the oldest queued write into it
 void take_queued() {
   Queued* q = g_qh;
-  take_slot(q->path, q->len, q->id);
+  take_slot(q->path, q->len, q->id, q->link);
   g_prm = q->rm;
   g_pat = q->at;
   if (q->len > kPostMax) g_pown = q->text, g_pdata = g_pown;   // (no copy: the slot owns the queued one)
@@ -343,6 +347,7 @@ void take_queued() {
 // the slot's write finished here: the queue never took it - run now; still waiting - taken back; running - waited for.
 // Only post_wait reaches it (a caller that waits on purpose: the rename's FLUSH), never post_step (phase 3)
 void finish_here() {
+  device::CardScope scope(g_plink);
   uint32_t s = __atomic_load_n(&g_prq.state, __ATOMIC_ACQUIRE);
   if (s == cardq::kFree && g_prm) {
     Fs fs;
@@ -416,6 +421,7 @@ bool post_queue(const char* path, const char* text, uint32_t len, uint32_t* id) 
     q->next = nullptr;
     q->at = now_us();
     sniprintf(q->path, sizeof q->path, "%s", path);
+    q->link = (int8_t)device::cur().index;
     if (g_qt) g_qt->next = q;
     else g_qh = q;
     g_qt = q;
@@ -446,6 +452,7 @@ bool post_remove(const char* path, uint32_t* id) {
     if (!q) return false;
     q->next = nullptr, q->at = now_us();
     sniprintf(q->path, sizeof q->path, "%s", path);
+    q->link = (int8_t)device::cur().index;
     if (g_qt) g_qt->next = q;
     else g_qh = q;
     g_qt = q;
@@ -469,7 +476,7 @@ bool post_step() {
   if (!g_pbusy) return false;
 #if CORE_MSAMP
   uint32_t s0 = __atomic_load_n(&g_prq.state, __ATOMIC_ACQUIRE);
-  if (!cardq::async(&g_prq, g_prm ? cardq::kRemoveReq : cardq::kAtomicReq, nullptr, g_ppath, 0, (uint8_t*)g_pdata, g_plen)) {
+  if (!cardq::async(&g_prq, g_prm ? cardq::kRemoveReq : cardq::kAtomicReq, nullptr, g_ppath, 0, (uint8_t*)g_pdata, g_plen, g_plink)) {
     // Phase 3 (2026-10-26): a write the card core has not taken after cardq's kTakeBackUs (held up: a long upload, a
     // card's own pause) stays posted. It used to be taken back and run here, but this is the control core, whose OUT
     // FIFO holds 2 ms, and the write may now be a pattern's (the RAM store queues them): a take-back was a dropout
@@ -507,7 +514,7 @@ void post_wait(const char* path) {
       if (!queued(path)) return;
       take_queued();
     }
-    if (path && strcmp(path, g_ppath) && !queued(path)) return;   // not in this reader's way
+    if (path && (strcmp(path, g_ppath) || g_plink != device::cur().index) && !queued(path)) return;   // not in this reader's way
     finish_here();
   }
 #endif
@@ -515,7 +522,7 @@ void post_wait(const char* path) {
 
 bool pending(const char* path) {
   if (!path) return false;
-  if (g_pbusy && !strcmp(g_ppath, path)) return true;   // in the slot: posted, or on the card core now
+  if (g_pbusy && g_plink == device::cur().index && !strcmp(g_ppath, path)) return true;   // in the slot: posted, or on the card core now
 #if CORE_MSAMP
   if (queued(path)) return true;
 #endif

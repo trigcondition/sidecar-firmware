@@ -17,9 +17,9 @@ extern "C" int pbkdf2_sha1 (const char *passphrase, const u8 *ssid, size_t ssid_
 using namespace wificonf;
 
 static const char From[] = "wifi";
-static const char ConfPath[] = "/.rytm/wifi.txt";	// on the card (FatFs "SD:"), through s_Fs
-static const char TryPath[] = "/.rytm/wifi.try";
-static const char SupplicantPath[] = "SD:/.rytm/wpa.conf";	// written from wifi.txt at a Wi-Fi boot (the key only)
+static const char ConfPath[] = "/.sidecar/wifi.txt";	// on the card (FatFs "SD:"), through s_Fs
+static const char TryPath[] = "/.sidecar/wifi.try";
+static const char SupplicantPath[] = "SD:/.sidecar/wpa.conf";	// written from wifi.txt at a Wi-Fi boot (the key only)
 static const char FirmwarePath[] = "SD:/firmware/";
 
 CWifi *CWifi::s_pThis = 0;
@@ -353,7 +353,7 @@ const char *CWifi::Store (const char *pSSID, unsigned nSSID, const char *pPSK, b
 	if (!bOK)
 	{
 		CLogger::Get ()->Write (From, LogError, "join: cannot write %s", ConfPath);
-		return "cannot write /.rytm/wifi.txt";
+		return "cannot write /.sidecar/wifi.txt";
 	}
 	WriteTrial (kTrying, 0);
 	m_Join = JoinRestarting;
@@ -382,7 +382,7 @@ const char *CWifi::Forget (void)
 	n.on = FALSE;
 	boolean bOK = WriteConf (&n, FALSE);
 	memset (&n, 0, sizeof n);
-	if (!bOK) return "cannot write /.rytm/wifi.txt";
+	if (!bOK) return "cannot write /.sidecar/wifi.txt";
 	char Prev[40];
 	strcpy (Prev, ConfPath);
 	strcat (Prev, ".prev");
@@ -406,7 +406,7 @@ const char *CWifi::Power (boolean bOn)
 	boolean bTrial = bOn && !m_Conf.on && has_network (&m_Conf);
 	boolean bOK = WriteConf (&n, bTrial);
 	memset (&n, 0, sizeof n);
-	if (!bOK) return "cannot write /.rytm/wifi.txt";
+	if (!bOK) return "cannot write /.sidecar/wifi.txt";
 	m_Conf.on = bOn;
 	m_bHaveConf = TRUE;
 	if (bTrial) WriteTrial (kTrying, 0);

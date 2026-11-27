@@ -29,6 +29,7 @@ core 0. DIN goes to the Rytm as `4F` and out of its MIDI port through the OS's s
 USB-A never waits: `pi/engine/midiout_q.h` holds a queue per device, one transfer in flight (`pi/circle/circle-midi-async.patch`, applied by `pi/engine/build.sh`). What cannot go is shed clock first, then values, then note-ons; note-offs last, here, in `g_AsampMidi` and on the Rytm's DIN ring. A note-off refused is tried again for 1 s. The Rytm's removal ends the USB notes. An echoed note (a DAW's thru) is dropped: `midim::echo`, 200 ms, slower loops are not caught.
 
 Held notes are in a 64-entry table; see the head of midim.h for what ends them. Non-note data has a byte budget (DIN 2400 B/s); notes never wait. Clock stays the Rytm's: its stock settings
-reach DIN and USB-C, and its realtime bytes are forwarded to USB-A while a voice sends there.
+reach DIN and USB-C, and its realtime bytes are forwarded to USB-A while a voice sends there. With two boxes (decided 2026-11-26)
+each box's clock goes to USB-A only while its own voices alone send there; while both boxes' voices send to USB-A, no clock goes.
 
 Console: `midim`. Tests: `core/tests/test_midim.cpp`, rytm-mods `tools/emu/mi_emu.py`, `sim/midim_e2e.py`.

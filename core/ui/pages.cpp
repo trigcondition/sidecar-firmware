@@ -17,7 +17,7 @@ CORE_COLD int Source::voice() const { return -1; }
 CORE_COLD int Source::code(int k) const {
   int vi = voice();
   if (vi < 0) return param(k);
-  return srclib::code_of(v[vi & 7].p[k & 15]);
+  return srclib::code_of(v[voice_wrap(vi)].p[k & 15]);
 }
 
 static inline uint32_t mix(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }

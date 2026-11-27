@@ -8,6 +8,7 @@
 #include "lib/library.h"
 #include "lib/pools.h"
 #include "lib/srclib.h"
+#include "machines.h"
 #include "msamp/msamp.h"
 #include "samp/sedit.h"
 #include "ui/remote.h"
@@ -17,7 +18,7 @@
 namespace wgview_pi {
 
 namespace {
-bool shows(int vi) { return vi >= 0 && vi < 8 && (core::v[vi].gr || core::v[vi].wt || core::v[vi].ms); }
+bool shows(int vi) { return vi >= 0 && vi < core::kVoices && (core::v[vi].gr || core::v[vi].wt || core::v[vi].ms); }
 uint32_t mix(uint32_t h, uint32_t x) { return (h ^ x) * 16777619u; }
 uint32_t fbits(float f) {
   uint32_t u;
@@ -28,14 +29,14 @@ core::gr::Viz g_z;   // ~1.2 KB, not on the stack
 // a list's machine (SAMPLES: GRANULAR, WAVETABLES: WAVETABLE, INSTRUMENTS: MULTISAMPLE) as the view reads it: entry e
 // = code e of its pool list; its loader's state (LOADING, RAM, FAILED: P4) and note, the code a voice plays
 struct Mach {
-  int (*state)(int);
+  int (*state)(int, int);   // (voice slot, entry): entry_state_in
   int (*sel)(int, int);
   const char* (*note)(int, char*, int);
 };
 const Mach kMach[core::pools::kLists] = {
-    {core::gr::entry_state, core::gr::src_entry, core::gr::entry_note},
-    {core::wt::entry_state, core::wt::src_entry, core::wt::entry_note},
-    {core::msamp::entry_state, core::msamp::src_entry, core::msamp::entry_note},
+    {core::gr::entry_state_in, core::gr::src_entry, core::gr::entry_note},
+    {core::wt::entry_state_in, core::wt::src_entry, core::wt::entry_note},
+    {core::msamp::entry_state_in, core::msamp::src_entry, core::msamp::entry_note},
 };
 int list_of(int kind) {
   return kind == WGV_GRANULAR ? core::pools::kSamples : kind == WGV_WAVETABLE ? core::pools::kTables
@@ -68,19 +69,22 @@ void fill_zones(sidecar_wg_view_t* o, int vi) {
   for (int i = 0; i < n; ++i) o->ms_keys[keys[i] >> 3 & 15] |= (unsigned char)(1u << (keys[i] & 7));
 }
 // the row holding a browser item already (one entry per hash; an input / built-in by its index), -1 none
-int row_of_item(int l, int i) {
+// The view's lists are the shown voice's box's (its voice slot; none shown: the base box's, slot 0). This is core 0:
+// device::cur() is the control core's and moves under it, so every read names its slot.
+int view_slot(int vi) { return vi >= 0 && vi < core::kVoices ? core::slot_of_voice(vi) : 0; }
+int row_of_item(int vs, int l, int i) {
   char path[core::srclib::kPath];
   if (!core::srclib::item_path(l, i, path, sizeof path)) return -1;
   int type = 0, id = 0;
   if (core::srclib::special(l, path, &type, &id)) {
     for (int c = 0; c < core::pools::kCodes; ++c) {
-      const core::pools::Entry& e = core::pools::at(l, c);
+      const core::pools::Entry& e = core::pools::at(vs, l, c);
       if (e.type == type && e.id == id) return c;
     }
     return -1;
   }
   core::lib::Ref r;
-  return core::lib::ref_for_path(path, &r) ? core::pools::find_hash(l, r) : -1;
+  return core::lib::ref_for_path(path, &r) ? core::pools::find_hash(vs, l, r) : -1;
 }
 // One bank of list l into o (the bank the view shows), its states every time (LOADING -> RAM, P3's users), the RAM,
 // SELECT UNUSED's rows while the view selects, and the list machine's browser when its folder or the list changed (racy
@@ -88,13 +92,14 @@ int row_of_item(int l, int i) {
 uint32_t fill_pool(sidecar_wg_view_t* o, int l, int vi, int p0) {
   namespace pl = core::pools;
   const Mach& m = kMach[l];
+  const int vs = view_slot(vi);
   int bank = sidecar_wgview_bank();
   bank = bank < 0 ? 0 : bank > 7 ? 7 : bank;
   uint32_t h = 2166136261u;
   o->list = l, o->bank = bank;
   for (int r = 0; r < WGV_ROWS; ++r) {
     int c = pl::code(bank, r);
-    const pl::Entry& e = pl::at(l, c);
+    const pl::Entry& e = pl::at(vs, l, c);
     int t = r == 0 ? (int)pl::kOff : (int)e.type;
     const char* nm = r == 0 ? "OFF" : t == pl::kEmpty ? "" : e.name;
     if (t != pl::kEmpty && r && !nm[0]) {   // (no display name cached: the file's)
@@ -104,23 +109,23 @@ uint32_t fill_pool(sidecar_wg_view_t* o, int l, int vi, int p0) {
     sniprintf(o->rname[r], WGV_NAME, "%s", nm);
     unsigned f = 0;
     if (r && t != pl::kEmpty) {
-      int ms = m.state(c);
+      int ms = m.state(vs, c);
       if (e.st == core::lib::kMissing) f |= WGV_RF_MISSING;
       else if (e.st == core::lib::kChanged) f |= WGV_RF_CHANGED;
       if (ms == core::gr::kStateLoading) f |= WGV_RF_LOADING;
       else if (ms == core::gr::kStateFailed) f |= WGV_RF_FAILED;
-      else if (ms == core::gr::kStateRam || pl::resident(l, c)) f |= WGV_RF_RAM;
-      if (pl::used(l, c)) f |= WGV_RF_USED;
+      else if (ms == core::gr::kStateRam || pl::resident(vs, l, c)) f |= WGV_RF_RAM;
+      if (pl::used(vs, l, c)) f |= WGV_RF_USED;
       if (pl::has_file(e) && e.ch) f |= e.ch >= 2 ? WGV_RF_ST : WGV_RF_MONO;   // docs/STEREO.md
     }
-    int u = r ? pl::users(l, c) : 0;
+    int u = r ? pl::users(vs, l, c) : 0;
     o->rtype[r] = (unsigned char)t, o->rflags[r] = (unsigned char)f, o->rusers[r] = (unsigned char)(u > 255 ? 255 : u);
     h = mix(h, (uint32_t)t | f << 8 | (uint32_t)o->rusers[r] << 16);
   }
-  h = mix(h, pl::sig(l) * 8u + (uint32_t)bank);
-  for (int k = 0; k < pl::kLists; ++k) o->count[k] = pl::count(k), h = mix(h, (uint32_t)o->count[k]);
-  o->locked = pl::locked(l);
-  sniprintf(o->lock_why, sizeof o->lock_why, "%s", o->locked ? pl::lock_why(l) : "");
+  h = mix(h, pl::sig(vs, l) * 8u + (uint32_t)bank + (uint32_t)vs * 64u);
+  for (int k = 0; k < pl::kLists; ++k) o->count[k] = pl::count(vs, k), h = mix(h, (uint32_t)o->count[k]);
+  o->locked = pl::locked(vs, l);
+  sniprintf(o->lock_why, sizeof o->lock_why, "%s", o->locked ? pl::lock_why(vs, l) : "");
   o->playing = pl::playing();
   pl::Ram ram = pl::ram();
   o->ram_known = ram.budget > 0;
@@ -129,7 +134,7 @@ uint32_t fill_pool(sidecar_wg_view_t* o, int l, int vi, int p0) {
   h = mix(h, o->ram_mb * 128u + (uint32_t)o->ram_pct);
   o->nunused = 0;
   if (sidecar_wgview_selecting()) {
-    o->nunused = pl::select_unused(l, o->unused, WGV_CODES);
+    o->nunused = pl::select_unused(vs, l, o->unused, WGV_CODES);
     for (int i = 0; i < o->nunused; ++i) h = mix(h, (uint32_t)o->unused[i]);
     h = mix(h, (uint32_t)o->nunused + 1);
   }
@@ -153,7 +158,7 @@ uint32_t fill_pool(sidecar_wg_view_t* o, int l, int vi, int p0) {
   // the browser (srclib's kind = the list's number): again when its folder / listing or the list changed
   // (the rows already holding its files only while FILES is shown: a search of the list an item)
   bool rows = sidecar_wgview_lib_shown();
-  uint32_t lg = ((core::srclib::view_gen(l) * 3u + (uint32_t)l) * 2654435761u ^ (rows ? pl::sig(l) : 0u)) * 2u + rows;
+  uint32_t lg = ((core::srclib::view_gen(l) * 3u + (uint32_t)l) * 2654435761u ^ (rows ? pl::sig(vs, l) : 0u)) * 2u + rows;
   if (lg != o->lib_gen) {
     o->lib_gen = lg;
     sniprintf(o->lib_cwd, sizeof o->lib_cwd, "%s", core::srclib::cwd(l));
@@ -165,7 +170,7 @@ uint32_t fill_pool(sidecar_wg_view_t* o, int l, int vi, int p0) {
     for (; n < WGV_LIB && core::srclib::item(l, n, &nm, &dir, nullptr); ++n) {
       sniprintf(o->lib_name[n], WGV_LNAME, "%s", nm);
       o->lib_flags[n] = (unsigned char)((dir ? WGV_LIB_DIR : 0) | (nm[0] == '@' || o->lib_cwd[0] == '@' ? WGV_LIB_VIRT : 0));
-      o->lib_row[n] = (short)(dir || !rows ? -1 : row_of_item(l, n));
+      o->lib_row[n] = (short)(dir || !rows ? -1 : row_of_item(vs, l, n));
     }
     o->lib_n = n;
   }

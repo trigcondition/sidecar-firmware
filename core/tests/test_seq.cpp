@@ -1159,7 +1159,7 @@ int main() {
     const uint8_t other[] = {0xF0, 0x7D, 0x52, 0x54, 0x10, 'O', 'T', 'H', 0xF7};
     engine_sysex(other, sizeof other);
     // UX review B1: OTH has no Sidecar files, SEQTEST some - the switch waits for the Rytm's answer; NO: a new project
-    CHECK(rename::state() == rename::kAsk && !strcmp(project, "SEQTEST") && seq::any_tracks());
+    CHECK(rename::state() == rename::kAsk && !strcmp(prj().key, "SEQTEST") && seq::any_tracks());
     rename::answer(false);
     // fix round 1: while OTH's store fills, an edit of OTH (the project the Rytm is on) is refused at once with that
     // reason - a track made a seq track, a pattern edit on a pattern switched to meanwhile - never taken and then lost
@@ -1202,11 +1202,11 @@ int main() {
     for (int i = 0; i < 1000 && fmt::post_busy(); ++i) fmt::post_step();
     direct_state({2, 0, 0x7F});
     while (seq::idle()) {}
-    CHECK(!strcmp(project, "SEQTEST") && seq::view().pattern == 0 && seq::view().locked == 0);
+    CHECK(!strcmp(prj().key, "SEQTEST") && seq::view().pattern == 0 && seq::view().locked == 0);
     const uint8_t other[] = {0xF0, 0x7D, 0x52, 0x54, 0x10, 'O', 'T', 'H', 0xF7};
     engine_sysex(other, sizeof other);
     if (rename::state() == rename::kAsk) rename::answer(false);
-    CHECK(project_loading() && !strcmp(project, "OTH"));
+    CHECK(project_loading() && !strcmp(prj().key, "OTH"));
     CHECK(seq::view().locked == 0);   // the loaded pattern is still SEQTEST's A01: editable
     int u0 = used(0);
     seq::Track* lt = seq::edit_track(0, true);
@@ -1580,7 +1580,7 @@ int main() {
   {
     const int D = 713;
     std::vector<int16_t> hist;   // BD's rendered output, by host frame
-    int16_t ring[64][8];
+    int16_t ring[64][kVoices];
     uint64_t mach[16] = {};
     CHECK(cmd("seq=cal:1").find("calibrating") != std::string::npos);
     int64_t start = (int64_t)seq::frames();
@@ -1639,6 +1639,21 @@ int main() {
     m[100] ^= 1;   // a damaged one: refused, the last good kept
     for (uint8_t c : m) rytm_dump::byte(c);
     CHECK(rytm_dump::stats().bad == 1 && rytm_dump::record(nullptr, &gen) && gen == 1);
+    {   // a stock Rytm says no 2D 02: a test's rytmpat=fetch:n asks for pattern n (a data byte; 0x80 would not pass USB MIDI)
+      const int was = rytm_dump::active_pattern();
+      char o[160];
+      g_out.clear();
+      CHECK(rytm_dump::command("rytmpat=fetch:5", o, sizeof o) && rytm_dump::active_pattern() == 5);
+      rytm_dump::tick(now_ms());
+      CHECK(rq() == 1 && g_out.back()[9] == 5);
+      for (uint8_t c : dump_of(rec, 5)) rytm_dump::byte(c);
+      CHECK(rytm_dump::command("rytmpat=fetch:128", o, sizeof o) && rytm_dump::active_pattern() == 5);
+      CHECK(rytm_dump::record(&pat, &gen) && pat == 5 && gen == 2);
+      rytm_dump::pattern_changed(was);   // (back as it was: its fetch answered, nothing left pending)
+      advance_ms(1000), rytm_dump::tick(now_ms());
+      for (uint8_t c : dump_of(rec, was < 0 ? 3 : was)) rytm_dump::byte(c);
+      CHECK(!rytm_dump::pending() || rytm_dump::stats().requests == rytm_dump::stats().answers);
+    }
     g_out.clear();
     rytm_dump::set_playing(false);
     auto tk = [] { rytm_dump::tick(now_ms()); };   // the dump's own tick: the transport as set here, not seq's
@@ -2785,7 +2800,7 @@ int main() {
     for (int way = 0; way < 2; ++way) {   // 0: back to it (install), 1: queued back (the prefetch)
       direct_state({2, 41, 0x7F});
       while (seq::idle()) {}
-      CHECK(!strcmp(project, "SEQTEST") && seq::view().pattern == 41 && seq::view().locked == 2);
+      CHECK(!strcmp(prj().key, "SEQTEST") && seq::view().pattern == 41 && seq::view().locked == 2);
       engine_sysex(other, sizeof other);
       if (rename::state() == rename::kAsk) rename::answer(false);
       CHECK(project_loading() && seq::view().locked == 2);

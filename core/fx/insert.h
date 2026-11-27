@@ -10,7 +10,7 @@
 //   ins::Engine   the DSP: allocation-free; the DELAY's lines (kLine floats a channel) are memory the platform places
 //                 (heap_buffers.h on the Pi, a static array elsewhere). A voice's chain runs on the render core that
 //                 renders the voice (render_voices, after the voice's own sound: chains of other voices are other
-//                 cores' business); the bus chains on the send FX's core (the Pi's render core 2).
+//                 cores' business); the bus chains on the send FX's core (the Pi: slot 0's render core 2, slot 1's core 1).
 //
 // TYPE ids (stable: the card's files name them, sim/protocol.py INSERT_TYPES): 0 OFF, 1 FILTER, 2 CRUSH, 3 DRIVE,
 // 4 EQ, 5 COMP, 6 DELAY, 7 TREMOLO, 8 RINGMOD, 9 AMP, 10 SAT. Params P1..P4 0..127 (labels: kLabels):
@@ -40,13 +40,18 @@
 #include <string.h>
 
 #include "fx/amp.h"
+#include "fx/fx_guard.h"
+#include "machines.h"
 #include "fx/sat_fx.h"
 #include "fx/sidechain.h"
 
 namespace core {
 namespace ins {
 
-constexpr int kVoices = 8, kSlots = 2, kParams = 4, kBuses = 3, kMasters = 2;
+// The chains are one box's (its voices V1..V8, its buses and master): kVoices here is kBoxVoices. An engine voice plays
+// through its box voice's chain (voice_out: box_voice(vi)) in its own slot's set: slot 0's (control, engine(0)) or slot
+// 1's (control1, engine(1)), alone or beside a Rytm.
+constexpr int kVoices = kBoxVoices, kSlots = 2, kParams = 4, kBuses = 3, kMasters = 2;
 constexpr int kChains = kVoices + kBuses + kMasters;   // 0..7 the voices' chains (mono), 8..10 the buses', 11..12 the master's (stereo)
 constexpr int kInsJsonCap = 12288;           // the /status "ins" buffer (pi/engine/bridge.h): json()'s worst case + the stream budget must fit
 constexpr int kBus0 = kVoices;              // chain of bus b (0..2): kBus0 + b
@@ -80,7 +85,7 @@ constexpr uint8_t kEqFlat(int k) { return k >= 2 ? (uint8_t)64 : (uint8_t)0; }
 
 // The master's send TYPE slots (kMChorus..): chain c's slot s, its smoothed params p, x / r -> y0 / y1 (master.cpp; null
 // without one: the slot passes dry). As amp::run, on the render core that runs the chain.
-extern void (*send_insert)(int c, int s, const float* p, const float* x, const float* r, float* y0, float* y1, int m);
+extern void (*send_insert)(int box, int c, int s, const float* p, const float* x, const float* r, float* y0, float* y1, int m);
 
 struct Control {
   volatile uint8_t type[kChains][kSlots];
@@ -89,6 +94,10 @@ struct Control {
   volatile uint8_t route3;                           // bus 3: 0 PRE (host -> Rytm 2/3), 1 POST (0/1)
   volatile int8_t peq[kChains][kEqParams];           // ins1112 the POST EQ as it plays (eq_store: 0 = does nothing)
   volatile uint8_t mpair[kMasters][kSlots];          // the master's AMP slots: 1 an L/R pair (amp.h), 0 one instance on (L + R) / 2
+  // CPU admission (core/device/admit.h ins_fits, decided 2026-11-22; the master's chains too since 2026-11-23, on core 3):
+  // 1 the slot's type was not admitted when it was set, or was shed (no room on its render core): it plays dry (bypassed)
+  // and shows NO CPU until it is (set_cpu_check). 0: plays. The buses' chains are never refused
+  volatile uint8_t refused[kChains][kSlots];
   // 0.5.0 SIDECHAIN (sidechain.h): each chain's stage between its slots and its POST EQ. mode 0 = off (zeroed: no stage)
   volatile uint8_t scmode[kChains];                  // sc::Mode
   volatile uint8_t scsrc[kChains];                   // sc::Src
@@ -96,6 +105,25 @@ struct Control {
   volatile uint8_t scmon[kChains];                   // 0.5.2 MON: DUCK plays its filtered key instead of the chain (never saved)
 };
 extern Control control;
+// Slot 1's: its voices 8..15 play through chains of their own, alone or beside a Rytm (every chain OFF until slot 1's
+// settings are loaded into it); `control` is slot 0's (the Rytm's). Each holds all of its slot's chains: its voices', its
+// buses' and its master's (3(d): each box its own send FX and master chain). control_of(slot of a voice).
+extern Control control1;
+inline Control& control_of(int slot) { return slot ? control1 : control; }
+// 3(c), 3(d): the settings (set_type .. mod_offset, the card, the console) are the slot in hand's, every chain (its own
+// control_of). slot_fn names the slot in hand (core/pool/pool.cpp sets it to prj_slot; null: 0, the DSP benches).
+// ctl(c): what chain c of the slot in hand plays (the pages). slot_in_hand: that slot (master.cpp's settings follow it).
+extern int (*slot_fn)();
+// rytm_fn(s): slot s's state is a Rytm's (its send FX are its kit's 0x20s, not SFX lines: either slot, two Rytms).
+// core/pool/pool.cpp sets it to device::rytm_state_at; null: slot 0 is the Rytm's and no other slot is (the DSP benches)
+extern bool (*rytm_fn)(int);
+inline const Control& ctl(int) {
+  int sl = slot_fn ? slot_fn() : 0;
+  return control_of(sl > 0 && sl < kVoiceSlots ? sl : 0);
+}
+int slot_in_hand();
+// AMP plays on every box's voice and master chains (decided 2026-11-26: slot 0 and slot 1 the same; amp.h keys its state by
+// box and chain).
 
 // ---- small DSP helpers (no tables; the Pi's hosted side has libm)
 inline float flush(float x) { return (x > -1e-20f && x < 1e-20f) ? 0.0f : x; }
@@ -275,9 +303,11 @@ struct Sc {
 
 class Engine {
  public:
-  explicit Engine(float sample_rate = 48000.0f) : sr_(sample_rate) {
+  explicit Engine(float sample_rate = 48000.0f, int box = 0) : sr_(sample_rate), box_(box) {
     for (int c = 0; c < kChains; ++c) ScClear(sc_[c]);
   }
+  int Box() const { return box_; }   // the slot whose chains these are (send_insert's master and bus rooms are its)
+  void SetAmp(bool on) { amp_ = on; }   // AMP plays on these chains (else an AMP slot is dry)
   // The DELAY lines: kLines x kLine floats (zeroed), or null (DELAY plays dry). Before any Process.
   void Place(float (*lines)[kLine]) {
     int k = 0;
@@ -301,7 +331,10 @@ class Engine {
   // Chain c runs or fades (anything to do): a type set, a fade not yet at dry, or a post EQ set or still releasing
   bool Active(int c, const Control& k) const {
     for (int s = 0; s < kSlots; ++s)
-      if (k.type[c][s] || slot_[c][s].cur || slot_[c][s].wet > 0.0f) return true;
+      if ((k.type[c][s] && (amp_ || k.type[c][s] != kAmp) && !k.refused[c][s] && !fx::guard::ins_muted(box_, c, s)) ||
+          slot_[c][s].cur ||
+          slot_[c][s].wet > 0.0f)
+        return true;
     return peq_set(k, c) || !peq_[c].idle || k.scmode[c] || !sc_[c].idle;   // ins1112; 0.5.0 SIDECHAIN
   }
   // A voice's chain, mono, in place (n any; processed in kChunk pieces)
@@ -354,15 +387,26 @@ class Engine {
 
  private:
   // one slot over m <= kChunk frames: L in x, R in r (null: mono)
+  // (the measured guard, fx_guard.h: a running slot's time on its core; a slot it muted fades out like a refused one)
   void Run(int c, int s, float* x, float* r, int m, const Control& k) {
     Slot& o = slot_[c][s];
-    const int want = k.type[c][s] < kAllTypes ? k.type[c][s] : kOff;
+    const int gu = fx::guard::ins_unit(box_, c, s);
+    const int want = k.type[c][s] < kAllTypes && (amp_ || k.type[c][s] != kAmp) && !k.refused[c][s] && !fx::guard::muted(gu)
+                         ? k.type[c][s]
+                         : kOff;   // (no AMP: dry; not admitted: dry, CPU admission; muted for its measured time: dry)
     if (o.cur == kOff && want == kOff && o.wet <= 0.0f) return;   // off (the usual case): nothing
-    const float step = (float)m / kFadeFrames;
+    const uint32_t t0 = fx::guard::stamp();
+    // (muted by a late block: out over 1 ms, guard::kShortFadeFrames, as the slot still costs its time on a late core)
+    RunSlot(o, c, s, want, x, r, m, k, want == kOff && fx::guard::short_fade(gu) ? fx::guard::kShortFadeFrames : kFadeFrames);
+    if (const uint32_t sl = fx::guard::slow_us(gu)) fx::guard::spin_us(sl);   // (a test's slow effect: fxguard=slow:)
+    fx::guard::note(gu, fx::guard::stamp() - t0, m);
+  }
+  void RunSlot(Slot& o, int c, int s, int want, float* x, float* r, int m, const Control& k, int fade = kFadeFrames) {
+    const float step = (float)m / fade;
     if (want != o.cur && o.wet <= 0.0f) {   // faded out (or off): the new effect from clean
       __atomic_store_n(&o.cur, (uint8_t)want, __ATOMIC_RELEASE);
       o.fresh = true;
-      if (want == kAmp) amp::fresh(c, s);
+      if (want == kAmp) amp::fresh(box_, c, s);
       o.d[0].Clear(), o.d[1].Clear();
       if (want == kDelay) o.d[0].ClearLine(), o.d[1].ClearLine();
       o.key = -1.0f;
@@ -384,9 +428,9 @@ class Engine {
     float y[2][kChunk];
     o.feed0 = w0, o.feed1 = w1;
     if (o.cur == kAmp) {
-      amp::run(c, s, o.sp, x, r, y[0], y[1], m);   // mono: (L + R) / 2 onto both sides
+      amp::run(box_, c, s, o.sp, x, r, y[0], y[1], m);   // mono: (L + R) / 2 onto both sides (this box's own rows)
     } else if (o.cur >= kTypes && send_insert) {
-      send_insert(c, s, o.sp, x, r, y[0], y[1], m);   // a master slot's send TYPE (core/fx/master.h)
+      send_insert(box_, c, s, o.sp, x, r, y[0], y[1], m);   // a master slot's send TYPE (core/fx/master.h), this box's
     } else {
       Effect(o, 0, x, y[0], m, c >= kBus0 || r ? 0 : -1);
       if (r) Effect(o, 1, r, y[1], m, 1);
@@ -454,11 +498,11 @@ class Engine {
     float kb[kChunk];
     bool live = false;
     if (key >= 0) {
-      live = sc::read(key, kb, m, &o.last_w, &o.since, late < 224 ? late : 224);
+      live = sc::read(box_, key, kb, m, &o.last_w, &o.since, late < 224 ? late : 224);
       if (live && src == sc::kAinLR) {   // L + R: the mean (the R ring's own freshness is not asked: L's is)
         float kr[kChunk];
         uint32_t lw = 0, sn = 0;
-        if (sc::read(key + 1, kr, m, &lw, &sn, late < 224 ? late : 224))
+        if (sc::read(box_, key + 1, kr, m, &lw, &sn, late < 224 ? late : 224))
           for (int i = 0; i < m; ++i) kb[i] = 0.5f * (kb[i] + kr[i]);
       }
     }
@@ -485,7 +529,7 @@ class Engine {
       const int tg = sc::trig_of(src);
       int fire = -1;   // the frame a trig starts on (a source's trig: this chunk's first; AUDIO IN's onset: the frame itself)
       if (tg >= 0) {
-        const uint32_t cnt = __atomic_load_n(&sc::bus().trig[tg], __ATOMIC_ACQUIRE);
+        const uint32_t cnt = __atomic_load_n(&sc::bus(box_).trig[tg], __ATOMIC_ACQUIRE);
         if (!o.trig_seen) o.last_trig = cnt, o.trig_seen = true;   // what came before the stage engaged is not a trig
         else if (cnt != o.last_trig) {
           o.last_trig = cnt;
@@ -970,6 +1014,8 @@ class Engine {
   Sc sc_[kChains];          // 0.5.0: each chain's SIDECHAIN stage
   bool st_[kChains] = {};   // a voice chain ran in stereo last
   float sr_;
+  int box_ = 0;
+  bool amp_ = true;         // AMP plays (SetAmp: false plays an AMP slot dry; every box's chains play it, amp.h)
   uint32_t faults_ = 0;
 };
 
@@ -993,6 +1039,7 @@ int eq_param(int c, int k);     // the knob as set
 int eq_playing(int c, int k);   // the knob as it plays (the LFO's offset on top)
 void eq_mod_offset(int c, int k, int off);   // -127..127, on the knob (core/mod kIns params 8..11: E1..E4)
 bool eq_on(int c);              // chain c's post EQ is off its flat defaults
+bool eq_on_in(int slot, int c);  // ... slot `slot`'s chain c (any core)
 // sfx-basewidth (0.5.0): HPF and LPF as BASE / WIDTH, the Elektron delay filter's way (Digitone, Analog Four): BASE is the
 // high-pass's corner (HPF = BASE), WIDTH how far above it the low-pass sits, in the same steps (LPF = 127 - BASE - WIDTH,
 // 0 = off once BASE + WIDTH >= 127; the LPF's scale is the HPF's within 0.03 octave). BASE 0 / WIDTH 127 = both off.
@@ -1040,6 +1087,8 @@ void set_param(int c, int s, int k, int v);
 void set_send(int vi, int bus, int v);       // voice vi -> bus 0..2
 void set_route3(int post);                   // bus 3: 0 PRE, 1 POST
 int param(int c, int s, int k);              // the knob (0..127)
+void set_param_in(int slot, int c, int s, int k, int v);   // the same, slot's (not the slot in hand's: amp.cpp's own step)
+int param_in(int slot, int c, int s, int k);
 // seq-ux p-locks (core/seq/seq.cpp): a step's lock of voice chain vi's slot s param k in place of the knob (v 0..127),
 // -1 the knob again
 void lock(int vi, int s, int k, int v);
@@ -1055,22 +1104,29 @@ bool any_on();                               // a chain has a TYPE
 void touch();                                // the settings changed (the card file written a second later): OUT's
 
 // ---- the DSP hooks
-// render_voices (voices.cpp), after voice vi's own sound, before the CC 120 ramp: rows row[0..n-1] of ring column vi
-// through the voice's chain (int16 in, float inside, the poly voices' soft limiter at the end); nothing when the
+// render_voices (voices.cpp), after engine voice vi's own sound, before the CC 120 ramp: rows row[0..n-1] of ring
+// column vi (the engine's block, core::kVoices wide) through its box voice's chain (box_voice(vi)) (int16 in, float inside, the poly voices' soft limiter at the end); nothing when the
 // chain is off. ring_r: the voice renders a stereo pair (OUT PRE / POST): its R in ring_r's column, the chain in
 // stereo. The render core that renders vi.
-void voice_out(int vi, int16_t (*ring)[kVoices], const int* row, int n, int16_t (*ring_r)[kVoices] = nullptr);
+// slot: the voice's (slot_of_voice), whose chains it plays through (engine(slot), control_of(slot))
+void voice_out(int vi, int16_t (*ring)[core::kVoices], const int* row, int n, int16_t (*ring_r)[core::kVoices] = nullptr,
+               int slot = 0);
 // The voices' sends into the buses (the Pi's OUT fill, core 0: the voices as rendered, after their chains): out[i][b]
 // = sum over v of V[i][v] x send[v][b]^2 (ramped per block), full scale 1.0
 void voice_sends(const int16_t (*v)[kVoices], int n, float (*out)[kBuses]);
 bool sends_on();                             // a voice sends to a bus (else voice_sends writes zeros)
+// ... of box `box`'s voices with its sends (control_of(box)), its own ramps (phase 3(d): each box its send FX)
+void voice_sends(int box, const int16_t (*v)[kVoices], int n, float (*out)[kBuses]);
+bool sends_on(int box);
 // Bus 3 (the send FX's core, after SendFx::Process): its send mix in[n] (mono) through its chain onto pre / post (the
 // pair route3 names; soft-limited as the send FX's pairs). bus3_on: anything to do (a send and a TYPE, or its tail).
 // mono (optional): the chain's output, (L + R) / 2, before the limit (the Pi's spectrum); untouched while it is off
 void bus3(const float* in, int n, float (*pre)[2], float (*post)[2], float* mono = nullptr);
 bool bus3_on();
-Engine& engine();
-// The DELAY lines: on CORE_HEAP_BUFFERS ports placed by heap_buffers_place (voices.cpp), else a static array.
+void bus3(int box, const float* in, int n, float (*pre)[2], float (*post)[2], float* mono = nullptr);   // box's bus 3 (engine(box))
+bool bus3_on(int box);
+Engine& engine(int slot = 0);   // slot 0's chains (with the buses and the master), or slot 1's
+// The DELAY lines (slot 1's after slot 0's): on CORE_HEAP_BUFFERS ports placed by heap_buffers_place (voices.cpp), else a static array.
 unsigned long heap_bytes();
 void heap_place(void* mem);
 
@@ -1091,9 +1147,13 @@ void rekey(const char* name);   // as lfo::rekey: the settings in memory are nam
 #endif
 // insert.cpp's side for the card half: the edits since the last save (since: the last one's ms), saved, due now; every
 // chain off, no sends, no locks; card_forget: the card half's kit forgotten (tests)
-bool settings_dirty(uint32_t* since);
+bool settings_dirty(uint32_t* since);   // the slot in hand's
+bool settings_dirty_any();              // any slot's (the idle pass's settled)
 void settings_clean();
-void settings_due();
+void settings_due();                    // every slot's
+// an AMP slot's capture by name (the INSERT file's AMP line): the slot in hand's own AMP rows (amp.h: every box's chains)
+void want_amp(int c, int s, const char* file);
+const char* amp_file(int c, int s);
 void set_kit(int kit);
 void clear();
 void card_forget();
@@ -1102,7 +1162,19 @@ void card_forget();
 // "ins=b3:route:pre|post", "ins=reset"; the answer in out. False: not an ins command.
 bool command(const char* p, char* out, int cap);
 int json(char* out, int cap);                // "\"ins\":{...}" (docs/INSERT-FX.md)
-struct Stats { uint32_t sets, locks, lfo_sets, saves, loads, voice_blocks, bus_blocks; };
+// CPU admission of the voice slots' types (decided 2026-11-22; core/device/admit.h ins_fits): a type is admitted when it is set
+// (set_type), not reserved per voice at attach. The check (device.cpp sets it; null, the default: every type plays): may box
+// slot `box`'s voice chain c, slot s play type t beside what plays now? OFF and AMP (amp.h admits its own) always may. A type
+// refused plays dry with NO CPU (Control::refused); regrant() admits what fits again (a box left, a slot went OFF), each
+// idle pass, never refusing one that plays. Control core, never per sample.
+void set_cpu_check(bool (*fits)(int box, int c, int s, int t));
+int regrant();                               // the refused slots now admitted
+// Shed for CPU (decided 2026-11-22: the clock lowered for heat): box slot box's voice chain c, slot s plays dry and shows
+// NO CPU, as if refused, until regrant() finds room. false: OFF, AMP (amp::shed) or already refused.
+bool shed(int box, int c, int s);   // (a voice or master chain)
+bool refused(int c, int s);                  // the slot in hand's voice slot plays dry for CPU (the pages: NO CPU)
+int refused_count(int box);                  // box slot's voice slots set but refused now (/status admit insRefused)
+struct Stats { uint32_t sets, locks, lfo_sets, saves, loads, voice_blocks, bus_blocks, refused; };
 const Stats& stats();
 void reset();                                // tests: every chain off, sends 0, the engine cleared
 

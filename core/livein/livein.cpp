@@ -7,6 +7,7 @@
 
 #include "fx/out.h"
 #include "machines.h"
+#include "device/device.h"   // voice_in: a console voice V is the slot in hand's box voice (box=S: prefix)
 #include "platform.h"
 #include "voices.h"
 
@@ -202,9 +203,9 @@ bool wanted() {
 }
 
 // ---- the control core
-CORE_COLD bool forced(int vi) { return g_force[vi & 7]; }
+CORE_COLD bool forced(int vi) { return g_force[voice_wrap(vi)]; }
 CORE_COLD void force(int vi, bool on) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (g_force[vi] == on) return;
   g_force[vi] = on;
 #if CORE_MSAMP
@@ -218,14 +219,14 @@ CORE_COLD void force(int vi, bool on) {
 #endif
   silence(vi);
 }
-CORE_COLD void trig(int vi) { __atomic_fetch_add(&g_trig[vi & 7], 1u, __ATOMIC_RELEASE); }
-CORE_COLD void release(int vi) { __atomic_fetch_add(&g_off[vi & 7], 1u, __ATOMIC_RELEASE); }
-CORE_COLD void silence(int vi) { __atomic_fetch_add(&g_reset[vi & 7], 1u, __ATOMIC_RELEASE); }
+CORE_COLD void trig(int vi) { __atomic_fetch_add(&g_trig[voice_wrap(vi)], 1u, __ATOMIC_RELEASE); }
+CORE_COLD void release(int vi) { __atomic_fetch_add(&g_off[voice_wrap(vi)], 1u, __ATOMIC_RELEASE); }
+CORE_COLD void silence(int vi) { __atomic_fetch_add(&g_reset[voice_wrap(vi)], 1u, __ATOMIC_RELEASE); }
 CORE_COLD void set_fifo(int frames) { g_fifo = frames < 0 ? 0 : frames > 4096 ? 4096 : frames; }
 CORE_COLD int fifo() { return g_fifo; }
 
 CORE_COLD int latency_ms10(int vi, bool* measured) {
-  const Pub& u = pub[vi & 7];
+  const Pub& u = pub[voice_wrap(vi)];
   int32_t m = u.measured;
   if (measured) *measured = m >= 0;
   int frames = m >= 0 ? m : out::device().loop_frames + g_fifo + (int)u.backlog;
@@ -233,7 +234,7 @@ CORE_COLD int latency_ms10(int vi, bool* measured) {
 }
 
 CORE_COLD Stats stats(int vi) {
-  const Pub& u = pub[vi & 7];
+  const Pub& u = pub[voice_wrap(vi)];
   Stats s = {};
   s.frames_in = g_w;
   s.blocks = u.blocks, s.underruns = u.underruns, s.skips = u.skips, s.limited = u.limited, s.probes = u.probes;
@@ -311,7 +312,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       return true;
     }
     bool on = strcmp(a + 7, ":off") != 0;
-    force(vi, on);
+    force(device::voice_in((uint8_t)vi), on);   // the slot in hand's box voice vi (box=S: on the console)
     sniprintf(out, cap, "livein: voice %d %s", vi, on ? "plays LIVE IN (AUDIO IN through its INSERT chain and route)"
                                                      : "plays its own machine");
     return true;
@@ -347,7 +348,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     sniprintf(out, cap,
               "livein: measuring voice %d's round trip: 5 clicks over 3 s on the voice (its own sound muted meanwhile); "
               "the device's main out must reach its AUDIO IN (a cable)%s; `livein` shows the result",
-              vi, out::control.route[vi] == out::kTrk ? " - TRK: the track's AMP must be open (OUT POST is simpler)" : "");
+              vi, out::control_of(slot_of_voice(vi)).route[box_voice(vi)] == out::kTrk ? " - TRK: the track's AMP must be open (OUT POST is simpler)" : "");
     return true;
   }
   if (a[0]) {
@@ -539,7 +540,7 @@ static inline float click(int k) {
   return 0.355f * sinf(6.2831853f * 1000.0f * (float)k / kSr + 0.3f) * 0.7f * 32767.0f / kVoiceGain;
 }
 
-void post(int vi, int16_t (*ring)[8], int16_t (*ring_r)[8], const int* row, int n) {
+void post(int vi, int16_t (*ring)[kVoices], int16_t (*ring_r)[kVoices], const int* row, int n) {
   R& s = r[vi];
   Pub& u = pub[vi];
   if (n > kMaxN) n = kMaxN;

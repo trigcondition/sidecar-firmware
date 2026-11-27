@@ -98,7 +98,7 @@ function rig(opts = {}) {
   await assert.rejects(link.del("/Samples/Folder"), /not empty/);
   await link.del("/Samples/Folder/renamed.bin");
   await link.del("/Samples/Folder");
-  await assert.rejects(link.del("/.rytm/env"), /protected/);
+  await assert.rejects(link.del("/.sidecar/env"), /protected/);
   await assert.rejects(link.upload("f", "/.rytm/x", data), /protected/);
   dev.transport = true;
   await assert.rejects(link.mkdir("/X"), /STOP TO WRITE/);

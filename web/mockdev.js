@@ -54,7 +54,7 @@ export class MockDevice {
     file("/Samples/Snares/SD Crack.wav", noise(61210, 3));
     file("/Samples/Loops/Break 120bpm.wav", noise(1411244, 4));
     file("/PRESETS/rytm.sine_test/Soft.txt", new TextEncoder().encode("P1 40\nP2 64\n"));
-    file("/.rytm/env", new TextEncoder().encode("hash=0123456789abcdef\nversion=4\n"));
+    file("/.sidecar/env", new TextEncoder().encode("hash=0123456789abcdef\nversion=4\n"));
     file("/.rytm/slots/MYPROJECT.txt", new TextEncoder().encode("U1 rytm.sine_test 1.0.0\n"));
     file("/Notes für Sidecar.txt", new TextEncoder().encode("ünïcode name\n"));
     this.store = new Map();
@@ -314,14 +314,14 @@ export class MockDevice {
     const X = this.xfer;
     const up = (x, o) => this.j({ t: "up", x, ...o });
     const fs = (o, path, why) => this.j({ t: "fs", op: o, st: why ? "err" : "ok", p: path, ...(why ? { why } : {}) });
-    const prot = (q) => q === "/" || q === "/.rytm" || q.startsWith("/.rytm/") || q === "/Samples";
+    const prot = (q) => q === "/" || q === "/.rytm" || q.startsWith("/.rytm/") || q === "/.sidecar" || q.startsWith("/.sidecar/") || q === "/Samples";
     if (op === "o") {
       const kind = String.fromCharCode(p[1]), id = p[2], size = dv.getUint32(3, true), crc = dv.getUint32(7, true), path = str(11);
       if (X && X.kind === kind && X.id === id && X.size === size && X.crc === crc) return up(id, { st: "open", off: X.off, max: 1024, resume: true });
       this.xfer = null;
       if (this.transport) return up(id, { st: "err", why: "STOP TO WRITE: the transport runs" });
       if (kind === "f") {
-        if (prot(path) || path.startsWith("/.rytm/")) return up(id, { st: "err", why: "protected (the engine's own files)" });
+        if (prot(path) || path.startsWith("/.rytm/") || path.startsWith("/.sidecar/")) return up(id, { st: "err", why: "protected (the engine's own files)" });
         const dir = path.replace(/\/[^/]*$/, "") || "/";
         if (!this.fs.get(dir)?.dir) return up(id, { st: "err", why: "cannot create the file (folder missing?)" });
       } else if (kind === "p") {

@@ -2,7 +2,7 @@
 // and the DSP SAMPLE reports it leads to must not hold up the audio. The SysEx handlers run on the Pi's control core
 // (core 3, ToCore in pi/engine/cores.cpp), which renders a block only between its passes (the FIFO: 2 ms); measured on
 // the device (/status slowSx, build 0db9a36): 0D (a folder's listing) 1.2 ms, 0F (LOAD TO PROJ) 2.9-7.1 ms, 03 (a DSP
-// SAMPLE report) 2.7-4.6 ms - each one card read of /.rytm/files.bin per file record (card::Index::file), many per
+// SAMPLE report) 2.7-4.6 ms - each one card read of /.sidecar/files.bin per file record (card::Index::file), many per
 // message. Card time is the host's card model (core/host/core_port.h host_card_model), charged to the core that runs
 // it; the card core (core 0) is the test calling cardq::service() between the handlers.
 //
@@ -70,7 +70,7 @@ static std::vector<uint8_t> report(int vb, std::vector<int> p) {   // a 0x03 PAR
 }
 static void ready() {   // the project's pool lists read (the control core's steps; their card work on the card core)
   char k[kKeyMax];
-  project_key(project, k, sizeof k);
+  project_key(prj().key, k, sizeof k);
   for (int i = 0; i < 20000 && (!pools::ready() || strcmp(pools::project(), k) || pools::saving()); ++i) {
     pools::step();
     card_core();
@@ -135,13 +135,13 @@ int main() {
   ready();
   pool_sync();
   card_core();
-  CHECK(npool == 1 && !strcmp(pool[0].path, "Drums/hit150.wav") && pool[0].folder == drums && pool[0].file == 150);
+  CHECK(prj().npool == 1 && !strcmp(pool[0].path, "Drums/hit150.wav") && pool[0].folder == drums && pool[0].file == 150);
   CHECK(!g_out.empty() && g_out.back()[4] == 0x14);
   uint64_t a1 = handle(msg({0x0F, (uint8_t)(drums >> 7), (uint8_t)(drums & 127), 1, 199 - 128}));   // a second: A002
   ready();
   pool_sync();
   card_core();
-  CHECK(npool == 2 && pool[1].file == 199);
+  CHECK(prj().npool == 2 && pool[1].file == 199);
   // 13: the pool table
   g_out.clear();
   uint64_t p0 = handle(msg({0x13}));

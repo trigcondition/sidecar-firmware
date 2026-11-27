@@ -61,7 +61,7 @@ const char* neon_bench(unsigned row, uint64_t* c, uint64_t* n) {
     g_res.Prepare(0.01f, 0.4f, 0.5f, 0.6f);
   }
   using namespace core::simd;
-  static int16_t ring[12][8];
+  static int16_t ring[12][core::kVoices];   // the render ring (simd.h clip_rows: kVoices columns)
   static int rows[12] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
   const float f[3] = {0.01f, 0.02f, 0.03f}, a[3] = {1.0f, 0.5f, 0.3f};
   float fb[2] = {0, 0};

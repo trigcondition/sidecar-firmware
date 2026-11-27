@@ -173,7 +173,7 @@ Rytm->host channels (for a looper); the real USB controller.
    or JUNO). The effective FM list is the project's /.rytm/fm/<PROJECT>.txt
    (bank MD5, voice, name per line) or else Plaits' 96 ROM voices; 17 sends
    its names (as 16), 18 asks for them. /DX7's banks (4104-byte .syx or bare
-   4096 bytes) are indexed at boot (MD5 and names per bank, /.rytm/dx7.bin
+   4096 bytes) are indexed at boot (MD5 and names per bank, /.sidecar/dx7.bin
    behind a hash of /DX7's listing; teensy/voiceloop/dx7_lib.h) and shown in
    TEENSY as a folder DX7 of /DX7's folders, each bank a folder of its 32
    voices; LOAD TO PROJ adds a voice to the FM list. JUNO banks (a .syx of

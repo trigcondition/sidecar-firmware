@@ -12,7 +12,7 @@
 // Every write is cleaned to the point of coherency (dc cvac): a reset drops dirty cache lines, not DRAM.
 // At the next boot (crumb::Begin first thing in CKernel::Initialize) the old area is copied aside when its magic
 // words hold, and crumb::Report logs it: "crumb: the previous boot ..." lines and its log's last lines ("prev| ...");
-// kernel.cpp also writes that whole log tail to /.rytm/prevboot.txt. No magic (a power-on, RAM not kept): one line
+// kernel.cpp also writes that whole log tail to /.sidecar/prevboot.txt. No magic (a power-on, RAM not kept): one line
 // says so. Reading it: the core whose heartbeat stopped first is the one that hung; core 0's section and the disk /
 // file lines say where (a disk transfer in flight: the SD driver; the disk count far past the section's start: FatFs
 // looping; neither: code of the engine's own).
@@ -290,8 +290,8 @@ inline const char* sec_name(unsigned core, uint32_t s) {
       case 23: return "the display (pages and Update)";
       case 24: return "the stats line (LogStats)";
       case 40: return "the network's tasks (MsSleep: the web server, the TCP links)";
-      case 41: return "writing /.rytm/prevboot.txt (the breadcrumb's copy on the card)";
-      case 42: return "writing /.rytm/blackbox.log (the black box, blackbox_pi.cpp)";
+      case 41: return "writing /.sidecar/prevboot.txt (the breadcrumb's copy on the card)";
+      case 42: return "writing /.sidecar/blackbox.log (the black box, blackbox_pi.cpp)";
       default: return "?";
     }
   if (core == 3) switch (s) {

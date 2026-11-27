@@ -22,6 +22,7 @@
 #pragma once
 #include "../platform.h"
 #include "../project_key.h"
+#include "../machines.h"
 #if CORE_MSAMP
 #include "../msamp/cardq.h"
 namespace core {
@@ -41,6 +42,7 @@ namespace jlib {
 const int kMaxFolders = 64;    // folders and banks
 const int kMaxFiles = 160;     // per folder
 const int kMaxList = 127;      // the project's JUNO list (16's total is 7 bits)
+const int kListSlots = core::kVoiceSlots;   // a project list per voice slot (core/pool/pool.h)
 
 struct Folder {
   char name[24];
@@ -193,15 +195,19 @@ class Lib {
   }
 
   // --- the project's JUNO list ---
-  int listed() const { return nlist_; }
-  const Patch& slot(int i) const { return list_[i]; }
+  int listed() const { return L().n; }
+  const Patch& slot(int i) const { return L().list[i]; }
+  // voice slot s's list (a voice's own box's: slot_of_voice), whatever slot is in hand; the slot in hand's: sel
+  int listed(int s) const { return lists_[pick(s)].n; }
+  const Patch& slot(int s, int i) const { return lists_[pick(s)].list[i]; }
+  void selector(int (*sel)()) { sel_ = sel; }
 
   // 2026-10-27 (core/bundle/prjslot.h): the list's next writes under another project key (a SAVE AS copy placed)
   void rekey(const char* project) { project_file(project); }
   JLIB_FLASH(load_list) void load_list(const char* project) {
     project_file(project);
-    read_list(file_, list_, &nlist_);
-    log_("juno list %s: %d slots", file_, nlist_);
+    read_list(L().file, L().list, &L().n);
+    log_("juno list %s: %d slots", L().file, L().n);
   }
   // load_list in two parts (a card core, core/pool/pool.cpp): the file read into a copy, on that core; the copy taken in here
   static void list_path(const char* project, char* out, int cap) {
@@ -234,10 +240,10 @@ class Lib {
     }
   }
   JLIB_FLASH(take_list) void take_list(const char* file, const Patch* list, int count) {
-    sniprintf(file_, sizeof file_, "%s", file);
-    memcpy(list_, list, sizeof(Patch) * (size_t)count);
-    nlist_ = count;
-    log_("juno list %s: %d slots", file_, nlist_);
+    sniprintf(L().file, sizeof L().file, "%s", file);
+    memcpy(L().list, list, sizeof(Patch) * (size_t)count);
+    L().n = count;
+    log_("juno list %s: %d slots", L().file, L().n);
   }
 
   // LOAD TO PROJ on patch i of folder j: into the first empty slot (none if
@@ -246,13 +252,13 @@ class Lib {
     Patch p;
     if (!patch(j, i, p.name, p.b)) return -1;
     p.used = true;
-    for (int s = 0; s < nlist_; ++s)
-      if (list_[s].used && memcmp(list_[s].b, p.b, 18) == 0) return s;
+    for (int s = 0; s < L().n; ++s)
+      if (L().list[s].used && memcmp(L().list[s].b, p.b, 18) == 0) return s;
     int s = 0;
-    while (s < nlist_ && list_[s].used) ++s;
+    while (s < L().n && L().list[s].used) ++s;
     if (s >= kMaxList) return -1;
-    list_[s] = p;
-    if (s == nlist_) ++nlist_;
+    L().list[s] = p;
+    if (s == L().n) ++L().n;
     save();
     log_("juno list: slot %d = %s", s, p.name);
     return s;
@@ -261,50 +267,50 @@ class Lib {
   // The list's edits (the Pi's web page, core/user/lists.cpp): each saves the list. False: no such slot.
   // A patch's own 18 bytes and name into the first empty slot (none if those bytes are listed already): its slot, -1.
   JLIB_FLASH(put) int put(const uint8_t* b, const char* name) {
-    for (int s = 0; s < nlist_; ++s)
-      if (list_[s].used && memcmp(list_[s].b, b, 18) == 0) return s;
+    for (int s = 0; s < L().n; ++s)
+      if (L().list[s].used && memcmp(L().list[s].b, b, 18) == 0) return s;
     int s = 0;
-    while (s < nlist_ && list_[s].used) ++s;
+    while (s < L().n && L().list[s].used) ++s;
     if (s >= kMaxList) return -1;
-    Patch& p = list_[s];
+    Patch& p = L().list[s];
     memcpy(p.b, b, 18);
     copy_name(p.name, name, sizeof p.name);
     p.used = true;
-    if (s == nlist_) ++nlist_;
+    if (s == L().n) ++L().n;
     save();
     return s;
   }
   // Slot s = these bytes, whatever it holds (save false: the caller saves after a run of them)
   JLIB_FLASH(set_row) void set_row(int s, const uint8_t* b, const char* name, bool save_now = true) {
     if (s < 0 || s >= kMaxList) return;
-    Patch& p = list_[s];
+    Patch& p = L().list[s];
     memcpy(p.b, b, 18);
     copy_name(p.name, name, sizeof p.name);
     p.used = true;
-    if (s >= nlist_) nlist_ = s + 1;
+    if (s >= L().n) L().n = s + 1;
     if (save_now) save();
   }
   void resave() { save(); }
   JLIB_FLASH(clear) bool clear(int s) {
-    if (s < 0 || s >= nlist_) return false;
-    list_[s].used = false;
-    while (nlist_ && !list_[nlist_ - 1].used) --nlist_;
+    if (s < 0 || s >= L().n) return false;
+    L().list[s].used = false;
+    while (L().n && !L().list[L().n - 1].used) --L().n;
     save();
     return true;
   }
   JLIB_FLASH(rename) bool rename(int s, const char* name) {
-    if (s < 0 || s >= nlist_ || !list_[s].used) return false;
-    copy_name(list_[s].name, name, sizeof list_[s].name);
+    if (s < 0 || s >= L().n || !L().list[s].used) return false;
+    copy_name(L().list[s].name, name, sizeof L().list[s].name);
     save();
     return true;
   }
   JLIB_FLASH(swap) bool swap(int a, int b) {   // two slots trade places (one may be empty, or past the end)
     if (a < 0 || b < 0 || a >= kMaxList || b >= kMaxList || a == b) return false;
-    for (; nlist_ <= (a > b ? a : b); ++nlist_) list_[nlist_].used = false;
-    Patch t = list_[a];
-    list_[a] = list_[b];
-    list_[b] = t;
-    while (nlist_ && !list_[nlist_ - 1].used) --nlist_;
+    for (; L().n <= (a > b ? a : b); ++L().n) L().list[L().n].used = false;
+    Patch t = L().list[a];
+    L().list[a] = L().list[b];
+    L().list[b] = t;
+    while (L().n && !L().list[L().n - 1].used) --L().n;
     save();
     return true;
   }
@@ -434,7 +440,7 @@ class Lib {
   void project_file(const char* project) {
     char n[core::kKeyMax];
     core::project_key(project, n, sizeof n);
-    sniprintf(file_, sizeof file_, "/.rytm/juno/%s.txt", n);
+    sniprintf(L().file, sizeof L().file, "/.rytm/juno/%s.txt", n);
   }
 
   static void copy_name(char* d, const char* n, int cap) {   // printable ASCII (the list file's tab and line safe)
@@ -466,29 +472,29 @@ class Lib {
     if (core::cardq::worker()) {   // (the card core: fmt's posted queue, the folder made there)
       static char t[kMaxList * 64];
       uint32_t k = 0;
-      for (int s = 0; s < nlist_; ++s) {
-        if (list_[s].used) {
-          for (int i = 0; i < 18; ++i) k += (uint32_t)sniprintf(t + k, sizeof t - k, "%02x", list_[s].b[i]);
-          k += (uint32_t)sniprintf(t + k, sizeof t - k, "\t%s", list_[s].name);
+      for (int s = 0; s < L().n; ++s) {
+        if (L().list[s].used) {
+          for (int i = 0; i < 18; ++i) k += (uint32_t)sniprintf(t + k, sizeof t - k, "%02x", L().list[s].b[i]);
+          k += (uint32_t)sniprintf(t + k, sizeof t - k, "\t%s", L().list[s].name);
         }
         t[k++] = '\n';
       }
-      if (!core::list_post(file_, t, k)) log_("juno list: cannot write %s", file_);
+      if (!core::list_post(L().file, t, k)) log_("juno list: cannot write %s", L().file);
       return;
     }
 #endif
     sd_->mkdir("/.rytm/juno");
     core::File f;
-    if (!f.open(file_, core::kWrite)) {
-      log_("juno list: cannot write %s", file_);
+    if (!f.open(L().file, core::kWrite)) {
+      log_("juno list: cannot write %s", L().file);
       return;
     }
     char line[64];
-    for (int s = 0; s < nlist_; ++s) {
+    for (int s = 0; s < L().n; ++s) {
       int n = 0;
-      if (list_[s].used) {
-        for (int i = 0; i < 18; ++i) n += sniprintf(line + n, sizeof line - n, "%02x", list_[s].b[i]);
-        n += sniprintf(line + n, sizeof line - n, "\t%s", list_[s].name);
+      if (L().list[s].used) {
+        for (int i = 0; i < 18; ++i) n += sniprintf(line + n, sizeof line - n, "%02x", L().list[s].b[i]);
+        n += sniprintf(line + n, sizeof line - n, "\t%s", L().list[s].name);
       }
       line[n++] = '\n';
       f.write(line, n);
@@ -508,10 +514,18 @@ class Lib {
   uint8_t order_[kMaxFiles];
   uint16_t dumps_[kMaxFiles];
   uint8_t codes_[kMaxFiles];   // a bank's patch numbers (0x80: none)
-  // the project's list
-  char file_[48] = "";
-  Patch list_[kMaxList];
-  int nlist_ = 0;
+  // the project lists, one per voice slot (each box's project its own: core/pool/pool.h): the slot in hand's
+  // through sel_ (set by the core: prj_slot), slot s's named through listed(s) / slot(s, i)
+  struct List {
+    char file[48] = "";
+    Patch list[kMaxList];
+    int n = 0;
+  };
+  List lists_[kListSlots];
+  int (*sel_)() = nullptr;
+  List& L() { return lists_[pick(sel_ ? sel_() : 0)]; }
+  const List& L() const { return lists_[pick(sel_ ? sel_() : 0)]; }
+  static int pick(int s) { return s >= 0 && s < kListSlots ? s : 0; }
 };
 
 }  // namespace jlib

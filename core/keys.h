@@ -69,6 +69,7 @@ struct Stats {
 const Stats& stats();
 // The settings: /.rytm/keys.txt "mode=selected|channel", "auto=1..16", "mac=1|0" (load at boot, save from idle_save)
 void load();
+void take_text(const char* b, int n);   // 3(c) step 8: a read keys.txt into the slot in hand's settings (another slot's at its attach)
 bool save();
 // The console's "keys" (the status), "keys=selected|channel", "keys=auto:N", "keys=mac:on|off"
 bool command(const char* p, char* out, int cap);

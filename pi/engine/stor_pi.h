@@ -34,7 +34,7 @@ boolean Command (const char *pCmd);
 void Status (CString *pOut);		// ,"stor":{"exfat":..,"vols":[...],"bench":{...}}
 void UiFill (sidecar_status_view_t *pView);	// the STATUS page's USB / NVME rows
 void NoteLoop (unsigned nUs);		// core 0's loop: one MsSleep (1)'s wake time (the bench's busy phases)
-void Transport (u8 nStatus);		// the Rytm's realtime messages (core 3): playing or not (the bench's refusal)
+void Transport (int nSlot, u8 nStatus);	// box slot's realtime messages (core 3): the bench is refused while any box plays
 boolean Mounted (int nVol);		// stor::Vol
 const char *Drive (int nVol);		// "USB:"
 // core 0: f_read / f_write in pieces (stor::piece); the bytes done (fewer: the file's end or an error), -1 none

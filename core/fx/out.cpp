@@ -17,14 +17,33 @@ namespace core {
 namespace out {
 
 Control control;
+volatile int8_t g_base_slot = 0;
+Control control1 = [] { Control c; defaults(c); return c; }();
 void (*on_change)() = nullptr;
+int (*slot_fn)() = nullptr;
 
 namespace {
 
-uint8_t g_knob[kVoices][4];      // LEV PAN WID DEC
-int16_t g_lfo[kVoices][3];
-int8_t g_track[kVoices];         // the track that last triggered the voice (-1 unknown)
-uint16_t g_mutes = 0;
+// 3(c): each voice slot's OUT knobs, offsets and routes as set, playing in control_of(slot) - the slot in hand's
+// (slot_fn). The mute gate is each slot's own (set_mutes / trig_track name the slot); the PRE / POST / TRK trims too.
+struct Set {
+  uint8_t knob[kVoices][4];      // LEV PAN WID DEC
+  int16_t lfo[kVoices][3];
+  uint8_t route[kVoices];        // the routes the project holds (control.route is what plays: below)
+};
+Set g_set[kVoiceSlots];
+int g_force = -1;   // reset(): the slot worked on
+int hand() {
+  int sl = g_force >= 0 ? g_force : slot_fn ? slot_fn() : 0;
+  return sl > 0 && sl < kVoiceSlots ? sl : 0;
+}
+Set& S() { return g_set[hand()]; }
+Control& K() { return control_of(hand()); }
+// a box with one stereo mix return forces POST on the base box's voices (the Overbridge device: out::g_device)
+bool mix_forced(int sl) { return device().ret == kStereoMix && sl == g_base_slot; }
+// the mute gate, each slot's (3(c) step 8): its box's tracks muted, the track that last triggered each of its voices
+int8_t g_track[kVoiceSlots][kVoices];   // (-1 unknown)
+uint16_t g_mutes[kVoiceSlots];
 Stats g_stats;
 
 struct Init {
@@ -66,21 +85,26 @@ void changed() {
   if (on_change) on_change();
 }
 void refresh(int vi) {
-  control.lev[vi] = (uint8_t)clampi(g_knob[vi][0] + g_lfo[vi][0], 0, 127);
-  control.pan[vi] = (uint8_t)clampi(g_knob[vi][1] + g_lfo[vi][1], 0, 127);
-  control.wid[vi] = (uint8_t)clampi(g_knob[vi][2] + g_lfo[vi][2], 0, 127);
-  control.dec[vi] = g_knob[vi][3];
+  const Set& t = S();
+  Control& c = K();
+  c.lev[vi] = (uint8_t)clampi(t.knob[vi][0] + t.lfo[vi][0], 0, 127);
+  c.pan[vi] = (uint8_t)clampi(t.knob[vi][1] + t.lfo[vi][1], 0, 127);
+  c.wid[vi] = (uint8_t)clampi(t.knob[vi][2] + t.lfo[vi][2], 0, 127);
+  c.dec[vi] = t.knob[vi][3];
 }
-void gates() {
+void gates(int sl) {
+  const uint16_t m = g_mutes[sl];
   for (int v = 0; v < kVoices; ++v) {
-    int t = g_track[v];
+    int t = g_track[sl][v];
     bool muted;
-    if (t >= 0) muted = (g_mutes >> t) & 1;
-    else {
-      int a = device().tracks[v][0], b = device().tracks[v][1];
-      muted = ((g_mutes >> a) & 1) && (b < 0 || ((g_mutes >> b) & 1));
+    if (t >= 0) muted = (m >> t) & 1;
+    else if (sl == 0) {   // the Rytm's shared voices: muted when both of its tracks are
+      int a = kRytmMk2.tracks[v][0], b = kRytmMk2.tracks[v][1];
+      muted = ((m >> a) & 1) && (b < 0 || ((m >> b) & 1));
+    } else {
+      muted = (m >> v) & 1;   // a box's voice v plays its track v (seq voice_of)
     }
-    control.open[v] = muted ? 0 : 1;
+    control_of(sl).open[v] = muted ? 0 : 1;
   }
 }
 
@@ -119,48 +143,60 @@ void value_text(int k, int v, char* b, int cap) {
   sniprintf(b, cap, CORE_STR("%d"), v);
 }
 
-// The routes the project holds. control.route is what plays: a stereo mix's box forces POST there and leaves these for line(),
-// so a box never changes what a Rytm's project says.
-static uint8_t g_route[kVoices];
-
+// The routes the project holds (Set::route). control.route is what plays: a stereo mix's box forces POST there and leaves
+// these for line(), so a box never changes what a Rytm's project says.
 void set_route(int vi, int r) {
   if (vi < 0 || vi >= kVoices || r < 0 || r >= kRoutes) return;
-  g_route[vi] = (uint8_t)r;
-  if (device().ret == kStereoMix) r = kPost;   // one stereo mix: no route to choose
-  if (control.route[vi] != r) ++g_stats.xfades;
-  control.route[vi] = (uint8_t)r;
+  S().route[vi] = (uint8_t)r;
+  if (mix_forced(hand())) r = kPost;   // one stereo mix: no route to choose
+  if (K().route[vi] != r) ++g_stats.xfades;
+  K().route[vi] = (uint8_t)r;
   changed();
 }
 void set_param(int vi, int k, int v) {
   if (vi < 0 || vi >= kVoices || k < 0 || k > 3) return;
-  g_knob[vi][k] = (uint8_t)clampi(v, 0, 127);
+  S().knob[vi][k] = (uint8_t)clampi(v, 0, 127);
   refresh(vi);
   changed();
 }
-int param(int vi, int k) { return vi >= 0 && vi < kVoices && k >= 0 && k <= 3 ? g_knob[vi][k] : 0; }
+int param(int vi, int k) { return vi >= 0 && vi < kVoices && k >= 0 && k <= 3 ? S().knob[vi][k] : 0; }
 void mod_offset(int vi, int k, int off) {
   if (vi < 0 || vi >= kVoices || k < 0 || k > 2) return;
-  g_lfo[vi][k] = (int16_t)clampi(off, -127, 127);
+  S().lfo[vi][k] = (int16_t)clampi(off, -127, 127);
   refresh(vi);
 }
-void set_mutes(uint16_t mask) {
-  g_mutes = mask;
-  gates();
+const Control& ctl() { return K(); }
+void set_mutes(uint16_t mask) { set_mutes(0, mask); }
+void set_mutes(int slot, uint16_t mask) {
+  if (slot < 0 || slot >= kVoiceSlots) return;
+  g_mutes[slot] = mask;
+  gates(slot);
 }
-void trig_track(int vi, int track) {
-  if (vi < 0 || vi >= kVoices) return;
-  g_track[vi] = (int8_t)(track >= 0 && track < 12 ? track : -1);
-  gates();
+void trig_track(int vi, int track) { trig_track(0, vi, track); }
+void trig_track(int slot, int vi, int track) {
+  if (slot < 0 || slot >= kVoiceSlots || vi < 0 || vi >= kVoices) return;
+  g_track[slot][vi] = (int8_t)(track >= 0 && track < 12 ? track : -1);
+  gates(slot);
 }
-bool any_stereo() {
+bool any_stereo() { return any_stereo(g_base_slot); }   // (the base box's: its output stage's PRE / POST pairs)
+bool any_stereo(int slot) {
+  const Control& c = control_of(slot);
   for (int v = 0; v < kVoices; ++v)
-    if (control.route[v] != kTrk) return true;
+    if (c.route[v] != kTrk) return true;
   return false;
 }
+// the slot in hand's (the console: the base box's, box=S: that box's), either slot alike (decided 2026-11-26)
 void set_trim(int pair, int db10) {
-  if (pair == 2) control.trk10 = (int16_t)clampi(db10, -240, 240);
+  if (pair == 2) K().trk10 = (int16_t)clampi(db10, -240, 240);
   if (pair < 0 || pair > 1) return;
-  control.trim10[pair] = (int16_t)clampi(db10, -240, 120);
+  K().trim10[pair] = (int16_t)clampi(db10, -240, 120);
+}
+void set_trim_all(int pair, int db10) {   // the cmdline's: every slot's stage the same, whichever slot a box takes
+  for (int s = 0; s < kVoiceSlots; ++s) {
+    g_force = s;
+    set_trim(pair, db10);
+  }
+  g_force = -1;
 }
 
 bool from_line(const char* const* w, int n) {
@@ -177,32 +213,35 @@ bool from_line(const char* const* w, int n) {
 }
 int line(int vi, char* b, int cap) {
   if (vi < 0 || vi >= kVoices) return 0;
-  if (g_route[vi] == kTrk && g_knob[vi][0] == 100 && g_knob[vi][1] == 64 && g_knob[vi][2] == 64 && !g_knob[vi][3])
+  const Set& t = S();
+  if (t.route[vi] == kTrk && t.knob[vi][0] == 100 && t.knob[vi][1] == 64 && t.knob[vi][2] == 64 && !t.knob[vi][3])
     return 0;
-  return sniprintf(b, cap, CORE_STR("OUT V%d %s %d %d %d %d\n"), vi + 1, route_name(g_route[vi]), g_knob[vi][0],
-                   g_knob[vi][1], g_knob[vi][2], g_knob[vi][3]);
+  return sniprintf(b, cap, CORE_STR("OUT V%d %s %d %d %d %d\n"), vi + 1, route_name(t.route[vi]), t.knob[vi][0],
+                   t.knob[vi][1], t.knob[vi][2], t.knob[vi][3]);
 }
-void clear() {
+void clear() {   // the slot in hand's
   for (int v = 0; v < kVoices; ++v) {
-    g_route[v] = kTrk, control.route[v] = device().ret == kStereoMix ? kPost : kTrk;
-    g_knob[v][0] = 100, g_knob[v][1] = 64, g_knob[v][2] = 64, g_knob[v][3] = 0;
+    S().route[v] = kTrk, K().route[v] = mix_forced(hand()) ? kPost : kTrk;
+    S().knob[v][0] = 100, S().knob[v][1] = 64, S().knob[v][2] = 64, S().knob[v][3] = 0;
     refresh(v);
   }
 }
 
-void set_device(const Device* d) {
+void set_device(const Device* d) {   // (the base box's voices: g_base_slot's)
   if (!d) d = &kRytmMk2;
+  const int sl = g_base_slot > 0 && g_base_slot < kVoiceSlots ? g_base_slot : 0;
   if (d->ret != g_device->ret)
-    for (int v = 0; v < kVoices; ++v) control.route[v] = d->ret == kStereoMix ? (uint8_t)kPost : g_route[v];
+    for (int v = 0; v < kVoices; ++v) control_of(sl).route[v] = d->ret == kStereoMix ? (uint8_t)kPost : g_set[sl].route[v];
   g_device = d;
 }
 
 static int voice_text(int vi, char* o, int cap) {
   char a[8], b[8], c[8], d[8];
-  value_text(0, g_knob[vi][0], a, sizeof a), value_text(1, g_knob[vi][1], b, sizeof b);
-  value_text(2, g_knob[vi][2], c, sizeof c), value_text(3, g_knob[vi][3], d, sizeof d);
-  return sniprintf(o, cap, CORE_STR("V%d %s LEV %s PAN %s WID %s DEC %s%s"), vi + 1, route_name(control.route[vi]), a, b, c,
-                   d, control.open[vi] ? "" : " (muted)");
+  const Set& t = S();
+  value_text(0, t.knob[vi][0], a, sizeof a), value_text(1, t.knob[vi][1], b, sizeof b);
+  value_text(2, t.knob[vi][2], c, sizeof c), value_text(3, t.knob[vi][3], d, sizeof d);
+  return sniprintf(o, cap, CORE_STR("V%d %s LEV %s PAN %s WID %s DEC %s%s"), vi + 1, route_name(K().route[vi]), a, b, c,
+                   d, K().open[vi] ? "" : " (muted)");
 }
 
 bool command(const char* p, char* o, int cap) {
@@ -238,7 +277,7 @@ bool command(const char* p, char* o, int cap) {
         return true;
       }
       int v = c[0] >= '1' && c[0] <= '8' ? c[0] - '1' : 0;
-      meas::start(same_ci(b, "trk"), v);
+      meas::start(same_ci(b, "trk"), v, hand());   // (the slot in hand's box: the console's base box, or box=S:)
       sniprintf(o, cap, CORE_STR("stereo: measuring (about %d s): tones and impulses on POST, PRE%s; the Rytm's MAIN IN read back "
                                  "(stereo=measure:result when done)"), same_ci(b, "trk") ? 6 : 4, same_ci(b, "trk") ? ", TRK" : "");
       return true;
@@ -249,9 +288,9 @@ bool command(const char* p, char* o, int cap) {
       sniprintf(o, cap, "stereo, stereo=trim:pre|post|trk:DB10, stereo=measure[:trk[:V]]|measure:stop, stereo=result");
       return true;
     }
-    int n = sniprintf(o, cap, CORE_STR("stereo: trim PRE %d POST %d TRK %d (0.1 dB)"), control.trim10[0], control.trim10[1], control.trk10);
+    int n = sniprintf(o, cap, CORE_STR("stereo: trim PRE %d POST %d TRK %d (0.1 dB)"), K().trim10[0], K().trim10[1], K().trk10);
     for (int v = 0; v < kVoices && n > 0 && n < cap; ++v)
-      if (control.route[v] != kTrk) {
+      if (K().route[v] != kTrk) {
         int k = sniprintf(o + n, cap - n, ", ");
         if (k > 0) n += k;
         if (n < cap) n += voice_text(v, o + n, cap - n);
@@ -303,12 +342,12 @@ int json(char* o, int cap) {
   int n = sniprintf(o, cap, CORE_STR("\"out\":["));
   for (int v = 0; v < kVoices && n < cap; ++v) {
     int k = sniprintf(o + n, cap - n, CORE_STR("%s{\"route\":\"%s\",\"lev\":%d,\"pan\":%d,\"wid\":%d,\"dec\":%d,\"open\":%d}"),
-                      v ? "," : "", v >= 0 && control.route[v] == kPre ? "pre" : control.route[v] == kPost ? "post" : "trk",
-                      g_knob[v][0], g_knob[v][1], g_knob[v][2], g_knob[v][3], control.open[v]);
+                      v ? "," : "", v >= 0 && K().route[v] == kPre ? "pre" : K().route[v] == kPost ? "post" : "trk",
+                      S().knob[v][0], S().knob[v][1], S().knob[v][2], S().knob[v][3], K().open[v]);
     if (k < 0 || k >= cap - n) return cap;
     n += k;
   }
-  int k = sniprintf(o + n, n < cap ? cap - n : 0, CORE_STR("],\"trim\":[%d,%d],"), control.trim10[0], control.trim10[1]);
+  int k = sniprintf(o + n, n < cap ? cap - n : 0, CORE_STR("],\"trim\":[%d,%d],"), K().trim10[0], K().trim10[1]);
   if (k > 0) n += k;
   if (n < cap) n += meas::json(o + n, cap - n);
   return n;
@@ -318,13 +357,18 @@ const Stats& stats() { return g_stats; }
 
 void reset() {
   defaults(control);
+  defaults(control1);
   g_device = &kRytmMk2;
-  for (int v = 0; v < kVoices; ++v) {
-    g_knob[v][0] = 100, g_knob[v][1] = 64, g_knob[v][2] = 64, g_knob[v][3] = 0;
-    g_lfo[v][0] = g_lfo[v][1] = g_lfo[v][2] = 0;
-    g_track[v] = -1;
+  for (Set& t : g_set)
+    for (int v = 0; v < kVoices; ++v) {
+      t.knob[v][0] = 100, t.knob[v][1] = 64, t.knob[v][2] = 64, t.knob[v][3] = 0;
+      t.lfo[v][0] = t.lfo[v][1] = t.lfo[v][2] = 0;
+      t.route[v] = kTrk;
+    }
+  for (int sl = 0; sl < kVoiceSlots; ++sl) {
+    for (int v = 0; v < kVoices; ++v) g_track[sl][v] = -1;
+    g_mutes[sl] = 0;
   }
-  g_mutes = 0;
   g_stats = Stats();
 }
 

@@ -80,12 +80,12 @@ static void to_project(const char* name) {   // 0x10: the Rytm's project; its fi
   for (const char* c = name; *c; ++c) m[k++] = (uint8_t)*c;
   m[k++] = 0xF7;
   engine_sysex(m, k);
-  for (int i = 0; i < 400 && strcmp(core::project, name); ++i) {
+  for (int i = 0; i < 400 && strcmp(core::prj().key, name); ++i) {
     if (rename::state() == rename::kAsk) rename::answer(false);   // (a new name, not a rename of the project before)
     at(g_us + 20000), idle_save(), card_core_turn();
   }
   loaded();
-  CHECK(!strcmp(core::project, name));
+  CHECK(!strcmp(core::prj().key, name));
 }
 static void kit(int k) {   // 3B: the Rytm's active kit (0-based)
   const uint8_t m[8] = {0xF0, 0x7D, 0x52, 0x54, 0x3B, 1, (uint8_t)k, 0xF7};

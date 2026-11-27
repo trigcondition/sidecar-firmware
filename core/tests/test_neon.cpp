@@ -51,11 +51,11 @@ static void report(const char* name) {
 #if CORE_NEON
 static void test_clip_rows() {
   for (int t = 0; t < 20000; ++t) {
-    int n = 1 + rnd() % 16, i = rnd() % 8, wrap = rnd() % 16;
+    int n = 1 + rnd() % 16, i = rnd() % core::kVoices, wrap = rnd() % 16;
     float o[16];
     int row[16];
     for (int s = 0; s < n; ++s) o[s] = sample(), row[s] = (wrap + s) % 16;
-    int16_t a[16][8], b[16][8];
+    int16_t a[16][core::kVoices], b[16][core::kVoices];
     memset(a, 0x55, sizeof a), memset(b, 0x55, sizeof b);
     clip_rows_c(a, row, i, o, n), clip_rows_neon(b, row, i, o, n);
     CHECK(!memcmp(a, b, sizeof a));

@@ -61,7 +61,7 @@ static void lib_ready() {
   run(5);
 }
 static void open_project(const char* name) {
-  snprintf(core::project, sizeof core::project, "%s", name);
+  snprintf(core::prj().key, sizeof core::prj().key, "%s", name);
   for (int i = 0; i < 2000 && (!pools::ready() || strcmp(pools::project(), name)); ++i) run(1);
   CHECK(pools::ready());
 }

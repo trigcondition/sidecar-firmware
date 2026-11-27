@@ -89,6 +89,7 @@ struct Req {
   int32_t got;               // kReadReq: bytes read (-1 an error); kOpenReq: 1 opened, 0 not
   uint32_t posted_us;
   void (*fn)(Req*);          // kFnReq
+  int8_t link;               // the box's link it was queued for (async: the control core's Scope): its state folder (core/device/device.h)
 };
 
 void set_worker(bool on);    // a card core runs service() (the Pi: core 0); off: post() runs the request itself
@@ -114,7 +115,8 @@ void set_need(uint32_t ahead_ms, uint32_t low_ms, int who = 0);
 // write): call it each step with the same request until it returns true (done: r->got); false while it waits
 // (posted, running, or the queue full: posted at a later call). Nothing waits or spins. Without a card core it runs at
 // once (true at the first call), the old path.
-bool async(Req* r, Kind kind, File* f, const char* path, uint64_t off, uint8_t* buf, uint32_t len);
+// link: the box's link whose folder its paths are in; -1: the control core's link in hand (device::cur()).
+bool async(Req* r, Kind kind, File* f, const char* path, uint64_t off, uint8_t* buf, uint32_t len, int link = -1);
 // The card core's
 Req* service();              // the oldest posted request run (nullptr: none waiting)
 int pending();

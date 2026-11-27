@@ -7,11 +7,13 @@
 #include <math.h>
 #include <stdint.h>
 
+#include "machines.h"
+
 namespace core {
 
 class MainOut {
  public:
-  static const int kVoices = 8;
+  static const int kVoices = kBoxVoices;   // one box's voices: the block the output stage hands it
   static constexpr float kLimit = 0.25f;           // -12 dBFS
   static const uint32_t kFadeFrames = 48000 / 5;   // 200 ms
   static constexpr float kGain = 0.5f;             // the voices' sum, before the limit

@@ -92,7 +92,7 @@ CORE_COLD bool Index::parse_wav(core::File& f, FileRec* r) {
 
 CORE_COLD bool Index::load(uint64_t h) {
   core::File env;
-  if (!env.open("/.rytm/env", core::kRead)) return false;
+  if (!env.open("/.sidecar/env", core::kRead)) return false;
   char t[160] = {0};
   env.read(t, sizeof t - 1);
   env.close();
@@ -100,12 +100,12 @@ CORE_COLD bool Index::load(uint64_t h) {
   sniprintf(want, sizeof want, "hash=%08lx%08lx\n", (unsigned long)(h >> 32), (unsigned long)(uint32_t)h);
   if (strncmp(t, want, strlen(want)) || !strstr(t, "version=4\n")) return false;
   core::File fo;
-  if (!fo.open("/.rytm/folders.bin", core::kRead)) return false;
+  if (!fo.open("/.sidecar/folders.bin", core::kRead)) return false;
   int n = fo.fileSize() / sizeof(Folder);
   if (n < 1 || n > kMaxFolders) return false;
   fo.read(folders_, n * sizeof(Folder));
   fo.close();
-  if (!files_.open("/.rytm/files.bin", core::kRead)) return false;
+  if (!files_.open("/.sidecar/files.bin", core::kRead)) return false;
   nfolders_ = n;
   nfiles_ = files_.fileSize() / sizeof(FileRec);
   return true;
@@ -127,10 +127,10 @@ CORE_COLD void Index::flush_sorted(core::File& out, FileRec* recs, int n) {
 // consecutive), its .wav files to files.bin together, by name.
 CORE_COLD bool Index::build(uint64_t h) {
   uint32_t t0 = core::now_ms();
-  sd_.mkdir("/.rytm");
-  sd_.remove("/.rytm/env");               // no env until the index is whole
+  sd_.mkdir("/.sidecar");
+  sd_.remove("/.sidecar/env");               // no env until the index is whole
   core::File out, fo;
-  if (!out.open("/.rytm/files.bin", core::kWrite)) return false;
+  if (!out.open("/.sidecar/files.bin", core::kWrite)) return false;
   memset(&folders_[0], 0, sizeof(Folder));
   folders_[0].parent = -1;
   nfolders_ = 1;
@@ -188,11 +188,11 @@ CORE_COLD bool Index::build(uint64_t h) {
     if ((f & 31) == 0 && log_) log_(CORE_STR("index: %d/%d folders, %lu files"), f, nfolders_, (unsigned long)nfiles_);
   }
   out.close();
-  if (!fo.open("/.rytm/folders.bin", core::kWrite)) return false;
+  if (!fo.open("/.sidecar/folders.bin", core::kWrite)) return false;
   fo.write(folders_, nfolders_ * sizeof(Folder));
   fo.close();
   core::File env;
-  if (!env.open("/.rytm/env", core::kWrite)) return false;
+  if (!env.open("/.sidecar/env", core::kWrite)) return false;
   char t[160];
   int n = sniprintf(t, sizeof t, "hash=%08lx%08lx\nversion=4\nfolders=%d\nfiles=%lu\n",
                    (unsigned long)(h >> 32), (unsigned long)(uint32_t)h, nfolders_, (unsigned long)nfiles_);
@@ -201,7 +201,7 @@ CORE_COLD bool Index::build(uint64_t h) {
   if (log_)
     log_(CORE_STR("index built: %d folders, %lu files (%lu .wav not usable), %lu ms"), nfolders_,
          (unsigned long)nfiles_, (unsigned long)skipped, (unsigned long)(core::now_ms() - t0));
-  return files_.open("/.rytm/files.bin", core::kRead);
+  return files_.open("/.sidecar/files.bin", core::kRead);
 }
 
 #ifdef CORE_HEAP_BUFFERS

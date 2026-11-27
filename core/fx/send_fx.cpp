@@ -10,9 +10,18 @@ namespace core {
 namespace fx {
 
 Control control;
-volatile bool card_dirty = false;
+Control control1;   // slot 1's (send_fx.h control_of)
+volatile uint8_t card_dirty = 0;
+int (*slot_fn)() = nullptr;
+CORE_COLD int slot_in_hand() {
+  int sl = slot_fn ? slot_fn() : 0;
+  return sl > 0 && sl < kVoiceSlots ? sl : 0;
+}
+CORE_COLD Control& cur() { return control_of(slot_in_hand()); }
 UserFx user[kUserSlots];
 volatile uint16_t kit_tag[kSlots];
+UserFx user1[kUserSlots];            // box 1's (send_fx.h user_of)
+volatile uint16_t kit_tag1[kSlots];
 
 // The stable TYPE ids 1..63 (sim/protocol.py SENDFX_TYPES): implemented 1, 2, 16, 17, 18 (and 5, 6, 8, 15 with
 // RYTM_SENDFX_LARGE); the rest reserved for planned effects.
@@ -30,13 +39,18 @@ static const int kNumBuiltins = sizeof kBuiltins / sizeof kBuiltins[0];
 CORE_COLD bool builtin(int id) { return plays(id); }
 
 CORE_COLD const char* type_name(int id, int slot) {
+  (void)slot;
+  return type_name_in(0, id);
+}
+
+CORE_COLD const char* type_name_in(int box, int id) {
   if (id == kOff) return "OFF";
   for (int i = 0; i < kNumBuiltins; ++i)
     if (kBuiltins[i].id == id) return kBuiltins[i].name;
   static const char* const kUfx[kUserSlots] = {"UFX1", "UFX2", "UFX3", "UFX4"};
   int u = id - kFirstUser;
-  if (u >= 0 && u < kUserSlots) return user[u].tag ? user[u].name : kUfx[u];
-  (void)slot;
+  const UserFx* us = user_of(box);
+  if (u >= 0 && u < kUserSlots) return us[u].tag ? us[u].name : kUfx[u];
   return "?";
 }
 
@@ -64,40 +78,48 @@ CORE_COLD int type_from_name(const char* s) {
   return v >= 0 && v <= 127 ? v : -1;
 }
 
-CORE_COLD State state(int slot) {
-  int id = control.knob[slot][0];
+CORE_COLD State state(int slot) { return state(control, slot); }
+
+CORE_COLD State state(const Control& c, int slot) {
+  int id = c.knob[slot][0];
   if (id == kOff) return kStEmpty;
-  if (id == kStutter && stutter_slot(control) != slot) return kStMissing;   // FX 1 has it (or this build lacks it)
+  if (id == kStutter && stutter_slot(c) != slot) return kStMissing;   // FX 1 has it (or this build lacks it)
   if (builtin(id)) return kStReady;
-  // a user id: the slot map must hold an effect whose tag matches the kit's (an untagged kit takes the slot's), and
+  // a user id: the box's slot map must hold an effect whose tag matches the kit's (an untagged kit takes the slot's), and
   // (Plugin API 3) its plugin must be loaded: READY then, else MISSING (the name says which effect the slot holds)
   int u = id - kFirstUser;
-  if (u >= 0 && u < kUserSlots && user_plays_at(id, slot)) return kStReady;
+  if (u >= 0 && u < kUserSlots && box_plays_at(box_of(c), id, slot)) return kStReady;
   return kStMissing;
 }
 
-bool any_on() {
+bool any_on() { return any_on(control); }
+
+bool any_on(const Control& c) {
+  const int b = box_of(c);
   for (int s = 0; s < kSlots; ++s)
-    if (builtin(control.knob[s][0]) || user_plays(control.knob[s][0])) return true;
+    if (builtin(c.knob[s][0]) || box_plays(b, c.knob[s][0])) return true;
   return false;
 }
 
-bool all_sound_off() {
-  static uint32_t last = 0;
-  static bool seen = false;
+bool all_sound_off() { return all_sound_off(control); }
+
+bool all_sound_off(Control& c) {
+  static uint32_t last[2] = {0, 0};
+  static bool seen[2] = {false, false};
+  const int b = box_of(c);
   uint32_t now = now_ms();
-  bool fresh = !seen || now - last >= 100;
-  seen = true, last = now;   // a burst keeps itself going
-  if (fresh) control.kill = (uint8_t)(control.kill + 1);
+  bool fresh = !seen[b] || now - last[b] >= 100;
+  seen[b] = true, last[b] = now;   // a burst keeps itself going
+  if (fresh) c.kill = (uint8_t)(c.kill + 1);
   return fresh;
 }
 
 uint8_t (*knob_filter)(int slot, int knob, uint8_t v) = nullptr;
 uint8_t (*send_filter)(int track, int slot, uint8_t v) = nullptr;
-void (*clock_listener)(uint8_t status, uint16_t spp) = nullptr;
-void (*bus_insert)(int slot, float (*y)[2], int n) = nullptr;
+void (*clock_listener)(int box, uint8_t status, uint16_t spp) = nullptr;
+void (*bus_insert)(const Control& c, int slot, float (*y)[2], int n) = nullptr;
 bool (*user_ready)(int u) = nullptr;
-volatile bool list_dirty = false;
+volatile uint8_t list_dirty = 0;
 bool (*user_loaded)(int u) = nullptr;
 const KnobLabels* (*user_labels)(int u) = nullptr;
 void (*user_fresh_req)(int u, int slot) = nullptr;
@@ -106,26 +128,29 @@ void (*user_run)(int u, int slot, const float* x, int n, float (*y)[2], const ui
 static inline uint8_t knob(int s, int k, uint8_t v) { return knob_filter ? knob_filter(s, k, v) : v; }
 static inline uint8_t send(int t, int s, uint8_t v) { return send_filter ? send_filter(t, s, v) : v; }
 CORE_COLD void set_knob_base(int s, int k, uint8_t v) {
-  if (s >= 0 && s < kSlots && k >= 0 && k < kKnobs) control.knob[s][k] = knob(s, k, v);
+  if (s >= 0 && s < kSlots && k >= 0 && k < kKnobs) cur().knob[s][k] = knob(s, k, v);
 }
 CORE_COLD void set_send_base(int t, int s, uint8_t v) {
-  if (t >= 0 && t < kTracks && s >= 0 && s < kSlots) control.send[t][s] = send(t, s, v);
+  if (t >= 0 && t < kTracks && s >= 0 && s < kSlots) cur().send[t][s] = send(t, s, v);
 }
 
-CORE_COLD void clock_in(uint8_t status, uint16_t spp) {   // per MIDI realtime byte, control side: cold
-  static int32_t pos = -1;   // the latest tick's song position (24 ppqn), -1 before the first after Start
-  static uint32_t ticks = 0;
-  static bool run = false;
+CORE_COLD void clock_in(uint8_t status, uint16_t spp) { clock_in(control, status, spp); }
+
+CORE_COLD void clock_in(Control& c, uint8_t status, uint16_t spp) {   // per MIDI realtime byte, control side: cold
+  static int32_t pos[2] = {-1, -1};   // the latest tick's song position (24 ppqn), -1 before the first after Start
+  static uint32_t ticks[2] = {0, 0};
+  static bool run[2] = {false, false};
+  const int b = box_of(c);
   switch (status) {
-    case 0xF8: ++ticks; if (run) ++pos; break;
-    case 0xFA: pos = -1, run = true; break;
-    case 0xFB: run = true; break;
-    case 0xFC: run = false; break;
-    case 0xF2: pos = (int32_t)spp * 6 - 1; break;
+    case 0xF8: ++ticks[b]; if (run[b]) ++pos[b]; break;
+    case 0xFA: pos[b] = -1, run[b] = true; break;
+    case 0xFB: run[b] = true; break;
+    case 0xFC: run[b] = false; break;
+    case 0xF2: pos[b] = (int32_t)spp * 6 - 1; break;
     default: return;
   }
-  control.clock = ClockWord::pack(pos, ticks, run);
-  if (clock_listener) clock_listener(status, spp);   // the Sidecar's LFOs' sync (core/lfo.h)
+  c.clock = ClockWord::pack(pos[b], ticks[b], run[b]);
+  if (clock_listener) clock_listener(b, status, spp);   // the LFOs' sync (core/lfo.h): each box's clock its own slot's LFOs' (3(c) step 10)
 }
 
 CORE_COLD uint16_t fx_tag(const char* name) {
@@ -149,20 +174,25 @@ CORE_COLD bool take_sendfx(const uint8_t* d, int len) {
   const uint8_t* b = d + 7;
   for (int i = 0; i < nb; ++i)
     if (b[i] > 0x7F) return false;
+  // The box in hand's (its slot's Scope: engine_sysex_link), never slot 0's whichever slot the Rytm holds (a Rytm in slot 1
+  // beside an A4 in slot 0 overwrote the A4's FX and tags before)
+  const int box = slot_in_hand();
+  Control& c = control_of(box);
   if (t < kTracks) {
-    control.send[t][0] = send(t, 0, b[0]);   // a modulation on top (core/mod kSnd)
-    control.send[t][1] = send(t, 1, b[1]);
+    c.send[t][0] = send(t, 0, b[0]);   // a modulation on top (core/mod kSnd)
+    c.send[t][1] = send(t, 1, b[1]);
   } else if (t == kTracks) {
     for (int s = 0; s < kSlots; ++s)
       for (int j = 0; j < 3; ++j) {
-        control.knob[s][2 * j] = knob(s, 2 * j, b[2 * kKnobPairs[s][j]]);   // an LFO's on top (core/lfo.h)
-        control.knob[s][2 * j + 1] = knob(s, 2 * j + 1, b[2 * kKnobPairs[s][j] + 1]);
+        c.knob[s][2 * j] = knob(s, 2 * j, b[2 * kKnobPairs[s][j]]);   // an LFO's on top (core/lfo.h)
+        c.knob[s][2 * j + 1] = knob(s, 2 * j + 1, b[2 * kKnobPairs[s][j] + 1]);
       }
   } else {
-    kit_tag[0] = (uint16_t)(b[0] << 7 | b[1]);
-    kit_tag[1] = (uint16_t)(b[2] << 7 | b[3]);
+    volatile uint16_t* kt = kit_tag_of(box);
+    kt[0] = (uint16_t)(b[0] << 7 | b[1]);
+    kt[1] = (uint16_t)(b[2] << 7 | b[3]);
   }
-  control.messages = control.messages + 1;
+  c.messages = c.messages + 1;
   return true;
 }
 
@@ -187,16 +217,19 @@ static const uint8_t kPlayable[] = {kOff, kChorus, kComb,
 #endif
                                     kCrush, kRingMod, kHalo};
 static const int kNumPlayable = sizeof kPlayable / sizeof kPlayable[0];
+// The 0x21 list is the box in hand's: its own user effects (the Rytm it goes to, whichever slot it holds)
 static CORE_COLD int list_id(int k) {
   if (k < kNumPlayable) return kPlayable[k];
+  const UserFx* us = user_of(slot_in_hand());
   for (int u = 0, n = kNumPlayable; u < kUserSlots; ++u)
-    if (user[u].tag && n++ == k) return kFirstUser + u;
+    if (us[u].tag && n++ == k) return kFirstUser + u;
   return -1;
 }
 
 CORE_COLD int names_total() {
+  const UserFx* us = user_of(slot_in_hand());
   int n = kNumPlayable;
-  for (int u = 0; u < kUserSlots; ++u) n += user[u].tag != 0;
+  for (int u = 0; u < kUserSlots; ++u) n += us[u].tag != 0;
   return n;
 }
 
@@ -207,7 +240,7 @@ CORE_COLD int sysex_names(uint8_t* m, bool replace, int total, int first, int co
   for (int k = first; k < first + count; ++k) {
     int id = list_id(k);
     m[n++] = (uint8_t)(id < 0 ? 0 : id);
-    n += name_n(m + n, id < 0 ? "" : type_name(id), 13);
+    n += name_n(m + n, id < 0 ? "" : type_name_in(slot_in_hand(), id), 13);
   }
   m[n++] = 0xF7;
   return n;
@@ -216,7 +249,8 @@ CORE_COLD int sysex_names(uint8_t* m, bool replace, int total, int first, int co
 // 0x24 SENDFX LABELS (sim/protocol.py sendfx_labels): F0 7D 52 54 24 01 <id> <4 x 4 label bytes> then per zone
 // <knob | show << 2 | step << 3> <lo> <base> <5 name bytes>, F7. Only for an id this build plays.
 CORE_COLD const KnobLabels* labels(int id) {
-  if (id >= kFirstUser && id < kFirstUser + kUserSlots) return user_labels ? user_labels(id - kFirstUser) : nullptr;
+  if (id >= kFirstUser && id < kFirstUser + kUserSlots)   // (the box in hand's own UFX: um's index box * kUserSlots + u)
+    return user_labels ? user_labels(slot_in_hand() * kUserSlots + id - kFirstUser) : nullptr;
   if (!plays(id)) return nullptr;
   switch (id) {
     case kChorus: return &kChorusLabels;
@@ -251,12 +285,14 @@ CORE_COLD int sysex_labels(uint8_t* m, int id) {
   return n;
 }
 
-CORE_COLD int sysex_state(uint8_t* m, int slot) {
-  int n = head(m, 0x22), id = control.knob[slot][0];
+CORE_COLD int sysex_state(uint8_t* m, int slot) {   // the box in hand's FX `slot` (its Rytm's page)
+  const int box = slot_in_hand();
+  const Control& c = control_of(box);
+  int n = head(m, 0x22), id = c.knob[slot][0];
   m[n++] = (uint8_t)slot;
   m[n++] = (uint8_t)id;
-  m[n++] = state(slot);
-  n += name_n(m + n, type_name(id, slot), 10);
+  m[n++] = state(c, slot);
+  n += name_n(m + n, type_name_in(box, id), 10);
   m[n++] = 0xF7;
   return n;
 }
@@ -284,28 +320,30 @@ static CORE_COLD const char* slot_arg(const char* p, int* slot) {
 }
 
 static CORE_COLD void show(char* r, int max) {
+  Control& C = cur();
   static const char* const kSt[4] = {"", "", "", " MISSING"};
   int at = put(r, max, 0, "sendfx:");
   for (int s = 0; s < kSlots; ++s) {
-    int id = control.knob[s][0];
+    int id = C.knob[s][0];
     at = put(r, max, at, s ? "; fx2 " : " fx1 ");
-    at = put(r, max, at, type_name(id, s));
+    at = put(r, max, at, type_name_in(slot_in_hand(), id));
     at = put(r, max, at, " (");
     at = put_u(r, max, at, (unsigned)id);
     at = put(r, max, at, ")");
-    at = put(r, max, at, kSt[state(s) & 3]);
+    at = put(r, max, at, kSt[state(C, s) & 3]);
     at = put(r, max, at, " p");
-    for (int j = 1; j < kKnobs; ++j) at = put(r, max, at, " "), at = put_u(r, max, at, control.knob[s][j]);
+    for (int j = 1; j < kKnobs; ++j) at = put(r, max, at, " "), at = put_u(r, max, at, C.knob[s][j]);
     at = put(r, max, at, " send");
-    for (int t = 0; t < kTracks; ++t) at = put(r, max, at, " "), at = put_u(r, max, at, control.send[t][s]);
+    for (int t = 0; t < kTracks; ++t) at = put(r, max, at, " "), at = put_u(r, max, at, C.send[t][s]);
   }
-  at = put(r, max, at, control.route == kRouteMain ? "; out forced main (0/1)" : control.route == kRouteFx ? "; out forced fx (2/3)" : "; out per slot (P1: 0..63 fx 2/3, 64..127 main 0/1)");
-  if (control.stutter_lag) at = put(r, max, at, "; stutter lag "), at = put_u(r, max, at, control.stutter_lag);
+  at = put(r, max, at, C.route == kRouteMain ? "; out forced main (0/1)" : C.route == kRouteFx ? "; out forced fx (2/3)" : "; out per slot (P1: 0..63 fx 2/3, 64..127 main 0/1)");
+  if (C.stutter_lag) at = put(r, max, at, "; stutter lag "), at = put_u(r, max, at, C.stutter_lag);
   at = put(r, max, at, "; 0x20 msgs ");
-  put_u(r, max, at, control.messages);
+  put_u(r, max, at, C.messages);
 }
 
 CORE_COLD bool command(const char* p, char* r, int max) {
+  Control& C = cur();   // the slot in hand's (3(c) step 8)
   int s;
   const char* a;
   if (strcmp(p, "sendfx") == 0) {
@@ -313,7 +351,8 @@ CORE_COLD bool command(const char* p, char* r, int max) {
     return true;
   }
   if (strcmp(p, "sendfx=off") == 0) {
-    control.knob[0][0] = control.knob[1][0] = kOff;
+    C.knob[0][0] = C.knob[1][0] = kOff;
+    if (settings_edit) settings_edit(0), settings_edit(1);
     show(r, max);
     return true;
   }
@@ -323,19 +362,20 @@ CORE_COLD bool command(const char* p, char* r, int max) {
       put(r, max, 0, "sendfx=K:TYPE (K 1|2; off chorus comb halo ..., or an id 0..127), sendfx=off");
       return true;
     }
-    control.knob[s][0] = (uint8_t)t;
+    C.knob[s][0] = (uint8_t)t;
+    if (settings_edit) settings_edit(s);
     show(r, max);
     return true;
   }
   if (strncmp(p, "sendfxout=", 10) == 0) {
-    if (strcmp(p + 10, "fx") == 0) control.route = kRouteFx;
-    else if (strcmp(p + 10, "main") == 0) control.route = kRouteMain;
-    else if (strcmp(p + 10, "slot") == 0) control.route = kRouteSlot;
+    if (strcmp(p + 10, "fx") == 0) C.route = kRouteFx;
+    else if (strcmp(p + 10, "main") == 0) C.route = kRouteMain;
+    else if (strcmp(p + 10, "slot") == 0) C.route = kRouteSlot;
     else {
       put(r, max, 0, "sendfxout=slot|fx|main (slot: each FX's P1; fx, main: force all)");
       return true;
     }
-    card_dirty = true;
+    card_dirty = (uint8_t)(card_dirty | 1u << slot_in_hand());
     show(r, max);
     return true;
   }
@@ -348,7 +388,7 @@ CORE_COLD bool command(const char* p, char* r, int max) {
       return true;
     }
     for (int i = 0; i < kTracks; ++i)
-      if (all || i == t) control.send[i][s] = send(i, s, (uint8_t)v), edited(mod::tid(mod::kSnd, i, s), (float)v);
+      if (all || i == t) C.send[i][s] = send(i, s, (uint8_t)v), edited(mod::tid(mod::kSnd, i, s), (float)v);
     show(r, max);
     return true;
   }
@@ -358,7 +398,7 @@ CORE_COLD bool command(const char* p, char* r, int max) {
       put(r, max, 0, "stutterlag=FRAMES (0..4800, 48 kHz)");
       return true;
     }
-    control.stutter_lag = (uint16_t)v;
+    C.stutter_lag = (uint16_t)v;
     show(r, max);
     return true;
   }
@@ -371,6 +411,7 @@ CORE_COLD bool command(const char* p, char* r, int max) {
     }
     set_knob_base(s, i, (uint8_t)v);   // 0.5.0: through the knob filter (a live entry's base), a manual edit (spec-050 2.5)
     if (i >= 2) edited(mod::tid(mod::kFx, s, i - 2), (float)v);
+    if (settings_edit) settings_edit(s);
     show(r, max);
     return true;
   }

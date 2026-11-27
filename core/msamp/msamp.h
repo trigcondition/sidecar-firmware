@@ -107,6 +107,7 @@ const char* entry_group(int e);
 const char* entry_path(int e);
 int entry_lib(int e);
 int entry_state(int e);               // 0 none 1 card 2 loading 3 resident 5 failed
+int entry_state_in(int ls, int e);   // in voice slot ls's list (entry_state: the slot in hand's)
 const char* entry_note(int e, char* b, int cap);
 uint32_t list_gen();
 int src_entry(int vi, int v);

@@ -83,7 +83,7 @@ int main() {
   CHECK(kit > 0);
   core::pool_assign(1, kit, 0);   // a.wav
   core::pool_assign(2, kit, 1);   // b.wav
-  CHECK(core::npool == 2);
+  CHECK(core::prj().npool == 2);
 
   // voice 1 on DSP SAMPLE, SMP 1, STA 0 END 120, LOP 0, MOD 0 (ONE)
   uint8_t p[16] = {0, 64, 64, 64, 0, 64, 64, 100, 64, 64, 1, 0, 0, 120, 0, 100};

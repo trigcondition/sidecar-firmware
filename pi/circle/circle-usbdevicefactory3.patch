@@ -1,0 +1,22 @@
+--- a/lib/usb/usbdevicefactory.cpp	2026-11-14 19:51:37.879948311 +0000
++++ b/lib/usb/usbdevicefactory.cpp	2026-11-14 19:51:37.890856552 +0000
+@@ -115,6 +115,8 @@
+ // rytm-pi hook (circle-usbdevicefactory2): the application may claim any Elektron device; it returns 0 for one it does not
+ // serve, and Circle goes on to the device's interfaces
+ extern CUSBFunction *RytmObDeviceCreate (CUSBFunction *pParent) __attribute__ ((weak));
++// sidecar hook (circle-usbdevicefactory3): the Teensy mirror relay (1209:0002, pi/engine/relay_proto.h)
++extern CUSBFunction *SidecarRelayCreate (CUSBFunction *pParent) __attribute__ ((weak));
+ 
+ CUSBFunction *CUSBDeviceFactory::GetDevice (CUSBFunction *pParent, CString *pName)
+ {
+@@ -137,6 +139,10 @@
+ 	{
+ 		pResult = RytmObDeviceCreate (pParent);
+ 	}
++	else if (SidecarRelayCreate != 0 && pName->Compare ("ven1209-2") == 0)
++	{
++		pResult = SidecarRelayCreate (pParent);
++	}
+ 	else if (   pName->Compare ("int9-0-0") == 0
+ 	    || pName->Compare ("int9-0-2") == 0)
+ 	{

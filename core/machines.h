@@ -6,7 +6,32 @@
 
 namespace core {
 
-constexpr int kVoices = 8;    // the Rytm's physical voices
+// Voices: a box names 8 (the voice byte's low 3 bits, a project's tracks), kBoxVoices. The engine renders kVoices: on the
+// Pi and the Mac (CORE_MSAMP) two boxes' worth, 16, slot 0's (the Rytm's) 0..7 and slot 1's 8..15 (docs/device-profiles.md
+// "Several devices"); on the Teensy one box's, 8. -DCORE_VOICES=8 builds the single-box engine anywhere.
+#ifndef CORE_VOICES
+#if CORE_MSAMP
+#define CORE_VOICES 16
+#else
+#define CORE_VOICES 8
+#endif
+#endif
+constexpr int kBoxVoices = 8;            // one box's voices: the wire's voice byte & 7, a project's per-voice data, a box's rows
+constexpr int kVoices = CORE_VOICES;     // the engine's: render arrays, machine state, a block's columns
+constexpr int kVoiceSlots = kVoices / kBoxVoices;   // slots with voices of their own (1 or 2)
+static_assert(kVoices == kBoxVoices || kVoices == 2 * kBoxVoices, "one box's voices or two boxes'");
+inline int slot_of_voice(int vi) { return vi / kBoxVoices; }          // the slot an engine voice belongs to (0 on 8 voices)
+inline int box_voice(int vi) { return vi & (kBoxVoices - 1); }     // its number in its box, 0..7 (per-box state's index)
+inline int voice_wrap(int vi) { return vi & (kVoices - 1); }       // an engine voice index kept in range (was vi & 7)
+// A per-voice array every element of which starts at x (a brace list of 8 left voices 8..15 at zero)
+template <class T> struct PerVoice {
+  T a[kVoices];
+  constexpr explicit PerVoice(T x) : a() {
+    for (int i = 0; i < kVoices; ++i) a[i] = x;
+  }
+  constexpr T& operator[](int i) { return a[i]; }
+  constexpr const T& operator[](int i) const { return a[i]; }
+};
 constexpr int kBlock = 12;    // frames a render call makes (plaits::kBlockSize; voices.cpp checks it)
 
 // The machine: voice byte & 0x78, matched exactly; anything else plays as PLAITS.

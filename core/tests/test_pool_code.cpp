@@ -62,7 +62,7 @@ int main() {
   cardq::reset();
   cardq::set_worker(true);
   CHECK(engine_begin() && card_ok && psram);
-  snprintf(core::project, sizeof core::project, "LIVE");
+  snprintf(core::prj().key, sizeof core::prj().key, "LIVE");
   lib::begin(true);
   for (int i = 0; i < 200000 && (i < 50 || lib::busy() || lib::stats().state != lib::kReady); ++i) pass();
   for (int i = 0; i < 4000 && !(pools::ready() && !strcmp(pools::project(), "LIVE")); ++i) pass();
@@ -97,7 +97,7 @@ int main() {
     for (int r : rows) {
       int code = b * 128 + r, line = b * kPool + r;
       CHECK(code != line);
-      if (code <= npool) CHECK(strcmp(pool[code - 1].path, pool[line - 1].path) != 0);   // (the wrong row, when there is one)
+      if (code <= prj().npool) CHECK(strcmp(pool[code - 1].path, pool[line - 1].path) != 0);   // (the wrong row, when there is one)
     }
 
   // 3. the fix: pool_line takes the list code and the old bank-A slot, and gives the row's own pool line
@@ -105,7 +105,7 @@ int main() {
     for (int r : rows) {
       int code = b * 128 + r, line = um::pool_line(code);
       CHECK(line == b * kPool + r);
-      CHECK(line >= 1 && line <= npool);
+      CHECK(line >= 1 && line <= prj().npool);
       CHECK(!strcmp(pool[line - 1].path, ("t/" + row_name(b, r)).c_str()));
       if (b == 0) CHECK(um::pool_line(r) == line);   // the old slot of bank A: the same line
     }

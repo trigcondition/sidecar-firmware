@@ -47,7 +47,7 @@ CORE_COLD void plot_seg(Canvas& c, int x0, int w, int ytop, int h, int from, int
 }
 
 CORE_COLD int sustain_of(int vi) {
-  return v[vi & 7].juno ? clampi(juno_kb[vi & 7][13], 0, 127) : 80;   // the Juno patch's sustain slider
+  return v[voice_wrap(vi)].juno ? clampi(juno_kb[voice_wrap(vi)][13], 0, 127) : 80;   // the Juno patch's sustain slider
 }
 
 CORE_COLD void draw_env(Canvas& c, const Rect& r, const Cell& cell, const Source& s) {
@@ -298,7 +298,7 @@ CORE_COLD void draw_chord(Canvas& c, const Rect& r, const Cell& cell, const Sour
   for (int i = 0; i < n; ++i) lo = ns[i] < lo ? ns[i] : lo, hi = ns[i] > hi ? ns[i] : hi;
   int vi = s.voice();
   VoiceSound vs;
-  uint32_t ctx = 1u | (uint32_t)((vi >= 0 && voice_sound(vi & 7, &vs) ? vs.machine : 0) & 0xFF) << 1;
+  uint32_t ctx = 1u | (uint32_t)((vi >= 0 && voice_sound(voice_wrap(vi), &vs) ? vs.machine : 0) & 0xFF) << 1;
 #if CORE_POLY
   ctx |= seq::stats().loads << 9;
 #endif
@@ -352,7 +352,7 @@ CORE_COLD uint32_t chord_key(const Cell& cell, const Source& s) {
 // ---- MULTISAMPLE's INST: the list entry's name (the card's /MULTISAMPLE, msamp.h), the place in the list under it
 CORE_COLD const char* inst_name(int code, int vi) {   // rui1038: the source code (bank * 128 + index), the voice's pick
 #if CORE_MSAMP
-  const char* n = msamp::entry_name(msamp::src_entry(vi < 0 ? 0 : vi & 7, code));
+  const char* n = msamp::entry_name(msamp::src_entry(vi < 0 ? 0 : voice_wrap(vi), code));
   return n && *n ? n : "NO INST";
 #else
   (void)code, (void)vi;

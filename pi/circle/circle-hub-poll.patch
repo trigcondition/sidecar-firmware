@@ -1,0 +1,124 @@
+diff -ruN a/include/circle/usb/usbstandardhub.h b/include/circle/usb/usbstandardhub.h
+--- a/include/circle/usb/usbstandardhub.h
++++ b/include/circle/usb/usbstandardhub.h
+@@ -62,6 +62,14 @@
+ 	static unsigned GetStatusLastError (void)	{ return s_nStatusLastError; }
+ 	static unsigned GetRearmFailures (void)		{ return s_nRearmFailures; }
+ 
++	// circle-hub-poll.patch: read every port's status at task level (UpdatePlugAndPlay) and handle a connection or
++	// enable change found there, as if the status-change request had reported it. For a caller that expects a device
++	// to leave or arrive while the hub's interrupt endpoint may go unserved (the Pi 4's VL805 hub beside a streaming
++	// Overbridge box: no unplug or replug seen for minutes). The status-change request stays armed as it is. One poll
++	// is queued at a time; task level only.
++	void RequestPortPoll (void);
++	static unsigned GetPollFinds (void)		{ return s_nPollFinds; }	// polls that found a change
++
+ private:
+ 	boolean EnumeratePorts (void);
+ 
+@@ -85,6 +93,7 @@
+ 	volatile boolean m_bStatusError;		// circle-hub-rearm.patch: set by the recovery timer, handled at task level
+ 	volatile TKernelTimerHandle m_hRecoveryTimer;
+ 	volatile unsigned m_nConsecErrors;		// since the last good completion
++	volatile boolean m_bPollDue;			// circle-hub-poll.patch: RequestPortPoll's event is queued
+ 
+ 	unsigned m_nPorts;
+ 	boolean m_bPowerIsOn;
+@@ -103,6 +112,7 @@
+ 	static unsigned s_nStatusErrors;
+ 	static unsigned s_nStatusLastError;
+ 	static unsigned s_nRearmFailures;
++	static unsigned s_nPollFinds;			// circle-hub-poll.patch
+ };
+ 
+ #endif
+diff -ruN a/lib/usb/usbstandardhub.cpp b/lib/usb/usbstandardhub.cpp
+--- a/lib/usb/usbstandardhub.cpp
++++ b/lib/usb/usbstandardhub.cpp
+@@ -36,6 +36,7 @@
+ unsigned CUSBStandardHub::s_nStatusErrors = 0;
+ unsigned CUSBStandardHub::s_nStatusLastError = 0;
+ unsigned CUSBStandardHub::s_nRearmFailures = 0;
++unsigned CUSBStandardHub::s_nPollFinds = 0;		// circle-hub-poll.patch
+ 
+ static const char FromHub[] = "usbhub";
+ static const char DevicePrefix[] = "uhub";
+@@ -48,6 +49,7 @@
+ 	m_bStatusError (FALSE),
+ 	m_hRecoveryTimer (0),
+ 	m_nConsecErrors (0),
++	m_bPollDue (FALSE),
+ 	m_nPorts (0),
+ 	m_bPowerIsOn (FALSE)
+ #if RASPPI >= 4
+@@ -707,6 +709,42 @@
+ 		return;
+ 	}
+ 
++	// circle-hub-poll.patch: a poll (RequestPortPoll) reads every port and goes on with the ports that show a
++	// connection or enable change, as a status-change report would. Each queued event is either this poll or one
++	// completion of the status-change request. The first event handled while a poll is due is taken as the poll, so
++	// when that was a completion, the poll's own event goes the usual way after it (its ports' change bits are clear
++	// by then) and arms the request: once per completion. A poll never arms it, since it is still pending.
++	boolean bPoll = FALSE;
++	if (m_bPollDue)
++	{
++		m_bPollDue = FALSE;
++		bPoll = TRUE;
++		usStatusBitmap = 0;
++		for (unsigned nPort = 0; nPort < m_nPorts; nPort++)
++		{
++			if (GetHost ()->ControlMessage (GetEndpoint0 (),
++				REQUEST_IN | REQUEST_CLASS | REQUEST_TO_OTHER,
++				GET_STATUS, 0, nPort+1, m_pStatus[nPort], 4) != 4)
++			{
++				return;			// the hub not answering now: nothing done, the next poll reads it again
++			}
++
++			if (m_pStatus[nPort]->wChangeStatus & (C_PORT_CONNECTION__MASK | C_PORT_ENABLE__MASK))
++			{
++				usStatusBitmap |= 1 << (nPort+1);
++			}
++		}
++
++		if (usStatusBitmap == 0)
++		{
++			return;
++		}
++
++		s_nPollFinds++;
++		CLogger::Get ()->Write (FromHub, LogNotice, "Port poll: a change the status change request did not report "
++					"(0x%04X, %u so far)", (unsigned) usStatusBitmap, s_nPollFinds);
++	}
++
+ 	//CLogger::Get ()->Write (FromHub, LogDebug, "Status change (0x%04X)",
+ 	//			(unsigned) usStatusBitmap);
+ 
+@@ -830,6 +868,11 @@
+ 		}
+ 	}
+ 
++	if (bPoll)
++	{
++		return;					// circle-hub-poll.patch: the request is still armed (a failure: polled again)
++	}
++
+ 	if (bFailed)
+ 	{
+ 		ScheduleRecovery ();			// circle-hub-noportpanic.patch: re-armed from the timer, 250 ms on
+@@ -883,3 +926,15 @@
+ 	pThis->m_bStatusError = TRUE;
+ 	pThis->GetHost ()->PortStatusChanged (pThis);
+ }
++
++// circle-hub-poll.patch
++void CUSBStandardHub::RequestPortPoll (void)
++{
++	if (m_bPollDue)
++	{
++		return;					// one is queued already
++	}
++
++	m_bPollDue = TRUE;
++	GetHost ()->PortStatusChanged (this);
++}

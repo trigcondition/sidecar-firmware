@@ -1,0 +1,12 @@
+diff -ruN a/include/circle/usb/usbmidihost.h b/include/circle/usb/usbmidihost.h
+--- a/include/circle/usb/usbmidihost.h	2026-11-19 09:04:38.633496061 +0000
++++ b/include/circle/usb/usbmidihost.h	2026-11-19 09:04:38.634989533 +0000
+@@ -67,7 +67,7 @@
+ 
+ 	TKernelTimerHandle m_hTimer;
+ 
+-	static const unsigned TxBufferSize = 64;
++	static const unsigned TxBufferSize = 512;	// circle-midi-async512.patch: one high-speed bulk packet (link1.cpp kTxBytes)
+ 	u8 *m_pTxBuffer = 0;			// one transfer's, written only while none is in flight
+ 	volatile boolean m_bTxBusy = FALSE;
+ 	volatile boolean m_bTxFailed = FALSE;

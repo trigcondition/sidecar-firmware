@@ -1,7 +1,7 @@
 // pi/engine/fan.h - the Pi 5 fan header's speed (portable, header only: tests/test_fan.cpp; the pin: fan_pi.h).
 // Under Linux the Raspberry Pi 5's device tree runs the official Active Cooler (and the case fan) from the SoC
 // temperature; under Sidecar nobody did, so a Pi 5 under load reached socmaxtemp and Circle lowered its clock.
-// The mode (fan= in /.rytm/display.txt, cmdline fan= wins, the console's fan=):
+// The mode (fan= in /.sidecar/display.txt, cmdline fan= wins, the console's fan=):
 //  - AUTO (the default): Linux's Pi 5 curve (bcm2712-rpi-5-b.dts): four trips at 50 / 60 / 67.5 / 75 C, each with 5 C
 //    of hysteresis, step the fan through the levels 0 / 75 / 125 / 175 / 250 (of 255). A level goes up when the SoC
 //    reaches its trip and down only once it is 5 C below it, so a unit that sits at a trip does not hunt.

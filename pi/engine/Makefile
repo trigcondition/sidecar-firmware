@@ -15,6 +15,9 @@ DEFINE += -DCORE_MSAMP=1
 OBJS = main.o kernel.o platform_pi.o shared.o ob_usb.o ob_follow.o cores.o console.o selftest.o guard.o tcp_link.o $(GADGET_OBJS) web.o sdfiles.o um_pi.o wifi.o rec_pi.o
 OBJS += web_ws.o               # /ws, the WebSocket (web_ws.h, docs/web-ws.md; the portable parts are ws_frame.h, ws_json.h, ws_session.h)
 OBJS += paircode_pi.o          # the pairing code's Pi side (paircode_pi.h; the portable paircode.cpp is in PORT_SRC)
+OBJS += link1.o                # the second box's USB MIDI, the engine's slot 1 (link1.h; the portable part is sysex_asm.h)
+OBJS += teensy_target.o        # usb=mirror through a Teensy relay (teensy_target.h; portable: relay_proto.h, mirror_stream.h)
+OBJS += teensy_flash.o         # the Pi writes the Teensy relay's program (teensy_flash.h; the portable part is teensy_hex.h)
 OBJS += midibridge_pi.o        # the Rytm MIDI bridge (midibridge_pi.h; the portable part is the header midibridge.h)
 OBJS += remote_views_pi.o       # the remote UI's views, built with or without a display (remote_views_pi.h; portable, tested on the Mac)
 OBJS += remote_srv.o remote_pi.o   # the remote UI service over the USB-C cable (remote_pi.h, docs/remote-ui.md; the portable part is remote_srv.cpp)
@@ -25,7 +28,7 @@ OBJS += loop_pi.o              # the master looper's boot RAM, audio hooks and K
 OBJS += update_pi.o             # the firmware update from the web page (update_pi.h; the portable part update.cpp is in PORT_SRC)
 # the volumes besides the card and the storage bench (docs/STORAGE.md): Circle's side; the logic is hosted (PORT_SRC)
 OBJS += stor_pi.o
-OBJS += blackbox_pi.o          # the black box: the log to /.rytm/blackbox.log (blackbox.h)
+OBJS += blackbox_pi.o          # the black box: the log to /.sidecar/blackbox.log (blackbox.h)
 # FatFs's disk layer in place of Circle's addon/fatfs/diskio.cpp (linked before libfatfs.a, so the archive's diskio.o
 # is never pulled in): the USB drives' transfers kept to the 64 KB TRB rule below FatFs (stor_diskio.cpp)
 OBJS += stor_diskio.o
@@ -97,7 +100,7 @@ OBJS += ../ui/sidecar_project.o
 # Hosted objects: the toolchain's C++ headers and newlib's libm, not Circle's (as spike3's Plaits): the core,
 # the engines and the engine's portable parts. Named *.cpp.o / *.cc.o / *.c.o under hosted/.
 # core/host/newlib_rand.cpp: DAISYSP's rand() with newlib's sequence, without newlib's libc (the one host file here).
-CORE_SRC := $(addprefix $(CORE)/,md/md.cpp project_key.cpp lfo.cpp hooks.cpp notes.cpp voices.cpp poly.cpp inst.cpp inst_alloc.cpp keys.cpp sysex.cpp host_link.cpp slots.cpp engine.cpp fx/send_fx.cpp fx/send_fx_card.cpp fx/insert.cpp fx/insert_card.cpp fx/master.cpp fx/amp.cpp fx/out.cpp fx/out_measure.cpp \
+CORE_SRC := $(addprefix $(CORE)/,md/md.cpp project_key.cpp lfo.cpp hooks.cpp notes.cpp voices.cpp poly.cpp inst.cpp inst_alloc.cpp keys.cpp sysex.cpp host_link.cpp slots.cpp engine.cpp fx/send_fx.cpp fx/send_fx_card.cpp fx/insert.cpp fx/fx_guard.cpp fx/insert_card.cpp fx/master.cpp fx/amp.cpp fx/out.cpp fx/out_measure.cpp \
             ui/canvas.cpp ui/widgets.cpp ui/pages.cpp ui/remote.cpp \
             pool/card_index.cpp pool/pool.cpp pool/pcache.cpp pool/sample_ram_pool.cpp pool/stream_budget.cpp presets/libs.cpp presets/preset_index.cpp msamp/sfz.cpp msamp/elmulti.cpp msamp/msamp.cpp msamp/sdtest.cpp wavetable/tables.cpp wavetable/wavetable.cpp wavetable/wt_make.cpp granular/granular.cpp livein/livein.cpp midim/midim.cpp arp/arp.cpp chop/chop.cpp chop/slicemap.cpp host/newlib_rand.cpp user/um.cpp user/lists.cpp)
 CORE_SRC += $(wildcard $(CORE)/ui/page_*.cpp)

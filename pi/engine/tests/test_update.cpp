@@ -110,7 +110,7 @@ static void wr(const std::string& p, const Bytes& b) {
 static void wrs(const std::string& p, const std::string& s) { wr(p, Bytes(s.begin(), s.end())); }
 static std::string rds(const std::string& p) { Bytes b = rd(p); return std::string(b.begin(), b.end()); }
 static void reset_card() {
-  std::string c = "rm -rf '" + g_root + "' && mkdir -p '" + g_root + "/.rytm'";
+  std::string c = "rm -rf '" + g_root + "' && mkdir -p '" + g_root + "/.rytm' '" + g_root + "/.sidecar'";
   CHECK(system(c.c_str()) == 0);
 }
 // a folder's files, relative path -> bytes
@@ -211,11 +211,11 @@ static void make_card() {
   wr("/engine.img", wrap(OLD4));
   wr("/kernel_2712.img", OLD5);
   wrs("/sdboot.img", "SDBOOT");
-  mkdir(mac("/.rytm/www-next").c_str(), 0755);
-  mkdir(mac("/.rytm/www-next/assets").c_str(), 0755);
-  wrs("/.rytm/www-next/index.html.gz", "old index");
-  wrs("/.rytm/www-next/assets/app-old.js.gz", "old app");
-  g_oldWeb = tree("/.rytm/www-next");
+  mkdir(mac("/.sidecar/www-next").c_str(), 0755);
+  mkdir(mac("/.sidecar/www-next/assets").c_str(), 0755);
+  wrs("/.sidecar/www-next/index.html.gz", "old index");
+  wrs("/.sidecar/www-next/assets/app-old.js.gz", "old app");
+  g_oldWeb = tree("/.sidecar/www-next");
 }
 
 // The firmware stand-in: which kernel the next boot loads and whether it is the trial (cmdline updtrial=1).
@@ -261,12 +261,12 @@ static upd::Env env(int board, const char* v, const char* c, bool trial = false,
   return e;
 }
 static std::string state() {
-  std::string t = rds("/.rytm/update/state.txt");
+  std::string t = rds("/.sidecar/update/state.txt");
   size_t a = t.find("state=");
   return a == std::string::npos ? "idle" : t.substr(a + 6, t.find('\n', a) - a - 6);
 }
 static std::string msg() {
-  std::string t = rds("/.rytm/update/state.txt");
+  std::string t = rds("/.sidecar/update/state.txt");
   size_t a = t.find("msg=");
   return a == std::string::npos ? "" : t.substr(a + 4, t.find('\n', a) - a - 4);
 }
@@ -374,11 +374,11 @@ static void t_refusals() {
     off.enabled = false, off.off_why = "web updates are off (cmdline.txt webupdate=0)";
     CHECK(upd::install(off, false, &r) == upd::kNone && r.status == 403 && strstr(r.msg, "webupdate=0"));
     upload(off, good_file());
-    CHECK(!has("/.rytm/update/update.scu"));
+    CHECK(!has("/.sidecar/update/update.scu"));
     // truncated: the upload stopped half way leaves no file to install
     Bytes f = good_file();
     r = upload(e, f, f.size() / 2);
-    CHECK(r.status == 200 && !has("/.rytm/update/update.scu"));
+    CHECK(r.status == 200 && !has("/.sidecar/update/update.scu"));
     CHECK(upd::install(e, false, &r) == upd::kNone && strstr(r.msg, "upload it first"));
     // a wrong CRC: not kept
     {
@@ -389,7 +389,7 @@ static void t_refusals() {
       CHECK(q.status == 409 && !strcmp(q.msg, "expected 49152"));
       for (size_t off2 = 49152; off2 < f.size(); off2 += 49152)
         upd::put(e, off2, f.size(), 1234, f.data() + off2, (uint32_t)(f.size() - off2 < 49152 ? f.size() - off2 : 49152), &q);
-      CHECK(q.status == 400 && strstr(q.msg, "CRC") && !has("/.rytm/update/update.scu") && !has("/.rytm/update/upload.part"));
+      CHECK(q.status == 400 && strstr(q.msg, "CRC") && !has("/.sidecar/update/update.scu") && !has("/.sidecar/update/upload.part"));
     }
     auto refuse = [&](const Bytes& file, const char* why, int status = 422) {
       CHECK(upload(e, file).status == 200);
@@ -474,10 +474,10 @@ static void t_happy(int board) {
   CHECK(state() == "committed" && trial_files_gone(board));
   CHECK(firmware(board, false, &trial) == (board == 4 ? padded(NEW4) : NEW5) && !trial);
   CHECK(rd(std::string(upd::boot_name(board)) + ".prev") == (board == 4 ? wrap(OLD4) : OLD5));
-  auto nw = tree("/.rytm/www-next");
-  CHECK(nw.size() == 2 && rds("/.rytm/www-next/index.html.gz") == "new index" && rds("/.rytm/www-next/assets/app-new.js.gz") == "new app");
-  CHECK(tree("/.rytm/www-next.prev") == g_oldWeb && !has("/.rytm/www-next.new"));
-  CHECK(rds("/.rytm/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=1\n" && !has("/.rytm/update/update.scu"));
+  auto nw = tree("/.sidecar/www-next");
+  CHECK(nw.size() == 2 && rds("/.sidecar/www-next/index.html.gz") == "new index" && rds("/.sidecar/www-next/assets/app-new.js.gz") == "new app");
+  CHECK(tree("/.sidecar/www-next.prev") == g_oldWeb && !has("/.sidecar/www-next.new"));
+  CHECK(rds("/.sidecar/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=1\n" && !has("/.sidecar/update/update.scu"));
   upd::Env now = env(board, "0.5.1", "bbbbbbb");
   CHECK(!upd::boot(now) && state() == "committed");
   CHECK(upd::state_json(now, js, sizeof js) > 0 && strstr(js, "\"prev\":true") && strstr(js, "\"prevVersion\":\"0.5.0 (aaaaaaa)\""));
@@ -510,8 +510,8 @@ static void t_noweb(int board) {
   CHECK(upload(old, f).status == 200 && upd::install(old, false, &r) == upd::kTry);
   upd::Env t = env(board, "0.5.1", "bbbbbbb", true, 31);
   CHECK(upd::boot(t) && upd::commit(t) && state() == "committed");
-  CHECK(tree("/.rytm/www-next") == g_oldWeb && !has("/.rytm/www-next.prev") && !has("/.rytm/www-next.new"));
-  CHECK(rds("/.rytm/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=0\n" && trial_files_gone(board));
+  CHECK(tree("/.sidecar/www-next") == g_oldWeb && !has("/.sidecar/www-next.prev") && !has("/.sidecar/www-next.new"));
+  CHECK(rds("/.sidecar/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=0\n" && trial_files_gone(board));
   CHECK(msg().find("web") == std::string::npos);
   bool trial;
   CHECK(firmware(board, false, &trial) == (board == 4 ? padded(NEW4) : NEW5));
@@ -564,9 +564,9 @@ static void t_notice(int board) {
   upd::Env later = env(board, "0.5.1", "bbbbbbb", false, 4);
   CHECK(!upd::boot(later) && state() == "reverted");
   CHECK(!upd::notice(later, a, b, sizeof a));
-  std::string st = rds("/.rytm/update/state.txt");
+  std::string st = rds("/.sidecar/update/state.txt");
   st.replace(st.find("state=reverted"), 14, "state=failed");
-  wrs("/.rytm/update/state.txt", st);
+  wrs("/.sidecar/update/state.txt", st);
   CHECK(!upd::boot(later) && state() == "failed");
   CHECK(!upd::notice(later, a, b, sizeof a));
   printf("Pi %d: screen notices: ok\n", board);
@@ -619,21 +619,21 @@ static void t_inflight(int board) {
     CHECK(upd::boot(t));
     CHECK(upload(t, good_file()).status == 409 && upload(old, good_file()).status == 409);
     upd::discard(t, &r);
-    CHECK(r.status == 409 && has("/.rytm/update/update.scu"));
+    CHECK(r.status == 409 && has("/.sidecar/update/update.scu"));
     Bytes hostile = web({{"index.html.gz", "evil"}, {"../../config.txt", "owned"}});
     Bytes other = web({{"index.html.gz", "other index"}});
     if (variant < 2) {
       Bytes k4 = wrap(NEW4);
-      wr("/.rytm/update/update.scu", ufile("0.5.1", "bbbbbbb", {{upd::kPartPi4, k4}, {upd::kPartPi5, NEW5}, {upd::kPartWeb, variant ? other : hostile}}));
+      wr("/.sidecar/update/update.scu", ufile("0.5.1", "bbbbbbb", {{upd::kPartPi4, k4}, {upd::kPartPi5, NEW5}, {upd::kPartWeb, variant ? other : hostile}}));
     } else
-      ::remove(mac("/.rytm/update/update.scu").c_str());
+      ::remove(mac("/.sidecar/update/update.scu").c_str());
     t.uptime_s = 31;
     CHECK(upd::commit(t) && state() == "committed");
     CHECK(strstr(msg().c_str(), "the web app was not") != nullptr);
-    CHECK(rds("/config.txt") == kCfg && tree("/.rytm/www-next") == g_oldWeb && !has("/.rytm/www-next.new"));
+    CHECK(rds("/config.txt") == kCfg && tree("/.sidecar/www-next") == g_oldWeb && !has("/.sidecar/www-next.new"));
     bool trial;
     CHECK(firmware(board, false, &trial) == (board == 4 ? padded(NEW4) : NEW5));
-    CHECK(rds("/.rytm/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=0\n");   // www-next.prev is not 0.5.0's app
+    CHECK(rds("/.sidecar/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=0\n");   // www-next.prev is not 0.5.0's app
   }
   // a stale prev.txt (the card changed in a computer): "previous" goes by the kernel's own stamp, and does not take
   // www-next.prev for its app
@@ -643,15 +643,15 @@ static void t_inflight(int board) {
   CHECK(upload(old, good_file()).status == 200 && upd::install(old, false, &r) == upd::kTry);
   upd::Env t = env(board, "0.5.1", "bbbbbbb", true, 40);
   CHECK(upd::boot(t) && upd::commit(t));
-  CHECK(rds("/.rytm/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=1\n");
-  wrs("/.rytm/update/prev.txt", "v=9.9.9\nc=1234567\nw=1\n");
+  CHECK(rds("/.sidecar/update/prev.txt") == "v=0.5.0\nc=aaaaaaa\nw=1\n");
+  wrs("/.sidecar/update/prev.txt", "v=9.9.9\nc=1234567\nw=1\n");
   upd::Env now = env(board, "0.5.1", "bbbbbbb");
   CHECK(upd::previous(now, false, &r) == upd::kTry);
-  std::string st = rds("/.rytm/update/state.txt");
+  std::string st = rds("/.sidecar/update/state.txt");
   CHECK(st.find("tv=0.5.0\ntc=aaaaaaa\n") != std::string::npos && st.find("web=0\n") != std::string::npos);
   upd::Env back = env(board, "0.5.0", "aaaaaaa", true, 40);
   CHECK(upd::boot(back) && upd::commit(back) && state() == "committed");
-  CHECK(rds("/.rytm/www-next/index.html.gz") == "new index");   // the app stayed: www-next.prev was not 0.5.0's
+  CHECK(rds("/.sidecar/www-next/index.html.gz") == "new index");   // the app stayed: www-next.prev was not 0.5.0's
   printf("Pi %d: no upload during a trial; a changed file is not unpacked; a stale prev.txt: ok\n", board);
 }
 
@@ -659,8 +659,8 @@ static void t_inflight(int board) {
 static void t_foreign_tryboot() {
   make_card();
   upd::Env e = env(5, "0.5.0", "aaaaaaa");
-  mkdir(mac("/.rytm/update").c_str(), 0755);
-  wrs("/.rytm/update/state.txt", "state=trying\nkind=update\ntv=0.5.1\ntc=bbbbbbb\n");
+  mkdir(mac("/.sidecar/update").c_str(), 0755);
+  wrs("/.sidecar/update/state.txt", "state=trying\nkind=update\ntv=0.5.1\ntc=bbbbbbb\n");
   wrs("/tryboot.txt", "[pi5]\nkernel=sdboot-try.img\n");
   CHECK(!upd::boot(e) && state() == "reverted" && has("/tryboot.txt"));
   printf("a foreign tryboot.txt stays: ok\n");
@@ -685,7 +685,7 @@ static void t_cut_install(int board) {
     CHECK(rd("/engine.img") == wrap(OLD4) && rd("/kernel_2712.img") == OLD5 && rds("/config.txt") == kCfg);
     upd::boot(old);
     CHECK(trial_files_gone(board) && state() != "trying" && state() != "staging");
-    CHECK(tree("/.rytm/www-next") == g_oldWeb);
+    CHECK(tree("/.sidecar/www-next") == g_oldWeb);
   }
   printf("Pi %d: power cut at each of %d card writes of install: old engine boots, cleaned up: ok\n", board, n);
 }
@@ -754,23 +754,23 @@ static void t_cut_commit(int board, bool prev_kind) {
 // web app), or the old one with its own app, nothing of a half revert
 static void check_after(int board, bool prev_kind, bool isNew, const Bytes& oldk) {
   CHECK(trial_files_gone(board));
-  CHECK(!has("/.rytm/www-next.new") && !has("/.rytm/www-next.swp"));
+  CHECK(!has("/.sidecar/www-next.new") && !has("/.sidecar/www-next.swp"));
   if (isNew) {
       CHECK(state() == "committed");
       CHECK(rd(std::string(upd::boot_name(board)) + ".prev") == (board == 4 ? wrap(oldk) : oldk));
       if (!prev_kind) {
-        CHECK(rds("/.rytm/www-next/index.html.gz") == "new index" && tree("/.rytm/www-next").size() == 2);
-        CHECK(tree("/.rytm/www-next.prev") == g_oldWeb);
+        CHECK(rds("/.sidecar/www-next/index.html.gz") == "new index" && tree("/.sidecar/www-next").size() == 2);
+        CHECK(tree("/.sidecar/www-next.prev") == g_oldWeb);
       } else {
-        CHECK(tree("/.rytm/www-next") == g_oldWeb && rds("/.rytm/www-next.prev/index.html.gz") == "new index");
+        CHECK(tree("/.sidecar/www-next") == g_oldWeb && rds("/.sidecar/www-next.prev/index.html.gz") == "new index");
       }
   } else {
     if (state() != "reverted") fprintf(stderr, "state %s msg %s\n", state().c_str(), msg().c_str());
     CHECK(state() == "reverted");
     CHECK(rd(upd::boot_name(board)) == (board == 4 ? wrap(oldk) : oldk));
     // the old version's own web app in place (a half revert must never "finish" the commit)
-    if (!prev_kind) CHECK(tree("/.rytm/www-next") == g_oldWeb);
-    else CHECK(rds("/.rytm/www-next/index.html.gz") == "new index" && tree("/.rytm/www-next.prev") == g_oldWeb);
+    if (!prev_kind) CHECK(tree("/.sidecar/www-next") == g_oldWeb);
+    else CHECK(rds("/.sidecar/www-next/index.html.gz") == "new index" && tree("/.sidecar/www-next.prev") == g_oldWeb);
   }
 }
 
@@ -786,7 +786,7 @@ static void t_previous_direct(int board) {
   bool trial;
   CHECK(firmware(board, false, &trial) == (board == 4 ? padded(legacy) : legacy) && !trial);
   CHECK(rd(std::string(upd::boot_name(board)) + ".prev") == (board == 4 ? wrap(OLD4) : OLD5));
-  CHECK(tree("/.rytm/www-next") == g_oldWeb && state() == "committed");
+  CHECK(tree("/.sidecar/www-next") == g_oldWeb && state() == "committed");
   // a damaged .prev is refused
   make_card();
   Bytes d = board == 4 ? wrap(legacy) : legacy;
@@ -848,7 +848,7 @@ static void t_make_update(const char* argv0) {
     CHECK(upd::boot(t) && upd::commit(t) && state() == "committed");
     bool trial;
     CHECK(firmware(board, false, &trial) == (board == 4 ? padded(NEW4) : NEW5));
-    auto w = tree("/.rytm/www-next");   // card.mjs's rule: text files as .gz only
+    auto w = tree("/.sidecar/www-next");   // card.mjs's rule: text files as .gz only
     CHECK(w.size() == 3 && w.count("/index.html.gz") && w.count("/assets/app.js.gz") && w.count("/assets/logo.png"));
   }
   system(("rm -rf '" + dir + "'").c_str());

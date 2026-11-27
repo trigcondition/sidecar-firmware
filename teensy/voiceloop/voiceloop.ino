@@ -1601,7 +1601,7 @@ FLASHMEM void plug_put(int mode, const char* pp, int pl, const uint8_t* data, in
 // FLASHMEM: a lookup once a block at most (rmp_pool_info_get runs from flash already); pool_read stays in ITCM.
 FLASHMEM int32_t h_pool_info(int32_t slot, rmp_pool_info* info) {
   int vi = plug_vnow;
-  if (vi < 0 || !info || !card_ok || slot < 1 || slot > npool || pool[slot - 1].folder < 0) return RMP_POOL_EMPTY;
+  if (vi < 0 || !info || !card_ok || slot < 1 || slot > prj().npool || pool[slot - 1].folder < 0) return RMP_POOL_EMPTY;
 #if RYTM_PSRAM
   if (psram) {
     const PoolEntry& e = pool[slot - 1];
@@ -1641,7 +1641,7 @@ __attribute__((noinline)) FLASHMEM int32_t h_pool_read_psram(int vi, int32_t slo
 #endif
 int32_t h_pool_read(int32_t slot, uint32_t pos, float* buf, int32_t n) {
   int vi = plug_vnow;
-  if (vi < 0 || !buf || n <= 0 || slot < 1 || slot > npool) return 0;
+  if (vi < 0 || !buf || n <= 0 || slot < 1 || slot > prj().npool) return 0;
 #if RYTM_PSRAM
   if (psram) {
     int32_t got = h_pool_read_psram(vi, slot, pos, buf, n);
@@ -1723,7 +1723,7 @@ FLASHMEM bool plug_pool_pass() {
     int slot = r.want, line = slot - 1;
     r.want = 0;
     if (!plug_pool_mine(vi)) continue;   // its buffers may be DSP SAMPLE's now
-    if (!card_ok || slot > npool || pool[line].folder < 0) {
+    if (!card_ok || slot > prj().npool || pool[line].folder < 0) {
       r.bad = slot;
       return true;
     }
@@ -2454,13 +2454,13 @@ FLASHMEM bool plug_resolve_pass() {
     rmp_pkg_ref r[32];
     ch = rmp_resolve_prints(&m, &nt, &plug_prints, r, plug_refs(r));
     logf(PSTR("plugins: slot prints (seq %d, %d entries) for %s: %d slot%s from the sounds"), (int)plug_prints.seq,
-         (int)plug_prints.n, project, __builtin_popcount(ch), __builtin_popcount(ch) == 1 ? "" : "s");
+         (int)plug_prints.n, prj().key, __builtin_popcount(ch), __builtin_popcount(ch) == 1 ? "" : "s");
     if (plug_fresh) ch |= rmp_resolve_inherit(&m, &nt, &plug_prev), plug_fresh = false;
     save = ch != 0;
   } else if (plug_fresh && (int32_t)(millis() - plug_fresh_until) >= 0 && !plug_prints_pending) {
     plug_fresh = false;
     ch = rmp_resolve_inherit(&m, &nt, &plug_prev);
-    if (ch) logf(PSTR("plugins: %s inherits %d slot%s from the previous project"), project, __builtin_popcount(ch), __builtin_popcount(ch) == 1 ? "" : "s");
+    if (ch) logf(PSTR("plugins: %s inherits %d slot%s from the previous project"), prj().key, __builtin_popcount(ch), __builtin_popcount(ch) == 1 ? "" : "s");
     save = ch != 0;
   } else if (list_ok && !plug_prints_have) {
     int s = 0;
@@ -2569,7 +2569,7 @@ FLASHMEM void plug_info_pass() {
        (unsigned long)cap, (unsigned long)(uintptr_t)&_itcm_block_count);
     ia(PSTR("\"arena\":{\"size\":%lu,\"used\":%lu,\"psram_size\":%lu,\"psram_used\":%lu},\"project\":"), (unsigned long)RMP_ARENA_BYTES,
        (unsigned long)rmp_arena_used(), (unsigned long)rmp_arena_psram_size(), (unsigned long)rmp_arena_psram_used());
-    plug_info_str(project);
+    plug_info_str(prj().key);
     ia(PSTR(",\"slots\":["));
     for (int s = 0; s < RMP_SLOTS; ++s) {
       const rmp_slot_entry& e = plug_map.slot[s];

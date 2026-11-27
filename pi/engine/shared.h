@@ -18,6 +18,8 @@ const unsigned kMidiOutBytes = 32768;
 struct TCmd { char text[192]; };   // pool=S:<a path under /Samples> is the longest
 
 extern Output g_Output;
+// The side stage's (side_out.h): slot 1's voices beside a Rytm, pulled by slot 1's own box stream. Idle otherwise.
+extern Output g_OutputSide;
 // The output's peaks for each reader (the display's meters, the stats line, the web's "levels"; peak_fan.h): core 0 only
 extern peakfan::Fan g_PeakFan;
 extern Spsc<uint8_t, 8192> g_MidiIn;

@@ -212,7 +212,15 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   else if (!strcmp(p, "rytmpat=voice")) set_page(kPageVoice);
   else if (!strcmp(p, "rytmpat=off")) set_active(false);
   else if (!strcmp(p, "rytmpat=fetch")) pg = pg ? pg : kPagePattern, want(0);
-  else if (p[7]) return sniprintf(out, cap, CORE_STR("rytmpat | rytmpat=on|voice|off|fetch")), true;
+  else if (!strncmp(p, "rytmpat=fetch:", 14) && p[14] >= '0' && p[14] <= '9') {
+    // a test's fetch of pattern n (0..127, A01 = 0): a stock Rytm never says its active pattern (no 2D 02), and the
+    // 0x80 request is not a MIDI data byte, so the Pi's USB MIDI packer drops it (usbmidi_pack). n stands for the
+    // active pattern until the box's next 2D 02 or a resync (forget_pattern)
+    int n = 0;
+    for (const char* q = p + 14; *q >= '0' && *q <= '9' && n < 1000; ++q) n = n * 10 + (*q - '0');
+    if (n > 127) return sniprintf(out, cap, CORE_STR("rytmpat=fetch:n, n 0..127")), true;
+    last_pattern = n, pg = pg ? pg : kPagePattern, want(0);
+  } else if (p[7]) return sniprintf(out, cap, CORE_STR("rytmpat | rytmpat=on|voice|off|fetch|fetch:n")), true;
   sniprintf(out, cap, CORE_STR("rytmpat: %s%s%s, pattern %d (gen %lu), requests %lu answers %lu bad %lu timeouts %lu"
                                 " dirties %lu"),
             pg == kPageVoice ? "voice" : pg ? "on" : "off", hold ? ", held (song)" : "", stale() ? ", stale" : "",

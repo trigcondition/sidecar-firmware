@@ -373,8 +373,8 @@ static void project(const char* n) {
   for (const char* c = n; *c; ++c) m[k++] = (uint8_t)*c;
   m[k++] = 0xF7;
   core::engine_sysex(m, k);
-  for (int i = 0; i < 200 && strcmp(core::project, n); ++i) core::idle_save(), card_turn();
-  CHECK(!strcmp(core::project, n));
+  for (int i = 0; i < 200 && strcmp(core::prj().key, n); ++i) core::idle_save(), card_turn();
+  CHECK(!strcmp(core::prj().key, n));
 }
 static void kit(int k) {
   const uint8_t m[8] = {0xF0, 0x7D, 0x52, 0x54, 0x3B, 1, (uint8_t)k, 0xF7};
@@ -548,7 +548,7 @@ static void fill_waits_for_a_pending_write() {
 
 // the boot: an edit before its fill is complete is the named project's (/.rytm/project), never the unnamed one's
 static void edit_during_boot_fill() {
-  CHECK(!strcmp(core::project, "BOOT") && core::project_loading());
+  CHECK(!strcmp(core::prj().key, "BOOT") && core::project_loading());
   CHECK(!core::seq::any_tracks() && core::seq::pattern_locked(0) == 3);   // (phase 2) nothing of it loaded yet: A01 not written
   {   // fix round 1: an edit of the loading project's tracks is refused at once, with that reason (never taken, then lost)
     char o[200];

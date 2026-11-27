@@ -178,10 +178,12 @@ uint32_t g_wave_us = 0;   // this tick's time here (the slow-step line's own nam
 }  // namespace
 
 // The overview of a pool slot (SMP, word 19: 1..), loading if new; null: no slot, an empty one, or no card.
-CORE_COLD const void* wave_of_slot(int slot, int* state, int* progress) {
+// ps: whose pool (a voice slot, core/pool/pool.h)
+static CORE_COLD const void* wave_of(int ps, int slot, int* state, int* progress) {
   *state = 0, *progress = 0;
-  if (!card_ok || slot < 1 || slot > npool || pool[slot - 1].folder < 0) return nullptr;
-  int f = pool[slot - 1].folder, fi = pool[slot - 1].file;
+  const int l = pool_line(ps, slot);
+  if (!card_ok || slot < 1 || slot > prj(ps).npool || pool[l].folder < 0) return nullptr;
+  int f = pool[l].folder, fi = pool[l].file;
   int pick = -1;
   for (int i = 0; i < kWaveSlots; ++i)
     if (cache[i].state && cache[i].folder == f && cache[i].file == fi) pick = i;
@@ -193,12 +195,16 @@ CORE_COLD const void* wave_of_slot(int slot, int* state, int* progress) {
     w.folder = (int16_t)f, w.file = (uint16_t)fi, w.state = 1, w.col = 0, w.frames = w.rate = 0;
   }
   Overview& w = cache[pick];
-  w.line = (int16_t)(slot - 1);
+  w.line = (int16_t)l;
   w.used = ++wave_clock;
   *state = w.state, *progress = w.col;
   return &w;
 }
-CORE_COLD const void* wave_of_voice(int vi, int* state, int* progress) { return wave_of_slot(pool_slot(v[vi & 7].p[10]), state, progress); }
+CORE_COLD const void* wave_of_slot(int slot, int* state, int* progress) { return wave_of(prj_slot(), slot, state, progress); }
+CORE_COLD const void* wave_of_voice(int vi, int* state, int* progress) {
+  vi = voice_wrap(vi);
+  return wave_of(slot_of_voice(vi), pool_slot(v[vi].p[10]), state, progress);
+}
 // rui1045: SMP's slot as the page reads it (the SRC view's 2A at 14 bits, or the voice's report): bank * 127 + row, 0 OFF
 CORE_COLD int smp_slot(const Source& s) {
   int c = s.code(10), row = c & 127;
@@ -276,7 +282,7 @@ CORE_COLD int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi :
 // mod: MOD's value as the page reads it (the Source's P12: the SRC view's is the Rytm's own, not the voice's yet)
 CORE_COLD int mode_of(int vi, float mod, bool smpl) {
   if (!psram) return -1;
-  return v[vi & 7].grain ? (int)rytm::SampleModes::kGrain : core::dsps_mode_of(smpl, mod);   // (SAMPLER's PLAY zones or MOD's)
+  return v[voice_wrap(vi)].grain ? (int)rytm::SampleModes::kGrain : core::dsps_mode_of(smpl, mod);   // (SAMPLER's PLAY zones or MOD's)
 }
 
 // The waveform in rows k.y..k.y+k.h-1, x0..x0+w-1, normalised; columns outside [a, b] dithered (a > b: none)
@@ -302,7 +308,7 @@ CORE_COLD void plot(Canvas& c, const Overview* w, int x0, int y0, int wd, int h,
 
 // No waveform (yet): why, centred over where it would be (slot: a text item; empty when there is a waveform)
 CORE_COLD void status(Canvas& c, const Overview* w, const Source& s, int x0, int wd, int y0, int h, int slot) {
-  int vi = s.voice() < 0 ? 0 : s.voice() & 7;
+  int vi = s.voice() < 0 ? 0 : voice_wrap(s.voice());
   const char* why = v[vi].grain && !psram ? "!RAM: GRAIN NEEDS PSRAM"
                     : !w ? (smp_slot(s) < 1 ? "SMP OFF" : "EMPTY SLOT") : w->state == 1 ? "LOADING" : w->state == 3 ? "UNREADABLE"
                                                                                                                   : nullptr;
@@ -330,7 +336,7 @@ CORE_COLD const char* draw_sample(Canvas& c, const Rect& r, const Cell& cell, co
   // when it lies inside the region (else, and 0 OFF, the whole region); DSP SAMPLE: MOD's LOOP, or ONE / streamed with
   // LOP >= 1, and END < STA reversed
   const bool smpl = remote_voice_smpl(vi);
-  const int z = v[vi & 7].grain ? -1 : core::dsps_play_zone(smpl, (float)s.param(11));
+  const int z = v[voice_wrap(vi)].grain ? -1 : core::dsps_play_zone(smpl, (float)s.param(11));
   const bool zrev = z == core::kPlayRev || z == core::kPlayRlp;
   bool rev = (end < sta) != zrev;
   int a = end < sta ? xe : xs, b = end < sta ? xs : xe;
@@ -610,7 +616,7 @@ CORE_COLD const Page* code_page_for_machine(int machine) {
 
 CORE_COLD const Page* page_for_voice(int machine, int vi, int mod) {
   if (sample_machine(machine) &&
-      mode_of(vi, mod < 0 ? v[vi & 7].p[11] : (float)mod, machine == kSmplMachine) == rytm::SampleModes::kGrain)
+      mode_of(vi, mod < 0 ? v[voice_wrap(vi)].p[11] : (float)mod, machine == kSmplMachine) == rytm::SampleModes::kGrain)
     return machine == kSmplMachine ? &kGrainPageDt : &kGrainPage;
   if (machine == kGrainMachine) return &kGrainMachinePage;
   return page_for_machine(machine);
@@ -619,14 +625,14 @@ CORE_COLD const Page* page_for_voice(int machine, int vi, int mod) {
 CORE_COLD uint32_t draw_key(const Cell& c, const Source& s) {
   uint32_t h = 0;
   if (c.arg == kDrawSample || c.arg == kDrawGrain) {
-    int vi = s.voice() < 0 ? 0 : s.voice() & 7, st = 0, prog = 0;
+    int vi = s.voice() < 0 ? 0 : voice_wrap(s.voice()), st = 0, prog = 0;
     const void* w = wave_of_slot(smp_slot(s), &st, &prog);
     const bool smpl = remote_voice_smpl(vi);
     h = (uint32_t)(w ? (uintptr_t)w : 1) ^ (uint32_t)st << 8 ^ (uint32_t)(prog / 16) << 12 ^ (uint32_t)(mode_of(vi, (float)s.param(11), smpl) + 1) << 20 ^
         (uint32_t)(smp_slot(s) < 1) << 28 ^ (uint32_t)smpl << 29 ^
         (uint32_t)(core::dsps_play_zone(smpl, (float)s.param(11)) + 1) << 24;   // (REV / FLP: the same engine mode as FWD)
     if (c.arg == kDrawSample) {   // the playhead moves the picture: 2 px steps of the ~100 (a tile or two a frame)
-      static LiveKey keys[8];     // 0.4.3: at most every kLiveMs
+      static LiveKey keys[kVoices];     // 0.4.3: at most every kLiveMs
       int ph = core::dsp_playhead(vi);
       h = keys[vi].get(h, (uint32_t)(ph < 0 ? 0 : 1 + ph / 1311), now_ms());
     }

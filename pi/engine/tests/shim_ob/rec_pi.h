@@ -11,3 +11,4 @@ inline void (*g_play_hook)(int32_t (*)[12], unsigned) = nullptr;   // a test's m
 struct TPlayStub { void mix(int32_t (*F)[12], unsigned n) { if (g_play_hook) g_play_hook(F, n); } };
 inline TRecStub g_Rec;
 inline TPlayStub g_Play;
+namespace rec_pi { inline int Slot() { return 0; } }   // the recorder's box (rec_pi.h): the base box here

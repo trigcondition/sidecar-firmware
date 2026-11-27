@@ -141,7 +141,7 @@ the function from the USB device altogether (if a computer has trouble with the 
   multicast filter answered Circle's default FALSE, and Circle's IGMP handler asserts on it the first time the link is
   up (the serial console: igmphandler.cpp(87)); the halted Pi was reset by the watchdog 15 s later. The device takes
   every frame anyway (NCM has no filter): it answers TRUE.
-  `GET /prevboot` (paired) returns the last crashed boot's report and log tail (`/.rytm/prevboot.txt`).
+  `GET /prevboot` (paired) returns the last crashed boot's report and log tail (`/.sidecar/prevboot.txt`).
 - The trust is the cable's, not the computer's: a computer that forwards IP traffic between its interfaces could pass
   another machine's packets onto the cable. The Sidecar has no gateway on the cable, so it cannot answer them.
 - The MAC addresses come from the board's serial number (locally administered): stable per Sidecar.

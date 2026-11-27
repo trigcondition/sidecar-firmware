@@ -19,12 +19,12 @@ using msamp::to_int;
 namespace {
 
 const char* const kPaths[2] = {"/.rytm/sdtest.bin", "/.rytm/sdtest2.bin"};
-const char* const kResult = "/.rytm/sdtest.txt";
+const char* const kResult = "/.sidecar/sdtest.txt";
 
 // ---- the board's card
 File files[2];
 bool d_open(int w, bool write) {
-  if (write) Fs().mkdir("/.rytm");
+  if (write) Fs().mkdir("/.sidecar");
   return files[w].open(kPaths[w], write ? kWrite : kRead);
 }
 int d_read(int w, uint64_t off, void* b, uint32_t n) {
@@ -115,7 +115,7 @@ uint32_t timed_write(int w, uint32_t n, bool* ok) {
 
 void save() {
   File f;
-  Fs().mkdir("/.rytm");
+  Fs().mkdir("/.sidecar");
   if (!f.open(kResult, kWrite)) return;
   char t[700];
   int n = sniprintf(t, sizeof t,

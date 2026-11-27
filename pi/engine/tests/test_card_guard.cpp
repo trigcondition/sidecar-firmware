@@ -11,7 +11,7 @@ using namespace cardguard;
 int main ()
 {
 	// Sidecar's folders, the folder itself and inside it, in any case, with or without the drive
-	for (const char *p : {"SD:/.rytm", "SD:/.rytm/blackbox.log", "/.digitakt/project", "/.a4/project", "SD:/.a4", "/.rytm/pair.txt", "/.rytm/projects/a/kit.txt", "SD:/Samples",
+	for (const char *p : {"SD:/.rytm", "SD:/.sidecar/blackbox.log", "/.dt/project", "/.a4/project", "SD:/.a4", "/.sidecar/pair.txt", "/.rytm/projects/a/kit.txt", "SD:/Samples",
 			      "SD:/Samples/pi-test/sine440.wav", "/samples/x.wav", "SD:/PLUGINS/a.rmp", "sd:/Recordings/t1/1.wav",
 			      "/Bundles/a.sidecar.zip", "/PRESETS/x", "/MULTISAMPLE/a/b.wav", "/WAVETABLES/w", "/GRANULAR/g",
 			      "/CHOP/c", "/NAM/n", "/JUNO/Factory/a.syx", "/DX7/a.syx", "/MACHINES/m", "/Plugins/.bak"})
@@ -46,7 +46,7 @@ int main ()
 		CHECK (open_ok (p, true));
 	}
 	// f_rename: both names; the new one has no drive of its own
-	CHECK (rename_ok ("SD:/.rytm/pair.txt.new", "/.rytm/pair.txt"));
+	CHECK (rename_ok ("SD:/.sidecar/pair.txt.new", "/.sidecar/pair.txt"));
 	CHECK (rename_ok ("/Samples/a", "/Samples/b"));
 	CHECK (rename_ok ("USB:/config.txt", "/x.txt"));
 	CHECK (!rename_ok ("SD:/config.txt", "/.rytm/x"));

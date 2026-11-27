@@ -75,6 +75,7 @@ void set_level_db(int db);
 int level_db();
 float level();
 void load();
+void take_text(const char* b, int n);   // 3(c) step 8: a read preview.txt into the slot in hand's level (another slot's at its attach)
 bool save();
 void reset_for_tests();
 

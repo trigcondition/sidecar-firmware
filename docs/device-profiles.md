@@ -192,34 +192,39 @@ engine, read for facts only; no code of it is here. [The community Digitakt port
 
 ## State folders
 
-A box with `state_dir` set (`/.digitakt` for the Digitakt) keeps its projects, settings and pools there, and the Rytm keeps
+A box with `state_dir` set (`/.dt` for the Digitakt) keeps its projects, settings and pools there, and the Rytm keeps
 its own in `/.rytm`, so they never mix. Shared content stays shared: `/Samples`, `/Plugins`, `/JUNO`, `/DX7` and the rest of
 the card's top level. The engine's own code keeps saying `/.rytm/...`. Every file call passes through one path function per
 port (`full` in `pi/engine/platform_pi.cpp`, `host_path` in `core/host/platform_host.cpp`), and those call
 `device::state_path`, which swaps the folder. With the Rytm it returns the same pointer after one test.
 
-The Pi's own files stay in `/.rytm` whatever the box: the network, the pairing, the screen, the black box
-(`kMachine` in `core/device/device.cpp`). A folder of its own also means its own copy of what is derived from the card,
-such as the sample library's index: built once, and it does not touch the Rytm's.
+The Pi's own files are in `/.sidecar` whatever the box (decided 2026-11-21): the network, the pairing, the screen and CPU
+clock, the black box, the update and web app, and the indexes of the shared libraries (the card index, `library/`,
+`dx7.bin`: one index of `/Samples`, `/JUNO`, `/DX7` for every box). See `core/device/sidecar_dir.h`; a card from an older
+build has them in `/.rytm` and the first boot moves them. A box's folder holds only that box's state.
 
-**The folder is chosen once per boot, before the first file is read, and never changes while the engine runs.** The engine
-reads the card at boot, long before a box can speak, and a stock Rytm never says hello, so nothing can wait for one. Instead:
+**Slots by attach order, folders by box type (decided 2026-11-21), and nothing restarts.** The first box to attach is slot 0,
+the second slot 1, whatever their types; each is in its type's folder (`/.rytm`, `/.a4`, `/.dt`) from then on, on
+whichever transport it spoke (`device::slot_of`), and its project, lists, store and settings are read from that folder at its
+attach (`project_attach_step`, either slot). No file stores a slot number. A box attaches with its hello (`4F`), the Rytm with
+its 35, and on the Pi any box with its USB device (`device::usb_attach`
+at enumeration: the same type is the same slot both ways). Status 3 (restart) is no longer sent, and `/.rytm/device` chooses
+nothing any more.
 
-1. `device::boot()`, first thing in `engine_begin`, reads `/.rytm/device`: the id of the last box. No file, or a Rytm's id:
-   the Rytm and `/.rytm`, exactly as before this layer existed.
-2. A hello from a box that needs another folder is answered with status 3. The Sidecar finishes its saves, writes its choice
-   to `/.rytm/device` and restarts. Your next hello is accepted.
-3. A Rytm with the Sidecar mods says 35 at its port-up. If the Sidecar is on a box's folder, that asks for `/.rytm` and one
-   restart in the same way.
+**At boot** slot 0 is presumed the Rytm's (`Link::presumed`): its project is read from `/.rytm` as it always was, so a *stock*
+Rytm (no mods, so no 35) is slot 0 as it always was. Its first message confirms it. A box whose hello (or USB) comes before
+any word from it takes slot 0 instead, and its folder is read into it.
 
-**What a box without a hello gets:** the state the last run chose. On a card that has never met another box that is the Rytm,
-`/.rytm`. A *stock* Rytm (no mods, so no 35) is known by its USB id: the Pi's Overbridge driver sees it, and on another box's folder
-that asks for `/.rytm` and one restart, unless a box said hello this boot. Another box's USB id changes nothing: its hello decides.
-A board with no restart hook (`hooks.device_restart`, Pi only) answers status 0 and stays.
+**A box that leaves** (`device::release`: its USB device gone, its transport down, another box's hello or a Rytm's 35 on its
+transport): its voices, transport, arpeggiator and MIDI notes stop, its transports route nowhere, and its edits are saved into
+its own folder (`Link::parting`, `device::leaving()` until `idle_save` has settled). Until then only that same box may take the
+slot back; another box's hello is answered status 4, wait (or it takes the other slot when that one is free). The box that stays
+never moves: its slot, voices, folder and transport stay as they are (the base, `g_base`, is slot 0 while held, else the slot
+that is). A box that comes back takes the lowest free slot and loads from its folder (the same slot it left, with nothing else
+there since: its state is as it saved it).
 
-**A Rytm and a Digitakt both on USB:** whichever got there first keeps the Sidecar, with no restart loop. While a Rytm is on USB, a hello that would
-leave `/.rytm` is answered status 4, wait, and takes effect after the Rytm goes; so is one in the first 10 s of a boot the Rytm's id caused,
-when the Rytm may not have enumerated yet (`/.rytm/device` says `1 usb` then). One box streams: the second keeps its MIDI, with no audio (the exception is `a4=1`, under "Several devices").
+**Two boxes at once** take both slots; a third box's hello is answered status 4, wait. A box's stream is claimed when it
+enumerates, its hello or not (one stream a slot).
 
 A box without `state_dir` shares `/.rytm`. A box sends no project name unless it can, so it stays on the project its folder
 last had: `_default` on a new folder.
@@ -228,30 +233,231 @@ A bundle exported on one device can be imported on another: their contents have 
 
 ## Several devices
 
-One Sidecar serves one box today, and nothing here builds more. What a box chose already lives in one `device::Link`
-(`g_link`), not in loose globals, so a second link does not start with a rewrite. Three places still assume one link: the
-output hook (`hooks.to_rytm` has no link to pass), `state_path` (the file layer has no link to ask), and `host_sysex`, which
-does not say which port a message came from.
+One Sidecar on the Pi (or the Mac, `CORE_MSAMP` builds) serves two boxes at once, any two of different types in either order
+(the Rytm, an A4, a Digitakt), slot 0 the first attached and slot 1 the second (see "State folders" above). The two do completely
+unrelated work. **Nothing of a project is shared:** each box has its own
+folder, project, pools, sequencer, scenes, LFOs, effects, clock, transport, song and pages, and differs from the other only
+in its profile's numbers. A part the second box does not have yet is a named gap (listed below), not a design choice. The
+Teensy has one slot (`kVoiceSlots` 1), so everything there stays one.
 
-A second device at the same time would need:
+What a box chose lives in one `device::Link` per box (`g_links[kLinks]`, `kLinks` 2): who holds it (`held`, the Rytm too),
+its box (`box`, null for the Rytm), its folder. Each transport (0: the platform's host link, the USB-C box's MIDI or the
+emulator's TCP link; 1: the other box's, the Teensy relay's) carries one slot at a time or none (`device::slot_of`,
+`route_of`, -1 none). Which physical port a box is on (USB-C or the Teensy relay) is decided at run time and
+changes nothing here.
 
-- **A clock master.** One box leads, the others follow: MIDI clock from the leader, or the Sidecar's. The sequencer, the LFOs
-  and the recorder each take one clock today, and two boxes' transports must not fight over it.
-- **Voice ownership.** Eight voices shared out: which link owns which voice, what happens when a box asks for one it does not
-  own, and how a box's `track` maps to a voice other than its own index. The translation is the place for it. `link_reset`
-  silences every voice today and would have to touch only the link's own.
-- **Separate project state.** Today there is one loaded project in RAM (pools, LFOs, inserts, the sequencer) and one folder,
-  chosen once a boot. Two folders at once mean per-link state in all of those, and every file call knowing its link. This is
-  the largest part. The boot-time choice and the restart would go. The restart is not acceptable while another box plays.
-- **Audio return.** The Pi's Overbridge host serves one device, with one stream and one clock. A second box needs a second
-  USB stream, and the two boxes' sample clocks differ, so one has to be resampled, or its audio goes out somewhere else. The
-  Pi's USB bandwidth and CPU budget need measuring first.
+### How a slot's state is reached
 
-A first step of this exists: `a4=1` (`docs/pi-engine.md`) streams an Analog Four MKII beside the Rytm, stock firmware, audio only: no link, no hello,
-no voices. The Rytm's stream stays the clock and the A4's is resampled to it (`pi/engine/drift_src.h`). Its USB MIDI is no host link (`pi/engine/usb_box.h`).
+- **The slot in hand.** On the control core, `device::cur()` is the link whose message is being handled or whose state is
+  being stepped; `prj_slot()` is its index. A box's messages are handled inside its link's `device::Scope`, and each module's
+  tick runs once per live slot inside that slot's Scope (`device::live`: held, saving after its box left, or the base).
+  Outside any Scope it is `g_base`: slot 0 while it is held, else the slot that is, so code that never names a slot does
+  what it always did.
+- **The Rytm's own machinery** (its params, scene and QPERF, kSnd, rytm_dump and patwrite, the calibration and its stems, the
+  recorder's fxin, the JUNO / FM names to it, its MIDI CONFIG and SONG replay, `hooks.transport`) follows its slot:
+  `device::rytm_at(s)`, `rytm_slot()` (-1 none), `rytm_home()` (its slot, else 0, where its state is read). Never slot 0 as
+  such. On one slot (the Teensy) `rytm_at` is always true, as slot 0 always was.
+  On the Pi, its pattern dumps and FILL's answers are read from whichever transport is routed to its slot
+  (`bridge::rytm_byte(t, b)` through `device::rytm_route(t)`: transport 0 unless it carries another box, transport 1 while it
+  carries it), in its Scope.
+- **Per-slot module state** is one struct per slot, `[kVoiceSlots]` (or `Per<T>`), read through an accessor of the slot in
+  hand (`prj()`, `pools::S()`, `ins::control_of(slot)`, `out::control_of(slot)`, `fx::control_of(slot)`,
+  `master::control_of(slot)`).
+- **Render and other cores** never read `cur()`: they take the slot from the voice (`slot_of_voice(vi)`).
+- **Files:** every file call goes through `state_path`, which uses the slot in hand's folder on the control core, or the
+  card request's (`device::CardScope`, set around each request the card core runs; `cardq::async` and the pool jobs carry
+  the slot they were posted for). The web's own calls use the box its page serves (`g_web_link`).
 
-Also: a way to tell the links apart (each USB MIDI device calls its own handler; the Rytm path's message has no port on it
-yet), and a remote UI that belongs to one link.
+### What each box has of its own
+
+| part | where | notes |
+|---|---|---|
+| project, its name and saves | `core/pool/pool.cpp` (`prj()`) | read from its folder at its attach (either slot); a 0x10 names its own box's project |
+| pool lists, JUNO / FM lists, the RAM store | `pools::S()`, `user/lists.cpp`, `store` | GRANULAR, WAVETABLE, MULTISAMPLE, CHOP resolve a voice's rows through its own slot; a file both lists hold loads once |
+| LFOs and the modulation layer | `core/mod` | a box's layer takes its own voices, its INSERT chains, its send FX and master; kSnd (the Rytm's track sends) is the Rytm's slot's |
+| INSERT and OUT | `ins::control_of(slot)`, `out::control_of(slot)` | buses, master chains, route; another slot's file holds its bus, ROUTE, PEQ, MFX and SFX lines; AMP plays on every box's voice and master chains, each box its own 6 (+2 master) (decided 2026-11-26); PRE / POST / TRK trims per slot (`stereo=trim` the slot in hand's, `trimpre=` / `trimpost=` every slot's) |
+| output stage | `pi/engine/output.*`, `side_out.h` | beside a Rytm, slot 1's voices go to a side stage paced by its own box's stream; alone, a box has the base stage |
+| send FX and master | `fx::control_of(slot)`, `master::control_of(slot)` | own TYPE, knobs, route (`sendfx.txt`), rooms; slot 0's TYPE and knobs stay the Rytm's kit 0x20s. The Rytm's instance, in either slot, is paced by its stems from its own stream's IN (`sendfx_pi::FromRytm(slot)`, SRC MIX `masterfx_pi::Stems(slot)`; its report 50 in `master::rytm()`); another box's by its voices |
+| user slots U1..U5, user effects UFX1..UFX4 | `um.cpp` | four effects per box, own `/.a4/fxslots`; own effects budget; plugins get their own box's transport. A Rytm in either slot gets its own fxslots names in its 0x21 list, its own labels, and its own 2 s BASE / WIDTH refresh (`sendfx_step` runs in each slot's Scope) |
+| scenes and the XY pad | `core/ui` | |
+| sequencer | `seq.cpp` (`Per<T>`) | a box's tracks on its own voices; own mute gate; 31 / 32 / 08 counted per slot (`seq=ui[:S]`) |
+| kits | `bundle/kits` | own queue, RELOAD ALL scan and records in its own folder; a box's 3B ends only its own voices' MIDI and arp notes |
+| MIDI clock | `host_link.cpp` `engine_realtime_link` | each transport's F8 FA FB FC F2 clock its own slot's send FX grid, LFOs, arpeggiator and plugins |
+| the Pi-wide jobs' clock | `rec_pi::Transport(slot, ..)`, `samp::transport(slot, ..)` | each on the clock of the box it belongs to (decided 2026-11-26): a sampler take follows the box it was armed for (the slot in hand: `box=S:samp=arm`, the page's box), its PLAY / next-bar start, STOP, bars and tempo; the recorder records the box whose PLAY started it while armed (its output stage, FX returns, IN channels and meters; a manual `rec=start` the base box's; decided 2026-11-26); the bundles' card writes slow and the storage bench is refused while any box plays (a box that stops or leaves clears its own); the MIDI machine's clock out to the Pi's USB-A devices is the box's whose voices alone send there, none while both boxes' do |
+| fxin, keys, MIDI learn, preview | | read from a box's folder at its attach, saved there |
+| remote UI | `ui/remote.cpp` | own pages, canvases, track tables and display reports; the touchscreen follows the box whose page opened or whose 49 came last |
+| SONG RECORD | `core/song` | own takes, journal, clock, lanes; each transport's whole MIDI stream taps its own slot's song. The A4's start snapshot, restore and UNDO REPLAY use its own dumps and GLOBAL MIDI settings |
+| arpeggiator, transport out, all sound off | `arp`, `hooks.transport_box(slot, ..)` | a box's STOP and CC 120 end only its own voices and its own send FX |
+
+### Voices on two links
+
+The Pi and the Mac render 16 engine voices (`core::kVoices`); the Teensy renders 8, and `-DCORE_VOICES=8` builds that engine
+anywhere. A box names 8 (`kBoxVoices`: the voice byte's low 3 bits, a project's tracks). Slot 0 (the first attached) plays
+engine voices 0..7 and slot 1 (the second) 8..15, whatever their types. Each box keeps its own voice count (an A4's 4, a Digitakt's
+8). The wire never changes: `device::voice_in` turns a report's voice byte into the link's engine voice where the message is
+handled (`host_sysex_slot`, `voice_report`), and `box_voice` turns it back.
+
+- **Engine state** (machines, render arrays, the stream and sample-RAM state, MULTISAMPLE, WAVETABLE, GRANULAR, CHOP,
+  LIVE IN, MIDI, user machines, poly FM, the sequencer's instances, the arpeggiator) is sized `kVoices` and indexed by
+  engine voice. `render_voices` takes the 16-wide ring. The Pi splits each slot's eight as one box's always were (`split=4`:
+  0-3 and 8-11 on core 1, 4-7 and 12-15 on core 2), and slot 1's only while a box has it, so a lone Rytm costs what it did.
+- **Per-box state** stays 8 wide, one set per slot, indexed by the box's own voice: the INSERT chains (`ins::kVoices`,
+  chains V1..V8), OUT's knobs and a profile's `out::Device` rows, the output stage, a project's files.
+- **Resets:** `link_reset(why, slot)` silences that slot's eight only, with its own send FX; a box's hello leaves the
+  Rytm's voices playing.
+
+### Voices and CPU admission
+
+Decided 2026-11-21 (`core/device/admit.h`). Each box asks for its type's voices (`Profile::voices`: the Rytm 8, the A4 4,
+the Digitakt 8). `voices=` in cmdline.txt lowers a type's count (`voices=rytm:6,a4:2,dt:4`, each 0..8, never above its
+profile's: a box's reports past its profile's voices are dropped anyway).
+
+When a box attaches (`device::select`, both by hello and by USB), its voices are admitted against the Pi's boot bench,
+scaled to the CPU clock setting, so that each render core stays under 80 % in the worst case:
+
+- **A voice** costs the worst machine of the bench (any voice may play any machine) and its POST EQ (`bench ins OFF+OFF` / 8).
+- **INSERT types are admitted when set** (decided 2026-11-22, like AMP below): a voice slot's type plays only while its
+  voice's render core stays under 80 % with the types already admitted there, each at its own boot bench row (`bench ins a
+  slot of each type`, a sixteenth of T+T on 8 voices x 2 slots; `admit::type_bp`, `ins_fits`, `voice_core`; the check is
+  `ins::set_cpu_check`, set by `device.cpp`). Otherwise the slot plays dry and its strip shows `NO CPU`
+  (`ins::Control::refused`), and each idle pass admits it again once there is room (`ins::regrant`). A type that plays is
+  never refused afterwards; a box attaching later counts it. Before, every voice reserved the worst TYPE pair. A voice on OUT
+  PRE / POST runs its chain in stereo, so its types count twice their row there (`device.cpp` `chain_mul`; a stereo-mix
+  box has every voice on POST); a type already playing when its voice goes stereo is shed if its core is then over. Gap:
+  the bus chains stay in the box row.
+- **A box's chains:** its send FX, bus and master chains at their worst set, dry, measured as one bench row
+  (`master::box_bench`), counted on the core that runs its send FX. Before that row (LT1, 2026-11-22) the sum of
+  overlapping rows.
+- **AMP is admitted when a slot loads a capture** (decided 2026-11-22), not reserved at attach: an AMP slot (a base-box
+  voice's, or the master pair's) starts playing only while its render core stays under 80 % with the AMPs already playing
+  there (`admit::amp_fits`, `amp_core`; the check is `amp::set_cpu_check`, set by `device.cpp`). Otherwise it plays dry
+  and shows `NO CPU` (`amp::kCpu`) until there is room (another AMP stops, a box leaves). AMPs playing when a box attaches
+  count against that box: the first ask wins. AMP plays on the base box's chains only, the other box's AMP slots play dry;
+  the cap of 6 voice AMP slots (`MAX 6`) still holds. `/status` `admit` has `amps1` / `amps2`, the AMPs counted per core.
+- **Under load** (LT3, 2026-11-22): each row alone on core 0 reads low against the two-box load, where all four cores share
+  the L2. The model scales them (`admit.h` `kAmpLoadPct` 500 since LT4 (300 at LT3), `kVoiceLoadPct` 135, `kChainLoadPct` 110; the boot's `admit:`
+  line prints them): the base box's master AMP pair measured ~26 % of a core against the bench's 2 x 4 %. With them,
+  reserved at attach (an AMP on every base-box voice, the pair on core 2), a Rytm or Digitakt base box was over on core 2
+  even alone; hence AMPs on load and the master chain on core 3 (below). Model with LT3's bench
+  (`design/rebalance-core2/MODEL.md` in the project files): Rytm+A4 4/4, Rytm+Digitakt 8/8, A4+Rytm 8/8, with room for one
+  AMP a core beside an A4 and none beside two 8-voice boxes.
+- **Where the chains run** (decided 2026-11-22): slot 0's send FX on render core 2, slot 1's send FX and master chain on
+  render core 1, each after its voices (`cores.cpp` `ChainCore`). Slot 0's master chain (the base box's while it is held,
+  with its AMP pair) runs on core 3 during RenderBlock's wait for cores 1 and 2 (`MasterCore`, `admit::master_core`; an
+  8-voice engine keeps it on core 2): the stats line prints its time as `c3 mfx`, inside `c3 own`. Core 3 is counted
+  (decided 2026-11-23 after LT6: at 1200 MHz slot 0's master AMP pair there made core 3's passes 10-19 ms and the engine
+  underran; with it off, none): `admit::core3_bp` is core 3's control work (13.4 %) and slot 0's master chain (8 %, its POST
+  EQ and send TYPEs) as fixed shares at 1500 MHz, plus every master INSERT type admitted (its bench row, twice: stereo)
+  and the master AMPs playing, within 70 % (`kC3LimitBp`: core 3 also waits for cores 1 and 2). The send TYPEs as master inserts (CHORUS, COMB, SPACE,
+  RINGS, CLOUD, HALO) count at their own boot rows, `bench sfxins T x4` / 4 (`admit::master_slot_bp`; stereo already, so
+  once). A master type or AMP with
+  no room plays dry and shows `NO CPU`; at a lower clock `shed_over` sheds the master AMPs, then the master types. At 1500
+  the pair fits (61.6 %), at 1200 one AMP of it. `/status` `admit` has `core3Bp` and `amps3`. LT1 found core 2 full with both boxes' chains on it (~95 % in config A) while core 1 was
+  ~70 % idle. Fixed by slot, never by which box is the base, so each box's rings keep one render core whatever attaches
+  or leaves; core 3 waits for both cores' chains before a pass whose base box changed (AMP's master rows follow the base).
+- **Placement:** a box's voices are its 0..n-1; 0..s-1 render on core 1 and s..7 on core 2, s its split: `split=` (4), or
+  half the voices its box asks for if fewer (an A4's 4 as 2 + 2), so a box's voices share both cores with the chains.
+  Core 3 puts each slot's split in every pass, so cores 1 and 2 never split a slot differently.
+
+The first box keeps its voices. The second gets the most that keep every core its voices land on under 80 % (a core
+already over by the chains alone takes none of them), never more than it asked for. Its reports past them are dropped
+(`host_sysex_slot`), the render cores skip those voices (`device::voice_admitted`), the box is told by a popup on its
+screen (`SIDECAR 4/8 VOICES` / `CPU FULL`, for 30 s while its screen can take one), and `/status` `slots[]` has `voices`,
+`asked` and `short`, with `admit` (bench, MHz, the limit and each render core's worst case now, in 1/100 % of a core).
+When its partner leaves, a box gets back what it asked for, once the partner's slot is no longer kept for it (saving, then `slothold=`, 5 s by default): a plug or unplug on one of the Pi's hub ports knocks the box on the other port off and back (re-enumerated; seen on a unit 2026-11-21, 8 of 8), and a box back to its kept slot keeps its place in the attach order, so a first box stays first with its voices. A clock change after an attach does not take voices away; it
+applies to the next attach (the boot log's `admit at N MHz, the second box's voices:` line lists each pair). No bench
+(`bench=0`, the host, the Teensy): nothing is refused.
+
+Not settled yet: the costs are an upper bound from the boot bench rows; the two-box worst-case measurement on a unit (full
+voices, the worst machine, expensive user FX on both boxes) checks them before the rule ships.
+
+### Audio
+
+Each box's audio stays its own: each slot's voices go back to its own box's stream (`CObUsb::Slot` is the core slot
+`usb_attach` gave it), each paced by its own box's clock. No audio crosses between boxes and nothing is resampled. (`a4=1`, `docs/pi-engine.md`, is the
+older stock-firmware path: an A4 with no mod streamed beside the Rytm, audio only, resampled into the Rytm's PRE pair by
+`pi/engine/drift_src.h`. An A4 with the Sidecar mod takes slot 1 instead.)
+
+### One per Sidecar by design
+
+The Rytm's own parameters, scene and QPERF, its 0x21 / 0x22 names and core_c's host API belong to the Rytm and follow its
+slot (`rytm_at`, `rytm_home`). The Pi's own files (network, pairing, screen, black box) are in `/.sidecar`, no box's.
+
+### The console's box selector
+
+Console commands run for the base box (`g_base`) as they always did. `box=S:<command>` runs one in another box's slot (design
+point 8): S is a slot (`0`, `1`) or a box type by its folder's name (`rytm`, `a4`, `dt`), which names the same box whatever its
+attach order (`device::box_prefix`). Inside it, the voice forms (`gr=`, `wt=`, `msamp=` `voice:V` and `pick:V:..`,
+`livein=voice:V`) take that box's own voice V (0..7), so `box=dt:wt=voice:2` forces the Digitakt's voice 3 whichever slot it is
+in. A selector naming no box attached now is logged and does nothing.
+
+The Rytm's project slots (`prjslot`, its 4B reports) and the RENAMED FROM? question on its PROJECT page run only for the Rytm's
+slot (`rytm_at`): another box's project name only names its project, in its own folder.
+
+### Named gaps
+
+What the second box does not have yet, or has differently:
+
+- **The web's bus meters and spectrum strip** show the base box's send FX (`/status` `slotFx` has both slots' counters).
+  The recorder, its meters and `stereo=measure` are either box's (decided 2026-11-26: the recorder takes the box whose
+  PLAY started the take; `box=S:stereo=measure` measures that box's own stage and MAIN IN).
+- **Sequencer on slot 1:** a lock's base for P1..P16 is 64 (the box's knob value is not known here); no SEED MOD source; no
+  latency calibration (`seq=cal` is the Rytm's slot only; a box keeps `seq=lat`); the touch editor's undo history is the
+  Rytm's slot's.
+- **Kits:** the A4's mod sends no 4C yet, so its slot's kit records exist only once it reports SAVE / RELOAD KIT.
+- **SONG RECORD on the A4:** its stopped program change is not traced, so a restore or undo writes only once its mod has
+  reported the pattern selected (2D 02); `midi_config()` is the Rytm's.
+- **Readers off the control core** (`gr` / `wt` / `msamp` `entry_note`, the `srclib` browser, `page_gfx`, `preset_index`)
+  read the slot in hand's lists.
+- **A box replaced before its saves land:** a different box can take its slot only once `idle_save` has settled; until then
+  it waits (status 4) or takes the other slot. A Rytm presumed at boot who never spoke gives slot 0 up at once (no save first).
+- **An Engine of SONG RECORD** keeps the MIDI CONFIG kind (the Rytm's default or none) its slot had when it was first made.
+- **Two boxes of one type:** see "Two boxes of one type" below for what is built and what is still a gap.
+- **Cost:** two boxes' expensive user effects on one core (core 2) are not measured on the Pi yet (CPU admission's upper
+  bound stands in for it until then: "Voices and CPU admission").
+
+## Two boxes of one type
+
+Two Rytms (or two A4s, two Digitakts) on one Pi, design decided 2026-11-26. A box is its type **and its DeviceUID**: the stock
+firmware's 32-bit unit ID, the answer to the Elektron MIDI RPC `0x03` (answer `0x83`) and to the USB vendor request Overbridge
+sends (`0xC0`, bRequest 0, 8 bytes). Nothing is written to the box. The USB serial cannot tell two units apart: every Elektron
+box says `000000000001`.
+
+- **Identity.** `Link::uid` (0: not known) beside `held`. A slot is box (p, uid)'s when the holder is p and the UIDs match
+  (`device::slot_of_box`); a holder whose UID was not known (the presumed Rytm, a box by its hello) takes the first known UID
+  while it is the one box of its type. A box whose UID is not known, with a box of its type already here, waits (status 4).
+- **Where the UID comes from.** On the Pi, `ObReadUid` (`pi/engine/ob_usb.cpp`) sends the vendor request when the box's
+  stream enumerates and passes the UID to `usb_attach`. When that gives nothing, the core asks the MIDI RPC on the box's own
+  transport every 500 ms for 2 s (`device::ask_uid`), never while its stream is frozen (`device::g_frozen`). The Teensy, one
+  slot, never asks.
+- **Folders.** A box's state is in `<type folder>/<uid>/` (`/.rytm/3fa2c001/`, `/.a4/...`, `/.dt/...`; 8 lowercase hex
+  digits). `<type folder>/last` names the UID attached last: a box whose UID is not known, alone of its type, uses that folder,
+  and the presumed Rytm reads it at boot. A card no UID was ever read for keeps using the type folder itself, as before.
+- **Migration.** The first box of a type to attach with a known UID inherits the type folder's old layout: every entry that is
+  not a UID folder, `last` or a Pi-wide name is renamed into its UID folder (FAT: a rename, nothing copied). A marker
+  `.moving` is written first and removed last; a boot that finds it finishes the move. Nothing is overwritten or deleted. On
+  the Pi the move runs on the card core (`cardq::kFnReq`), after the card requests queued before it. **An older build on a
+  migrated card** sees an empty `/.rytm` (as with the `/.sidecar` move): say so in the release notes.
+- **Names.** Each UID folder has `name.txt`, default the type and the UID's last 4 hex digits (`Rytm 3fa2`). `/status`
+  `boxes` rows are keyed by type and UID and carry `uid` and `label`; the web page renames a box with a double-click
+  (`box=<uid>:name=<text>`).
+- **MIDI to its box.** Circle's USB MIDI device names its USB device (`pi/circle/circle-midi-usbdevice.patch`), so
+  `CObUsb::SetMidiDevices` matches each transport to the stream of the same USB device, not by strings, and tells the core
+  (`device::set_midi_slot`): a hello or a Rytm's 35 on that transport is that slot's box.
+- **The console's selector** also takes `rytm2` (the second of a type) and a box's UID (8 hex digits, or the last 4).
+- **The Rytm per slot.** `rytm_home()` is the Rytm in hand when the slot in hand is a Rytm; a Rytm in slot 1 takes its send
+  FX from its kit's 0x20s, not the SFX lines; arp's track tables are each Rytm's own.
+
+Named gaps of this part:
+
+- **Byte order (step 0, 2026-11-26):** the units answer the vendor request with `00 00 00 01` and then the UID MSB first,
+  and that UID is the MIDI RPC 0x03 answer. This was read from Overbridge's and Transfer's own records of the bench Rytm, A4
+  and Digitone, not by a run of ours. `ObReadUid` reads bytes 4..7 big-endian. The emulator's `usb-rytm` sends its `uid`
+  property as 8 big-endian bytes, so the folder is the property's low 32 bits; its leading word is 0, not 1 (nothing reads it).
+- **The second Rytm's pattern view and FILL:** the pattern dump reader and FILL's writer are one, the first Rytm's.
+- **Two A4s, two Digitakts:** covered by the same code, not run.
+- **Two Rytms on the computer:** the mirror and the relay forward the UID request to their own box; not run with two units.
+- **Two Rytms' FX cost** on one core: measure in the QEMU FX load gate, then on units.
 
 ## Remote UI on a box
 

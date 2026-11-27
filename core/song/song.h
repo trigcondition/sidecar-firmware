@@ -48,6 +48,19 @@
 //
 // Threads: everything on the control side (the Pi's core 3): byte() from the platform's MIDI tap, tick() from its loop,
 // idle() among the card jobs, command() from the console. The display (core 0) reads lanes_publish's copy (lanes_read).
+//
+// Per slot (3(c) step 10c, the two-boxes rule: nothing shared): one engine per voice slot, each box its own takes in its
+// own state folder (/.rytm/songs/<project>, /.a4/songs/<project>), its own clock, transport, tempo, mutes, MIDI tap,
+// journal and display lanes. Every entry point is the slot in hand's (device::Scope; outside one the base box's), except
+// tick() and idle(), which run each slot's engine in its own Scope (slot 0 always, another while a box's folder is on its
+// link), and midi_config(), the Rytm's. The platform taps each transport's whole MIDI stream into byte() in the Scope of
+// the slot that transport carries (device::route_of). Slot 0 (the Rytm) is as it always was. Another slot's box (the A4)
+// records everything the Rytm's records that comes from its own stream and the Sidecar: its 2C ticks (4- or 5-byte
+// records) and 2D reports, its CC / NRPN and program changes by channel (config_none: no MIDI CONFIG read), its send FX
+// knobs and route (fx::control_of(slot)), its machine / SRC changes from its own remote UI track tables (step 10b;
+// the A4's mod sends no 33 today, so none come). Not
+// yet for it (named gaps, decided 2026-11-16: parity once traced): the start snapshot, MIDI CONFIG read, replay and
+// UNDO REPLAY (its stock dumps are other formats, traced first).
 #pragma once
 #include <stdint.h>
 
@@ -105,14 +118,33 @@ struct MidiConfig {
   uint8_t track_ch[kTracks];   // 1..16
   uint8_t fx_ch, auto_ch;      // 1..16 (auto: 14, learned from the PC the Rytm sends at PLAY)
   uint8_t perf_ch;             // 0.5.0: the PERF channel 1..16, 0 OFF (15 the Rytm's default; GLOBAL X kGlobalPerfCh)
+  // step 10c: the box's tracks with a channel of their own (12 the Rytm's; 6 the A4's: synth 1..4, FX, CV) - the start's
+  // mutes go to these only - and the channel a program change is sent on to select a pattern (0: auto_ch, the Rytm's;
+  // the A4's PROG CH IN CH)
+  uint8_t ntracks, pc_in_ch;
 };
 // GLOBAL X (0x6D) unpacked payload byte 27 = PERF CHANNEL - 1 (0..15), 0xff = OFF [measured, rytm-emu, OS 1.73 and 1.74:
 // notes scenes050]; byte 11 = AUTO CHANNEL - 1 [inferred: 0x0d with AUTO 14, not varied]
 constexpr int kGlobalPerfCh = 27, kGlobalAutoCh = 11;
 void config_default(MidiConfig* c);   // the Rytm's defaults (channels 1..12, FX 13, auto 14, PERF 15), not valid
+// The A4 MKII's (OS 1.56; the offsets of its GLOBAL dump as a host reads them, not yet run on a unit or in
+// a4-emu): its GLOBAL (0x5D) unpacked payload, one byte a setting, channels 0..15 = 1..16 and 0xFF OFF: 0x0B AUTO
+// CHANNEL, 0x0C..0x0F TRACK 1..4, 0x10 FX, 0x11 CV, 0x12 PROG CH IN CH (OFF: the AUTO CHANNEL), 0x13 PROG CH OUT CH,
+// 0x14 PERF, 0x19 PARAM OUTPUT (0 NRPN, 1 CC), 0x1B CLOCK SEND, 0x1C TRANSPORT RECEIVE, 0x1D TRANSPORT SEND, 0x1E PROG
+// CH RECEIVE, 0x1F PROG CH SEND. ENCODER DEST (0x25) and OUTPUT CH (0x28) are enums not decoded: never reported as
+// problems. Its program changes in are cued to the pattern's end, as the Rytm's.
+constexpr int kA4Tracks = 6;
+constexpr int kA4GlobalAuto = 0x0B, kA4GlobalTrack = 0x0C, kA4GlobalPcIn = 0x12, kA4GlobalPcOut = 0x13, kA4GlobalPerf = 0x14,
+              kA4GlobalParam = 0x19, kA4GlobalClockSend = 0x1B, kA4GlobalTrRecv = 0x1C, kA4GlobalTrSend = 0x1D,
+              kA4GlobalPcRecv = 0x1E, kA4GlobalPcSend = 0x1F;
+bool parse_global_a4(const uint8_t* u, int n, MidiConfig* c);
+// step 10c: another box's (not the Rytm's): no channel names a track (every CC / NRPN recorded by its channel, 0x40 | ch,
+// and replayed there), every program change a pattern change, not valid
+void config_none(MidiConfig* c);
 bool parse_global(const uint8_t* u, int n, MidiConfig* c);
-// the MIDI CONFIG as known now: the last GLOBAL dump's (song arming fetches it), else the defaults with the auto channel
-// learned from the PC at PLAY; core/mod/rytm_out.cpp's channels. set_midi_config: a GLOBAL's (tests)
+// the Rytm's MIDI CONFIG as known now (slot 0's engine, whatever the slot in hand): the last GLOBAL dump's (song arming
+// fetches it), else the defaults with the auto channel learned from the PC at PLAY; core/mod/rytm_out.cpp's channels.
+// set_midi_config: a GLOBAL's (tests)
 const MidiConfig& midi_config();
 void set_midi_config(const MidiConfig& c);
 enum : uint32_t { kCfgEncoder = 1, kCfgTrkCh = 2, kCfgNrpn = 4, kCfgPcReceive = 8, kCfgUnknown = 16 };
@@ -127,11 +159,15 @@ constexpr int kCfgRows = 6;
 const char* config_row(int k);   // "PORT: ENCODER DEST = INT+EXT" .. (null past the end)
 int config_wrong(const MidiConfig& c);
 
-// ---- the stock SysEx dumps (F0 00 20 3C 07 00 <id> 01 01 <nr> ... <checksum 2> <length 2> F7; docs/SONG.md 2.1)
+// ---- the stock SysEx dumps (F0 00 20 3C <dev> 00 <id> 01 01 <nr> ... <checksum 2> <length 2> F7; docs/SONG.md 2.1).
+// dev 0x07 the Rytm, 0x06 the A4 MKII (the same frame, the same working ids 0x68..0x6D and answers 0x58..0x5D; its
+// written working dumps apply at once, unsaved, with no answer: a4-song-dumps.md)
 enum : uint8_t { kReqKit = 0x68, kReqPattern = 0x6A, kReqSettings = 0x6C, kReqGlobal = 0x6D };
-int dump_request(uint8_t out[15], uint8_t id);   // nr 0: the working buffer
-// A whole dump: its id (byte 6), checksum (sum of bytes 10 - or 9, the object number, which the Rytm leaves out - .. the
-// payload's end & 0x3FFF) and length (bytes 5 .. the payload's end) right
+enum : uint8_t { kDevRytm = 0x07, kDevA4 = 0x06 };
+int dump_request(uint8_t out[15], uint8_t id, uint8_t dev = kDevRytm);   // nr 0: the working buffer
+// A whole dump (a Rytm's or an A4's: *dev when asked): its id (byte 6), checksum (sum of bytes 10 - or 9, the object
+// number, which the Rytm leaves out - .. the payload's end & 0x3FFF) and length (bytes 5 .. the payload's end) right
+bool dump_ok(const uint8_t* m, int n, uint8_t* id, uint8_t* dev);
 bool dump_ok(const uint8_t* m, int n, uint8_t* id);
 int unpack7(const uint8_t* p, int n, uint8_t* out, int cap);   // Elektron's 7-bit packing (8 -> 7)
 int b64_len(int n);
@@ -155,6 +191,8 @@ struct Buf {
 struct Take {
   char project[24];
   char name[40];
+  char box[8];          // step 10c: the box whose take it is ("" the Rytm's, slot 0; "a4" another slot's box: no stock
+                        // snapshot or replay until that box's dumps are traced)
   MidiConfig cfg;
   int pattern;          // at PLAY (-1 unknown)
   uint32_t tempo;       // bpm x 120 (0 unknown)
@@ -279,6 +317,10 @@ struct Port {
   // backup (kit2). Async: relink_done later; false: cannot
   virtual bool relink(int k, const Buf& kit) { return false; }
   virtual bool playing() { return false; }           // the Rytm plays (a restore / an undo then stops: never into it)
+  // step 10c: the pattern the box reports selected (its 2D 02), -2 when a program change's effect is not checked (the
+  // Rytm: stopped, its PC selects at once [measured]). A box whose stopped PC is not traced (the A4) is read or written
+  // only once it reports the pattern selected: a PC that did not select stops the restore / undo before anything goes on
+  virtual int pattern() { return -2; }
   virtual void sidecar(const Ev& e) = 0;             // a kSc event into the core
   virtual void sidecar_start(const Take& t) = 0;     // the take's start send FX into the core
 };
@@ -339,6 +381,7 @@ struct Restore {
   void begin(const Take* t, bool settings, uint32_t ms, Port& p, int current = -1);
   void tick(uint32_t ms, Port& p);
   bool cancel(Port& p);        // before anything is written: stopped (PC back to from); false: writing
+  int sel_target() const;      // the pattern the last PC selected (-1 none: no check)
   void dump_in(uint8_t id, const uint8_t* m, int n, uint32_t ms, Port& p);
   void backup_done(bool ok, uint32_t ms, Port& p);
   void relink_done(bool ok, uint32_t ms, Port& p);

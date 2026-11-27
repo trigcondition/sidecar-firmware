@@ -171,6 +171,7 @@ class Recorder {
   void set_stereo_voices(uint8_t mask) { st_now_ = mask; }
   uint8_t stereo_voices() const { return st_take_; }   // the take's (or the last one's)
   bool wants_side() const { return (side_on_ && state_ != 0) || meters_; }
+  int state() const { return state_; }       // kIdle .. kEnded (any core)
   bool wants_in() const { return state_ == 1 || state_ == 2 || meters_; }
   // the meters (the display's REC page, any state): while on, in_block / out_block keep each channel's peak (every
   // channel, selected or not: the levels show before a take); meter_peaks takes them (24-bit full scale, reset to 0).

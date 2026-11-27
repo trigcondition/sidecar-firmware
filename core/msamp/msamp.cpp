@@ -16,6 +16,8 @@
 #include "../pool/stream_budget.h"
 #include "../lib/srclib.h"
 #include "../machines.h"
+#include "device/device.h"   // voice_in: a console voice V is the slot in hand's box voice (box=S: prefix)
+#include "../pool/pool.h"
 #include "../ui/remote.h"
 #include "../poly.h"
 #include "cardq.h"
@@ -233,6 +235,7 @@ struct Slot {
   bool ram;                  // held whole
   bool forced;               // held whole for the streaming budget (core/pool/stream_budget.h), counted there
   int entry;                 // the list entry it holds (-1 after a rescan: kept only while used)
+  int8_t ls;                 // in that voice slot's list (an instrument shared by path serves both boxes)
   char path[kPath];
   Desc d;
   Smp* smp;
@@ -390,10 +393,19 @@ bool g_pace_test = false;    // tests: as if a DSP SAMPLE stream played
 int kept_now = 0;
 
 Slot slots[kSlots];
-Entry* list = nullptr;
-Entry* lbuf[2] = {nullptr, nullptr};
-int nlist = 0;              // srclib::kEntries once composed
-uint32_t composed_sig = 0;
+// One list per voice slot (its box's INSTRUMENTS pool, core/lib/pools.h at(s, ..)): a voice reads its own slot's
+// (LV(vi): slot_of_voice), the displays and the console the slot in hand's (LH()).
+struct Lists {
+  Entry* list = nullptr;
+  Entry* lbuf[2] = {nullptr, nullptr};
+  int nlist = 0;              // srclib::kEntries once composed
+  uint32_t composed_sig = 0;
+  uint8_t failed[srclib::kEntries];   // entries that failed to load (until a rescan): 1 failed, 2 no free slot
+};
+Lists g_ls[kVoiceSlots];
+inline int lh() { return prj_slot(); }
+inline Lists& LH() { return g_ls[lh()]; }
+inline Lists& LV(int vi) { return g_ls[slot_of_voice(vi)]; }
 volatile uint32_t g_list_gen = 1;
 bool arena = false;          // the pool RAM is there (core/pool/pcache.h)
 int16_t* rings = nullptr;    // kVoices * kPerVoice * kRing
@@ -428,7 +440,6 @@ struct LivePend {
   uint32_t ms;
 };
 LivePend lpend[kVoices][kPerVoice];
-uint8_t failed[srclib::kEntries];   // entries that failed to load (until a rescan)
 struct LiveTag {
   bool on;
   int8_t ch;
@@ -448,7 +459,7 @@ constexpr uint32_t kConvFrames = 1024;   // frames a step converts at most (meas
 struct Job {
   Phase phase;
   // load
-  int slot, entry;
+  int slot, entry, ls;       // ls: the voice slot whose list entry is loading
   File f;
   cardq::Req rq;
   bool open;                // f is open (by its open's result, not the handle's flag: a request may run on it)
@@ -483,11 +494,13 @@ CORE_COLD bool slot_playing(int s) {
 }
 CORE_COLD bool slot_selected(int s) {
   for (int v = 0; v < kVoices; ++v)
-    if (vslot[v] == s || (want[v] >= 0 && slots[s].entry == want[v])) return true;
+    if (vslot[v] == s || (want[v] >= 0 && slots[s].ls == slot_of_voice(v) && slots[s].entry == want[v])) return true;
   return false;
 }
-CORE_COLD bool same_file(int s, int entry) {   // a slot holds entry's file (the same resolved .sfz)
-  return slots[s].entry == entry || (entry >= 0 && entry < nlist && list[entry].path[0] && !strcasecmp(slots[s].path, list[entry].path));
+CORE_COLD bool same_file(int s, int ls, int entry) {   // a slot holds slot ls's entry's file (the same resolved .sfz)
+  const Lists& L = g_ls[ls];
+  return (slots[s].ls == ls && slots[s].entry == entry) ||
+         (entry >= 0 && entry < L.nlist && L.list[entry].path[0] && !strcasecmp(slots[s].path, L.list[entry].path));
 }
 CORE_COLD int count_active() {
   int a = 0;
@@ -495,9 +508,10 @@ CORE_COLD int count_active() {
     for (int k = 0; k < kPerVoice; ++k) a += !note_free(notes[v][k]);
   return a;
 }
-CORE_COLD int resident(int entry) {
+CORE_COLD int resident(int ls, int entry) {
+  if (entry < 0) return -1;
   for (int s = 0; s < kSlots; ++s)
-    if (slots[s].state == kReady && same_file(s, entry)) return s;
+    if (slots[s].state == kReady && same_file(s, ls, entry)) return s;
   return -1;
 }
 CORE_COLD Wr& wr_of(int vi, int k) { return wrs[vi * kPerVoice + k]; }
@@ -1022,7 +1036,7 @@ CORE_COLD const pools::Member* member_of(const pools::Member* mem, int nm, int i
 CORE_COLD void sample_ref(int s, int i, lib::Ref* ref) {
   Slot& sl = slots[s];
   int nm = 0;
-  const pools::Member* mem = sl.entry >= 0 ? pools::members(pools::kInstr, sl.entry, &nm) : nullptr;
+  const pools::Member* mem = sl.entry >= 0 ? pools::members(sl.ls, pools::kInstr, sl.entry, &nm) : nullptr;
   const pools::Member* mi = member_of(mem, nm, i, sl.d.samples[i]);
   if (mi) *ref = mi->ref;
   else lib::ref_for_path(sl.d.samples[i], ref);
@@ -1074,7 +1088,7 @@ CORE_COLD void job_abandon() {
 CORE_COLD void job_fail(const char* why) {
   Slot& sl = slots[job->slot];
   log(CORE_STR("msamp: %s: %s"), sl.path, why);
-  if (job->entry >= 0 && job->entry < srclib::kEntries) failed[job->entry] = 1;
+  if (job->entry >= 0 && job->entry < srclib::kEntries) g_ls[job->ls].failed[job->entry] = 1;
   slot_release(job->slot);
   sl.entry = -1;
   job_close();
@@ -1096,22 +1110,23 @@ CORE_COLD int free_slot() {
 
 CORE_COLD bool start_load() {
   for (int vi = 0; vi < kVoices; ++vi) {
-    int e = want[vi];
-    if (e < 0 || e >= nlist || !list[e].path[0] || failed[e] || resident(e) >= 0) continue;
+    int e = want[vi], ls = slot_of_voice(vi);
+    Lists& L = g_ls[ls];
+    if (e < 0 || e >= L.nlist || !L.list[e].path[0] || L.failed[e] || resident(ls, e) >= 0) continue;
     int s = free_slot();
     if (s < 0) {
-      if (failed[e] != 2) log(CORE_STR("msamp: no free instrument slot for %s (%d in use)"), list[e].name, kSlots);
-      failed[e] = 2;
+      if (L.failed[e] != 2) log(CORE_STR("msamp: no free instrument slot for %s (%d in use)"), L.list[e].name, kSlots);
+      L.failed[e] = 2;
       return false;
     }
     Slot& sl = slots[s];
     if (sl.state != kFree) slot_release(s);
     sl.state = kLoading;
-    sl.entry = e;
-    strcpy(sl.path, list[e].path);
+    sl.entry = e, sl.ls = (int8_t)ls;
+    strcpy(sl.path, L.list[e].path);
     sl.used = sl.need_ram = 0;
     sl.ram = false;
-    job->slot = s, job->entry = e;
+    job->slot = s, job->entry = e, job->ls = ls;
     job->text_len = 0;
     job->t0 = now_ms();
     job->opening = true;   // (step_sfz: the open, then the reads)
@@ -1137,7 +1152,7 @@ CORE_COLD void loaded() {
       sl.d.malformed);
   uint32_t ms = now_ms();
   for (int vi = 0; vi < kVoices; ++vi) {
-    if (want[vi] < 0 || resident(want[vi]) != job->slot) continue;
+    if (want[vi] < 0 || resident(slot_of_voice(vi), want[vi]) != job->slot) continue;   // (either box's)
     vslot[vi] = (int8_t)job->slot;
     if (pend[vi].on) {
       pend[vi].on = false;
@@ -1164,7 +1179,7 @@ CORE_COLD void plan() {
   // sbudget::kWantStreams voices of (its widest format, the stream budget of its samples' volume) is held whole
   // (over the budget wins over sidecar_load=stream too: streams the volume cannot carry would run dry; the decision is
   // the load's: a change acts at the instrument's next load)
-  bool always = pools::always_ram(pools::kInstr, job->entry), over = false;
+  bool always = pools::always_ram(job->ls, pools::kInstr, job->entry), over = false;
   for (int i = 0; i < sl.d.nsamples && !want_ram && !always && !over; ++i) {
     const Smp& m = sl.smp[i];
     if (m.frames && m.a.ch >= 2 && !pcache::mono() && !sbudget::fits(sl.d.samples[i], m.a.rate, 2, m.a.bits))
@@ -1443,7 +1458,7 @@ CORE_COLD bool step_sfz() {
   // the pool entry's members (in the .sfz's order of distinct samples): each played from where the library finds it
   // now (a member moved: from there, the .sfz unchanged; missing: as the .sfz says, its regions then silent)
   int nm = 0;
-  const pools::Member* mem = pools::members(pools::kInstr, job->entry, &nm);
+  const pools::Member* mem = pools::members(job->ls, pools::kInstr, job->entry, &nm);
   for (int i = 0; mem && i < sl.d.nsamples; ++i) {
     const pools::Member* mi = member_of(mem, nm, i, sl.d.samples[i]);
     if (!mi) continue;   // (a sample the entry does not know: as the .sfz says)
@@ -1629,48 +1644,57 @@ CORE_COLD void fill_step() {
 CORE_COLD void select(int vi) {
   int e = srclib::code_of(vp[vi][0]);
   if (v[vi].ms || force[vi]) pools::voice_on(pools::kInstr, vi, e);
-  if (!list || e < 0 || e >= nlist || srclib::silent(list, e)) {
+  const int ls = slot_of_voice(vi);
+  const Lists& L = g_ls[ls];
+  if (!L.list || e < 0 || e >= L.nlist || srclib::silent(L.list, e)) {
     vslot[vi] = -1, want[vi] = -1;
     return;
   }
   want[vi] = (int16_t)e;
-  int s = resident(e);
+  int s = resident(ls, e);
   if (s >= 0) slots[s].used_ms = now_ms();
   vslot[vi] = (int8_t)s;   // -1 while it loads: its notes so far ring on from their own slot
 }
 
 // The list composed from the INSTRUMENTS pool (srclib::compose): failed stays with its code while its path is the same,
-// the resident instruments stay where the list still has them, the voices select again.
-CORE_COLD void compose() {
-  Entry* old = list;
-  Entry* nl = list == lbuf[0] ? lbuf[1] : lbuf[0];
-  composed_sig = srclib::pool_sig(srclib::kMs);
-  int n = srclib::compose(srclib::kMs, nl);
+// the resident instruments stay where the list still has them, the voices select again. Voice slot ls's list (its
+// box's pool): a resident instrument no longer in it stays when another slot's list has the file (it moves there).
+CORE_COLD int find_path(const Entry* l, int n, const char* path) {
+  for (int i = 0; l && i < n; ++i)
+    if (l[i].path[0] && !strcasecmp(l[i].path, path)) return i;
+  return -1;
+}
+CORE_COLD void compose(int ls) {
+  Lists& L = g_ls[ls];
+  Entry* old = L.list;
+  Entry* nl = L.list == L.lbuf[0] ? L.lbuf[1] : L.lbuf[0];
+  L.composed_sig = srclib::pool_sig(ls, srclib::kMs);
+  int n = srclib::compose(ls, srclib::kMs, nl);
   for (int i = 0; i < n; ++i)
-    if (!old || strcasecmp(old[i].path, nl[i].path)) failed[i] = 0;
+    if (!old || strcasecmp(old[i].path, nl[i].path)) L.failed[i] = 0;
   bool loading = job->phase >= kSfzRead;
   for (int s = 0; s < kSlots; ++s) {
-    if (slots[s].state == kFree) continue;
-    int e = -1;
-    for (int i = 0; i < n && e < 0; ++i)
-      if (nl[i].path[0] && !strcasecmp(nl[i].path, slots[s].path)) e = i;
+    if (slots[s].state == kFree || slots[s].ls != ls) continue;   // (another slot's entry: its own compose finds it)
+    int e = find_path(nl, n, slots[s].path);
+    for (int k = 0; e < 0 && k < kVoiceSlots; ++k)   // still another box's instrument?
+      if (k != ls && (e = find_path(g_ls[k].list, g_ls[k].nlist, slots[s].path)) >= 0) slots[s].ls = (int8_t)k;
     slots[s].entry = e;
-    if (loading && job->slot == s) job->entry = e;
+    if (loading && job->slot == s) job->entry = e, job->ls = slots[s].ls;
     else if (e < 0 && slots[s].state == kReady && !slot_playing(s)) slot_release(s);
   }
-  list = nl;
-  nlist = n;
-  st.listed = pools::count(pools::kInstr);
+  L.list = nl;
+  L.nlist = n;
+  st.listed = pools::count(ls, pools::kInstr);
   __atomic_store_n(&g_list_gen, g_list_gen + 1, __ATOMIC_RELEASE);
   for (int vi = 0; vi < kVoices; ++vi)
-    if (want[vi] >= 0 || v[vi].ms) select(vi);
+    if (slot_of_voice(vi) == ls && (want[vi] >= 0 || v[vi].ms)) select(vi);
 }
 
-// /.rytm/sdtest.txt's read-ahead and stream count (sdtest.h), if the card was tested: the job's first work after begin
+// /.sidecar/sdtest.txt's read-ahead and stream count (sdtest.h), if the card was tested: the job's first work after begin
 CORE_COLD bool step_limits() {
   constexpr uint32_t kCap = 599;
   if (job->opening) {
-    if (!cardq::async(&job->rq, cardq::kOpenReq, &job->f, "/.rytm/sdtest.txt", 0, nullptr, 0)) return false;
+    if (!cardq::async(&job->rq, cardq::kOpenReq, &job->f, "/.sidecar/sdtest.txt", 0, nullptr, 0)) return false;
     job->opening = false;
     if (job->rq.got != 1) job->phase = kIdle;
     else job->open = true;
@@ -1709,9 +1733,12 @@ CORE_COLD void begin(bool card) {
     fill = new Fill();
     for (int v = 0; v < kVoices; ++v)
       for (int k = 0; k < kPerVoice; ++k) notes[v][k].pin = notes[v][k].pin2 = -1;
-    lbuf[0] = new Entry[srclib::kEntries];
-    lbuf[1] = new Entry[srclib::kEntries];
-    list = lbuf[0];
+    for (Lists& L : g_ls) {
+      L.lbuf[0] = new Entry[srclib::kEntries];
+      L.lbuf[1] = new Entry[srclib::kEntries];
+      L.list = L.lbuf[0];
+      memset(L.list, 0, sizeof(Entry) * srclib::kEntries);
+    }
     wrs = new Wr[kVoices * kPerVoice];
     for (int i = 0; i < kVoices * kPerVoice; ++i)
       wrs[i].rq = -1, wrs[i].on = wrs[i].open = wrs[i].ending = false, wrs[i].f = new File();
@@ -1743,10 +1770,10 @@ CORE_COLD void begin(bool card) {
         (unsigned long)(slot_cap >> 20), kSlots, (unsigned long)((uint64_t)kVoices * kPerVoice * kRing * 2 >> 10));
   }
   job_abandon();   // a load under way dropped: its request settled, its file's close queued (before the slots go)
-  for (int s = 0; s < kSlots; ++s) slot_release(s), slots[s].entry = -1;
+  for (int s = 0; s < kSlots; ++s) slot_release(s), slots[s].entry = -1, slots[s].ls = 0;
   for (int vi = 0; vi < kVoices; ++vi) vslot[vi] = -1, want[vi] = -1, pend[vi].on = false;
-  composed_sig = 0;
-  compose();
+  job->ls = 0;
+  for (int k = 0; k < kVoiceSlots; ++k) g_ls[k].composed_sig = 0, compose(k);
   memset(lpend, 0, sizeof lpend);
   for (int vi = 0; vi < kVoices; ++vi)
     for (int k = 0; k < kPerVoice; ++k) notes[vi][k].slot = -1, wr_end(wr_of(vi, k));
@@ -1755,7 +1782,7 @@ CORE_COLD void begin(bool card) {
 
 CORE_COLD void rescan() {   // the card changed: failed instruments tried again, the ones not playing read again on use
   if (!job) return;
-  memset(failed, 0, sizeof failed);
+  for (Lists& L : g_ls) memset(L.failed, 0, sizeof L.failed);
   for (int s = 0; s < kSlots; ++s)
     if (slots[s].state == kReady && !slot_playing(s)) slot_release(s);
   for (int vi = 0; vi < kVoices; ++vi) vslot[vi] = -1, want[vi] = -1;
@@ -1792,11 +1819,12 @@ CORE_COLD bool step() {
         job->opening = true, job->phase = kLimits;
         return true;
       }
-      if (srclib::pool_sig(srclib::kMs) != composed_sig) {   // the INSTRUMENTS pool changed (a row, a state)
-        StepTimer t("msamp.compose");
-        compose();
-        return true;
-      }
+      for (int k = 0; k < kVoiceSlots; ++k)
+        if (srclib::pool_sig(k, srclib::kMs) != g_ls[k].composed_sig) {   // an INSTRUMENTS pool changed (a row, a state)
+          StepTimer t("msamp.compose");
+          compose(k);
+          return true;
+        }
       {
         StepTimer t("msamp.start");
         if (start_load()) return true;
@@ -1816,13 +1844,13 @@ CORE_COLD bool step() {
   return false;
 }
 
-CORE_COLD bool forced(int vi) { return force[vi & 7]; }
+CORE_COLD bool forced(int vi) { return force[voice_wrap(vi)]; }
 
 CORE_COLD void report(int vi, int note, int vel, const float* p) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   for (int k = 0; k < 16; ++k) vp[vi][k] = p[k];
   select(vi);
-  pools::seen(pools::kInstr, srclib::code_of(vp[vi][0]));   // the used set
+  pools::seen_in(slot_of_voice(vi), pools::kInstr, srclib::code_of(vp[vi][0]));   // the used set (its box's)
   v[vi].live = true;
   if (note < 0) return;
   int s = vslot[vi];
@@ -1830,22 +1858,23 @@ CORE_COLD void report(int vi, int note, int vel, const float* p) {
     trig(vi, note, vel);
     return;
   }
-  if (!nlist) {
+  const Lists& L = LV(vi);
+  if (!L.nlist) {
     log(CORE_STR("trig voice %d MULTISAMPLE: no instruments"), vi);
     return;
   }
   if (want[vi] < 0) return;   // rui1038: a bank's OFF / empty row
   pend[vi] = {true, (uint8_t)note, (uint8_t)vel, now_ms()};
   ++st.waits;
-  log(CORE_STR("trig voice %d MULTISAMPLE waits for %s"), vi, list[want[vi]].name);
+  log(CORE_STR("trig voice %d MULTISAMPLE waits for %s"), vi, L.list[want[vi]].name);
 }
 
 CORE_COLD void live_on(int vi, int key, int vel, int ch, int mnote) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   int s = vslot[vi];
   if (key < 0 || key > 127) return;
   if (s < 0 || slots[s].state != kReady) {   // its instrument loads: the note waits (loaded() starts it)
-    if (!nlist || want[vi] < 0) return;
+    if (!LV(vi).nlist || want[vi] < 0) return;
     int f = -1;
     uint32_t now = now_ms();
     for (int k = 0; k < kPerVoice; ++k) {
@@ -1867,7 +1896,7 @@ CORE_COLD void live_on(int vi, int key, int vel, int ch, int mnote) {
 }
 
 CORE_COLD void live_off(int vi, int ch, int mnote) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   for (int k = 0; k < kPerVoice; ++k)   // still waiting for the instrument: dropped
     if (lpend[vi][k].on && lpend[vi][k].ch == ch && (mnote < 0 || lpend[vi][k].mnote == mnote)) lpend[vi][k].on = false;
   uint8_t keys[kPerVoice];
@@ -1893,74 +1922,85 @@ CORE_COLD void live_off(int vi, int ch, int mnote) {
 
 CORE_COLD int voice_notes(int vi) {
   int a = 0;
-  for (int k = 0; k < kPerVoice; ++k) a += !note_free(notes[vi & 7][k]);
+  for (int k = 0; k < kPerVoice; ++k) a += !note_free(notes[voice_wrap(vi)][k]);
   return a;
 }
 
 CORE_COLD int voice_keys(int vi, uint8_t* keys, int max) {
   int n = 0;
   for (int k = 0; k < kPerVoice && n < max; ++k) {
-    const Note& x = notes[vi & 7][k];
+    const Note& x = notes[voice_wrap(vi)][k];
     if (!note_free(x) && !x.rtrig) keys[n++] = x.key;
   }
   return n;
 }
 
+// The displays' and the console's: the slot in hand's list (device::cur(), the box being served)
 CORE_COLD const char* entry_name(int inst) {
-  if (!list || nlist <= 0) return "";
-  return list[inst < 0 ? 0 : inst >= nlist ? nlist - 1 : inst].name;
+  const Lists& L = LH();
+  if (!L.list || L.nlist <= 0) return "";
+  return L.list[inst < 0 ? 0 : inst >= L.nlist ? L.nlist - 1 : inst].name;
 }
 
 CORE_COLD void note_off(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   pend[vi].on = false;
   release_voice(vi, vp[vi][3] >= 64);
 }
 
-CORE_COLD int entries() { return nlist; }   // every code (bank * 128 + row)
-CORE_COLD const char* entry_group(int e) { return list && e >= 0 && e < nlist ? list[e].grp : ""; }
-CORE_COLD const char* entry_path(int e) { return list && e >= 0 && e < nlist ? list[e].path : ""; }
-CORE_COLD int entry_lib(int e) { return list && e >= 0 && e < nlist ? list[e].lib : srclib::kLibOff; }
-CORE_COLD int entry_state(int e) {   // as gr::entry_state: 0 none 1 card 2 loading 3 resident 5 failed
-  if (!list || e < 0 || e >= nlist || !srclib::playable(list[e])) return 0;
-  if (failed[e] == 1) return 5;
-  if (resident(e) >= 0) return 3;
+CORE_COLD int entries() { return LH().nlist; }   // every code (bank * 128 + row)
+CORE_COLD const char* entry_group(int e) { const Lists& L = LH(); return L.list && e >= 0 && e < L.nlist ? L.list[e].grp : ""; }
+CORE_COLD const char* entry_path(int e) { const Lists& L = LH(); return L.list && e >= 0 && e < L.nlist ? L.list[e].path : ""; }
+CORE_COLD int entry_lib(int e) { const Lists& L = LH(); return L.list && e >= 0 && e < L.nlist ? L.list[e].lib : srclib::kLibOff; }
+CORE_COLD int entry_state(int e) { return entry_state_in(lh(), e); }
+CORE_COLD int entry_state_in(int ls, int e) {   // as gr::entry_state: 0 none 1 card 2 loading 3 resident 5 failed
+  const Lists& L = g_ls[ls];
+  if (!L.list || e < 0 || e >= L.nlist || !srclib::playable(L.list[e])) return 0;
+  if (L.failed[e] == 1) return 5;
+  if (resident(ls, e) >= 0) return 3;
   for (int vi = 0; vi < kVoices; ++vi)
-    if (want[vi] == e) return 2;
+    if (slot_of_voice(vi) == ls && want[vi] == e) return 2;
   return 1;
 }
 CORE_COLD const char* entry_note(int e, char* b, int cap) {
   if (cap < 1) return "";
   b[0] = 0;
+  const int ls = lh();
+  const Lists& L = g_ls[ls];
   int st_ = entry_state(e);
   if (st_ == 5) sniprintf(b, cap, "FAILED");
-  else if (st_ == 2) sniprintf(b, cap, failed[e] == 2 ? "NO FREE SLOT" : "LOADING");
-  else if (st_ == 3) sniprintf(b, cap, "%s", slots[resident(e)].forced ? "RAM (BUDGET)" : slots[resident(e)].ram ? "RAM" : "STREAM");
-  else if (!st_ && list && e >= 0 && e < nlist && list[e].lib == srclib::kLibMissing) sniprintf(b, cap, "MISSING");
+  else if (st_ == 2) sniprintf(b, cap, L.failed[e] == 2 ? "NO FREE SLOT" : "LOADING");
+  else if (st_ == 3) sniprintf(b, cap, "%s", slots[resident(ls, e)].forced ? "RAM (BUDGET)" : slots[resident(ls, e)].ram ? "RAM" : "STREAM");
+  else if (!st_ && L.list && e >= 0 && e < L.nlist && L.list[e].lib == srclib::kLibMissing) sniprintf(b, cap, "MISSING");
   return b;
 }
 uint32_t list_gen() { return __atomic_load_n(&g_list_gen, __ATOMIC_ACQUIRE); }
-CORE_COLD int src_entry(int vi, int v) { return !list || nlist <= 0 ? -1 : v < 0 ? 0 : v >= nlist ? nlist - 1 : v; }
+CORE_COLD int src_entry(int vi, int v) {   // (in the voice's own box's list)
+  const Lists& L = LV(voice_wrap(vi));
+  return !L.list || L.nlist <= 0 ? -1 : v < 0 ? 0 : v >= L.nlist ? L.nlist - 1 : v;
+}
 CORE_COLD bool voice_picked(int) { return false; }   // (no picks over INST: a choice writes INST)
 CORE_COLD bool pick(int vi, int e) {   // the touchscreen's choice: INST written on the Rytm (48: the kit keeps it)
-  vi &= 7;
-  if (!job || !list || e < 0 || e >= nlist) return false;
+  vi = voice_wrap(vi);
+  const Lists& L = LV(vi);
+  if (!job || !L.list || e < 0 || e >= L.nlist) return false;
   ui::remote_param_write(vi, kMultiMachine, 0, e & 127, srclib::lo_of(e));
   vp[vi][0] = (float)(e & 127) + (float)srclib::lo_of(e) / 128.0f;
   select(vi);
-  log(CORE_STR("msamp: voice %d: INST %c%03d %s"), vi, 'A' + srclib::bank_of(e), e & 127, entry_name(e));
+  log(CORE_STR("msamp: voice %d: INST %c%03d %s"), vi, 'A' + srclib::bank_of(e), e & 127, L.list[e].name);
   return true;
 }
-CORE_COLD void kit_src(int vi, int e) {
-  vi &= 7;
-  if (!job || !list || e < 0 || e >= nlist) return;
+CORE_COLD void kit_src(int vi, int e) {   // the kit's INST for the voice (its own box's list), as a report would set it
+  vi = voice_wrap(vi);
+  const Lists& L = LV(vi);
+  if (!job || !L.list || e < 0 || e >= L.nlist) return;
   vp[vi][0] = (float)(e & 127) + (float)srclib::lo_of(e) / 128.0f;
   select(vi);
-  pools::seen(pools::kInstr, e);   // (the used set, as a report)
+  pools::seen_in(slot_of_voice(vi), pools::kInstr, e);   // (the used set, as a report: its box's)
 }
 
 CORE_COLD void silence(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   pend[vi].on = false;
   for (int k = 0; k < kPerVoice; ++k) lpend[vi][k].on = false;
   for (int k = 0; k < kPerVoice; ++k) kill(vi, k);
@@ -1974,7 +2014,7 @@ inline float herm(float xm1, float x0, float x1, float x2, float t) {
 }
 }  // namespace
 
-static float head_g[kVoices] = {1, 1, 1, 1, 1, 1, 1, 1};   // the render core's: each voice's headroom gain
+static PerVoice<float> head_g(1.0f);   // the render core's: each voice's headroom gain
 
 static void render_impl(int vi, float* out, float* outr, int nfr);
 void render_add(int vi, float* out, int nfr) { render_impl(vi, out, nullptr, nfr); }
@@ -2138,7 +2178,7 @@ static void render_impl(int vi, float* out, float* outr, int nfr) {
     for (int s = 0; s < nfr; ++s) dstr[s] += accr[s] * (g0 + dg * (float)(s + 1));
 }
 
-CORE_COLD float headroom(int vi) { return head_g[vi & 7]; }
+CORE_COLD float headroom(int vi) { return head_g[voice_wrap(vi)]; }
 
 CORE_COLD bool command(const char* p, char* out, int cap) {
   if (strncmp(p, "msamp", 5) != 0 || (p[5] && p[5] != '=')) return false;
@@ -2155,8 +2195,9 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       return true;
     }
     bool on = strcmp(a + 7, ":off") != 0;
-    if (force[vi] && !on) silence(vi);
-    force[vi] = on;
+    const int ev = device::voice_in((uint8_t)vi);   // the slot in hand's box voice vi (box=S: on the console)
+    if (force[ev] && !on) silence(ev);
+    force[ev] = on;
     sniprintf(out, cap, "msamp: voice %d %s", vi, on ? "plays MULTISAMPLE (any built-in machine the Rytm reports)" : "plays its own machine");
     return true;
   }
@@ -2185,11 +2226,16 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       return true;
     }
     if (e < 0) e = to_int(r);
-    if (!pick(vi, e)) sniprintf(out, cap, "msamp: no entry %d (%d listed)", e, nlist);
+    const int ev = device::voice_in((uint8_t)vi);   // the slot in hand's box voice vi
+    if (!pick(ev, e)) sniprintf(out, cap, "msamp: no entry %d (%d listed)", e, LV(ev).nlist);
     else sniprintf(out, cap, "msamp: voice %d INST %s", vi, entry_name(e));
     return true;
   }
   if (!strcmp(a, "list")) {
+    const Lists& L = LH();
+    const Entry* list = L.list;
+    const int nlist = list ? L.nlist : 0;
+    const uint8_t* failed = L.failed;
     for (int i = 0; i < nlist; ++i)
       if (list[i].lib != srclib::kLibHole && list[i].lib != srclib::kLibOff)   // rui1038: banks' empty rows left out
       log(CORE_STR("msamp: INST %c%03d %s [%s] (%s)%s"), 'A' + srclib::bank_of(i), i & 127, list[i].name, list[i].grp, list[i].path, failed[i] == 1 ? " failed" : "");
@@ -2203,7 +2249,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
                               "%d samples kept in RAM (%lu KB, %d waiting), "
                               "%lu trigs, %lu notes, %lu steals, %lu waits (%lu late), %lu loads (%lu failed, %lu left out), "
                               "%lu saves held by the card core%s;",
-                    nlist, st.resident, kSlots, (unsigned long)(slot_cap >> 20), st.active, kTotal, st.peak, st.streams,
+                    LH().nlist, st.resident, kSlots, (unsigned long)(slot_cap >> 20), st.active, kTotal, st.peak, st.streams,
                     st.streams_peak, max_streams, (unsigned long)ahead_ms, (unsigned long)st.underruns,
                     (unsigned long)st.bw_steals, (unsigned long)(st.stream_bytes >> 10), kept_now,
                     (unsigned long)(pcache::stats().kept >> 10), keep_waiting(), (unsigned long)st.trigs,
@@ -2231,8 +2277,8 @@ const Stats& stats() {
   st.resident = res;
   return st;
 }
-const char* list_path(int k) { return k >= 0 && k < nlist ? list[k].path : ""; }
-int voice_slot(int vi) { return vslot[vi & 7]; }
+const char* list_path(int k) { const Lists& L = LH(); return L.list && k >= 0 && k < L.nlist ? L.list[k].path : ""; }
+int voice_slot(int vi) { return vslot[voice_wrap(vi)]; }
 const Desc* slot_desc(int s) { return s >= 0 && s < kSlots && slots[s].state == kReady ? &slots[s].d : nullptr; }
 uint64_t slot_bytes(int s) { return s >= 0 && s < kSlots ? slots[s].used : 0; }
 bool slot_ram(int s) { return s >= 0 && s < kSlots && slots[s].ram; }

@@ -15,11 +15,20 @@ public:
 	{
 		u64 nTicks;			// generic-timer ticks since the last TakeStats
 		u64 nBusy[4];			// ticks working, per core
+		u64 nChain1;			// core 1's send FX and master chains: slot 1's (not in nBusy[1]: after its voices)
+		u64 nChain2;			// core 2's: slot 0's send FX (its master chain too on an 8-voice engine; not in nBusy[2])
+		u64 nChain3;			// core 3's: slot 0's master chain in a two-slot engine (inside nBusy[3], outside nWait3)
+		u64 nWait3;			// core 3 waiting for cores 1 and 2 in RenderBlock (inside nBusy[3])
 		u64 nSleep[4];			// ticks asleep in a counted wfe, per core
 		unsigned nWakes[4];		// how many of those wfe returned
 		u64 nMach[7];			// render ticks per machine (bridge::stat_name order, bridge::kMachines)
-		u64 nVoice[8];			// touch2: render ticks per voice (the display's STATUS page)
+		u64 nVoice[16];			// touch2: render ticks per engine voice (bridge::kVoices; the STATUS page shows the base box's)
 		unsigned nBlocks, nMaxBlockUs, nMaxPassUs, nFifoMin, nFifoMax, nMidiBytes, nSysEx, nNotes, nNoteChans;
+		unsigned nRunCapped;	// control passes that stopped rendering at the cap, the FIFO still short (an overload)
+		unsigned nFifoLate;	// base passes begun with the FIFO under a block (late for the busier render core)
+		unsigned nFifoHeld1, nFifoHeld2;	// passes late by the FIFO (fifo_late.h) for core 1, core 2
+		unsigned nFifoRunMax;	// the longest run of passes begun with a FIFO low
+		unsigned nFifoFits1, nFifoFits2;	// passes the FIFO's hold left on time: core 1 / 2 within admission's limit, no underrun
 	};
 
 	// The boot bench (bridge::bench, docs/pi-engine.md "Measurements"): each machine on one voice, on every core
@@ -54,6 +63,10 @@ public:
 	// (cardq::here_take). Racy reads from core 0 (a diagnostic).
 	struct TStall { unsigned gap_us, at_frames, gaps_over_2ms, sec_us[6], step_us, step_sum, here_us; };
 	static TStall Stall (void);
+	// Each transport's MIDI realtime as RealtimeIn took it (CK1, 2026-11-26: does a box's clock reach the Pi at all?):
+	// counts since boot of F8, FA / FB, FC, F2, and of bytes whose transport carried no slot (dropped). Racy reads.
+	struct TRealtime { unsigned nClock, nStart, nStop, nSongPos, nNoSlot; int nSlot; };
+	static TRealtime Realtime (unsigned nTransport);
 	static const char *StallStep (void);		// that slowest step's name, "" none. Kept here, /log's 64 KB are gone in 30 s
 	// The last kGaps gaps over 2 ms since the Reset, oldest first: {gap us, frames pulled at its end, us of that pass spent
 	// in its wfe (gap minus it: the pass itself), cntkctl_el1 then (the event stream's bits), DAIF (interrupt masks),
@@ -73,6 +86,9 @@ public:
 	// were always there and stay.
 	static void SetIdleWfe (boolean bOn);
 	static boolean IdleWfe (void);
+	// blocklimit=N on the cmdline (QEMU gates only, docs/pi-engine.md): a render core that has not finished its block
+	// after N ms is fatal (default and minimum 20, the unit's; at most 10000). Returns the limit set.
+	static unsigned SetBlockLimitMs (unsigned nMs);
 	static void EventStream (void);			// the calling core: a wfe sleeps 152 us at most
 	static void Sleep (void);			// core 0: one counted sleep (idlewait::nap)
 	static boolean NotesOn (void);			// notes=, for the web page (read only)
@@ -85,8 +101,9 @@ public:
 private:
 	void Worker (unsigned nCore);
 	void Control (void);
-	void RenderBlock (void);
+	void RenderBlock (int nSide);		// -1 the base box's block; a slot: the side stage's (side_out.h)
 	void Command (const char *pText);
+	static void SlotCommand (void *pArg);	// slot=S:<command> in slot S's Scope (cores.cpp, bridge::in_slot)
 };
 
 #endif

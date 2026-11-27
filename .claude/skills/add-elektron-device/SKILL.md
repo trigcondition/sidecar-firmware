@@ -65,7 +65,7 @@ bracket, `audio`, `controls`, `features`, `state_dir`, `out_allow`, `in_allow`.
   `translate` function only if neither can say it.
 - **`out_allow`** lets nothing through by default. Open only what the box understands; a small CPU should not get
   the Rytm's pages, pool tables and label lists.
-- **`state_dir`** (like `/.digitakt`) keeps the box's projects apart from the Rytm's `/.rytm`. Shared content
+- **`state_dir`** (like `/.dt`) keeps the box's projects apart from the Rytm's `/.rytm`. Shared content
   (`/Samples`, `/Plugins`, patch libraries) stays shared. The first hello restarts the Pi once into that folder.
 - **Register** it in the list in `device.cpp`.
 

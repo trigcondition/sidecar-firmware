@@ -1,5 +1,5 @@
 // pi/engine/ui_style.h - the display's theme words (docs/UI-THEMES.md): uistyle=oled|sidecar|guide in cmdline.txt,
-// the console command and /.rytm/display.txt. The ids are the ones of sidecar_theme.h (THEME_*). Portable, header only
+// the console command and /.sidecar/display.txt. The ids are the ones of sidecar_theme.h (THEME_*). Portable, header only
 // (tests/test_ui_style.cpp).
 //
 //   oled     0  the default (a card without the key, or a word not known, reads as this)

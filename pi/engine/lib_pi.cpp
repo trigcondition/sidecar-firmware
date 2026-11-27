@@ -19,7 +19,7 @@ void rules(core::lib::IoRule* r) {
 }
 bool card_busy() { return core::cardq::worker() && core::cardq::busy(); }
 bool other_job() { return core::bundle::busy(); }
-// the current project's references: its three POOL lists' Refs, members included (core/lib/pools.h refs(): any core,
+// the current projects' references (each voice slot's): their three POOL lists' Refs, members included (core/lib/pools.h refs(): any core,
 // each ref copied under the list's sequence counter); their hints handed over as pointers
 char s_Refs[4096][core::lib::kPath];
 int current_refs(const char** out, int max) {
@@ -27,8 +27,9 @@ int current_refs(const char** out, int max) {
     const char** out;
     int max, n;
   } c = {out, max < 4096 ? max : 4096, 0};
+  for (int vs = 0; vs < core::kVoiceSlots; ++vs)   // every box's project (core 0: each slot named, not the one in hand)
   for (int l = 0; l < core::pools::kLists; ++l)
-    core::pools::refs(l, [](void* x, int, int, int, const core::lib::Ref& r) {
+    core::pools::refs(vs, l, [](void* x, int, int, int, const core::lib::Ref& r) {
       Ctx* k = (Ctx*)x;
       if (k->n >= k->max || r.hint[0] != '/') return;
       sniprintf(s_Refs[k->n], sizeof s_Refs[k->n], "%s", r.hint);
@@ -53,7 +54,7 @@ void begin(bool card_ok) {
 
 bool poll() {
   char p[24];
-  memcpy(p, (const char*)core::project, sizeof p);
+  memcpy(p, (const char*)core::prj().key, sizeof p);
   p[23] = 0;
   if (strcmp(p, s_Project)) {   // another project: its references first
     memcpy(s_Project, p, sizeof s_Project);

@@ -249,7 +249,10 @@ Mac core** (Apple Silicon, the same NEON code as the Pi). The Pi 4 estimate by t
 **2.5-3.5 %** [inferred]. **Measured** on the Pi 4 (the boot bench, 2026-10-23): **3.98 % of a core an instance, worst
 block 5.5 %** (8 would have been 31.8 %). So **at most 6 AMP slots play at once** (`amp::kMaxRunning`, was 8 when it
 was planned with 3 %): 23.9 % of a core spread over the two render cores (voices 1-4 on core 1, 5-8 on core 2), at most
-two a voice (8 % of the 20 % a voice may take). A seventh shows `MAX 6` and plays dry until one is turned off. The Pi's
+two a voice (8 % of the 20 % a voice may take). A seventh shows `MAX 6` and plays dry until one is turned off. With two
+boxes, AMP plays on both boxes' voice and master chains and **each box has its own 6 (and its own master 2)** (decided
+2026-11-26: slot 0 and slot 1 the same), so the worst case is 12 voice instances; the voice guard (`pi/engine/guard.h`)
+mutes a voice whose render, chains included, overloads its core. The Pi's
 boot bench measures it: `bench amp A2-LITE: 1 instance x.xx % of a core, worst block y % -> cap 6 = z %` (core 0, after
 the `bench ins` lines).
 

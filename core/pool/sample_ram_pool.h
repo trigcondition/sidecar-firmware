@@ -18,6 +18,7 @@
 #include <Sampler.h>
 
 #include "../platform.h"
+#include "../machines.h"
 #include "card_index.h"
 
 namespace rytm {
@@ -30,7 +31,7 @@ class SampleRamPool {
                                                   // at 48 kHz): a longer one, its first kMaxFrames
   static const uint32_t kChunk = 8192;            // a card read, as the streams' refills
   static const int kQueue = 32;
-  static const int kVoices = 8;
+  static const int kVoices = core::kVoices;   // the engine's voices (two pins each)
 
   // At boot, after the card: the pool, itself in PSRAM (no RAM spent without
   // PSRAM), taking all of it but kReserve; null without PSRAM - and then

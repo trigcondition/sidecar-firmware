@@ -255,7 +255,7 @@ CORE_COLD bool is_ms(int vi) {
 #endif
 }
 // (the arpeggiator takes a voice's held notes whatever its machine: its pads bind, its keyboard notes come, one chord at a time)
-CORE_COLD bool plays_live(int vi) { return v[vi & 7].fm || is_ms(vi) || arp::on(vi & 7); }
+CORE_COLD bool plays_live(int vi) { return v[voice_wrap(vi)].fm || is_ms(vi) || arp::on(voice_wrap(vi)); }
 
 CORE_COLD int count_voice(int vi) {
   int k = 0;
@@ -575,13 +575,13 @@ CORE_COLD void reset() {
 }
 
 CORE_COLD void set_voice(int vi, const uint8_t* dx7) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   vhas[vi] = dx7 != nullptr;
   if (dx7) memcpy(vbytes[vi], dx7, 128);
 }
 
 CORE_COLD void knobs(int vi, const float* p) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   for (int k = 0; k < 8; ++k) vknobs[vi][k] = p[k];
   if (!slots) return;
   for (int i = 0; i < kTotal; ++i)
@@ -610,7 +610,7 @@ CORE_COLD void play_trig(int vi, int note, int vel, const float* p) {
 }  // namespace
 
 CORE_COLD bool take_live(int vi, int note, int vel) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!slots) return false;
   if (keys::take_trig(vi, note)) return true;   // the Rytm's trig for a keyboard note the Pi forwarded (core/keys.h)
   uint32_t ms = now_ms();
@@ -642,7 +642,7 @@ CORE_COLD bool take_live(int vi, int note, int vel) {
 }
 
 CORE_COLD bool take_trig(int vi, int note, int vel, const float* p) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!slots) return false;
   if (take_live(vi, note, vel)) return true;
   if (chord_of(p).chd == 0) return false;   // the mono note
@@ -652,19 +652,19 @@ CORE_COLD bool take_trig(int vi, int note, int vel, const float* p) {
 
 CORE_COLD bool live_now(int vi) {
   if (!slots) return false;
-  int ch = chan_of_voice(vi & 7);
+  int ch = chan_of_voice(voice_wrap(vi));
   return ch >= 0 && chan_active(chans[ch], now_ms());
 }
 
 CORE_COLD bool chord_add(int vi, int note, int vel) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!slots || !v[vi].fm || note < 0 || note > 127) return false;
   start(vi, note, vel, 1.0f, false, -1, 0);
   ++st.chords;
   return true;
 }
 
-CORE_COLD View view(int vi) { return views[vi & 7]; }
+CORE_COLD View view(int vi) { return views[voice_wrap(vi)]; }
 
 CORE_COLD int voice_notes(int vi) {
   if (is_ms(vi)) {
@@ -672,18 +672,18 @@ CORE_COLD int voice_notes(int vi) {
     return nm::voice_notes(vi);
 #endif
   }
-  return slots ? count_voice(vi & 7) : 0;
+  return slots ? count_voice(voice_wrap(vi)) : 0;
 }
 
 CORE_COLD void note_off(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!slots) return;
   for (int i = 0; i < kTotal; ++i)
     if (slots[i].owner == vi && !slots[i].live) release(slots[i]);
 }
 
 CORE_COLD void silence(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!slots) return;
   for (int i = 0; i < kTotal; ++i)
     if (slots[i].owner == vi) slots[i].owner = -1, slots[i].held = false;
@@ -746,10 +746,10 @@ void render_add(int vi, float* out, int n, uint8_t* stage) {
   }
 }
 
-CORE_COLD float headroom(int vi) { return head_g[vi & 7]; }
+CORE_COLD float headroom(int vi) { return head_g[voice_wrap(vi)]; }
 CORE_COLD int held_notes(int vi) {
   int k = 0;
-  for (int i = 0; slots && i < kTotal; ++i) k += slots[i].owner == (vi & 7) && slots[i].held;
+  for (int i = 0; slots && i < kTotal; ++i) k += slots[i].owner == voice_wrap(vi) && slots[i].held;
   return k;
 }
 CORE_COLD void set_note_sink(void (*f)(uint8_t, uint8_t, uint8_t)) { sink = f; }
@@ -805,7 +805,7 @@ CORE_COLD void pad_trigger(int t, bool on, uint32_t ms) {
       arp::trig_off(vi);
       trig_notes_off(vi);
       note_off(vi);
-      if (!v[vi & 7].fm && !is_ms(vi & 7)) voice_note_off(vi & 7);   // E0: the other machines' pad note (voice_play)
+      if (!v[voice_wrap(vi)].fm && !is_ms(voice_wrap(vi))) voice_note_off(voice_wrap(vi));   // E0: the other machines' pad note (voice_play)
     }
     pad_on[t] = false;
     return;
@@ -813,12 +813,12 @@ CORE_COLD void pad_trigger(int t, bool on, uint32_t ms) {
   pad_on_ms[t] = ms, pad_on[t] = true;
   pad_played[t] = false;
   if (vi < 0 || !seq::owns_track(t)) return;
-  SeqPad& q = spad[vi & 7];
+  SeqPad& q = spad[voice_wrap(vi)];
   if (q.on && ms - q.ms <= kBindMs) {   // its 0x04 came first
     q.on = false, pad_on[t] = false;
     pad_played[t] = true;
     ++st.seq_pads;
-    pad_play(vi & 7, q.note, q.vel);
+    pad_play(voice_wrap(vi), q.note, q.vel);
   }
 }
 // junopads (owner, 0.4.3: JUNO on a seq track, the CHRO pads silent; 6-OP FM played): a CHRO note-on / off on the
@@ -858,7 +858,7 @@ CORE_COLD void pads_reset() {   // reset(): no pad held or sounding
 }  // namespace
 
 CORE_COLD bool seq_pad(int vi, int note, int vel) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   uint32_t ms = now_ms();
   for (int t = 0; t < 12; ++t)
     if (pad_on[t] && ms - pad_on_ms[t] <= kBindMs && ui::remote_track_voice(t) == vi && seq::owns_track(t)) {
@@ -873,7 +873,7 @@ CORE_COLD bool seq_pad(int vi, int note, int vel) {
 
 CORE_COLD bool pad_sounding(int vi) {
   for (int t = 0; t < 12; ++t)
-    if (pad_played[t] && ui::remote_track_voice(t) == (vi & 7)) return true;
+    if (pad_played[t] && ui::remote_track_voice(t) == voice_wrap(vi)) return true;
   return false;
 }
 
@@ -1063,7 +1063,7 @@ CORE_COLD bool reply(const uint8_t* d, int len) {
 }
 
 CORE_COLD bool seq_on(int vi, int note, int vel) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!slots || note < 0 || note > 127) return false;
 #if CORE_MSAMP
   if (is_ms(vi)) {
@@ -1078,7 +1078,7 @@ CORE_COLD bool seq_on(int vi, int note, int vel) {
 }
 
 CORE_COLD void seq_off(int vi, int note) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!slots) return;
   for (int i = 0; i < kTotal; ++i) {
     Slot& s = slots[i];
@@ -1138,7 +1138,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       chans[ch].direct = chans[ch].chordkeys = false, chans[ch].vi = -1, st.bound[ch] = -1;
       return sniprintf(out, cap, CORE_STR("poly: channel %d unbound"), ch + 1), true;
     }
-    int vi = atoi(q + 1) & 7;
+    int vi = voice_wrap(atoi(q + 1));
     bind(ch, vi, 0);
     chans[ch].direct = true;
     chans[ch].chordkeys = strstr(q + 1, ":chord") != nullptr;

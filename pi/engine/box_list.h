@@ -1,5 +1,6 @@
 // pi/engine/box_list.h - the boxes on the USB-A ports, for /status "boxes" (docs/device-profiles.md, "What the page is told"): one list, so two of a kind
-// are two rows, each with its own key: type and Circle's umidiN, which holds while the box stays plugged in. The served box is always in it, on:0 while it is unplugged. A row
+// are two rows, each with its own key: type and the box's DeviceUID when known (two of one type, design 2026-11-26; "uid" and its
+// name "label" in the row), else type and Circle's umidiN, which holds while the box stays plugged in. The served box is always in it, on:0 while it is unplugged. A row
 // carries its profile's counts and feature bits when the type has a profile. No allocation, no Circle headers. Portable: tests/test_usb_box.cpp.
 #pragma once
 #include <stdint.h>
@@ -35,7 +36,7 @@ class BoxList {
 
   void clear() { n_ = 0; }
   // In order of type and umidiN, so a row keeps its place from one scan to the next.
-  void add(uint16_t id, uint8_t slot, TBoxRole role, const char* name) {
+  void add(uint16_t id, uint8_t slot, TBoxRole role, const char* name, uint32_t uid = 0, const char* label = 0) {
     if (n_ >= kMax) return;
     unsigned at = n_;
     while (at > 0 && rank(id, slot) < rank(r_[at - 1].id, r_[at - 1].slot)) --at;
@@ -44,6 +45,9 @@ class BoxList {
     r.id = id, r.slot = slot, r.role = role;
     strncpy(r.name, name != 0 ? name : "", sizeof r.name - 1);
     r.name[sizeof r.name - 1] = 0;
+    r.uid = uid;
+    strncpy(r.label, label != 0 ? label : "", sizeof r.label - 1);
+    r.label[sizeof r.label - 1] = 0;
     ++n_;
   }
 
@@ -78,6 +82,8 @@ class BoxList {
     uint8_t slot;         // umidiN; 0 the served box, unplugged
     TBoxRole role;
     char name[32];        // USB's product string: "Elektron Analog Four MKII"; 9 full rows still fit /status's 1536 B
+    uint32_t uid;         // its DeviceUID, 0 not known (its row keyed by umidiN)
+    char label[24];       // its name (the UID folder's name.txt), "" none
   };
   struct Out {
     char* p;
@@ -97,6 +103,9 @@ class BoxList {
       while (v);
       while (k) c(b[--k]);
     }
+    void x8(uint32_t v) {   // 8 lowercase hex digits (a UID, as its folder's name)
+      for (int k = 28; k >= 0; k -= 4) c("0123456789abcdef"[v >> k & 15]);
+    }
     void text(const char* t) {   // a USB string is the box's own: nothing in it may end the JSON string
       c('"');
       for (; *t; ++t)
@@ -110,8 +119,12 @@ class BoxList {
   static void row(Out& o, const Row& r, unsigned same, bool on, Lookup lookup) {
     static const char* const kRole[] = {"host", "waiting", "listening", "spare", "other"};
     o.s("{\"key\":\"");
-    o.u(r.id), o.c('-'), o.u(r.slot);
+    o.u(r.id), o.c('-');
+    if (r.uid) o.x8(r.uid);
+    else o.u(r.slot);
     o.s("\",\"id\":"), o.u(r.id);
+    if (r.uid) o.s(",\"uid\":\""), o.x8(r.uid), o.c('"');
+    if (r.label[0]) o.s(",\"label\":"), o.text(r.label);
     o.s(",\"n\":"), o.u(same);
     o.s(",\"name\":"), o.text(r.name);
     o.s(",\"role\":\""), o.s(kRole[r.role]);

@@ -2,7 +2,8 @@
 #include <circle/usb/usbdevice.h>
 #include <circle/usb/usbendpoint.h>
 #include <circle/usb/usbhostcontroller.h>
-class CUSBFunction {
+#include <circle/device.h>
+class CUSBFunction : public CDevice {
  public:
   CUSBFunction(CUSBFunction* p) : parent(p) {}
   CUSBFunction(CUSBDevice* d, CUSBHostController* h) : dev(d), host(h) {}

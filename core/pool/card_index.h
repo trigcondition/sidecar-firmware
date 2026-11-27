@@ -1,18 +1,18 @@
 // The engine's index of the card's /Samples (docs/sampler-plan.md, "The card index"), on core::File / core::Fs
 // (core/platform.h). At boot the board's fingerprint of /Samples (core::Fs::tree_hash: the Teensy hashes the raw
 // FAT32 / exFAT entries, 0.7 s on a 449-folder FAT32 card, 81 ms on 75 exFAT folders; other boards their own
-// listing) is compared with /.rytm/env; if it matches, the stored index is used, else the index is rebuilt (one
+// listing) is compared with /.sidecar/env; if it matches, the stored index is used, else the index is rebuilt (one
 // full scan reading every .wav's header) and written to /.rytm/ - the only writes to the card. The index lives
 // at the card's root, outside /Samples, so writing it does not change the
 // listing it checks.
 //
-//   /.rytm/folders.bin  Folder records, breadth first (a folder's subfolders
+//   /.sidecar/folders.bin  Folder records, breadth first (a folder's subfolders
 //                       are consecutive), folder 0 = /Samples
-//   /.rytm/files.bin    FileRec records, each folder's .wav files consecutive,
+//   /.sidecar/files.bin    FileRec records, each folder's .wav files consecutive,
 //                       in name order (sorted when built: version 3); integer PCM
 //                       16/24/32-bit only (version 4: float WAVs, format tag 3 or
 //                       extensible float, are left out - they decoded as noise)
-//   /.rytm/env          "hash=<16 hex>\nversion=4\nfolders=N\nfiles=N\n",
+//   /.sidecar/env          "hash=<16 hex>\nversion=4\nfolders=N\nfiles=N\n",
 //                       written last (a half-written index has no env; another
 //                       version's index is rebuilt, never read)
 //

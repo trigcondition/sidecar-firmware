@@ -3,6 +3,7 @@
 
 #include <string.h>
 
+#include "../device/device.h"
 #include "../fmt/fmt.h"
 #include "../samp/out.h"
 
@@ -101,6 +102,7 @@ int32_t dir_next(File* d, DirRec* out, uint32_t n) {
 }
 
 void run(Req* r) {
+  device::CardScope scope(r->link);   // its paths in the folder of the box it was queued for, on whichever core runs it
   if (r->kind < kKinds) ++st.ran[r->kind];
   if (r->kind == kOpenReq) {
     r->got = r->f->open(r->path, core::kRead) ? 1 : 0;
@@ -170,7 +172,7 @@ void run(Req* r) {
 CORE_COLD void set_worker(bool w) { on = w; }
 CORE_COLD bool worker() { return on; }
 
-CORE_COLD bool post(Req* r) {
+static CORE_COLD bool post_req(Req* r) {
   r->posted_us = now_us();
   if (!on) {   // no card core: at once
     r->state = kRunning;
@@ -194,6 +196,11 @@ CORE_COLD bool post(Req* r) {
   uint32_t p = w + 1 - ld(&rd);
   if (p > st.max_pending) st.max_pending = p;
   return true;
+}
+
+CORE_COLD bool post(Req* r) {
+  r->link = (int8_t)device::cur().index;   // (async names its own)
+  return post_req(r);
 }
 
 CORE_COLD bool cancel(Req* r) {
@@ -249,7 +256,7 @@ CORE_COLD void wait(Req* r) {
   g_here_us += now_us() - t;
 }
 
-CORE_COLD bool async(Req* r, Kind kind, File* f, const char* path, uint64_t off, uint8_t* buf, uint32_t len) {
+CORE_COLD bool async(Req* r, Kind kind, File* f, const char* path, uint64_t off, uint8_t* buf, uint32_t len, int link) {
   uint32_t s = ld(&r->state);
   if (s == kPosted || s == kRunning) return false;
   if (s == kDone) {
@@ -257,8 +264,9 @@ CORE_COLD bool async(Req* r, Kind kind, File* f, const char* path, uint64_t off,
     return true;
   }
   r->kind = kind, r->f = f, r->off = off, r->buf = buf, r->len = len, r->got = -1;
+  r->link = (int8_t)(link >= 0 ? link : device::cur().index);
   sniprintf(r->path, sizeof r->path, "%s", path ? path : "");
-  if (!post(r)) return false;   // the queue full: again at the next call
+  if (!post_req(r)) return false;   // the queue full: again at the next call
   if (ld(&r->state) != kDone) return false;
   r->state = kFree;             // no card core: run at once
   return true;

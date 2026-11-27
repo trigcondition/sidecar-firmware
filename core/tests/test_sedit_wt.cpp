@@ -173,7 +173,7 @@ int main() {
   cardq::reset();
   cardq::set_worker(true);
   CHECK(engine_begin() && card_ok);
-  snprintf(core::project, sizeof core::project, "LIVE");
+  snprintf(core::prj().key, sizeof core::prj().key, "LIVE");
   lib::begin(true);
   for (int i = 0; i < 200000 && (i < 50 || lib::busy() || lib::stats().state != lib::kReady); ++i) pass();
   for (int i = 0; i < 4000 && !(pools::ready() && !strcmp(pools::project(), "LIVE")); ++i) pass();

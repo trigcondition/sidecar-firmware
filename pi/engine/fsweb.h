@@ -4,7 +4,7 @@
 //
 // WHAT IT CAN REACH: the content folders only (reachable(), below) - /Samples, /Plugins, /Recordings, /Bundles,
 // /MULTISAMPLE, /WAVETABLES, /GRANULAR, /PRESETS, /MACHINES, /NAM, /CHOP, /JUNO, /DX7 - for reads as well as writes.
-// The boot files and /.rytm are not reachable here at all, whoever is asking.
+// The boot files, /.sidecar and the boxes' state folders are not reachable here at all, whoever is asking.
 // The USB drives' (and the NVMe SSD's) recordings too, as /USB/Recordings, /USB2/Recordings, /USB3/Recordings,
 // /NVME/Recordings (the recorder's destination, docs/STORAGE.md): listed, downloaded and deleted - nothing else of a
 // drive, and nothing written there (put, mkdir, mv refused). The backend maps them with volume_path().
@@ -55,13 +55,13 @@ struct Result { int status; char msg[160]; };   // status: an HTTP code (200 ok)
 
 bool path_ok(const char* p);          // absolute, printable ASCII, no "..", "//", '\\' or ':', at most kPath
 // Whether this API may touch the path at all: the card's content folders and what is under them, and "/" for the
-// listing. Everything else - the boot files, /.rytm (the Wi-Fi key, the paired devices), /overlays, anything else
+// listing. Everything else - the boot files, /.sidecar (the Wi-Fi key, the paired devices), the boxes' state folders, /overlays, anything else
 // someone drops on the card - is refused for every operation, read or write. The split is: /fs/* is content,
-// TCP 7310 (sdfiles.h) is firmware, /.rytm is neither. See the list in fsweb.cpp and docs/pi-engine.md.
+// TCP 7310 (sdfiles.h) is firmware, /.sidecar and /.rytm are neither. See the list in fsweb.cpp and docs/pi-engine.md.
 bool reachable(const char* p);
 bool read_only(const char* p);        // a boot file (or the root): see above
 bool is_package(const char* p);       // /Plugins/<name>.rmp
-// The Sidecar's own folders (/.rytm, /Samples, /Plugins, /Bundles): never deleted or renamed here (their contents may be);
+// The Sidecar's own folders (/.rytm, /.sidecar, /Samples, /Plugins, /Bundles): never deleted or renamed here (their contents may be);
 // listed with "ro":2. config.txt.bak (the restore backup) is a boot file (config.txt.prev stays writable).
 bool kept_dir(const char* p);
 // A drive path ("/USB/...", "/USB2/...", "/USB3/...", "/NVME/..."): 1..4 (stor_vol.h's order), *rest its path on that

@@ -41,6 +41,8 @@
 #pragma once
 #include <stdint.h>
 
+#include "machines.h"
+
 namespace core {
 namespace seq {
 
@@ -420,8 +422,9 @@ void init();                                   // boot: the pattern buffers (hea
 void reset();                                  // tests: everything stopped and empty, the latency default
 bool sysex(const uint8_t* d, int len);         // a whole 2C / 2D from the Rytm (true: it was one)
 void hello(int up20 = -1);                     // the Rytm's hello (35, its uptime in 1/20 s, -1 unknown): 2E again, a resync asked
-// Clock-only tracks in the 2E (ticked in 2C, nothing else; core/song: BD while SONG RECORD is armed or replaying)
-// per user, OR-ed: kClockSong (core/song), kClockLoop (core/loop); each user's mask replaces its own earlier one
+// Clock-only tracks in the 2E (ticked in 2C, nothing else; core/song: BD while SONG RECORD is armed or replaying): the
+// slot in hand's (each box's own song, step 10c); per user, OR-ed: kClockSong (core/song), kClockLoop (core/loop); each
+// user's mask replaces its own earlier one
 enum { kClockSong = 0, kClockLoop = 1, kClockUsers = 2 };
 void set_clock_tracks(int user, uint16_t mask);
 // The arpeggiator (core/arp/arp.h): the tracks to pin as its notes are the host's, and whether it wants the clock (BD's ticks)
@@ -430,6 +433,9 @@ void set_arp_tracks(uint16_t pins, bool clock);
 // clock now (stopped, or no tick yet). *lat the latency either way.
 bool beat_map(double* origin, double* per16, int* lat);
 double tempo();                                // the BPM last reported, 0 none
+// 3(c): slot s's (each box's own clock: its 2C ticks, its tempo). The forms above are slot 0's (SONG RECORD's)
+bool beat_map(int s, double* origin, double* per16, int* lat);
+double tempo(int s);
 void midi(uint8_t st, uint8_t d1, uint8_t d2); // a channel message (the Rytm's pads, a host keyboard): poly::midi's note sink (init)
 // A note heard on voice vi (pitch as the voice plays it): what midi() records and step-enters, for a source that knows
 // its voice and track (core/keys.h: a keyboard on the Pi; track -1: the seq track on vi shown first, else the first)
@@ -437,13 +443,17 @@ void note(int vi, bool on, int pitch, int vel, int track);
 bool owns_track(int t);                        // Rytm track t (0..11) is a seq track (the mask)
 int seqmode_on();                              // the Rytm's seq mode (2D 08): its track 0..11, -1 off
 bool rytm_live_rec();                          // the Rytm records live (2D 06 REC on, 2D 01 PLAY)
-void pre_block();                              // before each render block (kBlock frames): due notes started / ended
-void tick(uint32_t ms);                        // the control loop: LEDs, the page's state, the debounced save
+void pre_block();                              // before each render block (kBlock frames): due notes started / ended (3(c): each
+                                               // running slot that renders in the base pass, in its Scope)
+void pre_block_side(int slot);                 // the side stage's pass (core/device/device.h side_slot): that slot's block
+void pre_block_all();                          // a platform with one render pass for every voice (no side stage): every slot's
+void tick(uint32_t ms);                        // the control loop: LEDs, the page's state, the debounced save (each slot's)
 bool idle();                                   // a card job (load / prefetch / save): true if it did one
 void save_due();    // a restart is coming: idle saves the edits now, not when they settle
 bool unsaved();     // edits idle has not posted yet
 void project_changed();                        // 0x10 named another project (pool.h project)
 void project_leaving();                        // 1042: before pool.cpp takes a new name: the old project's edits saved
+void slot_left();                              // the slot in hand's box left (device::release): its transport stopped, its edits saved
 #if CORE_MSAMP
 // 2026-10-26, the RAM store (phase 2): the files a project load reads into the store for the sequencer (pool.h project's
 // tracks.txt, its 128 patterns' .sqp and 1042's saved states .sqs); project_changed runs once it is full (pool.h
@@ -460,11 +470,35 @@ int pad_oct(int vi);                           // BACKLOG 7g: the PAD OCT (-3..+
 bool owns_voice(int vi);                       // a seq track plays on voice vi now: its 0x04s make no note
 bool any_tracks();                             // a seq track is set (the mask)
 bool shown_wanted();                           // the SEQ page was asked for (seq=show, the Rytm's seq mode)
-uint64_t frames();                             // render frames so far (pre_block's count)
+uint64_t frames();                             // slot 0's render frames so far (pre_block's count): the calibration's
+uint64_t frames(int s);                        // slot s's (its own pass's count): its arpeggiator's, its SONG RECORD's
 // The Rytm's trig keys / PAGE / encoders while seq mode is on or the SEQ page shows (remote.cpp routes 31 / 32 here
 // first): true when taken.
 bool ui_key(int code, bool down, bool page_shown);
 bool ui_enc(int e, int delta, bool func, bool page_shown);
+// T374 (the A4's 32s lost under a held trig on a unit): each slot's own counts of what its box's 31 / 32 / 2D 08 did
+// here, so a unit run shows where they stop. The console's "seq=ui[:S]" prints them (S the slot, default the slot in
+// hand); the first refusals a second are logged ("seq: slot S 32 ...").
+//   keys / encs       31s / 32s that reached ui_key / ui_enc (remote.cpp's 31 / 32 after its own takers)
+//   *_mode            refused: seq mode off here (its 08 on not applied yet, or never) and the SEQ page not shown
+//   key_taken         taken by the sequencer; trig_down / trig_tap / trig_used / trig_unheld: a trig's press, a release
+//                     that toggled its step (a tap), one that did not (turned or used while held), one whose press this
+//                     side never took (held was 0 for it: no toggle)
+//   enc_held          taken with a trig held (its step edited); enc_free taken with none held (defaults, the lists);
+//   enc_range         refused: no knob A..H or no movement; enc_other: not taken (returned false past the mode test)
+//   enc_page / enc_bank / key_page: remote.cpp gave it to a page's own (POLY, MORPH, a scene key, a held page key) or the
+//                     bank list, never to the sequencer
+//   m08_on / m08_off  2D 08 reports; m08_blip: one that put back what is applied (cancelled a pending change);
+//                     m08_applied_on / _off: the changes tick() applied after kSeqOpenMs; m08_refused: an on for a track
+//                     that is no seq track here (nothing applied)
+struct UiIn {
+  uint32_t keys, key_mode, key_taken, key_page, trig_down, trig_tap, trig_used, trig_unheld;
+  uint32_t encs, enc_mode, enc_range, enc_held, enc_free, enc_other, enc_page, enc_bank;
+  uint32_t m08_on, m08_off, m08_blip, m08_applied_on, m08_applied_off, m08_refused;
+};
+const UiIn& ui_in(int slot);
+enum UiSkip { kSkipEncPage, kSkipEncBank, kSkipKeyPage };
+void ui_skipped(UiSkip why);   // remote.cpp: a 31 / 32 of the slot in hand's box kept from the sequencer (counted, logged)
 bool leds(uint8_t c[16]);                      // the trig LEDs now (palette); false: none (not a seq track shown)
 void page_leds(uint8_t c[4]);                  // the 4 PAGE LEDs (palette)
 bool command(const char* p, char* out, int cap);   // the console's "seq", "seq=track:T:on|off", "seq=lat:FRAMES", ...
@@ -476,7 +510,7 @@ bool command(const char* p, char* out, int cap);   // the console's "seq", "seq=
 // render_voices, after its voices v0..v1-1 of the block pre_block just counted: the click into its rows (hot: one
 // compare when idle). cal_audio: the 8 voice stems of the Rytm -> host stream in its channel order (BD SD RS/CP BT LT
 // MT/HT CH/OH CY/CB, frame f's at s + f * stride, full scale 2^31), n frames that arrived just now (frames() = arrival).
-void cal_render(int16_t (*ring)[8], const int* rows, int v0, int v1);
+void cal_render(int16_t (*ring)[kVoices], const int* rows, int v0, int v1);
 void cal_audio(const int32_t* s, int n, int stride, int64_t arrival);
 bool cal_wanted();
 

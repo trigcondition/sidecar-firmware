@@ -15,7 +15,9 @@
 #include "loopview_pi.h"
 #include "mod/xypad.h"
 #include "device/device.h"
+#include "device/admit.h"
 #include "fx/insert.h"
+#include "fx/fx_guard.h"
 #include "fx/master.h"
 #include "fx/out.h"
 #include "heap_buffers.h"
@@ -28,6 +30,7 @@
 #include "seq/seq.h"
 #include "song/song.h"
 #include "song_pi.h"
+#include "sendfx_pi.h"   // its box 0 SendFx for the box chains bench (box_bench)
 #include "morph_pi.h"   // 0.5.0: the display's MORPH page
 #include "xypad_pi.h"   // 0.5.0: the display's XY page
 #include "msamp/msamp.h"
@@ -56,6 +59,7 @@
 namespace bridge {
 
 static_assert(kVoices == core::kVoices && kBlock == core::kBlock && kMachines == core::kMachines, "bridge sizes");
+static_assert(kBoxVoices == core::kBoxVoices && kVoiceSlots == core::kVoiceSlots, "bridge sizes");
 static_assert(kLfoJsonCap == core::lfo::kJsonCap, "the /status LFO buffer");
 
 static void put32(uint8_t* p, uint32_t v) { for (int i = 0; i < 4; ++i) p[i] = (uint8_t)(v >> (8 * i)); }
@@ -123,13 +127,46 @@ void heap_place(void*) {}
 static volatile bool s_restart;
 static void device_restart() { s_restart = true; }
 bool take_restart() { bool r = s_restart; s_restart = false; return r; }
+extern "C" int rytm_render_core() __attribute__((weak));   // platform_pi.cpp: the calling core (the host tests: none, one thread)
+static bool control_core() { return !rytm_render_core || rytm_render_core() == 3; }   // (core/device/device.h path_link)
 
 bool begin(void (*to_host)(const uint8_t*, int)) {
   core::hooks.to_rytm = to_host;
   core::hooks.device_restart = device_restart;
+  core::hooks.control_core = control_core;
   return core::engine_begin();
 }
 void sysex(const uint8_t* d, int len) { core::engine_sysex(d, len); }
+void sysex_link(int link, const uint8_t* d, int len) { core::engine_sysex_link(link, d, len); }
+void sysex_self(const uint8_t* d, int len) { core::engine_sysex_self(d, len); }
+void sysex_self_slot(int slot, const uint8_t* d, int len) { core::engine_sysex_self_slot(slot, d, len); }
+bool in_slot(int slot, void (*fn)(void*), void* arg) {   // the load test's slot=S: (cores.cpp): fn in slot S's Scope
+  if (slot < 0 || slot >= core::device::kLinks) return false;
+  core::device::Scope s(core::device::g_links[slot]);
+  fn(arg);
+  return true;
+}
+bool admit_command(const char* p) {   // admit=report|enforce (core/device/admit.h), loadtest=on|off (core/engine.h idle_nosave)
+  if (!strcmp(p, "admit=report") || !strcmp(p, "admit=enforce")) {
+    core::admit::set_enforce(p[6] == 'e');
+    core::device::readmit();
+    core::log("admit: %s (slot voices %d / %d)", core::admit::enforce() ? "enforced" : "report only: no box refused",
+              core::device::admitted(0), core::device::admitted(1));
+    return true;
+  }
+  if (!strcmp(p, "loadtest=on") || !strcmp(p, "loadtest=off")) {
+    core::idle_nosave(p[10] == 'n');
+    core::log("loadtest: %s", core::idle_nosave() ? "on: edits are not saved to the card until a reboot or loadtest=off" : "off: saves again");
+    return true;
+  }
+  return false;
+}
+int out_base() { return core::device::base_voice_base(); }
+bool slot_renders(int slot) {   // a box holds it (attach order: either slot), or it is the base
+  if (slot < 0 || slot >= core::device::kLinks) return false;
+  return __atomic_load_n(&core::device::g_links[slot].held, __ATOMIC_RELAXED) ||
+         __atomic_load_n(&core::device::g_base, __ATOMIC_RELAXED) == &core::device::g_links[slot];
+}
 uint32_t render(int16_t (*block)[kVoices], int v0, int v1, uint64_t* mach, int16_t (*block_r)[kVoices], uint8_t* st) {
   return core::render_voices(block, kBlock, 0, v0, v1, mach, block_r, st);
 }
@@ -198,6 +235,7 @@ void seq_block() {
   core::seq::pre_block();
   um::pre_block();   // API 3: the block's transport snapshot for the user machines (core/user/um.h)
 }
+void seq_block_side(int slot) { core::seq::pre_block_side(slot); }   // (3(c): um's snapshot stays once a base block)
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2) {
   core::poly::midi(st, d1, d2);           // (and through its note sink the sequencer's recording and step entry)
 }
@@ -218,16 +256,17 @@ bool save_settled() { return core::idle_settled(); }
 bool samp_command(const char* p, char* out, int cap) {
   return core::samp::command(p, out, cap) || core::samp::asamp_command(p, out, cap);
 }
-void samp_transport(uint8_t st) { core::samp::transport(st); }
+void samp_transport(int slot, uint8_t st) { core::samp::transport(slot, st); }
 bool samp_wants_in() { return core::samp::wants_in() || core::samp::asamp_wants_in(); }
+int samp_slot() { return core::samp::clock_slot(); }
 void samp_in(const int32_t* f, int n, int stride) {
   core::samp::in_block(f, n, stride);
   core::samp::asamp_in_block(f, n, stride);
 }
 bool samp_wants_voices() { return core::samp::wants_voices(); }
-void samp_voices(const int16_t (*v)[kVoices], int n, const int16_t (*lr)[2 * kVoices], const float (*fx)[4]) { core::samp::voice_block(v, n, lr, fx); }
+void samp_voices(const int16_t (*v)[kBoxVoices], int n, const int16_t (*lr)[2 * kBoxVoices], const float (*fx)[4]) { core::samp::voice_block(v, n, lr, fx); }
 void pool_mono(bool on) { core::pcache::set_mono(on); }
-void stereo_trim(int pair, int db10) { core::out::set_trim(pair, db10); }
+void stereo_trim(int pair, int db10) { core::out::set_trim_all(pair, db10); }
 void stream_bench(int vol, unsigned mbps_x100, unsigned p99_us) {
   core::sbudget::set_bench(vol, mbps_x100 / 100.0f, p99_us / 1000.0f);
 }
@@ -249,6 +288,7 @@ bool poly_command(const char* p, char* out, int cap) {
          core::ins::command(p, out, cap) ||   // fx-ins: "ins", "ins=..." (core/fx/insert.h)
          core::master::command(p, out, cap) ||   // the master FX: "mfx", "mfx=..." (core/fx/master.h)
          core::amp::command(p, out, cap) ||   // INSERT AMP: "amp", "amp=rescan" (core/fx/amp.h)
+         core::fx::guard::command(p, out, cap) ||   // the measured guard of every effect: "fxguard", "fxguard=..." (core/fx/fx_guard.h)
          core::out::command(p, out, cap) ||   // the OUT route: "out=Vn:...", "stereo..." (core/fx/out.h)
          core::ui::vparam_command(p, out, cap) ||   // the touchscreen's VOICE knobs: "vparam=T:K:V" (core/ui/remote.h)
          core::sbudget::command(p, out, cap) ||   // the streaming budget: "stream" (core/pool/stream_budget.h)
@@ -267,7 +307,30 @@ void midim_set_out(bool (*f)(int, const uint8_t*, int)) { core::midim::set_out(f
 void rytm_gone() { core::midim::link_lost(); core::arp::link_lost(); core::master::link_lost(); core::mod::rp_link_lost(); core::link_lost(); }
 void rytm_resync() { core::ui::remote_resync(); core::midim::resync(); }
 void rytm_link(bool up) { core::midim::link_state(up); }
-void midim_realtime(uint8_t status) { if (status != 0xF2) core::midim::realtime(status); }
+void midim_realtime(int slot, uint8_t status) { if (status != 0xF2) core::midim::realtime(slot, status); }
+int realtime_link(int t, uint8_t status, uint16_t spp) { return core::engine_realtime_link(t, status, spp); }
+int base_slot() { return core::device::g_base ? core::device::g_base->index : 0; }
+bool box_command(const char* p, void (*run)(void*, const char*), void* ctx) {
+  const char* rest;
+  const int s = core::device::box_prefix(p, &rest);
+  if (s == -1) return false;
+  if (s < 0) {
+    core::log(CORE_STR("console: %s: %s"), p, rest);
+    return true;
+  }
+  if (!strncmp(rest, "name=", 5)) {   // box=S:name=<text>: the box's name, in its UID folder's name.txt (design 2026-11-26)
+    if (!core::device::set_label(s, rest + 5)) core::log(CORE_STR("console: %s: not named (no UID folder, or an empty name)"), p);
+    return true;
+  }
+  core::device::Scope in(core::device::g_links[s]);
+  run(ctx, rest);
+  return true;
+}
+int slot_in_hand() { return core::ins::slot_in_hand(); }
+int transport_slot(int t) {
+  const int s = core::device::slot_of(t, nullptr, 0);
+  return s >= 0 && s < core::kVoiceSlots ? s : -1;
+}
 void asamp_set_midi_out(bool (*f)(int, const uint8_t*, int)) { core::samp::asamp_set_midi_out(f); }
 bool keys_computer_on() { return core::keys::computer_on(); }
 const char* keys_line(char* b, int cap) { return core::keys::line(b, cap); }
@@ -291,16 +354,23 @@ void lfo_midi(uint8_t st, uint8_t d1, uint8_t d2) {
 }
 bool learn_command(const char* p, char* out, int cap) { return core::learn::command(p, out, cap); }
 bool lfo_command(const char* p, char* out, int cap) { return core::lfo::command(p, out, cap); }
-int lfo_json(char* out, int cap) { return core::lfo::json(out, cap); }
+int lfo_json(char* out, int cap) {   // the base box's LFOs (core 0: names the slot, never the control core's slot in hand)
+  const core::device::Link* b = __atomic_load_n(&core::device::g_base, __ATOMIC_RELAXED);
+  return core::lfo::json(out, cap, b ? b->index : 0);
+}
 bool lfo_link_full() { return core::lfo::link_full(); }
 bool mod_command(const char* p, char* out, int cap) { return core::mod::command(p, out, cap); }
 int mod_json(char* out, int cap) { return core::mod::json(out, cap); }
 bool scene_command(const char* p, char* out, int cap) { return core::scene::command(p, out, cap); }
 bool xy_command(const char* p, char* out, int cap) { return core::xypad::command(p, out, cap); }
-int scene_json(char* out, int cap) { return core::scene::json(out, cap); }
+int scene_json(char* out, int cap) {   // the base box's scenes (core 0: names the slot, never the slot in hand)
+  const core::device::Link* b = __atomic_load_n(&core::device::g_base, __ATOMIC_RELAXED);
+  return core::scene::json(out, cap, b ? b->index : 0);
+}
 bool loop_command(const char* p, char* out, int cap) { return core::loop::command(p, out, cap); }
 int loop_json(char* out, int cap) { return core::loop::json(out, cap); }
 uint64_t render_frames() { return core::seq::frames(); }
+uint64_t render_frames(int slot) { return core::seq::frames(slot); }
 int poly_json(char* out, int cap) {
   int n = core::seq::poly_json(out, cap);
   if (n > 0 && n + 2 < cap) {
@@ -362,22 +432,51 @@ bool rui_play_take(int* toggle, int* channel, int* take, int* level) {
 bool tap_on() { return core::ui::tap_on(); }
 // seq-p2: the sequencer's latency calibration (a click due or on its way back) and the Rytm pattern dump's reader
 bool cal_on() { return core::seq::cal_wanted(); }
+int cal_slot() { const int r = core::device::rytm_slot(); return r >= 0 ? r : base_slot(); }
 void cal_in(const int32_t* f, int n, int stride) { core::seq::cal_audio(f + 2, n, stride, (int64_t)core::seq::frames()); }
 void rytm_byte(uint8_t b) {
+  rytm_byte(0, b);
+  link_byte(0, b);   // SONG RECORD (core/song/song.h): the whole stream
+}
+static void rytm_read(uint8_t b) {
   core::rytm_dump::byte(b);
   core::patwrite::byte(b);   // 0.5.0 FILL: the pattern writer's answers (core/seq/patwrite.h)
-  core::song::byte(b);   // SONG RECORD (core/song/song.h): the whole stream
+}
+void rytm_byte(int t, uint8_t b) {
+  const int h = core::device::rytm_route(t);   // its slot when t carries it (transport 0 with no route yet: as ever)
+  if (h < 0) return;
+  // two Rytms (design 2026-11-26): the pattern dump reader and FILL's writer are one, the first Rytm's (a named gap: the
+  // second Rytm's pattern view and FILL); its bytes never mix into the first's records
+  if (core::kVoiceSlots > 1 && h != core::device::rytm_slot()) return;
+  if (h >= core::device::kLinks || &core::device::g_links[h] == core::device::g_cur) {
+    rytm_read(b);
+    return;
+  }
+  core::device::Scope in(core::device::g_links[h]);
+  rytm_read(b);
+}
+// SONG RECORD's tap (step 10c): transport t's every byte, as the slot it carries (each box its own song)
+void link_byte(int t, uint8_t b) {
+  const int s = core::device::route_of(t);
+  if (s < 0 || s >= core::kVoiceSlots || s >= core::device::kLinks) return;
+  if (&core::device::g_links[s] == core::device::g_cur) {
+    core::song::byte(b);
+    return;
+  }
+  core::device::Scope in(core::device::g_links[s]);
+  core::song::byte(b);
 }
 void tap_in(const int32_t* f, int n, int stride) { core::ui::tap_in(f, n, stride); }
 bool livein_on() { return core::livein::wanted(); }
 void livein_in(const int32_t* f, int n, int stride) { core::livein::in_block(f, n, stride); }
-bool sidechain_on() { return core::sc::wants_in(); }
-void sidechain_in(const int32_t* f, int n, int stride) {
-  core::sc::in_block(f, n, stride, 2, core::out::device().audio_in);   // the stems are IN 2..9 (core/fx/sidechain.h)
+bool sidechain_on(int slot) { return core::sc::wants_in(slot); }
+void sidechain_in(int slot, const core::out::Device* d, const int32_t* f, int n, int stride) {
+  if (!d) return;   // a Rytm's stems are IN 2..9 (core/fx/sidechain.h); another box has none of the Rytm's tracks, its AUDIO IN only
+  core::sc::in_block(slot, f, n, stride, d == &core::out::kRytmMk2 ? 2 : -1, d->audio_in);
 }
 void livein_fifo(unsigned frames) { core::livein::set_fifo((int)frames); }
 int livein_status(int vi, char* b, int cap) {
-  if (!core::v[vi & 7].li) return 0;
+  if (!core::v[core::voice_wrap(vi)].li) return 0;
   return core::livein::status_short(vi, b, cap);
 }
 bool gr_live_on() { return core::gr::live_wanted(); }
@@ -457,7 +556,7 @@ static void voices_boot_state() {
 }
 void reinit_voices() { voices_boot_state(); }
 
-static void bench_out(const uint8_t* d, int n) { core::engine_sysex(d, n); }
+static void bench_out(const uint8_t* d, int n) { core::engine_sysex_self(d, n); }
 
 uint64_t bench(const char* machine, uint32_t* worst_block, int* peak, uint32_t* hash) {
   core::NoteAdapter na(bench_out);
@@ -482,7 +581,7 @@ uint64_t bench(const char* machine, uint32_t* worst_block, int* peak, uint32_t* 
     const uint8_t p[16] = {10, 0, 64, 64, 0, 0, 64, 100, 0, 0, 0, 0, 0, 0, 0, 0};
     for (int k = 0; k < 16; ++k) m[6 + 2 * k] = p[k], m[7 + 2 * k] = 0;
     m[38] = 0xF7;
-    core::engine_sysex(m, 39);
+    core::engine_sysex_self(m, 39);
     for (int k = 0; k < 8; ++k) core::chop::live_on(0, k, 100, core::poly::kSeqCh, k);
   }
   for (int b = 0; b < 4000; ++b) {
@@ -549,30 +648,30 @@ uint64_t ins_bus_bench(uint32_t* worst_block, uint32_t* hash) {
   return sum;
 }
 uint64_t ins_bench(int a, int b, uint32_t* worst_block, uint32_t* hash) {
-  using namespace core::ins;
+  using namespace core::ins;   // (its chains: one box's, core::ins::kVoices; bridge::kVoices is the engine's)
   Engine* e = ins_bench_engine();
   static Control c;
   memset(&c, 0, sizeof c);
-  for (int v = 0; v < kVoices; ++v) {
+  for (int v = 0; v < core::ins::kVoices; ++v) {
     for (int k = 0; k < 4; ++k) c.type[v][0] = (uint8_t)a, c.type[v][1] = (uint8_t)b, c.play[v][0][k] = c.play[v][1][k] = (uint8_t)(40 + 20 * k);
     // ins1112: a == kOff && b == kOff is the post EQ measured on its own (kernel.cpp's last Pairs row); otherwise the
     // pair is measured with the post EQ flat, i.e. skipped, so the existing numbers stay comparable
     for (int k = 0; k < kEqParams; ++k)
       c.peq[v][k] = (int8_t)(a == kOff && b == kOff ? eq_store(k, k < 2 ? 70 : 100) : eq_store(k, kEqFlat(k)));
   }
-  float x[kVoices][kBlock];
+  float x[core::ins::kVoices][kBlock];
   uint64_t sum = 0;
   uint32_t worst = 0, h = 2166136261u;
   for (int n = 0; n < 4000; ++n) {
-    for (int v = 0; v < kVoices; ++v)   // (the test signal outside the timing: its sinf would weigh more than the chains)
+    for (int v = 0; v < core::ins::kVoices; ++v)   // (the test signal outside the timing: its sinf would weigh more than the chains)
       for (int s = 0; s < kBlock; ++s) x[v][s] = 0.3f * sinf(0.05f * (float)(n * kBlock + s) * (float)(v + 1));
     uint32_t t0 = core::cycles();
-    for (int v = 0; v < kVoices; ++v) e->ProcessMono(v, x[v], kBlock, c);
+    for (int v = 0; v < core::ins::kVoices; ++v) e->ProcessMono(v, x[v], kBlock, c);
     uint32_t t = core::cycles() - t0;
     sum += t;
     if (t > worst) worst = t;
     if (hash)
-      for (int v = 0; v < kVoices; ++v)
+      for (int v = 0; v < core::ins::kVoices; ++v)
         for (int s = 0; s < kBlock; ++s) h = (h ^ (uint32_t)(int32_t)(x[v][s] * 1048576.0f)) * 16777619u;
   }
   *worst_block = worst;
@@ -584,6 +683,8 @@ uint64_t amp_bench(uint32_t* worst_block) { return core::amp::bench(worst_block)
 uint64_t mfx_bench(uint32_t* worst_block) { return core::master::bench(worst_block); }
 uint64_t sfxins_bench(int set, uint32_t* worst_block) { return core::master::sfx_bench(set, worst_block); }
 const char* sfxins_bench_name(int set) { return core::master::sfx_bench_name(set); }
+int sfxins_bench_type(int set) { return core::master::sfx_bench_type(set); }
+uint64_t box_bench(uint32_t* worst_block) { return core::master::box_bench(sendfx_pi::Instance(0), worst_block); }
 static_assert(kInsJsonCap == core::ins::kInsJsonCap, "bridge.h's buffer size is the core's");
 int ins_json(char* out, int cap) {   // "ins":{... "out":[...]}, then "stream":{...} (the OUT route, the streaming budget)
   int n = core::ins::json(out, cap);
@@ -625,11 +726,11 @@ int rytm_pattern(int* transport) {
 #endif
 }
 uint32_t machine_gen(int vi) {
-  const core::V& x = core::v[vi & 7];
+  const core::V& x = core::v[core::voice_wrap(vi)];
   return x.user >= 0 ? (uint32_t) (x.user + 1) | um::code_epoch() << 3 : 0;
 }
 const char* machine_name(int vi) {
-  const core::V& x = core::v[vi & 7];
+  const core::V& x = core::v[core::voice_wrap(vi)];
   // the shared short names (core/machines.h machine_short: the Rytm's SIDECAR page says the same)
   return x.user >= 0 ? "USER" : core::machine_short(x.mi ? core::kMidiMachine : x.li ? core::kLiveMachine : x.cp ? core::kChopMachine : x.gr ? core::kGranMachine : x.wt ? core::kWaveMachine : x.ms ? core::kMultiMachine
                                                     : x.fm ? core::kFm : x.juno ? core::kJuno : x.grain ? core::kGrainMachine
@@ -657,13 +758,14 @@ int track_src_json(char* out, int cap) {
 // The RAM store (core/store/store.h) and what is still on its way to the card: unwritten = the card queue's pending requests
 // plus fmt's writes the queue does not hold (queued, and the slot's once the card core has taken it: running or held); oldestMs the oldest of those. An edit still inside
 // its 1 s settle has not been posted yet and is not counted.
+// (slot 0's store: the base Rytm's project, as before; core 0 names the slot)
 int store_json(char* out, int cap, unsigned long heap_free) {
   uint32_t fo = 0, fn = core::fmt::unwritten(&fo), co = core::cardq::oldest_ms();
   int cn = core::cardq::pending();
   int n = sniprintf(out, cap,
                     "\"store\":{\"files\":%d,\"bytes\":%lu,\"ready\":%s,\"unwritten\":%lu,\"oldestMs\":%lu,\"held\":%lu,"
                     "\"heapFree\":%lu}",
-                    core::store::present(), (unsigned long)core::store::bytes(), core::store::ready() ? "true" : "false",
+                    core::store::present(0), (unsigned long)core::store::bytes(0), core::store::ready(0) ? "true" : "false",
                     (unsigned long)((cn > 0 ? (uint32_t)cn : 0) + fn), (unsigned long)(fo > co ? fo : co),
                     (unsigned long)core::fmt::post_held(), heap_free);
   return n > 0 && n < cap ? n : 0;
@@ -673,8 +775,8 @@ const char* stat_name(int k) {
   return k >= 0 && k < kMachines ? n[k] : "?";
 }
 int card_folders() { return core::card_ok ? core::cards.folders() : 0; }
-const char* project() { return core::project; }
-int pool_slots() { return core::npool; }
+const char* project() { return core::prj().key; }
+int pool_slots() { return core::prj().npool; }
 uint32_t to_host_dropped() { return core::to_rytm_dropped(); }
 
 }  // namespace bridge

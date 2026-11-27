@@ -1,0 +1,91 @@
+diff --git a/lib/usb/xhciendpoint.cpp b/lib/usb/xhciendpoint.cpp
+index bdd63de..49f6da1 100644
+--- a/lib/usb/xhciendpoint.cpp
++++ b/lib/usb/xhciendpoint.cpp
+@@ -147,6 +147,13 @@ CXHCIEndpoint::CXHCIEndpoint (CXHCIUSBDevice *pDevice, const TUSBEndpointDescrip
+ 		m_uchEndpointType += 4;
+ 	}
+ 
++	if (m_pDevice->GetSlotID () == 0)		// circle-xhci-slotgone: the device has no slot (any more)
++	{
++		m_bValid = FALSE;
++
++		return;
++	}
++
+ 	// configure endpoint on HC
+ 	TXHCIInputContext *pInputContext = GetInputContextConfigureEndpoint ();
+ 	assert (pInputContext != 0);
+@@ -213,6 +220,11 @@ boolean CXHCIEndpoint::SetMaxPacketSize (u32 nMaxPacketSize)
+ 	assert (8 <= nMaxPacketSize && nMaxPacketSize <= 64);
+ 	m_usMaxPacketSize = nMaxPacketSize;
+ 
++	if (m_pDevice->GetSlotID () == 0)		// circle-xhci-slotgone
++	{
++		return FALSE;
++	}
++
+ 	TXHCIInputContext *pInputContext = GetInputContextSetMaxPacketSize ();
+ 	assert (pInputContext != 0);
+ 
+@@ -238,6 +250,7 @@ boolean CXHCIEndpoint::Transfer (CUSBRequest *pURB, unsigned nTimeoutMs)
+ 
+ 	if (!TransferAsync (pURB, nTimeoutMs))
+ 	{
++		m_bTransferCompleted = TRUE;		// circle-xhci-slotgone: ~CXHCIEndpoint asserts it
+ 		return FALSE;
+ 	}
+ 
+@@ -289,7 +302,8 @@ boolean CXHCIEndpoint::TransferAsync (CUSBRequest *pURB, unsigned nTimeoutMs)
+ 	u32 nBufLen = pURB->GetBufLen ();
+ 
+ 	m_SpinLock.Acquire ();
+-	if (m_nURBCount >= XHCI_EP_MAX_URBS)
++	if (   m_nURBCount >= XHCI_EP_MAX_URBS
++	    || m_pDevice->GetSlotID () == 0)		// circle-xhci-slotgone: doorbell 0 is the command ring's
+ 	{
+ 		m_SpinLock.Release ();
+ 
+@@ -500,6 +514,11 @@ boolean CXHCIEndpoint::ResetFromHalted (void)
+ 	assert (m_pDevice);
+ 	assert (XHCI_IS_ENDPOINTID (m_uchEndpointID));
+ 
++	if (m_pDevice->GetSlotID () == 0)		// circle-xhci-slotgone
++	{
++		return FALSE;
++	}
++
+ 	if (!m_pXHCIDevice->GetCommandManager ()->ResetEndpoint (m_pDevice->GetSlotID (),
+ 								 m_uchEndpointID))
+ 	{
+@@ -650,6 +669,11 @@ unsigned CXHCIEndpoint::GetEPState (void)
+ 		return 0;
+ 	}
+ 
++	if (m_pDevice->GetSlotID () == 0)		// circle-xhci-slotgone: its device context is freed
++	{
++		return 0;
++	}
++
+ 	DataMemBarrier ();
+ 	TXHCIDeviceContext *pContext = m_pDevice->GetDeviceContext ();	// coherent shared memory
+ 
+diff --git a/lib/usb/xhciusbdevice.cpp b/lib/usb/xhciusbdevice.cpp
+index d7d4c2e..590523f 100644
+--- a/lib/usb/xhciusbdevice.cpp
++++ b/lib/usb/xhciusbdevice.cpp
+@@ -164,9 +164,13 @@ boolean CXHCIUSBDevice::EnableHubFunction (void)
+ 	return TRUE;
+ }
+ 
++// circle-xhci-slotgone: 0 once the slot is gone. ~CXHCIUSBDevice disables and frees the slot before the base class
++// deletes the functions, and their endpoints are deleted after it (the periodic iv1 log line of ~CXHCIEndpoint, the
++// Overbridge and USB MIDI teardown); asserting here halted core 0 when a Rytm came back after its restart, and the
++// 15 s watchdog rebooted the Pi. The endpoint calls that need a slot check for 0 and fail instead.
+ u8 CXHCIUSBDevice::GetSlotID (void) const
+ {
+-	assert (XHCI_IS_SLOTID (m_uchSlotID));
++	assert (m_uchSlotID == 0 || XHCI_IS_SLOTID (m_uchSlotID));
+ 	return m_uchSlotID;
+ }
+ 

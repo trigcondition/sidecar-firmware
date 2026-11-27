@@ -16,7 +16,7 @@ public:
 };
 
 // A small card file written whole (core 0): <path>.tmp, then renamed over <path>; its folders made. The slot maps
-// and /.rytm/display.txt.
+// and /.sidecar/display.txt.
 boolean SdWriteWhole (const char *pPath, const char *pData, unsigned n);
 
 class CUserMachinesWriter : public CTask	// core 0: the queued slot-map writes

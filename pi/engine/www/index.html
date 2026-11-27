@@ -356,12 +356,20 @@
       <div class="row"><label>Brightness</label>
         <input id="bright" type="range" min="5" max="100" step="5" value="100" style="width:200px"><span id="brightv" class="mut">100 %</span></div>
       <p class="note">Brightness dims the picture, not the backlight (the panel's backlight has no software control).
-        Both are kept on the card (<code>/.rytm/display.txt</code>); <code>screensaver=</code> / <code>brightness=</code> in
+        Both are kept on the card (<code>/.sidecar/display.txt</code>); <code>screensaver=</code> / <code>brightness=</code> in
         cmdline.txt override them at boot.</p>
     </section>
   </div>
 
   <div class="tab" id="tab-sendfx">
+    <section id="fxmute-sec" hidden>
+      <h2>Effects muted for CPU</h2>
+      <div id="fxmute"></div>
+      <div class="row"><button data-cmd="fxguard">State to the log</button></div>
+      <p class="note">Each effect is timed as it plays, built-in or a user effect. One that ran too long on a busy core
+        (a Pi without a fan slows down when hot) is faded out and plays dry, NO CPU on the box. It stays off until its slot
+        is set again (another TYPE, a kit) or its box is plugged in again.</p>
+    </section>
     <section>
       <h2>Send FX</h2>
       <div class="fxs" id="fx"></div>
@@ -1069,6 +1077,7 @@ const boxWords = [];   // the page's own text with the Rytm in it, as written
 })();
 let boxShort = "Rytm", boxSeen = "";
 function boxLabel(b, all) {
+  if (b.label) return b.label;   // its own name (two of one type: name.txt in its UID folder)
   const name = BOX_SHORT[b.id] || b.name || "Unknown box";
   return all.filter((x) => x.id === b.id).length > 1 ? `${name} ${b.n}` : name;
 }
@@ -1086,7 +1095,11 @@ function boxRender(boxes) {
     e.setAttribute("role", "listitem");
     e.textContent = boxLabel(b, boxes);
     s.textContent = word;
-    e.title = `${b.name}: ${why}`;
+    e.title = `${b.name}: ${why}` + (b.uid ? ` (UID ${b.uid}; double-click to rename)` : "");
+    if (b.uid) e.addEventListener("dblclick", () => {   // its name, kept in its own folder on the card
+      const n = prompt(`Name for ${boxLabel(b, boxes)}`, b.label || "");
+      if (n && n.trim()) cmd(`box=${b.uid}:name=${n.trim()}`);
+    });
     e.append(s);
     return e;
   }));
@@ -1531,11 +1544,21 @@ async function pollStatus() {
     if (status.play) playRender(status.play);
     if (status.samp) smpRender(status.samp, status.asamp);
     if (status.midibridge) mbRender(status.midibridge);
+    fxMuteRender(status.fxMuted);
     setOnline(true);
   } catch (e) { setOnline(false); }
   statusBusy = false;
 }
 setInterval(pollStatus, 1000);
+// the measured guard's mutes (/status "fxMuted", core/fx/fx_guard.h): built-in and user effects the same way
+function fxMuteRender(m) {
+  const sec = $("#fxmute-sec");
+  if (!Array.isArray(m) || !m.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const boxName = (b) => { const s = (status.slots || []).find((x) => x.slot === b); return s && s.box ? s.box : `slot ${b}`; };
+  $("#fxmute").innerHTML = m.map((x) => `<div class="row"><span class="badge err">MUTED</span> <b>${esc(boxName(x.box))} ${esc(x.at)}</b>
+    ${esc(x.type)}${x.user ? ' <span class="badge">user</span>' : ""} <span class="mut">${esc(x.why)}</span></div>`).join("");
+}
 fetch("/status", { cache: "no-store" }).then((r) => r.json()).then((o) => boxRender(o.boxes)).catch(() => {});   // the pairing dialog's words too: pollStatus waits for it
 function setOnline(on, why) {
   online = on;

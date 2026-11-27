@@ -221,7 +221,7 @@ CORE_COLD void forget(Vo& x) {
 CORE_COLD void set_out(Out f) { out_fn = f; }
 
 CORE_COLD void report(int vi, int note, int vel, const float* p) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   Vo& x = vo[vi];
   memcpy(words[vi], p, sizeof words[vi]);
   read_words(x, p);
@@ -232,50 +232,54 @@ CORE_COLD void report(int vi, int note, int vel, const float* p) {
 
 CORE_COLD void note_off(int vi) {
   for (Held& h : held)
-    if (h.used && h.vi == (vi & 7) && h.src == kTrigSrc) off_entry(h);
+    if (h.used && h.vi == (voice_wrap(vi)) && h.src == kTrigSrc) off_entry(h);
 }
 
 CORE_COLD void live_on(int vi, int note, int vel, int ch, int mnote) {
-  Vo& x = vo[vi & 7];
+  Vo& x = vo[voice_wrap(vi)];
   live_off(vi, ch, mnote);   // the same key again
   if (x.dst > kOff) {
-    flush(x, words[vi & 7], true);   // as a trig: a bank and program before the note (the arp's notes, the sequencer's, the keys')
-    on_entry(x.dst, x.ch, note, vel, vi & 7, ch, mnote);
+    flush(x, words[voice_wrap(vi)], true);   // as a trig: a bank and program before the note (the arp's notes, the sequencer's, the keys')
+    on_entry(x.dst, x.ch, note, vel, voice_wrap(vi), ch, mnote);
   }
 }
 
 CORE_COLD void live_off(int vi, int ch, int mnote) {
   for (Held& h : held)
-    if (h.used && h.vi == (vi & 7) && h.src == ch && (mnote < 0 || h.mnote == mnote)) off_entry(h);
+    if (h.used && h.vi == (voice_wrap(vi)) && h.src == ch && (mnote < 0 || h.mnote == mnote)) off_entry(h);
 }
 
 CORE_COLD int voice_notes(int vi) {
   int n = 0;
-  for (const Held& h : held) n += h.used && h.vi == (vi & 7);
+  for (const Held& h : held) n += h.used && h.vi == (voice_wrap(vi));
   return n;
 }
 
 CORE_COLD void silence(int vi) {
   for (Held& h : held)
-    if (h.used && h.vi == (vi & 7)) off_entry(h);
+    if (h.used && h.vi == (voice_wrap(vi))) off_entry(h);
 }
 
 CORE_COLD void leave(int vi) {
   silence(vi);
-  Vo& x = vo[vi & 7];
+  Vo& x = vo[voice_wrap(vi)];
   x.dst = x.ch = -1;
   forget(x);
 }
 
-CORE_COLD void kit_switched() {
+// 3(c) step 9: slot >= 0 a box's own voices only (its kit, its link), -1 every voice
+static inline bool of_slot(int vi, int slot) { return slot < 0 || slot_of_voice(vi) == slot; }
+CORE_COLD void kit_switched(int slot) {
   uint32_t ms = now_ms();
   for (Held& h : held)
-    if (h.used && !((h.src == kTrigSrc || h.src == poly::kSeqCh) && ms - h.ms <= kFreshHeldMs)) off_entry(h);   // (kSeqCh: the arp's note of that trig)
-  for (int vi = 0; vi < kVoices; ++vi) forget(vo[vi]);
+    if (h.used && of_slot(h.vi, slot) && !((h.src == kTrigSrc || h.src == poly::kSeqCh) && ms - h.ms <= kFreshHeldMs)) off_entry(h);   // (kSeqCh: the arp's note of that trig)
+  for (int vi = 0; vi < kVoices; ++vi)
+    if (of_slot(vi, slot)) forget(vo[vi]);
 }
 
-CORE_COLD void kit_changed() {
+CORE_COLD void kit_changed(int slot) {
   for (int vi = 0; vi < kVoices; ++vi) {
+    if (!of_slot(vi, slot)) continue;
     silence(vi);
     forget(vo[vi]);
   }
@@ -307,19 +311,24 @@ CORE_COLD bool echo(int dest, int ch, int note, int vel) {
   return false;
 }
 
-CORE_COLD void stop() {
+CORE_COLD void stop(int slot) {
   for (Held& h : held)
-    if (h.used && (h.src == kTrigSrc || h.src == poly::kSeqCh)) off_entry(h);
+    if (h.used && (h.src == kTrigSrc || h.src == poly::kSeqCh) && of_slot(h.vi, slot)) off_entry(h);
 }
 
-CORE_COLD void realtime(uint8_t status) {
-  if (!out_fn) return;
-  for (const Vo& x : vo)
-    if (x.dst == kUsbA) {
-      out_fn(kUsbA, &status, 1);
-      return;
-    }
+// Each box's own clock (decided 2026-11-26): the USB-A devices are every box's, so a box's realtime bytes go there only
+// while its voices alone send there. With both boxes' voices on USB-A no clock goes at all (a device follows one clock).
+CORE_COLD int usba_slots() {
+  int m = 0;
+  for (int vi = 0; vi < kVoices; ++vi)
+    if (vo[vi].dst == kUsbA) m |= 1 << slot_of_voice(vi);
+  return m;
 }
+CORE_COLD void realtime(int slot, uint8_t status) {
+  if (!out_fn || slot < 0 || slot >= kVoiceSlots) return;
+  if (usba_slots() == 1 << slot) out_fn(kUsbA, &status, 1);
+}
+CORE_COLD void realtime(uint8_t status) { realtime(0, status); }
 
 void tick(uint32_t ms) {
   uint32_t dt = ms - last_ms;
@@ -352,7 +361,7 @@ void tick(uint32_t ms) {
 }
 
 CORE_COLD const Stats& stats() { return st; }
-CORE_COLD int dest_of(int vi) { return vo[vi & 7].dst > 0 ? vo[vi & 7].dst : (int)kOff; }
+CORE_COLD int dest_of(int vi) { return vo[voice_wrap(vi)].dst > 0 ? vo[voice_wrap(vi)].dst : (int)kOff; }
 
 CORE_COLD bool command(const char* p, char* out, int cap) {
   if (strcmp(p, "midim") != 0) return false;

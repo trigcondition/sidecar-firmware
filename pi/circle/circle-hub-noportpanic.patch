@@ -1,0 +1,106 @@
+diff --git a/lib/usb/usbstandardhub.cpp b/lib/usb/usbstandardhub.cpp
+index 6dacf06..6b7c268 100644
+--- a/lib/usb/usbstandardhub.cpp
++++ b/lib/usb/usbstandardhub.cpp
+@@ -675,9 +675,17 @@ void CUSBStandardHub::HandlePortStatusChange (void)
+ 
+ 	if (usStatusBitmap & 1)
+ 	{
+-		CLogger::Get ()->Write (FromHub, LogPanic, "Hub status change not handled");
++		// circle-hub-noportpanic.patch: was a LogPanic (halt, then the watchdog); the ports are handled anyway
++		CLogger::Get ()->Write (FromHub, LogWarning, "Hub status change not handled");
+ 	}
+ 
++	// circle-hub-noportpanic.patch: a request to the hub that fails here (the hub not answering for a moment, as
++	// while a Rytm restarts after an OS update) was a LogPanic: core 0 halted and the 15 s watchdog rebooted the
++	// Pi, with the panic line never reaching the black box. Now the line is logged, this pass stops, and the
++	// status change request is armed again later from the recovery timer (circle-hub-rearm2/3.patch). The hub
++	// keeps the change in its change bits and reports it again once the request is armed, so it is retried.
++	boolean bFailed = FALSE;
++
+ 	for (unsigned nPort = 0; nPort < m_nPorts; nPort++)
+ 	{
+ 		if (!(usStatusBitmap & (1 << (nPort+1))))
+@@ -689,8 +697,10 @@ void CUSBStandardHub::HandlePortStatusChange (void)
+ 			REQUEST_IN | REQUEST_CLASS | REQUEST_TO_OTHER,
+ 			GET_STATUS, 0, nPort+1, m_pStatus[nPort], 4) != 4)
+ 		{
+-			CLogger::Get ()->Write (FromHub, LogPanic,
+-						"Cannot get port status (port %u)", nPort+1);
++			CLogger::Get ()->Write (FromHub, LogError,
++						"Cannot get port status (port %u): tried again later", nPort+1);
++			bFailed = TRUE;
++			break;
+ 		}
+ 
+ 		u16 usChangeStatus = m_pStatus[nPort]->wChangeStatus;
+@@ -698,8 +708,12 @@ void CUSBStandardHub::HandlePortStatusChange (void)
+ 		//CLogger::Get ()->Write (FromHub, LogDebug, "Change status is 0x%04X (port %u)",
+ 		//			(unsigned) usChangeStatus, nPort+1);
+ 
+-		assert (!(usChangeStatus & C_PORT_SUSPEND__MASK));	// TODO
+-		assert (!(usChangeStatus & C_PORT_OVER_CURRENT__MASK));	// TODO
++		if (usChangeStatus & (C_PORT_SUSPEND__MASK | C_PORT_OVER_CURRENT__MASK))
++		{
++			// circle-hub-noportpanic.patch: was an assert (a halt); not handled, said once per change
++			CLogger::Get ()->Write (FromHub, LogWarning, "Port change 0x%04X not handled (port %u)",
++						(unsigned) usChangeStatus, nPort+1);
++		}
+ 
+ 		if (usChangeStatus & C_PORT_ENABLE__MASK)
+ 		{
+@@ -707,9 +721,11 @@ void CUSBStandardHub::HandlePortStatusChange (void)
+ 				REQUEST_OUT | REQUEST_CLASS | REQUEST_TO_OTHER,
+ 				CLEAR_FEATURE, C_PORT_ENABLE, nPort+1, 0, 0) < 0)
+ 			{
+-				CLogger::Get ()->Write (FromHub, LogPanic,
+-							"Cannot clear C_PORT_ENABLE (port %u)",
++				CLogger::Get ()->Write (FromHub, LogError,
++							"Cannot clear C_PORT_ENABLE (port %u): tried again later",
+ 							nPort+1);
++				bFailed = TRUE;
++				break;
+ 			}
+ 		}
+ 
+@@ -719,9 +735,11 @@ void CUSBStandardHub::HandlePortStatusChange (void)
+ 				REQUEST_OUT | REQUEST_CLASS | REQUEST_TO_OTHER,
+ 				CLEAR_FEATURE, C_PORT_RESET, nPort+1, 0, 0) < 0)
+ 			{
+-				CLogger::Get ()->Write (FromHub, LogPanic,
+-							"Cannot clear C_PORT_RESET (port %u)",
++				CLogger::Get ()->Write (FromHub, LogError,
++							"Cannot clear C_PORT_RESET (port %u): tried again later",
+ 							nPort+1);
++				bFailed = TRUE;
++				break;
+ 			}
+ 		}
+ 
+@@ -731,9 +749,11 @@ void CUSBStandardHub::HandlePortStatusChange (void)
+ 				REQUEST_OUT | REQUEST_CLASS | REQUEST_TO_OTHER,
+ 				CLEAR_FEATURE, C_PORT_CONNECTION, nPort+1, 0, 0) < 0)
+ 			{
+-				CLogger::Get ()->Write (FromHub, LogPanic,
+-							"Cannot clear C_PORT_CONNECTION (port %u)",
++				CLogger::Get ()->Write (FromHub, LogError,
++							"Cannot clear C_PORT_CONNECTION (port %u): tried again later",
+ 							nPort+1);
++				bFailed = TRUE;
++				break;
+ 			}
+ 
+ 			if (m_pStatus[nPort]->wPortStatus & PORT_CONNECTION__MASK)
+@@ -771,6 +791,12 @@ void CUSBStandardHub::HandlePortStatusChange (void)
+ 		}
+ 	}
+ 
++	if (bFailed)
++	{
++		ScheduleRecovery ();			// circle-hub-noportpanic.patch: re-armed from the timer, 250 ms on
++		return;
++	}
++
+ 	if (!StartStatusChangeRequest ())
+ 	{
+ 		CLogger::Get ()->Write (FromHub, LogError, "Cannot restart request");

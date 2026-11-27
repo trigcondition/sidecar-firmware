@@ -298,7 +298,7 @@ static void touch_view (int shown)		// HOME's touch test is the dot under the fi
 }
 
 // ---- the touch calibration (Settings > Display > CALIBRATE; touch_cal.h): a cross at each of the 4 targets in turn, the
-// raw values at each release taken; then "touchcal=X0,X1,Y0,Y1,SWAP" (stored in /.rytm/display.txt). Over everything
+// raw values at each release taken; then "touchcal=X0,X1,Y0,Y1,SWAP" (stored in /.sidecar/display.txt). Over everything
 // (the top layer, clickable: no control below gets the touches). A release on the CANCEL box in the middle ends it.
 
 static lv_obj_t *s_CalOv, *s_CalH, *s_CalV, *s_CalText, *s_CalCancel, *s_CalState;

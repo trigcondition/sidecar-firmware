@@ -216,7 +216,7 @@ int main() {
   srclib::begin(true);
   pools::begin(true);
   lib_settle();
-  snprintf(core::project, sizeof core::project, "%s", "LIVE");
+  snprintf(core::prj().key, sizeof core::prj().key, "%s", "LIVE");
   for (int i = 0; i < 2000 && (!pools::ready() || strcmp(pools::project(), "LIVE")); ++i) run(1);
   CHECK(pools::ready());
 
@@ -343,7 +343,7 @@ int main() {
   CHECK(!there("/.rytm/granular/LIVE.pool.txt"));
   // delete: the project's folder goes with its list files
   strcpy(g_current, "OTHER");
-  snprintf(core::project, sizeof core::project, "%s", "OTHER");   // (the Pi's env.current is core::project: as one here)
+  snprintf(core::prj().key, sizeof core::prj().key, "%s", "OTHER");   // (the Pi's env.current is core::prj().key: as one here)
   CHECK(start_delete("LIVE", "LIVE"));
   job();
   CHECK(status().phase == kDone);

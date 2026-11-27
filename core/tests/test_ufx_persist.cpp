@@ -84,7 +84,7 @@ static void goto_project(const char* p) {
   m.push_back(0xf7);
   engine_sysex(m.data(), (int)m.size());
   idle_all();
-  CHECK(!strcmp(core::project, p));
+  CHECK(!strcmp(core::prj().key, p));
 }
 static bool ufx(int u, rmp_slot_state st, const char* id) {   // UFX u+1
   um::SlotView v = um::slot_view(5 + u);
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
   if (argc == 3 && !strcmp(argv[1], "restart")) {   // ---- the second run: a restart on the same card
     host_set_card(argv[2]);
     boot();
-    CHECK(!strcmp(core::project, "P1"));
+    CHECK(!strcmp(core::prj().key, "P1"));
     // the boot's project: both effects back, the same packages
     CHECK(ufx(0, RMP_SLOT_READY, "fx.pingpong") && ufx(1, RMP_SLOT_EMPTY, "") && ufx(2, RMP_SLOT_READY, "fx.api3_fx"));
     CHECK(ufx(3, RMP_SLOT_EMPTY, ""));
@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
     put(std::string("/Plugins/") + n + ".rmp", b);
   }
   boot();
-  CHECK(!strcmp(core::project, "P1"));
+  CHECK(!strcmp(core::prj().key, "P1"));
   CHECK(slurp("/.rytm/fxslots/P1.txt") == "<none>");   // nothing written by a load
   cmd("um=fx:1:fx.pingpong");
   cmd("um=fx:3:fx.api3_fx");
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
     std::string old = slurp("/.rytm/fxslots/P1.txt");
     cardq::reset();
     cardq::set_worker(true);
-    snprintf(core::project, sizeof core::project, "P6");   // (pool.cpp's switch_to, the user machines' part: its hook)
+    snprintf(core::prj().key, sizeof core::prj().key, "P6");   // (pool.cpp's switch_to, the user machines' part: its hook)
     hooks.project_changed();
     um::idle();   // the read is under way (its first request posted, not served)
     char o[200];
@@ -187,7 +187,7 @@ int main(int argc, char** argv) {
     CHECK(strstr(o, "after the project's map is read"));
     idle_srv();
     cardq::set_worker(false);
-    CHECK(!strcmp(core::project, "P6"));
+    CHECK(!strcmp(core::prj().key, "P6"));
     CHECK(ufx(0, RMP_SLOT_EMPTY, "") && ufx(1, RMP_SLOT_READY, "fx.api3_fx") && ufx(2, RMP_SLOT_EMPTY, "") && ufx(3, RMP_SLOT_READY, "fx.api3_fx"));
     std::string p6 = slurp("/.rytm/fxslots/P6.txt");
     CHECK(p6 != "<none>" && p6.find("\tfx.api3_fx 1.0.0\n") != std::string::npos);

@@ -7,7 +7,7 @@
 //
 // What the next boot reads (config.txt, cmdline.txt, engine.img, kernel_2712.img, sdboot) is never written while the
 // old engine runs: install writes only new files (the trial kernel, cmdline-try.txt, tryboot.txt, its own state under
-// /.rytm/update). Only the trial engine's commit renames the old kernel to .prev and the trial into place - two
+// /.sidecar/update). Only the trial engine's commit renames the old kernel to .prev and the trial into place - two
 // renames, the one window where a power cut leaves no kernel (milliseconds; FAT has no atomic replace).
 #ifndef _pi_engine_update_h
 #define _pi_engine_update_h

@@ -232,7 +232,7 @@ The server's first message:
 
 ## Serving the new app from the Pi
 
-From the card: `GET /next/<file>` reads `SD:/.rytm/www-next/<file>` (`pi/engine/webnext_path.h`; `/next` and `/next/`
+From the card: `GET /next/<file>` reads `SD:/.sidecar/www-next/<file>` (`pi/engine/webnext_path.h`; `/next` and `/next/`
 are `index.html`). No kernel growth, and an app update needs no kernel.
 
 - The `.gz` sibling is sent when there is one (`Content-Encoding: gzip`), else the file itself.

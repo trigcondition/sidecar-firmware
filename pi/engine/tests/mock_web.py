@@ -10,7 +10,7 @@ failed one reverts (the previous settings back). join/forget/power need the same
 The pairing code (pi/engine/paircode.h) as web.cpp gates it: /pair/status, /pair, /pair/resume, /pair/forget,
 /pair/revoke, /pair/show, the same list of gated endpoints, the token from the X-Sidecar-Auth header (or tok= in a
 POST's body - never the query), the "401 not paired" answers with the X-Sidecar-Pair header, and the devices remembered in
-<CARD_DIR>/.rytm/pair.txt so a restart of this mock is a reboot of the Pi. The code is random per run and written to
+<CARD_DIR>/.sidecar/pair.txt so a restart of this mock is a reboot of the Pi. The code is random per run and written to
 <CARD_DIR>/sidecar-paircode.txt, as the engine does when no touchscreen is attached (there is none here); a test reads
 it from there. MOCK_PAIR=0 is cmdline.txt paircode=0 (the gate off), MOCK_PAIR=<8 digits> a fixed code.
 MOCK_PAIR_LOCK / MOCK_PAIR_GAP (seconds, default 60 and 1 as paircode.h) shorten the lockout for a test. The limiter
@@ -262,13 +262,13 @@ def wifi_post(op, form):
         w["on"] = form["on"] == "1"
         if w["on"] and not w["chip"]:
             w.update(chip=True, mode="scan")
-        log("wifi: stored on=%s in /.rytm/wifi.txt (the next boot)" % form["on"])
+        log("wifi: stored on=%s in /.sidecar/wifi.txt (the next boot)" % form["on"])
         return ""
     if op == "forget":
         if busy:
             return "busy: a join is being tried"
         w.update(ssid=None, open=False, on=False, join="none", reason="")
-        log("wifi: forget: the stored network removed from /.rytm/wifi.txt (and wifi.txt.prev), on=0")
+        log("wifi: forget: the stored network removed from /.sidecar/wifi.txt (and wifi.txt.prev), on=0")
         return ""
     if op == "join":
         if busy:
@@ -285,7 +285,7 @@ def wifi_post(op, form):
         out = "wrong_password" if psk == "wrong-pass" else None if ssid in names else "not_found"
         w.update(prev={k: w[k] for k in ("ssid", "open", "on", "chip")}, ssid=ssid, open=op_, on=True, join="restarting",
                  reason="", outcome=out, rebootUntil=time.time() + 3)
-        log("wifi: join: a new network stored in /.rytm/wifi.txt (its key, not the passphrase; the previous file kept as "
+        log("wifi: join: a new network stored in /.sidecar/wifi.txt (its key, not the passphrase; the previous file kept as "
             "wifi.txt.prev): restarting on Wi-Fi, the previous setting back if it is not up in %d s" % WIFI_TRIAL)
         return ""
     return None

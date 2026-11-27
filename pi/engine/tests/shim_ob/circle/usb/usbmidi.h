@@ -1,8 +1,12 @@
 #pragma once
 #include <circle/types.h>
+#include <circle/device.h>
+class CUSBDevice;
 // fail: the next sends that fail, each halting the bulk OUT (a halted endpoint fails every send until reset)
-class CUSBMIDIDevice {
+class CUSBMIDIDevice : public CDevice {
  public:
+  CUSBDevice* GetUSBDevice() const { return usb; }   // circle-midi-usbdevice.patch
+  CUSBDevice* usb = nullptr;
   boolean SendEventPackets(const u8*, unsigned) {
     if (fail > 0) return --fail, halted = true, FALSE;
     if (halted) return FALSE;

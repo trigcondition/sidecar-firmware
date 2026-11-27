@@ -31,7 +31,7 @@ memory: the screens never read the card.
 have to be restarted first (the engine keeps saying `"trial":true` in `/update/state` until the next restart, which no
 longer matters). Only a job under way (state `staging`, `trying`, `committing`) refuses another.
 
-**A crash report:** Settings › Update › "Read the last crash report" shows `/.rytm/prevboot.txt` (the report and the
+**A crash report:** Settings › Update › "Read the last crash report" shows `/.sidecar/prevboot.txt` (the report and the
 log tail of the last boot that did not end by a planned restart), with "Save as a file" for a bug report. Paired devices
 only (`GET /prevboot`, unlike `/log`, which is open; capped at 64 KB); the file holds no pairing code or Wi-Fi key.
 
@@ -90,11 +90,11 @@ the commit task, the reboot), `web.cpp` (the endpoints).
 | endpoint | what |
 |---|---|
 | `GET /update/state` | open, as /status: `{"api","enabled","why","board","version","commit","trial","state","kind","target","from","msg","prev","prevVersion","uploaded","commitIn","uptime"}` |
-| `POST /update/put?off=&total=&crc=` | the file in 48 KB chunks, `/fs/put`'s protocol (`200 ok <next>`, `200 done <n>`, `409 expected <off>`), to `/.rytm/update/update.scu` |
+| `POST /update/put?off=&total=&crc=` | the file in 48 KB chunks, `/fs/put`'s protocol (`200 ok <next>`, `200 done <n>`, `409 expected <off>`), to `/.sidecar/update/update.scu` |
 | `POST /update/install` `[force=1]` | checked again (header, every part's sha256, this board's kernel and its stamp, the web archive, the version, free space), staged as the trial; `{"ok","code","msg","reboot":"tryboot"}`, the reboot half a second later |
 | `POST /update/previous` `[force=1]` | the `.prev` kernel as a trial; one without the update code only with `force=1`, swapped at once (`"reboot":"plain"`) |
 | `POST /update/discard` | the uploaded file deleted |
-| `GET /prevboot` | (paired) `/.rytm/prevboot.txt`, text, at most 64 KB: the last crashed boot's report and log tail; 404 when none |
+| `GET /prevboot` | (paired) `/.sidecar/prevboot.txt`, text, at most 64 KB: the last crashed boot's report and log tail; 404 when none |
 
 From the install until its commit ends (or the next boot reverts it; not for the rest of a trial boot that has committed:
 see "Installing again" below) `put`, `discard` and a second install are refused: the uploaded
@@ -106,7 +106,7 @@ Paired (or the trusted cable) for everything but `/update/state`, and the strict
 
 ### The write order
 
-Install, on the running (old) engine, writes only new files: `/.rytm/update/state.txt` (`staging`), the trial kernel
+Install, on the running (old) engine, writes only new files: `/.sidecar/update/state.txt` (`staging`), the trial kernel
 (`engine-try.img` on the Pi 4, `kernel_2712-try.img` on the Pi 5: written as `.part`, every piece read back, the sha256
 and on the Pi 4 the SDCRENG1 sums checked on the card, then renamed), `cmdline-try.txt` (cmdline.txt's line plus
 `updtrial=1`), `tryboot.txt` (first line `# sidecar web update`; the Pi 4: config.txt with the sdboot block's line
@@ -121,7 +121,7 @@ The trial boot reads `tryboot.txt` once; `updtrial=1` on its cmdline tells the e
 the watchdog from its first boot step. After 30 s of uptime a task on core 0 commits: the stamp must match the
 target, the older `.prev` goes, the running kernel becomes `.prev`, the trial kernel takes the real name (these two
 renames are the one moment without a kernel under the boot name: FAT has no atomic replace, the same window as
-`sdboot.py install`), then the trial files go, the web app is unpacked to `/.rytm/www-next.new` and swapped in
+`sdboot.py install`), then the trial files go, the web app is unpacked to `/.sidecar/www-next.new` and swapped in
 (`www-next` becomes `www-next.prev`), and state `committed`. Each step is resumable: a power cut in the commit is
 finished by the next boot (whichever kernel the firmware then finds).
 
@@ -158,7 +158,7 @@ reverts to the committed kernel, as always (`test_update`: "install after a comm
 `make_update.py --web web-next/dist` (or `--build-web`, which runs `npm run build` in web-next first; it needs
 `web-next/node_modules`, so run `cd web-next && npm ci` once; the tool installs nothing) puts the web app in the file.
 The release (sidecar-expander `scripts/package_pi.sh`) builds web-next and passes it. A file **without** a web part (the
-kernels-only trial files) leaves `/.rytm/www-next` and `www-next.prev` alone and `prev.txt` says `w=0` (a "previous"
+kernels-only trial files) leaves `/.sidecar/www-next` and `www-next.prev` alone and `prev.txt` says `w=0` (a "previous"
 then does not swap the web app back). A trial/dev update with the page's fixes needs the web part, since the page is
 part of what changed: build it with `--build-web`.
 

@@ -77,6 +77,16 @@ int main() {
     char tiny[64];
     CHECK(f.json(tiny, sizeof tiny, 3, "Analog Four MKII", caps) == 0);
   }
+  {   // two Rytms (design 2026-11-26): keyed by their UIDs, each with its name
+    BoxList l;
+    l.add(1, 2, BoxSpare, "Elektron Analog Rytm MKII", 0x9f003fa2, "Live rig");
+    l.add(1, 1, BoxHost, "Elektron Analog Rytm MKII", 0x1234abcd, "Rytm abcd");
+    char j[1536];
+    CHECK(l.json(j, sizeof j, 1, "Analog Rytm MKII", nullptr) > 0);
+    const char* a = strstr(j, "{\"key\":\"1-1234abcd\",\"id\":1,\"uid\":\"1234abcd\",\"label\":\"Rytm abcd\",\"n\":1,");
+    const char* b = strstr(j, "{\"key\":\"1-9f003fa2\",\"id\":1,\"uid\":\"9f003fa2\",\"label\":\"Live rig\",\"n\":2,");
+    CHECK(a && b && a < b);
+  }
   printf("test_usb_box: ok\n");
   return 0;
 }

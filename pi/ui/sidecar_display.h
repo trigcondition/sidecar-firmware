@@ -21,7 +21,7 @@ public:
 
 	// The UI's size (docs/pi-display.md "Screen sizes"): 800x480 or 1024x600, the frame buffer's when it is one of them,
 	// 1280x720 on Touch Display 2, else 800x480 centred 1:1 on it with black borders (Pi 4), or scaled up to it (Pi 5's HDMI). SetUiSize before
-	// Initialize overrides that (res= in /.rytm/display.txt or cmdline.txt; 0, 0: automatic). The HDMI display's EDID
+	// Initialize overrides that (res= in /.sidecar/display.txt or cmdline.txt; 0, 0: automatic). The HDMI display's EDID
 	// (its preferred mode) is logged and, on the Pi 5, picks 1024x600 for a 1024x600 panel.
 	void SetUiSize (unsigned nWidth, unsigned nHeight)	{ m_nUiReqW = nWidth; m_nUiReqH = nHeight; }
 
@@ -55,7 +55,7 @@ public:
 	unsigned GetTouchContacts (void) const;
 	// a touch SCREEN is bound now (the USB digitizer or the DSI panel's touch; a mouse is not one): the late-computer prompt's gate
 	boolean HasTouchScreen (void) const	{ return m_pTouch != 0 || m_pDsiTouch != 0; }
-	// the 4-point calibration (touch_cal.h, "touchcal=" in /.rytm/display.txt): raw -> the UI's pixels; 0: none (then
+	// the 4-point calibration (touch_cal.h, "touchcal=" in /.sidecar/display.txt): raw -> the UI's pixels; 0: none (then
 	// cmdline touchscreen=, else the USB descriptor's logical range). It wins over both.
 	void SetTouchCal (const touch_cal_t *pCal);
 	static unsigned TouchContacts (void)	{ return s_pThis ? s_pThis->GetTouchContacts () : 0; }

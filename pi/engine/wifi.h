@@ -5,16 +5,16 @@
 // through it), so Wi-Fi and Ethernet are either/or for the network; the chip itself can run beside Ethernet:
 //   wifi=0     (cmdline.txt) off: no Wi-Fi code runs, nothing loaded
 //   wifi=scan  the chip up beside Ethernet (Ethernet stays the network): scans for the settings page
-//   wifi=1     Wi-Fi is the network: joins the network in /.rytm/wifi.txt (DHCP unless wifi.txt has ip=),
+//   wifi=1     Wi-Fi is the network: joins the network in /.sidecar/wifi.txt (DHCP unless wifi.txt has ip=),
 //              sidecar.local over Wi-Fi; Ethernet unused. No stored network: as wifi=scan.
 // No wifi= in cmdline.txt (the release): wifi.txt's on=1 means wifi=1 (the web page, the console or the display enable it).
 //
-// /.rytm/wifi.txt (wifi_conf.h), key=value lines ('#' comments): on=0|1, ssid=, psk= (the 64-hex key; a passphrase
+// /.sidecar/wifi.txt (wifi_conf.h), key=value lines ('#' comments): on=0|1, ssid=, psk= (the 64-hex key; a passphrase
 // written by hand is hashed at boot), open=1 (an open network), country= (ISO alpha2, default NL), band=2g|5g|any,
 // ip= netmask= gw= dns= (all four: static, else DHCP). Firmware: SD:/firmware/brcmfmac43455-sdio.{bin,txt,clm_blob}.
 //
 // A join (the page's Connect and save, the console's wifi=join, wifi=on with a stored network) is a trial: wifi.txt is
-// replaced atomically, the old one kept as wifi.txt.prev, /.rytm/wifi.try says "trying"; the page's join restarts the
+// replaced atomically, the old one kept as wifi.txt.prev, /.sidecar/wifi.try says "trying"; the page's join restarts the
 // Pi on Wi-Fi now (one network at a time), the console's at the next boot. Not up (associated and a DHCP lease) within
 // TrialSecs of that boot: wifi.txt.prev goes back, wifi.try says "failed" with the reason (wrong_password, not_found,
 // no_dhcp, not_started) and the Pi restarts on its previous setting - Ethernet when Wi-Fi was off - so a typo cannot

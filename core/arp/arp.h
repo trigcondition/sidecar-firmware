@@ -74,22 +74,25 @@ bool trig_off(int vi);                      // its 0x11: true when it ended the 
 void lock(int vi, int track, int mask, const uint8_t* val, int64_t until);
 int locked(int vi);                         // the mask in force, 0 none
 
-void block(int64_t h);                      // seq::pre_block, each render block: h its first frame
-void stop();                                // the transport left PLAY
-void kit_changed();                         // another active kit: every voice's notes end, but a trig of the last kFreshMs (the new kit's own: its 3B comes after it)
+// 3(c): each voice slot its own arpeggiator: its tracks' codes (the slot in hand's for sysex / set / get / command; slot 0 the
+// Rytm's tracks, another slot's box its tracks 0..7 on its own voices), its clock and tempo (seq's of that slot), its block in
+// its own pass, its transport's STOP. A box's codes come from the ARP page or the console (no box but the Rytm stores them yet).
+void block(int64_t h, int slot = 0);        // seq::pre_block, each render block of slot's pass: h its first frame, slot's voices
+void stop(int slot = -1);                   // slot's transport left PLAY (-1: every slot's)
+void kit_changed(int slot = -1);            // slot >= 0: that box's voices only (-1 every voice). Another active kit: every voice's notes end, but a trig of the last kFreshMs (the new kit's own: its 3B comes after it)
 void link_lost();                           // the Rytm's USB gone: every note ends, no 0x11 will come
 void end(int vi);                           // vi's notes end now (a machine change, a silence)
 void machines();                            // the Rytm's 33: a voice whose machine changed ends
 int held(int vi);                           // tests: the notes the arp holds on voice vi
 bool busy(int vi);                          // holding notes or sounding one (the pin's silence, seq.cpp)
-void tick(uint32_t ms);                     // every control pass: what the sequencer must clock and pin
+void tick(uint32_t ms);                     // every control pass, in each slot's Scope: what its sequencer must clock (and the Rytm's, pin)
 
 struct Stats {
   uint32_t notes, late, chords, reports, edits, released;
   uint32_t worst_us;   // block()'s slowest pass, its notes' starts included ("arp" on the console: the Pi's real number)
   int running;
 };
-const Stats& stats();
+const Stats& stats(int slot = 0);
 bool command(const char* p, char* out, int cap);   // the console's "arp", "arp=T:mode=up,spd=3,rng=1,gate=1,swng=0" (T 1..12)
 void reset();                               // tests: nothing running, every code 0
 

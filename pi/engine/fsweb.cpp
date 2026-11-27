@@ -19,14 +19,14 @@ namespace fsweb {
 namespace {
 
 // WHAT /fs/* CAN REACH AT ALL (docs/pi-engine.md "Pairing code" > "What the file API can reach"). The split is:
-// /fs/* is content, TCP 7310 is firmware, /.rytm is neither and is reachable through neither. Deny by default: a
+// /fs/* is content, TCP 7310 is firmware, /.sidecar and the boxes' /.rytm, /.a4, /.dt are neither and are reachable through neither. Deny by default: a
 // path that is not one of these folders, or inside one, does not exist as far as this API is concerned, for every
 // operation - list, get, put, del, mkdir and both ends of a mv.
 //
 // Before this, path_ok() checked syntax only and read_only() guarded writes to the root's boot files, so /fs/get
-// served anything on the card (the Wi-Fi key in /.rytm/wifi.txt, and the pairing code when a headless unit wrote
+// served anything on the card (the Wi-Fi key in /.sidecar/wifi.txt, and the pairing code when a headless unit wrote
 // one down) and read_only()'s "below the root: only overlays/ is the firmware's" let a write land on
-// /.rytm/pair.txt - putting a chosen device hash in there is a way past the pairing code itself. The pairing gate
+// /.sidecar/pair.txt - putting a chosen device hash in there is a way past the pairing code itself. The pairing gate
 // in web.cpp stops an unpaired client; this stops a paired one, and stops the gate being the only thing in the way.
 //
 // The set comes from what the engine and the page actually use: the sample library and GRANULAR's takes and pools
@@ -101,7 +101,7 @@ bool read_only(const char* p) {
 }
 
 bool kept_dir(const char* p) {
-  static const char* const kKept[] = {"/.rytm", "/.digitakt", "/.a4", "/Samples", "/Plugins", "/Bundles"};   // Bundles: docs/BUNDLES.md
+  static const char* const kKept[] = {"/.rytm", "/.sidecar", "/.dt", "/.a4", "/Samples", "/Plugins", "/Bundles"};   // Bundles: docs/BUNDLES.md
   for (const char* k : kKept) if (ieq(p, k, strlen(k) + 1)) return true;
   return false;
 }
@@ -178,7 +178,7 @@ int list_json(const Backend& b, const char* path, char* out, int cap, Result* r)
   int nOut = 0;                       // entries actually written: reachable() skips some, so i is not the count
   for (int i = 0; i < n && k < cap - 300; ++i) {
     sniprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", e[i].name);
-    if (!reachable(full)) continue;   // the card's root shows the content folders, not the boot files or /.rytm
+    if (!reachable(full)) continue;   // the card's root shows the content folders, not the boot files, /.sidecar or /.rytm
     char nm[200];
     int q = 0;
     for (const char* s = e[i].name; *s && q < 190; ++s) {   // JSON-escaped

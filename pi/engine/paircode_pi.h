@@ -17,7 +17,7 @@
 namespace paircode_pi {
 
 // Once at boot, after the card is mounted and before the network starts: cmdline.txt's paircode=, the code itself and
-// the remembered devices from /.rytm/pair.txt. Logs the gate's state, never the code.
+// the remembered devices from /.sidecar/pair.txt. Logs the gate's state, never the code.
 // bDisplay: a panel came up. bWanted: cmdline.txt asked for one (display=1, the default). With no display at all the
 // code would be nowhere to read, so it goes to the card's root (paircode::kRecoursePath) - said out loud, because
 // bWanted && !bDisplay means a panel was configured and did not come up, which is a surprise, not a choice. With a
@@ -25,7 +25,7 @@ namespace paircode_pi {
 void Init (const char *pCmdline, bool bDisplay, bool bWanted);
 paircode::Gate &Gate ();
 void Random (u8 *pOut, unsigned n);		// the hardware generator mixed with the timer (the code's, the bridge's token)
-void Save ();					// /.rytm/pair.txt, only when something changed
+void Save ();					// /.sidecar/pair.txt, only when something changed
 void Status (CString *pOut);			// /status's ",\"pair\":{...}" - the code is never in it
 void WarnTick ();				// once a minute: the loud line while the gate is off
 void UiFill (sidecar_status_view_t *v);		// the STATUS page's PAIR CODE row

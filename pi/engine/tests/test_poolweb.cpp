@@ -91,7 +91,7 @@ int main() {
   srclib::begin(true);
   pools::begin(true);
   for (int i = 0; i < 200000 && (i < 50 || lib::busy() || lib::stats().state != lib::kReady); ++i) lib::step();
-  snprintf(core::project, sizeof core::project, "%s", "WEB");
+  snprintf(core::prj().key, sizeof core::prj().key, "%s", "WEB");
   for (int i = 0; i < 2000 && (!pools::ready() || strcmp(pools::project(), "WEB")); ++i) run(1);
   CHECK(pools::ready());
 

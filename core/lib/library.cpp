@@ -43,10 +43,10 @@ static_assert(sizeof(Rec) == 64 && offsetof(Rec, path) == 60, "the library's rec
 inline bool hashed(const Rec& r) { return !(r.flags & fUnhashed); }
 inline bool live(const Rec& r) { return !(r.flags & (fDel | fGone)); }
 
-constexpr char kDir[] = "/.rytm/library";
-constexpr char kIndex[] = "/.rytm/library/index.bin";
-constexpr char kLog[] = "/.rytm/library/log.txt";
-constexpr char kState[] = "/.rytm/library/state.txt";
+constexpr char kDir[] = "/.sidecar/library";
+constexpr char kIndex[] = "/.sidecar/library/index.bin";
+constexpr char kLog[] = "/.sidecar/library/log.txt";
+constexpr char kState[] = "/.sidecar/library/state.txt";
 constexpr char kLogHead[] = "#sidecar library-log 1\n";
 constexpr uint32_t kLogCap = 256u << 10;      // log lines waiting for a card write (RAM)
 constexpr uint32_t kQuick = 65536;

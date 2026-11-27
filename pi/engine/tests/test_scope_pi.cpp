@@ -37,9 +37,10 @@ int remote_selected_track(uint32_t* gen) {
 }
 }  // namespace ui
 namespace device {   // the box in use: scope_pi asks foreign() and active().voices
-Link g_link{};
+Link g_links[kLinks]{};
+Link* g_cur = &g_links[0];
 static Profile s_rytm{};
-const Profile& active() { return g_link.box ? *g_link.box : s_rytm; }
+const Profile& active() { return cur().box ? *cur().box : s_rytm; }
 }  // namespace device
 }  // namespace core
 
@@ -99,10 +100,10 @@ int main() {
   // an A4: its tracks T1..T4 are voices 0..3, sources 1..4; T5, T6 and beyond none
   static core::device::Profile a4{};
   a4.voices = 4;
-  core::device::g_link.box = &a4;
+  core::device::cur().box = &a4;
   CHECK(core::device::foreign());
   for (int t = 0; t < 6; ++t) CHECK(scope_pi::SourceOfTrack(t) == (t < 4 ? 1 + t : 0));
-  core::device::g_link.box = nullptr;
+  core::device::cur().box = nullptr;
   scope_pi::Leave();
   CHECK(!core::ui::tap_enabled);
   printf("test_scope_pi: PASS\n");

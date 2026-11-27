@@ -16,7 +16,7 @@
 namespace bundle_pi {
 
 namespace {
-volatile bool g_playing = false;
+volatile uint32_t g_playing = 0;   // bit s: box slot s plays (each box's own transport, 2026-11-26: any box's PLAY slows the writes)
 volatile int g_rec = 0;
 void (*g_cmd)(const char*) = nullptr;
 
@@ -30,7 +30,7 @@ void rules(core::bundle::IoRule* r) {
 bool card_busy() { return core::cardq::worker() && core::cardq::busy(); }
 void current(char* out, int cap) {   // core 3's (a stale copy at worst)
   char p[24];
-  memcpy(p, (const char*)core::project, sizeof p);
+  memcpy(p, (const char*)core::prj().key, sizeof p);
   p[23] = 0;
   sniprintf(out, cap, "%s", p);
 }
@@ -106,9 +106,10 @@ void init(void (*command)(const char*)) {
   core::bundle::feed::set_available(core::card_ok);   // the PROJECT pages: shown while the card is up
 }
 
-void transport(uint8_t st) {
-  if (st == 0xFA || st == 0xFB) g_playing = true;
-  else if (st == 0xFC) g_playing = false;
+void transport(int slot, uint8_t st) {
+  if (slot < 0 || slot >= 32) return;
+  if (st == 0xFA || st == 0xFB) __atomic_or_fetch(&g_playing, 1u << slot, __ATOMIC_RELAXED);
+  else if (st == 0xFC) __atomic_and_fetch(&g_playing, ~(1u << slot), __ATOMIC_RELAXED);
 }
 
 bool poll(int recorder_state) {

@@ -69,6 +69,8 @@ inline bool silent(const Entry* list, int e) { return e >= 0 && e < kEntries && 
 // The machine's list from its pool list (kind k = the pool list's number): kEntries entries into out
 int compose(int k, Entry* out);
 uint32_t pool_sig(int k);            // the pool list's sig (compose again when it moves)
+int compose(int s, int k, Entry* out);   // voice slot s's pool list (core/lib/pools.h at(s, ..)), whatever slot is in hand
+uint32_t pool_sig(int s, int k);
 
 bool begun();
 void begin(bool card);               // boot (nm::begin): the browsers at the root

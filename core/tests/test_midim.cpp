@@ -505,6 +505,33 @@ int main() {
   midim::leave(5);
   midim::realtime(0xF8);
   same("");
+  // each box's own clock (decided 2026-11-26): USB-A hears a box's realtime bytes only while its voices alone send there
+  if (kVoiceSlots > 1) {
+    float pa[16] = {0}, pd[16] = {0};
+    pa[0] = kUsbA, pd[0] = kDin;
+    midim::report(kBoxVoices + 2, -1, 0, pa);   // slot 1's voice 3 on USB-A, slot 0 none
+    CHECK(midim::usba_slots() == 2);
+    g.clear();
+    midim::realtime(0, 0xF8);
+    same("");
+    midim::realtime(1, 0xF8);
+    CHECK(g.size() == 1 && g[0].d == midim::kUsbA && g[0].b[0] == 0xF8);
+    rep(0x43, 3, -1, 0, words(kUsbA, 0));   // slot 0's too: both on USB-A, no clock from either
+    CHECK(midim::usba_slots() == 3);
+    g.clear();
+    midim::realtime(0, 0xF8), midim::realtime(1, 0xFA), midim::realtime(1, 0xF8);
+    same("");
+    midim::report(kBoxVoices + 2, -1, 0, pd);   // slot 1 off USB-A: slot 0's clock again
+    g.clear();
+    midim::realtime(1, 0xF8);
+    same("");
+    midim::realtime(0, 0xF8);
+    CHECK(g.size() == 1 && g[0].b[0] == 0xF8);
+    midim::leave(kBoxVoices + 2);
+    rep(0x43, 3, -1, 0, words(kDin, 0));
+    midim::leave(3);
+    g.clear();
+  }
 
   // the SRC view's 2A sends with the voice idle
   midim::reset();
@@ -634,6 +661,24 @@ int main() {
     same("");
     ms(midim::kFreshHeldMs + 1);
     midim::kit_switched();
+    same("1:803C00 ");
+  }
+  // 3(c) step 9: another box's kit (its 3B, its link's reset) ends only its own voices' notes; the Rytm's voice keeps its
+  {
+    midim::reset();
+    g.clear();
+    ms(10);
+    rep(0x43, 1, -1, 0, words(kDin, 0));
+    midim::live_on(1, 60, 100, poly::kSeqCh, 60);
+    same("1:903C64 ");
+    ms(midim::kFreshHeldMs + 1);
+    if (kVoiceSlots > 1) {
+      midim::kit_switched(1);
+      midim::kit_changed(1);
+      same("");
+      CHECK(midim::voice_notes(1) == 1);
+    }
+    midim::kit_switched(0);
     same("1:803C00 ");
   }
   // a Pi restart: a track on MIDI, the machine known from its 33, before any report

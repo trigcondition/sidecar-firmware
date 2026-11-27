@@ -58,20 +58,18 @@ int main() {
   voices_init();
   CHECK(device::active().id == device::kIdRytm);
 
-  // its first hello: a state folder of its own, so one restart; the capture plays on the boot after it
+  // its first hello: slot 1, its own state folder at once, no restart; the capture plays from there
   static int restarts = 0;
   hooks.device_restart = [] { ++restarts; };
   const uint8_t hello[] = {0xf0, 0x7d, 0x52, 0x54, device::kCmdHello, 1, 0, device::kIdDigitakt, 1, 0xf7};
   host_sysex(hello, (int)sizeof hello);
-  CHECK(g_out.size() == 1 && g_out[0][8] == device::kRestart && !device::foreign());
-  for (int k = 0; k < 100 && !restarts; ++k) {
+  CHECK(g_out.size() == 1 && g_out[0][8] == device::kOk && device::foreign());
+  for (int k = 0; k < 100; ++k) {
     device::step();
     fmt::post_step();
   }
-  CHECK(restarts == 1);
-  device::reset();
-  device::boot();
-  CHECK(!strcmp(device::g_link.state, "/.digitakt") && device::active().id == device::kIdDigitakt);
+  CHECK(restarts == 0);
+  CHECK(!strcmp(device::cur().state, "/.dt") && device::active().id == device::kIdDigitakt);
   g_out.clear();
 
   int hellos = 0, trigs = 0, reports = 0, controls = 0, offs = 0;
@@ -88,13 +86,13 @@ int main() {
       ++hellos;
       CHECK(device::active().id == device::kIdDigitakt);
     } else if (m[4] == 0x04) {
-      int vi = m[5] & 7;
+      int vi = device::voice_in(m[5]);   // slot 1's voice k: engine voice 8 + k
       CHECK(n == 43 && v[vi].live);
       if (!played[vi] && m[5] != (0x40 | 5)) {   // (MD's CT1..CT8 voice: FM BD at the mod's defaults, played below)
         CHECK(play(vi) > 0);
         played[vi] = true;
       }
-      if (vi == 0) CHECK(!strcmp(md::set_name(md::voice_set(0)), "TRX B2"));
+      if (box_voice(vi) == 0) CHECK(!strcmp(md::set_name(md::voice_set(vi)), "TRX B2"));
       ++trigs;
     } else if (m[4] == 0x11) {
       ++offs;
@@ -108,8 +106,10 @@ int main() {
   }
   CHECK(hellos >= 2 && trigs >= 8 && reports > 100);
   // the machines the panel chose, each on its own voice
-  CHECK(v[0].md && !v[1].daisy && !v[1].juno && !v[1].fm && !v[1].md && v[2].juno && v[3].fm && v[4].daisy && v[5].md &&
-        !strcmp(md::set_name(md::voice_set(5)), "FM BD") && v[7].juno);
+  const int b = device::voice_base();   // the Digitakt alone: the first attached, slot 0, its voices 0..7
+  CHECK(b == 0 && device::slot_held_by(&device::kDigitakt) == 0);
+  CHECK(v[b + 0].md && !v[b + 1].daisy && !v[b + 1].juno && !v[b + 1].fm && !v[b + 1].md && v[b + 2].juno && v[b + 3].fm &&
+        v[b + 4].daisy && v[b + 5].md && !strcmp(md::set_name(md::voice_set(b + 5)), "FM BD") && v[b + 7].juno);
   // one answer a hello, nothing else: no traffic back but that
   CHECK((int)g_out.size() == hellos);
   for (auto& o : g_out) CHECK(o[4] == device::kCmdHello && o[8] == device::kOk);
@@ -134,40 +134,42 @@ int main() {
     run(3000);   // (the capture's envelopes have run out)
     ctl(vi, {127, 0, 1, 64, 0, 64, 0, 64, 0, 127, 64, 100, 64});   // the default sound: an open low-pass, nothing to run
     device::strip::trig(vi);
+    // (3(c): the Digitakt alone is the slot in hand: its strip plays in its own chains and OUT, control1)
+    CHECK(&ins::ctl(vi) == &ins::control_of(slot_of_voice(b)) && &out::ctl() == &out::control_of(slot_of_voice(b)));
     run(1);
-    CHECK(ins::control.type[vi][0] == ins::kOff && out::control.lev[vi] == 100 && out::control.pan[vi] == 64);
+    CHECK(ins::ctl(vi).type[vi][0] == ins::kOff && out::ctl().lev[vi] == 100 && out::ctl().pan[vi] == 64);
     ctl(vi, {48, 20, 1, 64, 0, 64, 0, 64, 0, 127, 64, 90, 30});     // LP at 48, VOL 90, PAN 30
-    CHECK(ins::control.type[vi][0] == ins::kFilter && ins::locked(vi, 0, 0) == 48 && ins::locked(vi, 0, 1) == 20 && ins::locked(vi, 0, 2) == 0);
-    CHECK(out::control.lev[vi] == 90 && out::control.pan[vi] == 30);
+    CHECK(ins::ctl(vi).type[vi][0] == ins::kFilter && ins::locked(vi, 0, 0) == 48 && ins::locked(vi, 0, 1) == 20 && ins::locked(vi, 0, 2) == 0);
+    CHECK(out::ctl().lev[vi] == 90 && out::ctl().pan[vi] == 30);
     ctl(vi, {48, 20, 2, 64, 0, 64, 0, 64, 0, 127, 64, 90, 30});     // HP: FILTER's morph at its far end
-    CHECK(ins::control.type[vi][0] == ins::kFilter && ins::locked(vi, 0, 2) == 127);
+    CHECK(ins::ctl(vi).type[vi][0] == ins::kFilter && ins::locked(vi, 0, 2) == 127);
     ctl(vi, {70, 90, 5, 64, 0, 64, 0, 64, 0, 127, 64, 90, 30});     // EQ_3: a bell, GAIN from RESO's knob
-    CHECK(ins::control.type[vi][0] == ins::kEq && ins::locked(vi, 0, 3) == 70 && ins::locked(vi, 0, 1) == 90);
+    CHECK(ins::ctl(vi).type[vi][0] == ins::kEq && ins::locked(vi, 0, 3) == 70 && ins::locked(vi, 0, 1) == 90);
     ctl(vi, {70, 90, 0, 64, 0, 64, 0, 64, 0, 127, 64, 90, 30});     // OFF
-    CHECK(ins::control.type[vi][0] == ins::kOff);
+    CHECK(ins::ctl(vi).type[vi][0] == ins::kOff);
     // ATK 0: at once, HOLD 127 (NOTE: no gate is reported): it stays
     ctl(vi, {127, 0, 1, 64, 0, 64, 0, 64, 0, 127, 64, 100, 64});
     device::strip::trig(vi);
     CHECK(device::strip::amp_env(vi) == 1.0f);
     run(2000);
-    CHECK(device::strip::amp_env(vi) == 1.0f && out::control.lev[vi] == 100);
+    CHECK(device::strip::amp_env(vi) == 1.0f && out::ctl().lev[vi] == 100);
     // an attack rises, HOLD 0, a short DEC ends the voice
     ctl(vi, {127, 0, 1, 64, 60, 64, 0, 64, 60, 0, 30, 100, 64});
     device::strip::trig(vi);
-    CHECK(device::strip::amp_env(vi) == 0.0f && out::control.lev[vi] <= 100);
+    CHECK(device::strip::amp_env(vi) == 0.0f && out::ctl().lev[vi] <= 100);
     run(4);
     float rising = device::strip::amp_env(vi);
     CHECK(rising > 0.0f && rising < 1.0f);
     run(3000);
-    CHECK(device::strip::amp_env(vi) == 0.0f && out::control.lev[vi] == 0);
+    CHECK(device::strip::amp_env(vi) == 0.0f && out::ctl().lev[vi] == 0);
     // the filter's envelope on CUT: up with a positive ENV, down to SUS
     ctl(vi, {40, 0, 1, 127, 0, 20, 0, 64, 0, 127, 64, 100, 64});
     device::strip::trig(vi);
     run(1);
     CHECK(device::strip::flt_env(vi) > 0.5f);
-    CHECK(ins::control.play[vi][0][0] > 40);
+    CHECK(ins::ctl(vi).play[vi][0][0] > 40);
     run(3000);
-    CHECK(device::strip::flt_env(vi) < 0.01f && ins::control.play[vi][0][0] == 40);
+    CHECK(device::strip::flt_env(vi) < 0.01f && ins::ctl(vi).play[vi][0][0] == 40);
     // a wrong length, a track past the box: dropped, not played
     uint32_t d1 = device::dropped();
     const uint8_t shortm[] = {0xf0, 0x7d, 0x52, 0x54, device::kCmdControls, 1, 10, 0, 0xf7};

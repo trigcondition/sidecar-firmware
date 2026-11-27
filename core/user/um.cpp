@@ -24,6 +24,8 @@ namespace cardq = core::cardq;
 #include "rmp_proto.h"
 #include "rmp_resolve.h"
 #include "rmp_slots.h"
+#include "device/device.h"
+#include "fx/fx_guard.h"
 #include "ui/remote.h"
 #include "voices.h"
 
@@ -49,8 +51,6 @@ constexpr int kNamesMax = 256 + RMP_ENUM_MAX;   // enum_first is 8 bits: the las
 // keeps 16: its steps store 8 k. So such a Rytm gets a list of 16, entry k the name the plugin's own zone of 8 k has (a 36-name
 // list: every 2.25th), and what it shows is what plays, the other names unreachable; the knob's long name says so.
 constexpr int kOldRytmNames = 16;
-bool g_rytm_names36 = false;
-uint8_t g_old_said;   // slots whose list was cut, logged once
 struct Pkg {
   char file[80];          // card path
   char id[32];
@@ -90,33 +90,87 @@ rmp_info g_scan_info;
 char g_names[kStore][80];  // the listing
 int g_nnames = 0;
 
-// ---- the project's map and the slots
-#if CORE_MSAMP
+// ---- 3(c) (option A, decided 2026-11-14): each voice slot (a box) has U1..U5 of its own - its project's map and notes,
+// its own loaded slots, its own protocol state (the 1D generations, the asks) - and nothing of one box's is the other's.
+// The load slots: box b's U(s+1) is b * kSlots + s ("L" below: 0..kMach-1), then the user effects (each box's UFX1..UFX4:
+// kMach + b * kUfx + u). The packages on the card, the code arena and the arenas' pool are the board's (an image
+// two slots play is placed once). A voice plays its own box's slots (lv). A box's map state is Bx (g_bx), the box in
+// work M() (g_bw: set with its Scope by BoxIn wherever a box's map, file or messages are worked on).
+constexpr int kBoxes = core::kVoiceSlots;
+constexpr int kMach = kSlots * kBoxes;   // the machine slots of every box
+// Plugin API 3's user effects UFX1..UFX4, each box its own four (3(c), decided 2026-11-14): box b's UFX(u+1) is effect
+// e = b * kUfx + u (the send FX's hooks name it so: core/fx/send_fx.h user_index), its load slot kMach + e.
+constexpr int kUfx = 4;                  // a box's
+constexpr int kFx = kUfx * kBoxes;       // every box's
+static_assert(kUfx == core::fx::kUserSlots, "UFX1..UFX4");
+inline int bx(int L) { return L >= kMach ? (L - kMach) / kUfx : L >= 0 ? L / kSlots : 0; }   // a load slot's box
+inline int ul(int L) { return L < kMach ? L % kSlots : (L - kMach) % kUfx; }   // its U number - 1 in its box (a UFX: its u)
+inline int lslot(int b, int s) { return b * kSlots + s; }
 // 7z (2026-10-31): a project's map and notes are read by the card core (map_step, from idle()): until both are here
-// g_map and its file names stay the old project's and everything goes on as if the project had changed a moment later.
+// the map and its file names stay the old project's and everything goes on as if the project had changed a moment later.
+#if CORE_MSAMP
 enum : uint8_t { kMrIdle, kMrMap, kMrNotes, kMrFx };
-uint8_t g_mr = kMrIdle;           // the read under way
-bool g_mr_again = false;          // a newer project meanwhile: read again when its request ends
 #endif
-rmp_slot_map g_map;
-char g_map_file[64] = "";
-// ---- which machine a slot plays (rmp_resolve.h): the notes file next to the map, the fingerprints the Rytm reports
-rmp_slot_notes g_notes;
-char g_notes_file[64] = "";
-rmp_slot_map g_prev;              // the previous project's map (what a fresh project inherits)
-// 1042 (data safety): the project's map / notes file is there but did not parse (a newer Sidecar's line, damage):
-// never written over - the slots still change in memory, the file keeps its bytes (before: the next save wrote the
-// in-memory map, every slot of the unparsed file lost)
-bool g_map_locked = false, g_notes_locked = false;
-bool g_fresh = false;             // this project had no map and no notes: inherits once the fingerprints are in
-uint32_t g_fresh_until = 0;       // ... or at this time (a Rytm that sends 0x25 gets this long to send it)
-bool g_prints_rytm = false;       // a 0x25 arrived since boot: this Rytm reports the fingerprints
-bool g_prints_have = false;       // a 0x25 was used for this project (then no lazy resolve from the trigs)
-uint32_t g_prints_hash = 0;       // its content
-bool g_prints_pending = false;    // a 0x25 waits for the scan's package list
-rmp_prints g_prints;
-uint16_t g_lazy_fp[kSlots];       // the trig tag last tried per slot (lazy resolve, an older Rytm)
-bool g_resolve_save = false;      // the map and notes to the card (after a resolve)
+constexpr uint32_t kFxRaw = 4096;   // a box's effects' file kept whole up to this (a line this build did not write is kept as it was)
+struct Bx {
+#if CORE_MSAMP
+  uint8_t mr = 0;                 // the read under way (kMrIdle)
+  bool mr_again = false;          // a newer project meanwhile: read again when its request ends
+  cardq::Req mrq;
+  char mr_map[64], mr_notes[64], mr_fx[64];   // the files read (map_file, notes_file, the effects' once all are here)
+  char mr_b[2][512];
+  int mr_n[3];
+  char mr_fxb[kFxRaw + 1];        // (one byte more: a file over kFxRaw shows)
+#endif
+  // ---- its user effects' file (/.rytm/fxslots/<project>.txt in its own folder; send_fx_card.cpp reads its "<tag> <name>"
+  // for the kits): a line a UFX, as read or written - "<tag> <name>\t<id> <a.b.c>" when um put the effect there. A line
+  // this build did not write (no tab) is kept as it is when the file is written again.
+  char fx_file[64];
+  char fx_txt[kUfx][64];
+  char fx_raw[kFxRaw];            // ... as read or last written; fx_raw_n its length
+  uint32_t fx_raw_n;
+  bool fx_big;                    // the file is over kFxRaw: never written
+  bool fx_locked;                 // the file is there but a line did not parse: never written over (as map_locked)
+  rmp_slot_map map;
+  char map_file[64];
+  // ---- which machine a slot plays (rmp_resolve.h): the notes file next to the map, the fingerprints the box reports
+  rmp_slot_notes notes;
+  char notes_file[64];
+  rmp_slot_map prev;              // the previous project's map (what a fresh project inherits)
+  // 1042 (data safety): the project's map / notes file is there but did not parse (a newer Sidecar's line, damage):
+  // never written over - the slots still change in memory, the file keeps its bytes (before: the next save wrote the
+  // in-memory map, every slot of the unparsed file lost)
+  bool map_locked, notes_locked;
+  bool fresh;                     // this project had no map and no notes: inherits once the fingerprints are in
+  uint32_t fresh_until;           // ... or at this time (a Rytm that sends 0x25 gets this long to send it)
+  bool prints_rytm;               // a 0x25 arrived since boot: this box reports the fingerprints
+  bool prints_have;               // a 0x25 was used for this project (then no lazy resolve from the trigs)
+  uint32_t prints_hash;           // its content
+  bool prints_pending;            // a 0x25 waits for the scan's package list
+  rmp_prints prints;
+  uint16_t lazy_fp[kSlots];       // the trig tag last tried per slot (lazy resolve, an older Rytm)
+  bool resolve_save;              // the map and notes to the card (after a resolve)
+  // ---- the protocol with the box (1A..1E): its slots' generations, the 1D's timing, what it asked for
+  rmp_meta meta;
+  uint32_t d1_ms;
+  bool d1_owed, d1_sent;
+  bool names36;                   // the box's mods hold 36 names a list (0021 since 0.4.0)
+  uint8_t old_said;               // slots whose list was cut, logged once
+  bool list_owed;                 // the box asked for the list while the first scan ran: sent when it ends
+};
+Bx g_bx[kBoxes];
+int g_bw = 0;                     // the box in work
+Bx& M() { return g_bx[g_bw]; }
+int hand() { int b = core::prj_slot(); return b > 0 && b < kBoxes ? b : 0; }   // the slot in hand's box
+// The box b in work, in its Scope (its project, its folder, its link for the messages): the control core only; nests
+struct BoxIn {
+  int was;
+  core::device::Scope sc;
+  explicit BoxIn(int b) : was(g_bw), sc(core::device::g_links[b > 0 && b < kBoxes ? b : 0]) { g_bw = b > 0 && b < kBoxes ? b : 0; }
+  ~BoxIn() { g_bw = was; }
+};
+// box b is there to be worked for: device::live (held, saving, or the base)
+bool box_on(int b) { return core::device::live(b); }
 uint32_t g_resolve_n = 0;         // resolves that changed something (the JSON's)
 constexpr uint32_t kFreshWaitMs = 1500;
 struct Slot {
@@ -126,10 +180,10 @@ struct Slot {
   uint32_t state_bytes, crc;
   uint16_t fp;
 };
-// Plugin API 3's user effects UFX1..UFX4 (core/fx/send_fx.h kFirstUser): load targets kSlots + u next to the machine
+// Plugin API 3's user effects UFX1..UFX4 (core/fx/send_fx.h kFirstUser): load targets kMach + e next to the machine
 // slots - the same job, the same checks, an arena and the guard - but never in the Rytm's slot protocol (19..1E).
-constexpr int kUfx = 4;
-constexpr int kAll = kSlots + kUfx;
+constexpr int kAll = kMach + kFx;
+static_assert(kAll <= 32, "g_muted, g_need: a bit a load slot");
 Slot g_slot[kAll];
 // ---- Plugin API 3 (sdk/rmp/rmp_api3.h, docs/plugin-api-3-plan.md): per slot its API 3 table, its image's code part,
 // its arena. Set by the load (job_step, the arena phase), cleared when the slot's assignment starts again (job_begin);
@@ -153,41 +207,34 @@ V3 g_v3[kAll];
 volatile uint32_t g_muted = 0;   // the guard muted the slot (bit s): a plugin call faulted, or ran late three times
 uint8_t g_late[kAll];            // late control calls in a row (API 3 plugins: three mute)
 uint32_t g_late_n[kAll];         // late control calls since the load (every plugin: the JSON's "late")
-// the effects: which package each UFX plays (um=fx:<n>:<id>; in memory), its two states (send FX 1 and 2: in its
-// arena block), live while core 2 may run it (published after both states are set up), busy while core 2 runs it
-rmp_slot_entry g_fxmap[kUfx];
-// the effects' file (/.rytm/fxslots/<project>.txt; send_fx_card.cpp reads its "<tag> <name>" for the kits): a line a
-// UFX, as read or written - "<tag> <name>\t<id> <a.b.c>" when um put the effect there. A line this build did not write
-// (no tab) is kept as it is when the file is written again.
-char g_fx_file[64] = "";
-char g_fx_txt[kUfx][64];
-constexpr uint32_t kFxRaw = 4096;   // the effects' file kept whole up to this (a line this build did not write is kept as it was)
-char g_fx_raw[kFxRaw];              // ... as read or last written; g_fx_raw_n its length
-uint32_t g_fx_raw_n = 0;
-bool g_fx_big = false;              // the file is over kFxRaw: never written
-bool g_fx_locked = false;   // the file is there but a line did not parse: never written over (as g_map_locked)
+// the effects (e: every box's): which package each UFX plays (um=fx:<n>:<id>; in memory), its two states (send FX 1 and
+// 2: in its arena block), live while core 2 may run it (published after both states are set up), busy while core 2 runs it
+rmp_slot_entry g_fxmap[kFx];
 void fx_stop(int u);
-uint8_t* g_fxst[kUfx][2];
-volatile uint8_t g_fx_live[kUfx], g_fx_busy[kUfx];
-volatile uint64_t g_fx_fault[kUfx];   // core 2's fault address (the control core words the why)
-volatile uint8_t g_fx_total[kUfx];
+uint8_t* g_fxst[kFx][2];
+volatile uint8_t g_fx_live[kFx], g_fx_busy[kFx];
+volatile uint64_t g_fx_fault[kFx];   // core 2's fault address (the control core words the why)
+volatile uint8_t g_fx_total[kFx];   // 1: the dearest of its box's effects over the 150 us share; 2: the dearest on a hot core (fx_guard.h)
+volatile uint8_t g_fx_dear_core[kFx];   // (2: that core)
 volatile uint32_t g_render_faults = 0;   // voices whose render faulted (render_fault, any core): bit vi    // core 2 muted it as the dearest when its effects together were over their share
-uint32_t g_fx_lastgen[kUfx][2];       // the gen of each state's last call (N5: edges older than that are not news)
-volatile uint32_t g_fx_slow_us[kUfx]; // core 2: the render that took the effect over its budget (the why), 0 none
-uint8_t g_fx_over[kUfx][2];           // core 2: calls over budget in a row, per send slot
-volatile bool g_fx_dead[kUfx];        // core 2 never left its render (fx_stop gave up): its states and arena kept out of reuse
-volatile uint32_t g_fx_era[kUfx];     // bumped by each fx_stop: a render that began before it mutes nothing after it
-// an effect's render of 12..16 frames: about half a block (the proposal: under 30 us); and all of core 2's effects in a
-// block together (both send slots, every UFX): kFxTotalUs. um=fxbudget:<call>:<total> sets both (tests, the bench).
+uint32_t g_fx_lastgen[kFx][2];       // the gen of each state's last call (N5: edges older than that are not news)
+volatile uint32_t g_fx_slow_us[kFx]; // core 2: the render that took the effect over its budget (the why), 0 none
+uint8_t g_fx_over[kFx][2];           // core 2: calls over budget in a row, per send slot
+volatile bool g_fx_dead[kFx];        // core 2 never left its render (fx_stop gave up): its states and arena kept out of reuse
+volatile uint32_t g_fx_era[kFx];     // bumped by each fx_stop: a render that began before it mutes nothing after it
+// an effect's render of 12..16 frames: about half a block (the proposal: under 30 us); and a box's effects in a block
+// together (both its send slots, its UFX1..UFX4): kFxTotalUs, each box its own (3(c): one box's dear effects never mute
+// the other's). um=fxbudget:<call>:<total> sets both (tests, the bench).
 uint32_t g_fx_budget_us = 120, g_fx_total_us = 150;
 constexpr int kFxOverMax = 16;        // calls (or blocks) over it in a row (a burst, a cold cache never mutes)
-// core 2's account of the block it is in (by the transport's gen): every effect's time, the frames, the overs in a row
+// core 2's account of the block it is in (by the transport's gen), one per box: each of its effects' time, the frames,
+// the overs in a row (us_u by the box's own effect 0..kUfx-1)
 struct FxAcct { uint32_t gen, us, frames, us_u[kUfx], over; };
-FxAcct g_fxa;
+FxAcct g_fxa[kBoxes];
 constexpr uint32_t kFxHugeUs = 2000;  // one call this long mutes at once: the FIFO's 2 ms
 constexpr uint32_t kFxStopWaitUs = 5000;   // fx_stop's wait for core 2 (then it gives up: core 3's block watchdog sees a hang)
-float g_fx_p[kUfx][2][16];            // the knobs last handed to each state (b->p_changed)
-uint32_t g_fx_ev[kUfx][2][3];         // the transport's START / STOP / JUMP counts each state has seen (once each)
+float g_fx_p[kFx][2][16];            // the knobs last handed to each state (b->p_changed)
+uint32_t g_fx_ev[kFx][2][3];         // the transport's START / STOP / JUMP counts each state has seen (once each)
 uint8_t g_jph = 0;               // the load's phase: 0 the package, 1 the arena (zeroed in pieces, then setup())
 enum : uint8_t { kJphImage = 0, kJphArena = 1 };
 constexpr uint32_t kZeroStep = 256u << 10;     // the arena zeroed per idle step (the slot LOADING meanwhile)
@@ -212,16 +259,17 @@ FreeBlk g_free[kFree];
 int g_nfree = 0;
 rmp3_host g_h3;                  // what an API 2 or 3 plugin finds in rmp_host.reserved[RMP_H_V3]
 rmp_host g_host3;                // the host table of an API 3 only plugin (api 3)
-// the transport snapshots (pre_block): two, the render cores read the block's (g_xp_gen & 1)
-rmp3_transport g_xp[2];
+// the transport snapshots (pre_block): two a box, the render cores read the block's (g_xp_gen & 1). 3(c): each box's from
+// its own MIDI clock (core/lfo.h clock_state(slot)): its machines and its effects follow its own transport
+rmp3_transport g_xp[kBoxes][2];
 volatile uint32_t g_xp_gen = 0;
 constexpr uint32_t kLeadFrames = 385;   // the FIFO's 96 frames + the Rytm's measured 289-frame loop (the proposal's estimate)
-uint32_t g_xp_starts = 0, g_xp_stops = 0, g_xp_jumps = 0;
+uint32_t g_xp_starts[kBoxes], g_xp_stops[kBoxes], g_xp_jumps[kBoxes];
 // per snapshot: how many START, STOP and JUMP blocks there were up to it (a consumer out of step with the blocks, the
 // send FX's effects on core 2, takes each edge once: fx_run)
-uint32_t g_xp_ev[2][3];
-uint32_t g_xp_evn[3];
-int32_t g_xp_song = -1;
+uint32_t g_xp_ev[kBoxes][2][3];
+uint32_t g_xp_evn[kBoxes][3];
+int32_t g_xp_song[kBoxes] = {-1};
 // what a block hands a plugin that declares signals while the host has no bus (RMP3_CAP_BUS): silence in, a sink out
 float g_sig_zero[16];
 rmp3_sig_in g_sig_none[4];
@@ -276,8 +324,13 @@ uint32_t g_job_off = 0, g_job_len = 0, g_job_crc = 0;
 
 // ---- voices
 uint8_t* g_vstate[core::kVoices];
-int8_t g_cur[core::kVoices];       // the slot whose voice_init the voice's state had; -1 none
-uint8_t g_mis = 0;                 // sound-tag mismatch, bit vi
+int8_t g_cur[core::kVoices];       // the slot whose voice_init the voice's state had (a load slot L); -1 none
+// the load slot voice vi plays: its box's U(v.user + 1), -1 none
+int lv(int vi) {
+  int u = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
+  return u < 0 || u >= kSlots ? -1 : lslot(core::slot_of_voice(vi), u);
+}
+uint32_t g_mis = 0;                // sound-tag mismatch, bit vi
 // E0 (core/inst.h): the instances' states, one per instance of the pool (core::inst::kTotal, placed at boot), each the
 // state of the slot g_icur[i] (-1 none) for voice g_ivi[i]
 constexpr int kInst = 32;   // = core::inst::kTotal (static_assert below)
@@ -286,10 +339,10 @@ int8_t g_icur[kInst], g_ivi[kInst];
 
 // ---- the measured cost: each voice's render time by slot (a render core adds to its voice's row; a voice renders
 // on one core at a time), summed by the control core against the slot's baseline at its last load
-uint64_t g_cyc[core::kVoices][kSlots];
-uint32_t g_blk[core::kVoices][kSlots];
-uint64_t g_cyc0[kSlots];
-uint32_t g_blk0[kSlots];
+uint64_t g_cyc[core::kVoices][kMach];
+uint32_t g_blk[core::kVoices][kMach];
+uint64_t g_cyc0[kMach];
+uint32_t g_blk0[kMach];
 uint32_t g_cost_ms = 0;     // the JSON again once a second while something plays (its "ns" moves)
 uint32_t g_cost_blk = 0;
 void cost_sum(int s, uint64_t* cyc, uint32_t* blk) {
@@ -311,22 +364,18 @@ uint32_t cost_ns(int s, uint32_t* blocks) {
 }
 
 // ---- protocol
-rmp_meta g_meta;
-uint32_t g_1d_ms = 0;
-bool g_1d_owed = false, g_1d_sent = false;
-int8_t g_ans[kSlots];              // a 1E waiting for its answer: its op, -1 none
-uint32_t g_ans_t[kSlots];
+int8_t g_ans[kMach];              // a 1E waiting for its answer: its op, -1 none
+uint32_t g_ans_t[kMach];
 uint8_t g_inst[kStore];            // the Rytm's installed list: g_pkg indices of the loadable packages
 int g_ninst = 0;
 uint8_t g_einst[kStore];           // the installed effects (API 3, UFX1..UFX4): g_pkg indices, the newest version of each id
 int g_neff = 0;
 uint32_t g_list_print = 0;
-bool g_list_owed = false;          // the Rytm asked for the list while the first scan ran: sent when it ends
 
 // ---- the JSON (seqlock, double buffer)
 char g_js[2][16384];
 int g_jlen[2];
-UiView g_ui[2];
+UiView g_ui[2][kBoxes];      // each box's display view
 volatile uint32_t g_jseq = 0;
 bool g_pub = true;
 bool g_mp = true;           // something 1A says may have changed: meta_poll in the next idle
@@ -407,7 +456,10 @@ int find_ver(const char* id, uint32_t version) {
     if (g_pkg[i].ok && g_pkg[i].version == version && strncmp(g_pkg[i].id, id, 32) == 0) return i;
   return find_pkg(id);
 }
-const rmp_slot_entry& entry_of(int s) { return s < kSlots ? g_map.slot[s] : g_fxmap[s - kSlots]; }
+rmp_slot_entry& mslot(int L) { return g_bx[bx(L)].map.slot[ul(L)]; }     // machine slot L's map entry
+rmp_slot_note& nslot(int L) { return g_bx[bx(L)].notes.slot[ul(L)]; }     // ... its note
+uint8_t& mgen(int L) { return g_bx[bx(L)].meta.gen[ul(L)]; }              // ... its generation (1A..1D)
+const rmp_slot_entry& entry_of(int s) { return s < kMach ? mslot(s) : g_fxmap[s - kMach]; }
 int find_slot(int s) { const rmp_slot_entry& m = entry_of(s); return m.id[0] ? find_ver(m.id, m.version) : -1; }
 int find_any(const char* id) {
   for (int i = 0; i < g_npkg; ++i)
@@ -419,31 +471,31 @@ int find_any(const char* id) {
 // (the presets' part, below: what 1A's flag and generation follow)
 uint32_t g_pscan_todo = 0;                 // slots whose preset folder is to be scanned (bit s)
 int g_pscan_slot = -1;                     // the slot being scanned
-bool g_pre_has[kSlots];                    // its last scan found presets (1A's flag)
-uint32_t g_pre_fp[kSlots];                 // its last scan's list fingerprint (moves the 1A generation)
+bool g_pre_has[kMach];                    // its last scan found presets (1A's flag)
+uint32_t g_pre_fp[kMach];                 // its last scan's list fingerprint (moves the 1A generation)
 // Labels that follow a list knob (a package with an RMP_LABELS block, plugins/mdkit's TYPE): the slot's knob names are
 // those of the value the voice being looked at has - the Rytm's selected track's voice when it plays the slot, else the
 // voice whose knobs moved last on it (a report without a trig: a knob turn, a kit load), else the first voice on it.
 // The description changes with it, so rmp_meta's print moves the slot's generation and the 1D makes the Rytm ask 1A
 // again: its user-machine page and the touchscreen (which shows the Rytm's labels) follow TYPE. -1: the static labels.
 // The set shown moves at most every kLblMs (a 1D and the Rytm's 1A each time: two tracks edited in turn do not flood).
-int8_t g_lbl_vi[kSlots];        // the voice whose knobs the user moved last on the slot (-1 none)
-int8_t g_lbl_cur[kSlots];       // the set the slot's description shows (-1 the static labels)
-uint32_t g_lbl_ms[kSlots];      // when it last moved
-uint32_t g_lbl_key[kSlots];     // the package (crc ^ size) g_lbl_cur indexes: another package's sets are other lists
+int8_t g_lbl_vi[kMach];        // the voice whose knobs the user moved last on the slot (-1 none)
+int8_t g_lbl_cur[kMach];       // the set the slot's description shows (-1 the static labels)
+uint32_t g_lbl_ms[kMach];      // when it last moved
+uint32_t g_lbl_key[kMach];     // the package (crc ^ size) g_lbl_cur indexes: another package's sets are other lists
 constexpr uint32_t kLblMs = 150;
 uint32_t lbl_key(const Pkg& e) { return e.crc ^ e.size; }
 int lbl_shown(int s, const Pkg& e) { return g_lbl_key[s] == lbl_key(e) ? g_lbl_cur[s] : -1; }   // (review 5)
 int lbl_set(int s, const Pkg& e) {
   if (!e.lbl.nsets) return -1;
-  auto on = [s](int vi) { return vi >= 0 && vi < core::kVoices && core::v[vi].user == s && g_cur[vi] == s; };
+  auto on = [s](int vi) { return vi >= 0 && vi < core::kVoices && lv(vi) == s && g_cur[vi] == s; };
   int vi = core::ui::remote_track_voice(core::ui::remote_selected_track(nullptr));
   if (!on(vi)) vi = g_lbl_vi[s];
   for (int w = 0; !on(vi) && w < core::kVoices; ++w) vi = on(w) ? w : -1;
   return on(vi) ? rmp_labels_pick(&e.lbl, core::v[vi].p) : -1;   // (RLB2: the TYPE among its ENGINE's names)
 }
 const rmp_desc* slot_desc(int s, rmp_desc* tmp) {
-  const rmp_slot_entry& e = g_map.slot[s];
+  const rmp_slot_entry& e = mslot(s);
   if (!e.id[0]) return nullptr;
   int k = find_slot(s);
   if (k >= 0) {
@@ -464,8 +516,8 @@ bool settled(int s) {   // (its presets too: a 1E's answer carries the generatio
   return !g_full && !(g_need >> s & 1) && g_job != s && g_scan == 0 && !(g_pscan_todo >> s & 1) && g_pscan_slot != s;
 }
 void lbl_update() {   // the label sets the slots show, from their voices (rate-limited)
-  for (int s = 0; s < kSlots; ++s) {
-    int k = g_map.slot[s].id[0] ? find_slot(s) : -1;
+  for (int s = 0; s < kMach; ++s) {
+    int k = mslot(s).id[0] ? find_slot(s) : -1;
     int want = k >= 0 ? lbl_set(s, g_pkg[k]) : -1;
     uint32_t key = k >= 0 ? lbl_key(g_pkg[k]) : 0;
     if (key != g_lbl_key[s]) g_lbl_key[s] = key, g_lbl_cur[s] = -1, g_lbl_ms[s] = core::now_ms() - kLblMs;   // a new package: at once
@@ -477,8 +529,8 @@ void lbl_update() {   // the label sets the slots show, from their voices (rate-
 // The slots' 16 short labels (P1..P16) as slot_desc names them, the label set shown included: written here only (meta_poll,
 // the core um's idle runs on), read by hooks.user_label on any core. A reader gets no rmp_desc on its stack and never
 // walks a label set mid-change; a torn read gives at worst one mixed 4-char label for one poll ([4] stays 0).
-char g_lbl16[kSlots][16][5];
-volatile bool g_lbl16_ok[kSlots];
+char g_lbl16[kMach][16][5];
+volatile bool g_lbl16_ok[kMach];
 void lbl16_update(int s, const rmp_desc* p) {
   if (!p) { g_lbl16_ok[s] = false; return; }
   for (int k = 0; k < 16; ++k) {
@@ -491,8 +543,8 @@ void lbl16_update(int s, const rmp_desc* p) {
 }
 void meta_poll() {
   lbl_update();
-  for (int s = 0; s < kSlots; ++s) {
-    const rmp_slot_entry& e = g_map.slot[s];
+  for (int s = 0; s < kMach; ++s) {
+    const rmp_slot_entry& e = mslot(s);
     rmp_desc d;
     const rmp_desc* p = slot_desc(s, &d);
     lbl16_update(s, p);
@@ -504,7 +556,7 @@ void meta_poll() {
     // with the same labels would print the same), and its 1B answers from the set shown
     int k = find_slot(s);
     uint32_t lp = k >= 0 && g_pkg[k].lbl.nsets ? (uint32_t)(lbl_shown(s, g_pkg[k]) + 2) * 0x85EBCA6Bu : 0u;
-    if (rmp_meta_set(&g_meta, s, rmp_meta_print(st, slot_flags(s), e.id, e.version, p) ^ g_pre_fp[s] * 2654435761u ^
+    if (rmp_meta_set(&g_bx[bx(s)].meta, ul(s), rmp_meta_print(st, slot_flags(s), e.id, e.version, p) ^ g_pre_fp[s] * 2654435761u ^
                                      (uint32_t)rmp_why_of(st, RMP_WHY_NONE) * 0x9E3779B1u ^ lp))
       g_pub = true;
   }
@@ -513,19 +565,19 @@ void meta_poll() {
 // (from meta_poll's cache only: called on core 0 for the web and the UI)
 bool on_label(int vi, int k, char* b, int cap) {
   if (vi < 0 || vi >= core::kVoices || k < 0 || k > 15 || cap < 1) return false;
-  int s = core::v[vi].user;
-  if (s < 0 || s >= kSlots || !g_lbl16_ok[s]) return false;
+  int s = lv(vi);
+  if (s < 0 || s >= kMach || !g_lbl16_ok[s]) return false;
   sniprintf(b, cap, "%.4s", g_lbl16[s][k]);
   return true;
 }
 void send_1d(int slot, int result) {
   uint8_t m[RMP_MSG_MAX];
   meta_poll();
-  core::to_rytm(m, rmp_build_slots(m, g_meta.gen, g_meta.store_gen, slot, result));
-  rmp_meta_take(&g_meta);
-  g_1d_ms = core::now_ms();
-  g_1d_owed = false;
-  g_1d_sent = true;
+  core::to_rytm(m, rmp_build_slots(m, M().meta.gen, M().meta.store_gen, slot, result));
+  rmp_meta_take(&M().meta);
+  M().d1_ms = core::now_ms();
+  M().d1_owed = false;
+  M().d1_sent = true;
 }
 void send_meta(int s) {
   uint8_t m[RMP_MSG_MAX];
@@ -535,7 +587,7 @@ void send_meta(int s) {
     if (p != &d) d = *p;
     rmp_desc_pad_unused(&d);
     p = &d;
-    if (!g_rytm_names36)
+    if (!M().names36)
       for (int k = 0; k < d.nknobs; ++k) {
         rmp_desc_knob& q = d.knob[k];
         if (q.enum_count <= kOldRytmNames) continue;
@@ -545,16 +597,16 @@ void send_meta(int s) {
         t[i++] = ' ', t[i++] = '1', t[i++] = '6', t[i++] = '/';
         t[i++] = (char)('0' + q.enum_count / 10), t[i++] = (char)('0' + q.enum_count % 10), t[i] = 0;
         q.enum_count = kOldRytmNames;
-        if (!(g_old_said >> s & 1)) {
-          g_old_said |= (uint8_t)(1u << s);
-          core::log("um: U%d %s: this Rytm's mods hold 16 names of a list: 16 reachable (update the Sidecar mods)", s + 1, d.name);
+        if (!(M().old_said >> ul(s) & 1)) {
+          M().old_said |= (uint8_t)(1u << ul(s));
+          core::log("um: U%d %s: this Rytm's mods hold 16 names of a list: 16 reachable (update the Sidecar mods)", ul(s) + 1, d.name);
         }
       }
   }
-  int g = g_meta.gen[s];
+  int g = mgen(s);
   int st = rmp_proto_state(g_slot[s].st);
-  core::to_rytm(m, rmp_build_meta_head_why(m, s + 1, g, st, slot_flags(s), p, g_slot[s].fp, rmp_why_of(st, RMP_WHY_NONE)));
-  for (int part = 1; p && part < rmp_meta_nparts(p); ++part) core::to_rytm(m, rmp_build_meta_part(m, s + 1, g, part, p));
+  core::to_rytm(m, rmp_build_meta_head_why(m, ul(s) + 1, g, st, slot_flags(s), p, g_slot[s].fp, rmp_why_of(st, RMP_WHY_NONE)));
+  for (int part = 1; p && part < rmp_meta_nparts(p); ++part) core::to_rytm(m, rmp_build_meta_part(m, ul(s) + 1, g, part, p));
 }
 void send_enum(int s, int arg) {
   char names[RMP_ENUM_MAX][8];
@@ -581,7 +633,7 @@ void send_enum(int s, int arg) {
 #endif
   }
   if (n < 0) n = 0;
-  if (!g_rytm_names36 && n > kOldRytmNames) {   // ascending: an entry only moves down over ones already taken
+  if (!M().names36 && n > kOldRytmNames) {   // ascending: an entry only moves down over ones already taken
     for (int i = 0; i < kOldRytmNames; ++i) memmove(names[i], names[i * n / kOldRytmNames], sizeof names[i]);
     n = kOldRytmNames;
   }
@@ -589,7 +641,7 @@ void send_enum(int s, int arg) {
   int first = 0;
   do {
     int c = n - first < RMP_LIST_PER_MSG ? n - first : RMP_LIST_PER_MSG;
-    core::to_rytm(m, rmp_build_list(m, s + 1, arg, g_meta.gen[s], first == 0, n, first, c, names[first], 8));
+    core::to_rytm(m, rmp_build_list(m, ul(s) + 1, arg, mgen(s), first == 0, n, first, c, names[first], 8));
     first += c;
   } while (first < n);
 }
@@ -603,7 +655,7 @@ void send_installed() {
       memset(names[i], 0, sizeof names[i]);
       memcpy(names[i], g_pkg[g_inst[first + i]].name, 10);
     }
-    core::to_rytm(m, rmp_build_list(m, 0, RMP_LIST_INSTALLED, g_meta.store_gen, first == 0, g_ninst, first, c, names[0], 14));
+    core::to_rytm(m, rmp_build_list(m, 0, RMP_LIST_INSTALLED, M().meta.store_gen, first == 0, g_ninst, first, c, names[0], 14));
     first += c;
   } while (first < g_ninst);
 }
@@ -611,11 +663,11 @@ void send_installed() {
 // native <name>.<preset_ext> (the plugin's load_entry), one list in name order. Scanned between requests (4 entries a
 // step), loaded between requests (a file of 4 KB at most a step); the report path only decides (rmp_pv).
 rmp_preset_names g_pnames;                 // ONE for all slots: the names of the slot scanned last (1B 0x20)
-rmp_preset_index g_pix[kSlots];            // per slot: each entry's folder index and kind, a generation
-rmp_knobs g_knobs[kSlots];                 // per slot: roles and ranges (its description)
+rmp_preset_index g_pix[kMach];            // per slot: each entry's folder index and kind, a generation
+rmp_knobs g_knobs[kMach];                 // per slot: roles and ranges (its description)
 rmp_pv g_pv[core::kVoices];                // per voice: its preset state
 uint8_t g_rbuf[4096];                      // a preset file being read
-uint32_t g_pre_key[kSlots];                // what the slot's presets were scanned for (its id and package)
+uint32_t g_pre_key[kMach];                // what the slot's presets were scanned for (its id and package)
 core::File g_pdir;
 #if CORE_MSAMP
 // 7z (2026-10-30): the scan's and the load's card work on the card core through the card queue (as the package job's,
@@ -633,13 +685,13 @@ struct PreJob { int8_t vi, which, s; uint8_t seq, stage; bool native, cut; uint1
 enum : uint8_t { kLjOpen, kLjRead, kLjClose, kLjDone };
 PreJob g_lj = {-1, 0, 0, 0, kLjDone, false, false, 0, -1, 0};   // the one load in flight (vi -1: none)
 #endif
-uint8_t g_pre_page[kSlots];                // name pages asked for (19 what 2): bit p
-uint8_t g_pv_new = 0, g_pv_wait = 0, g_last_trig = 0, g_pv_resync = 0;   // bit vi
+uint8_t g_pre_page[kMach];                // name pages asked for (19 what 2): bit p
+uint32_t g_pv_new = 0, g_pv_wait = 0, g_last_trig = 0, g_pv_resync = 0;   // bit vi
 struct PreLoad { bool on; int8_t s; uint8_t gen; int16_t entry; bool sync; float p[16]; uint8_t seq; };   // seq: moves with each new decision
 PreLoad g_pl[core::kVoices][2];            // [0] the sound's own preset (written back), [1] a p-lock's play
 struct HeldNote { uint8_t note, vel; bool held; uint32_t t; };
 HeldNote g_hn[core::kVoices];              // a trig's note_on held until its preset load ran
-uint8_t g_note_wait = 0;                   // bit vi: silent meanwhile
+uint32_t g_note_wait = 0;                  // bit vi: silent meanwhile
 constexpr uint32_t kNoteHoldUs = 2000;     // a held note plays by then, loaded or not
 uint32_t g_pre_again_ms = 0;               // a preset written (core 0 writes it later): every list scanned again then
 bool g_pre_again = false;
@@ -705,14 +757,14 @@ void fault_where(int s, uint64_t pc, char* b, int cap) {
   if (pc && c0 && pc >= c0 && pc < c0 + x.code_bytes) sniprintf(b, cap, "+0x%x", (unsigned)(pc - c0));
   else sniprintf(b, cap, "0x%llx (outside its code)", (unsigned long long)pc);
 }
-const char* slot_pfx(int s) { return s < kSlots ? "U" : "UFX"; }
-int slot_no(int s) { return s < kSlots ? s + 1 : s - kSlots + 1; }
+const char* slot_pfx(int s) { return s >= kMach ? (bx(s) ? "S1:UFX" : "UFX") : bx(s) ? "S1:U" : "U"; }   // (slot 1's: "S1:U3")
+int slot_no(int s) { return ul(s) + 1; }
 void slot_mute1(int s, const char* why) {
   __atomic_or_fetch(&g_muted, 1u << s, __ATOMIC_RELEASE);
   for (int vi = 0; vi < core::kVoices; ++vi)
     if (g_cur[vi] == s) core::v[vi].live = false;
   copy(g_why[s], why, sizeof g_why[s]);
-  if (s >= kSlots) core::fx::list_changed();
+  if (s >= kMach) core::fx::list_changed();
   core::log("um: %s%d %s %s", slot_pfx(s), slot_no(s), entry_of(s).id, why);
   g_pub = true;
 }
@@ -769,7 +821,7 @@ constexpr int kInstState0 = 8;
 bool state_room(int s, int inst, int vi) {
   V3& x = g_v3[s];
   if (!x.p3 || !x.voice_bytes) return true;
-  uint32_t idx = inst < 0 ? (uint32_t)vi : (uint32_t)(kInstState0 + inst);
+  uint32_t idx = inst < 0 ? (uint32_t)core::box_voice(vi) : (uint32_t)(kInstState0 + inst);
   if (idx < x.states) return true;
   if (!x.room_said) {
     x.room_said = true;
@@ -788,12 +840,12 @@ bool c_voice_init(int s, void* st, int vi, int inst) {
   if (sl.p->voice_init && !gcall(s, "voice_init", [&] { sl.p->voice_init(st); })) return false;
   const V3& x = g_v3[s];
   if (x.p3 && x.p3->voice_attach) {
-    uint32_t idx = inst < 0 ? (uint32_t)vi : (uint32_t)(kInstState0 + inst);
+    uint32_t idx = inst < 0 ? (uint32_t)core::box_voice(vi) : (uint32_t)(kInstState0 + inst);
     rmp3_voice v;
     v.shared = x.shared, v.shared_bytes = x.shared_bytes;
     v.arena = x.voice_bytes && idx < x.states ? x.voices + (size_t)idx * x.voice_bytes : nullptr;
     v.arena_bytes = v.arena ? x.voice_bytes : 0;
-    v.slot = s + 1, v.voice = vi, v.instance = inst, v.place = RMP3_AT_VOICE;
+    v.slot = ul(s) + 1, v.voice = core::box_voice(vi), v.instance = inst, v.place = RMP3_AT_VOICE;
     if (!gcall(s, "voice_attach", [&] { x.p3->voice_attach(st, &v); })) return false;
   }
   return true;
@@ -818,7 +870,7 @@ void c_note_off(int s, void* st) {
 float g_sig_sink[kCores][4][16];   // signals a plugin writes while the host has no bus: dropped
 float* g_sig_sinkp[kCores][4];
 float g_sig_val[kCores][4];
-void block_fill(rmp3_block* b, int n, float* l, float* r, uint32_t place) {
+void block_fill(rmp3_block* b, int n, float* l, float* r, uint32_t place, int box) {   // (box: whose transport)
   int c = this_core();
   memset(b, 0, sizeof *b);
   b->size = sizeof *b;
@@ -827,7 +879,7 @@ void block_fill(rmp3_block* b, int n, float* l, float* r, uint32_t place) {
   b->flags = r ? 0u : (uint32_t)RMP3_B_MONO_OUT;
   b->out[0] = l, b->out[1] = r;
   b->place = place;
-  b->transport = &g_xp[b->gen & 1];
+  b->transport = &g_xp[box][b->gen & 1];
   b->sig_in = g_sig_none;
   for (int k = 0; k < 4; ++k) g_sig_sinkp[c][k] = g_sig_sink[c][k];
   b->sig_audio = g_sig_sinkp[c];
@@ -849,7 +901,9 @@ void upool_drop(int vi) {   // the voice's pin and entry go
 int32_t h_pool_info(int32_t code, rmp_pool_info* info) {
   int vi = g_vnow[this_core()];
   int32_t slot = pool_line(code);   // (the list code or bank A's slot: the pool line from here on)
-  if (vi < 0 || !info || slot < 1 || slot > core::npool || core::pool[slot - 1].folder < 0) return RMP_POOL_EMPTY;
+  if (vi < 0 || !info || slot < 1 || slot > core::prj(core::slot_of_voice(vi)).npool ||
+      core::pool[core::pool_line(core::slot_of_voice(vi), slot)].folder < 0)
+    return RMP_POOL_EMPTY;
   UPool& u = g_up[vi];
   if (u.slot == slot && u.pcm) {
     info->frames = u.frames, info->channels = 1, info->rate = u.rate;
@@ -880,8 +934,9 @@ bool upool_pass() {
     int slot = u.want;
     if (!slot) continue;
     if (g_cur[vi] < 0 || !core::psram) { u.want = 0; continue; }
-    const core::PoolEntry& e = core::pool[slot - 1];
-    if (slot > core::npool || e.folder < 0) { u.want = 0; u.bad = slot; continue; }
+    const int ps = core::slot_of_voice(vi);   // (the voice's own box's pool)
+    const core::PoolEntry& e = core::pool[core::pool_line(ps, slot)];
+    if (slot > core::prj(ps).npool || e.folder < 0) { u.want = 0; u.bad = slot; continue; }
     const int16_t* pcm;
     uint32_t frames;
     float rate;
@@ -937,7 +992,7 @@ void pre_invalidate(int s) {
   rmp_preset_invalidate(&g_pix[s]);
   g_pre_has[s] = false;
   g_pre_fp[s] = 0;
-  if (g_map.slot[s].id[0]) g_pscan_todo |= 1u << s;
+  if (mslot(s).id[0]) g_pscan_todo |= 1u << s;
   else g_pscan_todo &= ~(1u << s);
   g_mp = true;
 }
@@ -947,7 +1002,7 @@ void pre_slot(int s) {
   const rmp_desc* p = slot_desc(s, &d);
   rmp_knobs_from_desc(&g_knobs[s], p);
   uint32_t k = 2166136261u;
-  for (const char* c = g_map.slot[s].id; *c; ++c) k = (k ^ (uint8_t)*c) * 16777619u;
+  for (const char* c = mslot(s).id; *c; ++c) k = (k ^ (uint8_t)*c) * 16777619u;
   int pk = g_slot[s].pkg;
   if (pk >= 0) k = (k ^ g_pkg[pk].crc ^ g_pkg[pk].size) * 16777619u;
   if (k == g_pre_key[s]) return;
@@ -976,7 +1031,7 @@ void pscan_step() {
     int s = __builtin_ctz(g_pscan_todo);
     g_pscan_todo &= ~(1u << s);
     rmp_preset_scan_begin(&g_pnames, &g_pix[s], s);
-    if (!core::card_ok || !g_map.slot[s].id[0]) {
+    if (!core::card_ok || !mslot(s).id[0]) {
       pscan_end(s);
       return;
     }
@@ -986,7 +1041,7 @@ void pscan_step() {
   bool live = g_pscan_slot == s;
   if (g_ps == kPsOpen) {
     char path[48];
-    sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[s].id);
+    sniprintf(path, sizeof path, "/PRESETS/%s", mslot(s).id);
     if (!cardq::async(&g_prq, cardq::kOpenReq, &g_pdir, path, 0, nullptr, 0)) return;   // (later)
     g_ps_found = g_prq.got == 1 && g_pdir.isDir();
     if (g_ps_found && live) { g_ps = kPsList; return; }
@@ -1014,7 +1069,7 @@ void pscan_step() {
   if (g_pscan_slot != s) return;   // abandoned
   g_pscan_slot = -1;
   pscan_end(s);
-  if (g_ps_found) core::log("um: presets U%d %s: %d", s + 1, g_map.slot[s].id, (int)g_pix[s].n);
+  if (g_ps_found) core::log("um: presets U%d %s: %d", slot_no(s), mslot(s).id, (int)g_pix[s].n);
 }
 #else
 // One step of scanning a slot's /PRESETS/<id>/: open it, then kScanPerStep entries.
@@ -1026,8 +1081,8 @@ void pscan_step() {
     g_pscan_todo &= ~(1u << s);
     rmp_preset_scan_begin(&g_pnames, &g_pix[s], s);
     char path[48];
-    sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[s].id);
-    if (core::card_ok && g_map.slot[s].id[0] && g_pdir.open(path, core::kRead) && g_pdir.isDir()) {
+    sniprintf(path, sizeof path, "/PRESETS/%s", mslot(s).id);
+    if (core::card_ok && mslot(s).id[0] && g_pdir.open(path, core::kRead) && g_pdir.isDir()) {
       g_pscan_slot = s;
       return;
     }
@@ -1043,7 +1098,7 @@ void pscan_step() {
       g_pdir.close();
       g_pscan_slot = -1;
       pscan_end(s);
-      core::log("um: presets U%d %s: %d", s + 1, g_map.slot[s].id, (int)g_pix[s].n);
+      core::log("um: presets U%d %s: %d", slot_no(s), mslot(s).id, (int)g_pix[s].n);
       return;
     }
     char nm[128];
@@ -1063,19 +1118,19 @@ void send_presets(int s, int page) {
   uint8_t m[RMP_MSG_MAX];
   int from = page * 16, to = from + 16 < l.n ? from + 16 : l.n;
   if (from >= l.n) {
-    core::to_rytm(m, rmp_build_list(m, s + 1, RMP_LIST_PRESETS, g_meta.gen[s], page == 0, l.n, from, 0, l.name[0], RMP_PRESET_NAME));
+    core::to_rytm(m, rmp_build_list(m, ul(s) + 1, RMP_LIST_PRESETS, mgen(s), page == 0, l.n, from, 0, l.name[0], RMP_PRESET_NAME));
     return;
   }
   for (int f = from; f < to; f += RMP_LIST_PER_MSG) {
     int c = to - f < RMP_LIST_PER_MSG ? to - f : RMP_LIST_PER_MSG;
-    core::to_rytm(m, rmp_build_list(m, s + 1, RMP_LIST_PRESETS, g_meta.gen[s], page == 0 && f == from, l.n, f, c, l.name[f],
+    core::to_rytm(m, rmp_build_list(m, ul(s) + 1, RMP_LIST_PRESETS, mgen(s), page == 0 && f == from, l.n, f, c, l.name[f],
                                     RMP_PRESET_NAME));
   }
 }
 // The voice's preset decision for its latest report (the Teensy's plug_pv_decide): a load runs from idle().
 void pv_decide(int vi, int s, bool is_trig, const float* p) {
-  uint8_t bit = (uint8_t)(1u << vi);
-  g_pv_wait &= (uint8_t)~bit;
+  uint32_t bit = 1u << vi;
+  g_pv_wait &= ~bit;
   int pre = pre_knob(s);
   if (pre < 0 || pre > 15) return;
   const rmp_preset_index& ix = g_pix[s];
@@ -1085,13 +1140,13 @@ void pv_decide(int vi, int s, bool is_trig, const float* p) {
     return;
   }
   if (g_pv_resync & bit) {   // a write-back the list change dropped: decided again first, as a non-trig
-    g_pv_resync &= (uint8_t)~bit;
+    g_pv_resync &= ~bit;
     if (is_trig) pv_decide(vi, s, false, g_pl[vi][0].p);
   }
   rmp_pv_check(&g_pv[vi], ix.gen);
   bool sync = false;
   int e = rmp_pv_decide(&g_pv[vi], pre, ix.n, is_trig, (g_pv_new & bit) != 0, p, &sync);
-  g_pv_new &= (uint8_t)~bit;
+  g_pv_new &= ~bit;
   PreLoad* P = g_pl[vi];
   bool takeover = false;
   if (is_trig && P[0].on && P[0].gen == ix.gen && ix.n > 0) {   // the sound's new preset not loaded yet
@@ -1117,17 +1172,17 @@ void pv_params(int vi, int s, bool is_trig, float* q) {   // what params() gets:
   rmp_pv_effective(&g_pv[vi], &g_knobs[s], q);
 }
 void pv_reset(int vi) {   // the voice starts (or leaves) a slot: presets afresh
-  uint8_t bit = (uint8_t)(1u << vi);
+  uint32_t bit = 1u << vi;
   rmp_pv_reset(&g_pv[vi]);
   g_pl[vi][0].on = g_pl[vi][1].on = false;
-  g_pv_wait &= (uint8_t)~bit;
-  g_note_wait &= (uint8_t)~bit;
-  g_pv_resync &= (uint8_t)~bit;
+  g_pv_wait &= ~bit;
+  g_note_wait &= ~bit;
+  g_pv_resync &= ~bit;
 }
 void note_fire(int vi) {   // a trig's held note_on, now
   if (!(g_note_wait >> vi & 1)) return;
-  g_note_wait &= (uint8_t)~(1u << vi);
-  int s = core::v[vi].user;
+  g_note_wait &= ~(1u << vi);
+  int s = lv(vi);
   if (s < 0 || g_cur[vi] != s || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p) return;
   const HeldNote& n = g_hn[vi];
   {
@@ -1135,7 +1190,7 @@ void note_fire(int vi) {   // a trig's held note_on, now
     c_note_on(s, g_vstate[vi], (float)n.note, (n.vel < 1 ? 1 : n.vel) / 127.0f);
   }
   core::v[vi].live = !muted(s);
-  if (n.held) core::log("um: trig voice %d U%d note %d (after its preset load: %u us)", vi, s + 1, n.note,
+  if (n.held) core::log("um: trig voice %d U%d note %d (after its preset load: %u us)", vi, slot_no(s), n.note,
                         (unsigned)(core::now_us() - n.t));
 }
 // A pending load of voice vi that cannot run now (L.on cleared, as for any load taken): the voice moved on, or the list
@@ -1145,11 +1200,11 @@ bool pre_stale(int vi, PreLoad& L) {
   int s = L.s;
   const rmp_preset_index& ix = g_pix[s];
   const Slot& sl = g_slot[s];
-  if (core::v[vi].user != s || g_cur[vi] != s || sl.st != RMP_SLOT_READY || !sl.p) return true;   // moved on
+  if (lv(vi) != s || g_cur[vi] != s || sl.st != RMP_SLOT_READY || !sl.p) return true;   // moved on
   if (!rmp_preset_index_ok(&ix) || ix.gen != L.gen || L.entry >= ix.n) {   // the list changed meanwhile: decided again
-    if (L.sync || g_pl[vi][0].on) g_pv_resync |= (uint8_t)(1u << vi);
+    if (L.sync || g_pl[vi][0].on) g_pv_resync |= (1u << vi);
     g_pl[vi][0].on = g_pl[vi][1].on = false;
-    g_pv_wait |= (uint8_t)(1u << vi);
+    g_pv_wait |= (1u << vi);
     return true;
   }
   return false;
@@ -1176,14 +1231,15 @@ void pre_apply(int vi, PreLoad& L, int n, bool cut, uint32_t t0) {
   }
   if (why) {
     rmp_pv_failed(&g_pv[vi], L.entry);
-    core::log("um: preset voice %d U%d %d %s: %s", vi, s + 1, (int)L.entry, name, why);
+    core::log("um: preset voice %d U%d %d %s: %s", vi, slot_no(s), (int)L.entry, name, why);
     return;
   }
   uint8_t ok[16], ov[16];
   int m = rmp_pv_load(&g_pv[vi], L.entry, L.sync, vals, &g_knobs[s], core::now_ms(), L.p, ok, ov);
   if (m) {
     uint8_t msg[RMP_MSG_MAX];
-    core::to_rytm(msg, rmp_build_knobs(msg, vi, s + 1, m, ok, ov));
+    BoxIn in(bx(s));   // (to the voice's own box: its voice number there)
+    core::to_rytm(msg, rmp_build_knobs(msg, core::box_voice(vi), ul(s) + 1, m, ok, ov));
   }
   float q[16];
   pv_params(vi, s, g_last_trig >> vi & 1, q);
@@ -1191,7 +1247,7 @@ void pre_apply(int vi, PreLoad& L, int n, bool cut, uint32_t t0) {
     VNow now(vi);
     c_params(s, g_vstate[vi], q);
   }
-  core::log("um: preset voice %d U%d %d %s (%s%s, %u us)", vi, s + 1, (int)L.entry, name, L.sync ? "written back" : "played",
+  core::log("um: preset voice %d U%d %d %s (%s%s, %u us)", vi, slot_no(s), (int)L.entry, name, L.sync ? "written back" : "played",
             cut ? ", cut at 4096 B" : "", (unsigned)(core::now_us() - t0));
 }
 #if CORE_MSAMP
@@ -1204,7 +1260,7 @@ bool pre_job() {
   for (;;) {
     if (j.stage == kLjOpen) {
       char path[48];
-      sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[j.s].id);
+      sniprintf(path, sizeof path, "/PRESETS/%s", mslot(j.s).id);
       if (!cardq::async(&g_lrq, cardq::kOpenAtReq, &g_lf, path, j.dir, nullptr, 0)) return false;   // (later)
       if (g_lrq.got == 1) {
         j.cut = g_lf.fileSize() > sizeof g_rbuf;
@@ -1253,7 +1309,7 @@ void pre_load(int vi, int which) {
   int n = -1;
   bool cut = false;
   char path[48];
-  sniprintf(path, sizeof path, "/PRESETS/%s", g_map.slot[s].id);
+  sniprintf(path, sizeof path, "/PRESETS/%s", mslot(s).id);
   core::File d, f;
   if (d.open(path, core::kRead) && f.open(&d, ix.dir[L.entry], core::kRead)) {
     cut = f.fileSize() > sizeof g_rbuf;
@@ -1268,8 +1324,8 @@ void pre_load(int vi, int which) {
 bool pre_pass() {
   for (int vi = 0; vi < core::kVoices; ++vi) {
     if (!(g_pv_wait >> vi & 1)) continue;
-    int s = core::v[vi].user;
-    if (s < 0 || g_cur[vi] != s) { g_pv_wait &= (uint8_t)~(1u << vi); continue; }
+    int s = lv(vi);
+    if (s < 0 || g_cur[vi] != s) { g_pv_wait &= ~(1u << vi); continue; }
     if (rmp_preset_index_ok(&g_pix[s])) {
       pv_decide(vi, s, g_last_trig >> vi & 1, core::v[vi].p);
       if (!g_pl[vi][0].on && !g_pl[vi][1].on) note_fire(vi);
@@ -1300,19 +1356,21 @@ bool pre_pass() {
 }
 // Preset names asked for: sent while the shared names are the slot's, else its folder scanned first.
 bool pre_pages() {
-  for (int s = 0; s < kSlots; ++s) {
+  for (int s = 0; s < kMach; ++s) {
     if (!g_pre_page[s] || !rmp_preset_names_ok(&g_pnames, &g_pix[s], s)) continue;
     int pg = __builtin_ctz(g_pre_page[s]);
     g_pre_page[s] &= (uint8_t)~(1u << pg);
+    BoxIn in(bx(s));
     send_presets(s, pg);
     return true;
   }
-  for (int s = 0; s < kSlots; ++s) {
+  for (int s = 0; s < kMach; ++s) {
     if (!g_pre_page[s]) continue;
-    if (!g_map.slot[s].id[0]) {   // nothing assigned: no presets
+    if (!mslot(s).id[0]) {   // nothing assigned: no presets
       g_pre_page[s] = 0;
       uint8_t m[RMP_MSG_MAX];
-      core::to_rytm(m, rmp_build_list(m, s + 1, RMP_LIST_PRESETS, g_meta.gen[s], 1, 0, 0, 0, g_pnames.name[0], RMP_PRESET_NAME));
+      BoxIn in(bx(s));
+      core::to_rytm(m, rmp_build_list(m, ul(s) + 1, RMP_LIST_PRESETS, mgen(s), 1, 0, 0, 0, g_pnames.name[0], RMP_PRESET_NAME));
       return true;
     }
     if (g_pscan_slot != s) g_pscan_todo |= 1u << s;
@@ -1339,11 +1397,11 @@ bool pre_save(int s, const char* raw, char* out, int cap) {
   const Slot& sl = g_slot[s];
   rmp_desc d;
   const rmp_desc* p = slot_desc(s, &d);
-  if (sl.st != RMP_SLOT_READY || !p) { sniprintf(out, cap, "U%d plays nothing", s + 1); return false; }
+  if (sl.st != RMP_SLOT_READY || !p) { sniprintf(out, cap, "U%d plays nothing", slot_no(s)); return false; }
   int vi = -1;
   for (int k = 0; k < core::kVoices; ++k)
     if (g_cur[k] == s) vi = k;
-  if (vi < 0) { sniprintf(out, cap, "no voice plays U%d yet (a trig first)", s + 1); return false; }
+  if (vi < 0) { sniprintf(out, cap, "no voice plays U%d yet (a trig first)", slot_no(s)); return false; }
   float q[16];
   pv_params(vi, s, false, q);
   bool roles = false;
@@ -1358,7 +1416,7 @@ bool pre_save(int s, const char* raw, char* out, int cap) {
     len += (uint32_t)sniprintf(txt + len, sizeof txt - len, "P%d %d\n", kb.p, iv);
   }
   char path[72];
-  sniprintf(path, sizeof path, "/PRESETS/%s/%s.txt", g_map.slot[s].id, name);
+  sniprintf(path, sizeof path, "/PRESETS/%s/%s.txt", mslot(s).id, name);
 #if CORE_MSAMP
   if (cardq::worker()) {   // (write_atomic makes the folders)
     if (!core::fmt::post_queue(path, txt, len)) { sniprintf(out, cap, "%s not written", path); return false; }
@@ -1368,7 +1426,7 @@ bool pre_save(int s, const char* raw, char* out, int cap) {
     core::Fs fs;
     char dir[48];
     fs.mkdir("/PRESETS");
-    sniprintf(dir, sizeof dir, "/PRESETS/%s", g_map.slot[s].id);
+    sniprintf(dir, sizeof dir, "/PRESETS/%s", mslot(s).id);
     fs.mkdir(dir);
     core::File f;
     bool ok = f.open(path, core::kWrite) && f.write(txt, len) == len;
@@ -1378,14 +1436,14 @@ bool pre_save(int s, const char* raw, char* out, int cap) {
   copy(g_pre_path, path, sizeof g_pre_path);
   g_pre_again = true;   // core 0 may write it a little later: every list scanned again then
   g_pre_again_ms = core::now_ms() + 300;
-  sniprintf(out, cap, "U%d preset %s saved (voice %d)", s + 1, name, vi);
+  sniprintf(out, cap, "U%d preset %s saved (voice %d)", slot_no(s), name, vi);
   return true;
 }
 
 // ---- voices
 void voice_leave(int vi) {
   int s = g_cur[vi];
-  g_mis &= (uint8_t)~(1u << vi);
+  g_mis &= ~(1u << vi);
   if (s < 0) return;
   g_cur[vi] = -1;
   pv_reset(vi);
@@ -1412,18 +1470,20 @@ void resolved(uint32_t ch, const char* how);
 int pkg_refs(rmp_pkg_ref* r);
 void note_log(int s, const char* what);
 // Lazily (a Rytm without 0x25): a trig's tag names the machine an empty or inherited slot should play.
-void lazy_tag(int s, int tag) {
+void lazy_tag(int L, int tag) {
+  BoxIn in(bx(L));
+  const int s = ul(L);
 #if CORE_MSAMP
-  if (g_mr) return;   // (not against the old project's map)
+  if (M().mr) return;   // (not against the old project's map)
 #endif
-  if (g_prints_have || g_scan || !tag || g_lazy_fp[s] == tag) return;
-  g_lazy_fp[s] = (uint16_t)tag;
+  if (M().prints_have || g_scan || !tag || M().lazy_fp[s] == tag) return;
+  M().lazy_fp[s] = (uint16_t)tag;
   rmp_pkg_ref r[kStore];
   int n = pkg_refs(r);
-  if (rmp_resolve_tag(&g_map, &g_notes, s, (uint16_t)tag, r, n)) {
+  if (rmp_resolve_tag(&M().map, &M().notes, s, (uint16_t)tag, r, n)) {
     resolved(1u << s, "from a trig's sound tag");
-  } else if (g_notes.slot[s].flags & (RMP_RF_UNKNOWN | RMP_RF_COLLISION)) {
-    note_log(s, g_notes.slot[s].flags & RMP_RF_COLLISION ? "the sound's fingerprint names several machines"
+  } else if (nslot(L).flags & (RMP_RF_UNKNOWN | RMP_RF_COLLISION)) {
+    note_log(L, nslot(L).flags & RMP_RF_COLLISION ? "the sound's fingerprint names several machines"
                                                          : "no machine installed has the sound's fingerprint");
     g_pub = true;
   }
@@ -1431,12 +1491,15 @@ void lazy_tag(int s, int tag) {
 void on_prints(const uint8_t* d, int len) {
   rmp_prints p;
   if (!rmp_parse_prints(d, len, &p)) return;
-  g_prints_rytm = true;
-  g_prints = p;
-  g_prints_pending = true;   // applied from idle(), once the package list is there
+  BoxIn in(hand());
+  M().prints_rytm = true;
+  M().prints = p;
+  M().prints_pending = true;   // applied from idle(), once the package list is there
 }
 void on_report(int vi, int s, int was, int note, int vel, int tag) {
   core::V& x = core::v[vi];
+  s = s < 0 || s >= kSlots ? -1 : lslot(core::slot_of_voice(vi), s);   // (3(c): its own box's U(s + 1))
+  if (s < 0) { if (g_cur[vi] >= 0) voice_leave(vi); x.live = false; return; }
   if (note >= 0 && tag && (g_slot[s].st != RMP_SLOT_READY || tag != g_slot[s].fp)) lazy_tag(s, tag);
   if (g_cur[vi] >= 0 && g_cur[vi] != s) voice_leave(vi);
   Slot& sl = g_slot[s];
@@ -1444,7 +1507,7 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
     x.live = false;
     return;
   }
-  uint8_t bit = (uint8_t)(1u << vi);
+  uint32_t bit = 1u << vi;
   if (note >= 0) {
     if (tag && tag != sl.fp) {   // the sound was made for another machine: silent until a matching trig
       if (g_mis & bit) return;
@@ -1452,10 +1515,10 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
       voice_leave(vi);
       g_mis |= bit;
       x.live = false;
-      core::log("um: trig voice %d U%d: sound tag %d, the slot's %d - silent", vi, s + 1, tag, (int)sl.fp);
+      core::log("um: trig voice %d U%d: sound tag %d, the slot's %d - silent", vi, slot_no(s), tag, (int)sl.fp);
       return;
     }
-    g_mis &= (uint8_t)~bit;
+    g_mis &= ~bit;
   } else if (g_mis & bit) {
     return;
   }
@@ -1474,7 +1537,7 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
   }
   // presets (rmp_pv): what this report means for the voice's preset; a load runs from idle()
   if (note >= 0) g_last_trig |= bit;
-  else g_last_trig &= (uint8_t)~bit;
+  else g_last_trig &= ~bit;
   // its knobs moved (the Rytm's report, not an LFO or a step lock: core::user_report_internal): the labels follow it
   if (note < 0 && !core::user_report_internal && g_lbl_vi[s] != vi) g_lbl_vi[s] = (int8_t)vi, g_mp = true;
   pv_decide(vi, s, note >= 0, x.p);
@@ -1504,7 +1567,7 @@ void on_note_off(int vi) {
 }
 // A render core: kBlock samples of voice vi (silence unless its slot plays it).
 void on_render(int vi, float* o) {
-  int s = core::v[vi].user;
+  int s = lv(vi);
   const Slot& sl = g_slot[s < 0 ? 0 : s];
   if (s < 0 || g_cur[vi] != s || sl.st != RMP_SLOT_READY || !sl.p || (g_note_wait >> vi & 1) || muted(s)) {
     for (int k = 0; k < core::kBlock; ++k) o[k] = 0.0f;
@@ -1521,7 +1584,7 @@ void on_render(int vi, float* o) {
     const rmp3_plugin* p3 = g_v3[s].p3;
     if (p3) {   // API 3: one block of data (mono here: out[1] null)
       rmp3_block b;
-      block_fill(&b, core::kBlock, o, nullptr, RMP3_AT_VOICE);
+      block_fill(&b, core::kBlock, o, nullptr, RMP3_AT_VOICE, bx(s));
       p3->render(g_vstate[vi], &b);
     } else {
       sl.p->render(g_vstate[vi], o, core::kBlock);
@@ -1536,8 +1599,8 @@ void on_render(int vi, float* o) {
 
 // API 3, a voice on OUT PRE / POST: a stereo plugin (out_channels 2) writes L and R (true); anything else L (false: R = L).
 bool on_render2(int vi, float* l, float* r) {
-  int s = core::v[vi].user;
-  const rmp3_plugin* p3 = s >= 0 && s < kSlots ? g_v3[s].p3 : nullptr;
+  int s = lv(vi);
+  const rmp3_plugin* p3 = s >= 0 && s < kMach ? g_v3[s].p3 : nullptr;   // (a load slot L)
   if (!p3 || p3->out_channels < 2 || g_cur[vi] != s || g_slot[s].st != RMP_SLOT_READY || (g_note_wait >> vi & 1) || muted(s)) {
     on_render(vi, l);
     return false;
@@ -1551,7 +1614,7 @@ bool on_render2(int vi, float* l, float* r) {
   {
     VNow now(vi);
     rmp3_block b;
-    block_fill(&b, core::kBlock, l, r, RMP3_AT_VOICE);
+    block_fill(&b, core::kBlock, l, r, RMP3_AT_VOICE, bx(s));
     p3->render(g_vstate[vi], &b);
   }
   uint32_t dt = core::cycles() - t0;
@@ -1582,39 +1645,40 @@ void notes_file(char* d, const char* map, int cap) {
 }
 // The project's map (b[0..n)) and notes (nb[0..k)) as read; n, k -1: missing or unreadable.
 void map_take(const char* b, int n, const char* nb, int k) {
-  memset(&g_map, 0, sizeof g_map);
-  g_map_locked = n > 0 && !rmp_slots_parse(b, (uint32_t)n, &g_map);
-  if (g_map_locked)
+  memset(&M().map, 0, sizeof M().map);
+  M().map_locked = n > 0 && !rmp_slots_parse(b, (uint32_t)n, &M().map);
+  if (M().map_locked)
     core::log("um: %s is not a slot map this build reads (a newer Sidecar's, or damaged) - every slot empty, the file "
-              "kept as it is (not written)", g_map_file);
-  bool notes = k > 0 && rmp_notes_parse(nb, (uint32_t)k, &g_notes);
-  g_notes_locked = k > 0 && !notes;
-  if (g_notes_locked) core::log("um: %s is not a notes file this build reads - kept as it is (not written)", g_notes_file);
-  g_fresh = rmp_resolve_open(&g_map, &g_notes, n >= 0, notes);
+              "kept as it is (not written)", M().map_file);
+  bool notes = k > 0 && rmp_notes_parse(nb, (uint32_t)k, &M().notes);
+  M().notes_locked = k > 0 && !notes;
+  if (M().notes_locked) core::log("um: %s is not a notes file this build reads - kept as it is (not written)", M().notes_file);
+  M().fresh = rmp_resolve_open(&M().map, &M().notes, n >= 0, notes);
 }
 // The effects' file as read (b[0..n); n -1: missing, -2: there but not read): each line a UFX. A project with no file keeps
 // what is loaded, as before (nothing is written until um changes a slot). A line with an effect ("...\t<id> <a.b.c>", the
 // slot map's fields) that does not parse, or a file that is there and could not be read (a card error): the file is
-// locked, every slot empty, the file never written over. The whole text is kept (g_fx_raw) so that the lines this build
+// locked, every slot empty, the file never written over. The whole text is kept (M().fx_raw) so that the lines this build
 // does not own are written back as they were (fx_save); a file over kFxRaw bytes is read for its first lines and never
 // written. An effect not installed is not looked at here: its slot goes MISSING when it loads, the file as it was.
 void fx_take(const char* b, int n) {
-  g_fx_locked = false;
-  g_fx_big = false;
-  g_fx_raw_n = 0;
+  M().fx_locked = false;
+  M().fx_big = false;
+  M().fx_raw_n = 0;
+  if (g_bw) core::fx::slots_text(g_bw, b, n);   // (another box's names for its kits; every box's also come from its own sendfx_project)
   if (n == -1) return;
   const bool unread = n < 0;
   if (unread) n = 0;
   if (n > (int)kFxRaw) {
-    g_fx_big = true;
+    M().fx_big = true;
     n = (int)kFxRaw;
-    core::log("um: %s is over %u bytes - read, kept as it is (not written: the effects change in memory only)", g_fx_file,
+    core::log("um: %s is over %u bytes - read, kept as it is (not written: the effects change in memory only)", M().fx_file,
               (unsigned)kFxRaw);
   } else {
-    memcpy(g_fx_raw, b, (size_t)n);
-    g_fx_raw_n = (uint32_t)n;
+    memcpy(M().fx_raw, b, (size_t)n);
+    M().fx_raw_n = (uint32_t)n;
   }
-  if (unread) g_fx_locked = true;
+  if (unread) M().fx_locked = true;
   rmp_slot_entry ne[kUfx];
   char txt[kUfx][64];
   memset(ne, 0, sizeof ne);
@@ -1633,68 +1697,65 @@ void fx_take(const char* b, int n) {
     rmp_slot_map m;
     sniprintf(l, sizeof l, "U1 %s\n", tab + 1);
     if (!rmp_slots_parse(l, (uint32_t)strlen(l), &m)) {
-      g_fx_locked = true;
+      M().fx_locked = true;
       memset(ne, 0, sizeof ne);
       break;
     }
     ne[u] = m.slot[0];
   }
-  if (g_fx_locked) {
+  if (M().fx_locked) {
     memset(txt, 0, sizeof txt);
     if (unread)
-      core::log("um: %s is there but could not be read - every UFX empty, the file kept as it is (not written)", g_fx_file);
+      core::log("um: %s is there but could not be read - every UFX empty, the file kept as it is (not written)", M().fx_file);
     else
       core::log("um: %s is not a user-effect file this build reads (a newer Sidecar's, or damaged) - every UFX empty, the "
-                "file kept as it is (not written)", g_fx_file);
+                "file kept as it is (not written)", M().fx_file);
   }
   for (int u = 0; u < kUfx; ++u) {
-    memcpy(g_fx_txt[u], txt[u], sizeof g_fx_txt[u]);
-    if (!strcmp(ne[u].id, g_fxmap[u].id) && ne[u].version == g_fxmap[u].version) continue;
-    fx_stop(u);   // (core 2 out of it before its assignment changes)
-    g_fxmap[u] = ne[u];
-    __atomic_store_n(&core::fx::user[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
+    const int e = g_bw * kUfx + u;   // (the box in work's UFX u)
+    memcpy(M().fx_txt[u], txt[u], sizeof M().fx_txt[u]);
+    if (!strcmp(ne[u].id, g_fxmap[e].id) && ne[u].version == g_fxmap[e].version) continue;
+    fx_stop(e);   // (core 2 out of it before its assignment changes)
+    g_fxmap[e] = ne[u];
+    __atomic_store_n(&core::fx::user_of(g_bw)[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
+    g_need |= 1u << (kMach + e);   // (loaded again: its new effect, or empty)
   }
 }
 #if CORE_MSAMP
-cardq::Req g_mrq;
-char g_mr_map[64], g_mr_notes[64], g_mr_fx[64];   // the files read (g_map_file, g_notes_file, g_fx_file once all are here)
-char g_mr_b[2][512];
-char g_mr_fxb[kFxRaw + 1];   // (one byte more: a file over kFxRaw shows)
-int g_mr_n[3];
 // The map's read, a request a file (kSmallReq: recover, open, read, close): the map, the notes, then both taken at once.
 // A save of the file still on its way lands first (a project left and come back to at once). The request's own step:
-// a newer project meanwhile (g_mr_again) reads again from the map.
+// a newer project meanwhile (M().mr_again) reads again from the map.
 void map_step() {
-  while (g_mr) {
-    int w = g_mr == kMrMap ? 0 : g_mr == kMrNotes ? 1 : 2;
-    const char* path = w == 2 ? g_mr_fx : w ? g_mr_notes : g_mr_map;
-    if (g_mrq.state == cardq::kFree && core::fmt::pending(path)) return;
-    if (!core::card_ok) g_mr_n[w] = -1;
-    else if (!cardq::async(&g_mrq, cardq::kSmallReq, nullptr, path, 0, w == 2 ? (uint8_t*)g_mr_fxb : (uint8_t*)g_mr_b[w],
-                           w == 2 ? (uint32_t)sizeof g_mr_fxb : (uint32_t)sizeof g_mr_b[w])) return;
-    else g_mr_n[w] = g_mrq.got;
-    if (g_mr_again) {
-      g_mr_again = false;
-      g_mr = kMrMap;
-    } else if (w < 2) {
-      g_mr = w ? kMrFx : kMrNotes;
+  while (M().mr) {
+    int w = M().mr == kMrMap ? 0 : M().mr == kMrNotes ? 1 : 2;
+    const char* path = w == 2 ? M().mr_fx : w ? M().mr_notes : M().mr_map;
+    if (M().mrq.state == cardq::kFree && core::fmt::pending(path)) return;
+    if (!core::card_ok) M().mr_n[w] = -1;
+    else if (!cardq::async(&M().mrq, cardq::kSmallReq, nullptr, path, 0, w == 2 ? (uint8_t*)M().mr_fxb : (uint8_t*)M().mr_b[w],
+                           w == 2 ? (uint32_t)sizeof M().mr_fxb : (uint32_t)sizeof M().mr_b[w])) return;
+    else M().mr_n[w] = M().mrq.got;
+    if (M().mr_again) {
+      M().mr_again = false;
+      M().mr = kMrMap;
+    } else if (w < 2) {   // (then the effects' file: each box its own)
+      M().mr = w ? kMrFx : kMrNotes;
     } else {
-      g_mr = kMrIdle;
-      copy(g_map_file, g_mr_map, sizeof g_map_file);
-      copy(g_notes_file, g_mr_notes, sizeof g_notes_file);
-      copy(g_fx_file, g_mr_fx, sizeof g_fx_file);
-      map_take(g_mr_b[0], g_mr_n[0], g_mr_b[1], g_mr_n[1]);
-      fx_take(g_mr_fxb, g_mr_n[2]);
-      core::log("um: project %s, map %s%s", core::project, g_map_file, g_fresh ? " (none: fresh)" : "");
+      M().mr = kMrIdle;
+      copy(M().map_file, M().mr_map, sizeof M().map_file);
+      copy(M().notes_file, M().mr_notes, sizeof M().notes_file);
+      copy(M().fx_file, M().mr_fx, sizeof M().fx_file);
+      map_take(M().mr_b[0], M().mr_n[0], M().mr_b[1], M().mr_n[1]);
+      fx_take(M().mr_fxb, M().mr_n[2]);
+      core::log("um: project %s, map %s%s", core::prj().key, M().map_file, M().fresh ? " (none: fresh)" : "");
     }
   }
 }
 void map_read() {   // (no card core, as at boot: done here; with one from idle())
-  map_file(g_mr_map, sizeof g_mr_map);
-  notes_file(g_mr_notes, g_mr_map, sizeof g_mr_notes);
-  fx_file(g_mr_fx, g_mr_map, sizeof g_mr_fx);
-  if (g_mr) g_mr_again = true;
-  else g_mr = kMrMap;
+  map_file(M().mr_map, sizeof M().mr_map);
+  notes_file(M().mr_notes, M().mr_map, sizeof M().mr_notes);
+  fx_file(M().mr_fx, M().mr_map, sizeof M().mr_fx);
+  if (M().mr) M().mr_again = true;
+  else M().mr = kMrMap;
   if (!cardq::worker()) map_step();
 }
 #else
@@ -1707,19 +1768,19 @@ int read_small(const char* path, char* b, int cap) {
   return n;
 }
 void map_read() {
-  map_file(g_map_file, sizeof g_map_file);
-  notes_file(g_notes_file, g_map_file, sizeof g_notes_file);
-  fx_file(g_fx_file, g_map_file, sizeof g_fx_file);
+  map_file(M().map_file, sizeof M().map_file);
+  notes_file(M().notes_file, M().map_file, sizeof M().notes_file);
+  fx_file(M().fx_file, M().map_file, sizeof M().fx_file);
   char b[512], nb[512], fb[512];
-  core::fmt::recover(g_map_file);     // 0.3.0: a cut between write_atomic's renames - the previous map back (fmt.h)
-  core::fmt::recover(g_notes_file);
-  core::fmt::recover(g_fx_file);
-  int n = read_small(g_map_file, b, sizeof b);
-  int k = read_small(g_notes_file, nb, sizeof nb);
-  int f = read_small(g_fx_file, fb, sizeof fb);
+  core::fmt::recover(M().map_file);     // 0.3.0: a cut between write_atomic's renames - the previous map back (fmt.h)
+  core::fmt::recover(M().notes_file);
+  core::fmt::recover(M().fx_file);
+  int n = read_small(M().map_file, b, sizeof b);
+  int k = read_small(M().notes_file, nb, sizeof nb);
+  int f = read_small(M().fx_file, fb, sizeof fb);
   map_take(b, n, nb, k);
   fx_take(fb, f);
-  core::log("um: project %s, map %s%s", core::project, g_map_file, g_fresh ? " (none: fresh)" : "");
+  core::log("um: project %s, map %s%s", core::prj().key, M().map_file, M().fresh ? " (none: fresh)" : "");
 }
 #endif
 // 0.3.0 power-cut safety: core::fmt::write_atomic, not the tmp-remove-rename this did before. The slot map says which
@@ -1736,17 +1797,17 @@ bool write_whole(const char* path, const char* txt, uint32_t n) {
   return core::fmt::write_atomic(path, txt, n);
 }
 bool map_save() {   // the map (what an older build reads), then the notes
-  if (g_map_locked) {   // 1042: never over a map this build could not read
-    core::log("um: %s not written: it did not parse (the slots change in memory only)", g_map_file);
+  if (M().map_locked) {   // 1042: never over a map this build could not read
+    core::log("um: %s not written: it did not parse (the slots change in memory only)", M().map_file);
     return false;
   }
   char txt[400];
-  uint32_t n = rmp_slots_format(&g_map, txt, sizeof txt);
-  bool ok = write_whole(g_map_file, txt, n);
+  uint32_t n = rmp_slots_format(&M().map, txt, sizeof txt);
+  bool ok = write_whole(M().map_file, txt, n);
   char nt[512];   // the notes only next to a written map (an "empty" note beside an old map would be stale)
-  n = rmp_notes_format(&g_notes, nt, sizeof nt);
-  if (ok && !g_notes_locked && !write_whole(g_notes_file, nt, n)) core::log("um: %s not written", g_notes_file);
-  g_fresh = false;
+  n = rmp_notes_format(&M().notes, nt, sizeof nt);
+  if (ok && !M().notes_locked && !write_whole(M().notes_file, nt, n)) core::log("um: %s not written", M().notes_file);
+  M().fresh = false;
   return ok;
 }
 // The effects' file written whole (an atomic write, as the map's): the text as read, UFX u's line (the changed one)
@@ -1754,60 +1815,62 @@ bool map_save() {   // the map (what an older build reads), then the notes
 // line this build does not own (a long one, one past the fourth) too. Not over a file that did not parse, could not be
 // read or is over kFxRaw, and never cut: a result over kFxRaw is refused.
 bool fx_save(int u) {
-  if (g_fx_locked) {
-    core::log("um: %s not written: it did not parse or could not be read (the effects change in memory only)", g_fx_file);
+  if (M().fx_locked) {
+    core::log("um: %s not written: it did not parse or could not be read (the effects change in memory only)", M().fx_file);
     return false;
   }
-  if (g_fx_big) {
-    core::log("um: %s not written: it is over %u bytes (the effects change in memory only)", g_fx_file, (unsigned)kFxRaw);
+  if (M().fx_big) {
+    core::log("um: %s not written: it is over %u bytes (the effects change in memory only)", M().fx_file, (unsigned)kFxRaw);
     return false;
   }
   static char out[kFxRaw + kUfx * 66];
   uint32_t o = 0, at = 0;
   for (int i = 0; i < kUfx; ++i) {
-    if (i != u && at < g_fx_raw_n) {   // the line as it is
+    if (i != u && at < M().fx_raw_n) {   // the line as it is
       uint32_t e = at;
-      while (e < g_fx_raw_n && g_fx_raw[e] != '\n') ++e;
-      bool nl = e < g_fx_raw_n;
-      memcpy(out + o, g_fx_raw + at, e - at);
+      while (e < M().fx_raw_n && M().fx_raw[e] != '\n') ++e;
+      bool nl = e < M().fx_raw_n;
+      memcpy(out + o, M().fx_raw + at, e - at);
       o += e - at;
       if (nl || i + 1 < kUfx) out[o++] = '\n';
       at = e + 1;
     } else {   // the changed line, or one the file did not have
-      if (at < g_fx_raw_n) {
-        while (at < g_fx_raw_n && g_fx_raw[at] != '\n') ++at;
+      if (at < M().fx_raw_n) {
+        while (at < M().fx_raw_n && M().fx_raw[at] != '\n') ++at;
         ++at;
       }
-      o += (uint32_t)sniprintf(out + o, sizeof out - o, "%s\n", g_fx_txt[i]);
+      o += (uint32_t)sniprintf(out + o, sizeof out - o, "%s\n", M().fx_txt[i]);
     }
   }
-  if (at < g_fx_raw_n) {   // the lines after the fourth
-    memcpy(out + o, g_fx_raw + at, g_fx_raw_n - at);
-    o += g_fx_raw_n - at;
+  if (at < M().fx_raw_n) {   // the lines after the fourth
+    memcpy(out + o, M().fx_raw + at, M().fx_raw_n - at);
+    o += M().fx_raw_n - at;
   }
   if (o > kFxRaw) {
-    core::log("um: %s not written: the change would make it over %u bytes (the effects change in memory only)", g_fx_file,
+    core::log("um: %s not written: the change would make it over %u bytes (the effects change in memory only)", M().fx_file,
               (unsigned)kFxRaw);
     return false;
   }
-  memcpy(g_fx_raw, out, o);
-  g_fx_raw_n = o;
-  return write_whole(g_fx_file, out, o);
+  memcpy(M().fx_raw, out, o);
+  M().fx_raw_n = o;
+  return write_whole(M().fx_file, out, o);
 }
-void note_log(int s, const char* what) {
-  const rmp_slot_note& e = g_notes.slot[s];
-  core::log("um: U%d %s: %s (%s, sounds' fingerprint %u)", s + 1, g_map.slot[s].id[0] ? g_map.slot[s].id : "-", what,
+void note_log(int s, const char* what) {   // (a load slot L)
+  const rmp_slot_note& e = nslot(s);
+  core::log("um: %s%d %s: %s (%s, sounds' fingerprint %u)", slot_pfx(s), slot_no(s), mslot(s).id[0] ? mslot(s).id : "-", what,
             rmp_src_name(e.src), (unsigned)e.fp);
 }
-// The slots `ch` changed by a resolve: loaded again, the map and notes saved, each logged.
+// The slots `ch` (the box in work's U numbers - 1, as the resolver gives them) changed by a resolve: loaded again, the
+// map and notes saved, each logged.
 void resolved(uint32_t ch, const char* how) {
-  for (int s = 0; s < kSlots; ++s) {
-    if (!(ch >> s & 1)) continue;
+  for (int u = 0; u < kSlots; ++u) {
+    if (!(ch >> u & 1)) continue;
+    const int s = lslot(g_bw, u);
     g_need |= 1u << s;
-    note_log(s, g_notes.slot[s].flags & RMP_RF_UPDATED ? "updated from the project's sounds" : how);
+    note_log(s, nslot(s).flags & RMP_RF_UPDATED ? "updated from the project's sounds" : how);
   }
   if (ch) ++g_resolve_n;
-  g_resolve_save = g_resolve_save || ch;
+  M().resolve_save = M().resolve_save || ch;
   g_pub = true;
   g_mp = true;
 }
@@ -1818,38 +1881,41 @@ int pkg_refs(rmp_pkg_ref* r) {   // the loadable packages, as the resolver sees 
   return n;
 }
 void inherit_now() {   // a fresh project: the previous project's slots where nothing else says
-  if (!g_fresh) return;
-  g_fresh = false;   // (nothing inherited: no file written, the project stays fresh for its next load)
-  resolved(rmp_resolve_inherit(&g_map, &g_notes, &g_prev), "inherited from the previous project");
+  if (!M().fresh) return;
+  M().fresh = false;   // (nothing inherited: no file written, the project stays fresh for its next load)
+  resolved(rmp_resolve_inherit(&M().map, &M().notes, &M().prev), "inherited from the previous project");
 }
 // A 0x25 for this project: resolved once the package list is there (the scan), a repeat ignored.
 void prints_apply() {
-  g_prints_pending = false;
-  uint32_t h = rmp_prints_hash(&g_prints);
-  if (g_prints_have && h == g_prints_hash) return;
-  g_prints_have = true;
-  g_prints_hash = h;
+  M().prints_pending = false;
+  uint32_t h = rmp_prints_hash(&M().prints);
+  if (M().prints_have && h == M().prints_hash) return;
+  M().prints_have = true;
+  M().prints_hash = h;
   rmp_pkg_ref r[kStore];
   int n = pkg_refs(r);
-  resolved(rmp_resolve_prints(&g_map, &g_notes, &g_prints, r, n), "from the project's sounds");
-  core::log("um: slot prints (seq %d, %d entr%s) for %s", (int)g_prints.seq, (int)g_prints.n, g_prints.n == 1 ? "y" : "ies",
-            core::project[0] ? core::project : "_default");
+  resolved(rmp_resolve_prints(&M().map, &M().notes, &M().prints, r, n), "from the project's sounds");
+  core::log("um: slot prints (seq %d, %d entr%s) for %s", (int)M().prints.seq, (int)M().prints.n, M().prints.n == 1 ? "y" : "ies",
+            core::prj().key[0] ? core::prj().key : "_default");
   inherit_now();
 }
 void project_reload() {
-  if (g_resolve_save) {   // the old project's resolve, still to be saved: to its own files first
-    g_resolve_save = false;
-    if (!map_save()) core::log("um: %s not written", g_map_file);
+  if (M().resolve_save) {   // the old project's resolve, still to be saved: to its own files first
+    M().resolve_save = false;
+    if (!map_save()) core::log("um: %s not written", M().map_file);
   }
-  memcpy(&g_prev, &g_map, sizeof g_prev);
+  memcpy(&M().prev, &M().map, sizeof M().prev);
   map_read();
-  g_full = true;
-  g_prints_have = false;
-  g_prints_pending = false;
-  memset(g_lazy_fp, 0, sizeof g_lazy_fp);
+  // every slot of the box loads again (3(c): only its own: another box's play on; on one box, as before, a full reload
+  // that also packs the code arena)
+  if (kBoxes == 1) g_full = true;
+  else g_need |= ((1u << kSlots) - 1) << (g_bw * kSlots);
+  M().prints_have = false;
+  M().prints_pending = false;
+  memset(M().lazy_fp, 0, sizeof M().lazy_fp);
   // a fresh project waits for the Rytm's fingerprints (if it sends them) before it inherits
   // (always: after a boot this Rytm may not have sent one yet; an older Rytm only inherits 1.5 s later)
-  g_fresh_until = core::now_ms() + kFreshWaitMs;
+  M().fresh_until = core::now_ms() + kFreshWaitMs;
 }
 
 // ---- the scan of the card's packages
@@ -1911,7 +1977,7 @@ void scan_finish() {
     int k = find_slot(s);
     uint32_t crc = k >= 0 ? g_pkg[k].crc ^ g_pkg[k].size : 0;
     if (crc != (g_slot[s].crc ^ 0) || g_slot[s].st != RMP_SLOT_READY) g_need |= 1u << s;
-    if (s < kSlots && (k < 0 || lbl_key(g_pkg[k]) != g_lbl_key[s])) g_lbl_cur[s] = -1, g_lbl_ms[s] = core::now_ms() - kLblMs;   // (review 5: another package)
+    if (s < kMach && (k < 0 || lbl_key(g_pkg[k]) != g_lbl_key[s])) g_lbl_cur[s] = -1, g_lbl_ms[s] = core::now_ms() - kLblMs;   // (review 5: another package)
   }
   list_build();
   for (int s = 0; s < kAll; ++s) {   // the slots' package indices into the new list (a READY slot not reloaded keeps its image)
@@ -1919,20 +1985,24 @@ void scan_finish() {
     if (k < 0 && g_slot[s].st == RMP_SLOT_READY) g_need |= 1u << s;
     g_slot[s].pkg = k;
   }
-  if (changed) rmp_meta_store(&g_meta);
-  if (changed) {   // other packages: a fingerprint nothing had may resolve now (only the slots still open), a trig's again
-    memset(g_lazy_fp, 0, sizeof g_lazy_fp);
-    uint32_t open = rmp_resolve_open_slots(&g_notes);
-    if (g_prints_have && open) {
-      rmp_pkg_ref r[kStore];
-      int n = pkg_refs(r);
-      resolved(rmp_resolve_prints(&g_map, &g_notes, &g_prints, r, n, open), "from the project's sounds (a new package)");
+  for (int b = 0; b < kBoxes; ++b) {   // (each box's: its list's generation, its resolves, its owed list)
+    if (!box_on(b)) continue;
+    BoxIn in(b);
+    if (changed) rmp_meta_store(&M().meta);
+    if (changed) {   // other packages: a fingerprint nothing had may resolve now (only the slots still open), a trig's again
+      memset(M().lazy_fp, 0, sizeof M().lazy_fp);
+      uint32_t open = rmp_resolve_open_slots(&M().notes);
+      if (M().prints_have && open) {
+        rmp_pkg_ref r[kStore];
+        int n = pkg_refs(r);
+        resolved(rmp_resolve_prints(&M().map, &M().notes, &M().prints, r, n, open), "from the project's sounds (a new package)");
+      }
     }
+    if (M().list_owed) { M().list_owed = false; send_installed(); }
   }
   g_pub = true;
-  if (g_list_owed) { g_list_owed = false; send_installed(); }
   core::log("um: %d package%s in %s, %d for the Rytm's list (generation %d)%s", g_npkg, g_npkg == 1 ? "" : "s", g_dir,
-            g_ninst, (int)g_meta.store_gen, g_over ? " (more not listed)" : "");
+            g_ninst, (int)g_bx[0].meta.store_gen, g_over ? " (more not listed)" : "");
 }
 void scan_fail(Pkg& e, const char* why) {
   e.ok = false;
@@ -2267,12 +2337,13 @@ struct FxLabels {
   char lab[4][core::fx::kLabelChars + 1];
   char zn[core::fx::kMaxZones][core::fx::kZoneChars + 1];
 };
-FxLabels g_fxl[kUfx][2];
-volatile uint8_t g_fxl_on;   // bit u: the loaded effect u has labels; bit 4 + u: they are in g_fxl[u][1]
+FxLabels g_fxl[kFx][2];
+volatile uint32_t g_fxl_on;   // bit u: the loaded effect u has labels; bit 16 + u: they are in g_fxl[u][1]
+static_assert(kFx <= 16, "g_fxl_on");
 const core::fx::KnobLabels* fx_labels(int u) {
-  if (u < 0 || u >= kUfx) return nullptr;
-  uint8_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);
-  return on >> u & 1 ? &g_fxl[u][on >> (4 + u) & 1].kl : nullptr;
+  if (u < 0 || u >= kFx) return nullptr;
+  uint32_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);
+  return on >> u & 1 ? &g_fxl[u][on >> (16 + u) & 1].kl : nullptr;
 }
 // knob q's zones of package e into L from zone *nz on; false (nothing added) if they would not fit, or it has none
 bool fx_zones(const Pkg& e, int q, int knob, FxLabels& L, int* nz) {
@@ -2311,11 +2382,11 @@ bool fx_zones(const Pkg& e, int q, int knob, FxLabels& L, int* nz) {
 }
 void fx_labels_build(int u, int pkg) {
   if (pkg < 0) {
-    __atomic_fetch_and(&g_fxl_on, (uint8_t)~(1u << u), __ATOMIC_ACQ_REL);
+    __atomic_fetch_and(&g_fxl_on, ~(1u << u), __ATOMIC_ACQ_REL);
     return;
   }
   const Pkg& e = g_pkg[pkg];
-  int b = !(__atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE) >> (4 + u) & 1);   // the copy no reader was given
+  int b = !(__atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE) >> (16 + u) & 1);   // the copy no reader was given
   FxLabels& L = g_fxl[u][b];
   memset(&L, 0, sizeof L);
   int nz = 0;
@@ -2328,8 +2399,8 @@ void fx_labels_build(int u, int pkg) {
   for (int j = 0; j < 4; ++j) L.kl.label[j] = L.lab[j];
   L.kl.zones = L.z;
   L.kl.nzones = (uint8_t)nz;
-  uint8_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);   // (only this core writes it)
-  on = (uint8_t)((on & ~(1u << (4 + u))) | 1u << u | b << (4 + u));
+  uint32_t on = __atomic_load_n(&g_fxl_on, __ATOMIC_ACQUIRE);   // (only this core writes it)
+  on = (on & ~(1u << (16 + u))) | 1u << u | (uint32_t)b << (16 + u);
   __atomic_store_n(&g_fxl_on, on, __ATOMIC_RELEASE);
 }
 
@@ -2342,8 +2413,8 @@ void slot_set(int s, rmp_slot_state st, const rmp_plugin* p, int pkg) {
   sl.crc = pkg >= 0 && st == RMP_SLOT_READY ? g_pkg[pkg].crc ^ g_pkg[pkg].size : 0;
   sl.fp = st == RMP_SLOT_READY && pkg >= 0 ? g_pkg[pkg].fp : 0;
   g_pub = true;
-  if (s >= kSlots) {   // (an effect slot: the Rytm's TYPE list, labels and states again)
-    fx_labels_build(s - kSlots, st == RMP_SLOT_READY ? pkg : -1);
+  if (s >= kMach) {   // (an effect slot: the Rytm's TYPE list, labels and states again)
+    fx_labels_build(s - kMach, st == RMP_SLOT_READY ? pkg : -1);
     core::fx::list_changed();
     return;
   }   // (an effect: no cost row, no presets, nothing the Rytm asks for)
@@ -2357,12 +2428,12 @@ void job_end(int s, rmp_slot_state st, const rmp_plugin* p, int pkg, const char*
   if (st != RMP_SLOT_READY) sniprintf(g_why[s], sizeof g_why[s], "%s: %s", st == RMP_SLOT_NO_ROOM ? "no room" : "bad", what);
   g_job = -1;
   g_jph = kJphImage;
-  core::log("um: %s%d %s: %s", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1, entry_of(s).id, what);
+  core::log("um: %s%d %s: %s", slot_pfx(s), slot_no(s), entry_of(s).id, what);
 }
 
 // A machine slot plays machines, an effect slot effects (with the send position, the one built yet): else why not.
 const char* kind_wrong(int s, const rmp3_plugin* p3) {
-  if (s < kSlots) return p3 && p3->kind != RMP3_KIND_MACHINE ? "an effect (UFX1..UFX4), not a machine" : nullptr;
+  if (s < kMach) return p3 && p3->kind != RMP3_KIND_MACHINE ? "an effect (UFX1..UFX4), not a machine" : nullptr;
   if (!p3 || p3->kind != RMP3_KIND_EFFECT) return "a machine (U1..U5), not an effect";
   if (!(p3->places & RMP3_AT_SEND)) return "its places lack a send slot (the one position built yet)";
   return nullptr;
@@ -2372,20 +2443,20 @@ const char* kind_wrong(int s, const rmp3_plugin* p3) {
 // voice_attach (place SEND, voice -1, instance 0 / 1, arena parts 0 / 1). False: a fault (BAD, the job ended).
 // (one state k of effect s; fault: false, with the fault's address in *pcout)
 bool fx_state_init(int s, int k, uint64_t* pcout) {
-  int u = s - kSlots;
+  int u = s - kMach;
   const V3& x = g_v3[s];
   const rmp_plugin* p = x.p;
   void* st = g_fxst[u][k];
   memset(st, 0, g_slot[s].state_bytes);
   for (int j = 0; j < 16; ++j) g_fx_p[u][k][j] = -1.0f;   // (the first block: every knob changed)
-  for (int q = 0; q < 3; ++q) g_fx_ev[u][k][q] = g_xp_evn[q];   // (no old edges)
+  for (int q = 0; q < 3; ++q) g_fx_ev[u][k][q] = g_xp_evn[u / kUfx][q];   // (no old edges: its box's)
   uint64_t pc = 0;
   uint32_t us = 0;
   rmp3_voice v;
   v.shared = x.shared, v.shared_bytes = x.shared_bytes;
   v.arena = x.voice_bytes && (uint32_t)k < x.states ? x.voices + (size_t)k * x.voice_bytes : nullptr;
   v.arena_bytes = v.arena ? x.voice_bytes : 0;
-  v.slot = 64 + u, v.voice = -1, v.instance = k, v.place = RMP3_AT_SEND;
+  v.slot = 64 + u % kUfx, v.voice = -1, v.instance = k, v.place = RMP3_AT_SEND;   // (its box's UFX number)
   if (guarded([&] {
         if (p->voice_init) p->voice_init(st);
         if (x.p3->voice_attach) x.p3->voice_attach(st, &v);
@@ -2412,30 +2483,30 @@ bool fx_states(int s) {
 // control call) asks by fx_fresh_req and plays nothing in that slot till fx_fresh_done; the control core (fx_fresh_pass,
 // each idle pass) zeroes that state's arena part (in kZeroStep pieces, as the load does), then does what the load does
 // to a state: zero, voice_init, voice_attach, guarded. Core 2 does not render a state it is waiting for.
-uint32_t g_fx_req[kUfx][2], g_fx_ack[kUfx][2];   // requests made by core 2 / answered by the control core
-uint32_t g_fx_zoff[kUfx][2];                     // the control core's progress zeroing the arena part
-uint32_t g_fx_req_us[kUfx][2];                   // when core 2 made the latest request (only read for the log below)
-uint32_t g_fx_waitlog[kUfx][2];                  // the request the control core logged as waiting long (once each)
+uint32_t g_fx_req[kFx][2], g_fx_ack[kFx][2];   // requests made by core 2 / answered by the control core
+uint32_t g_fx_zoff[kFx][2];                     // the control core's progress zeroing the arena part
+uint32_t g_fx_req_us[kFx][2];                   // when core 2 made the latest request (only read for the log below)
+uint32_t g_fx_waitlog[kFx][2];                  // the request the control core logged as waiting long (once each)
 constexpr uint32_t kFxFreshLogUs = 250000;       // a request that waits longer than this is logged
 void fx_fresh_req(int u, int sl) {
-  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return;
+  if (u < 0 || u >= kFx || sl < 0 || sl > 1) return;
   __atomic_store_n(&g_fx_req_us[u][sl], core::now_us(), __ATOMIC_RELAXED);   // (a counter read; the log is the control core's)
   __atomic_add_fetch(&g_fx_req[u][sl], 1u, __ATOMIC_SEQ_CST);
 }
 bool fx_fresh_done(int u, int sl) {
-  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return true;
+  if (u < 0 || u >= kFx || sl < 0 || sl > 1) return true;
   return __atomic_load_n(&g_fx_ack[u][sl], __ATOMIC_SEQ_CST) == __atomic_load_n(&g_fx_req[u][sl], __ATOMIC_SEQ_CST);
 }
 bool fx_fresh_pass() {
-  for (int u = 0; u < kUfx; ++u)
+  for (int u = 0; u < kFx; ++u)
     for (int sl = 0; sl < 2; ++sl) {
       uint32_t r = __atomic_load_n(&g_fx_req[u][sl], __ATOMIC_SEQ_CST);
       if (r == g_fx_ack[u][sl]) continue;
-      const int s = kSlots + u;
+      const int s = kMach + u;
       const uint32_t waited = core::now_us() - __atomic_load_n(&g_fx_req_us[u][sl], __ATOMIC_RELAXED);
       if (waited > kFxFreshLogUs && g_fx_waitlog[u][sl] != r) {   // (a request the slot has been silent for: once)
         g_fx_waitlog[u][sl] = r;
-        core::log("um: UFX%d send %d: fresh state waited %u ms for the control core (%s; silent till then)", u + 1, sl + 1,
+        core::log("um: %s%d send %d: fresh state waited %u ms for the control core (%s; silent till then)", slot_pfx(s), slot_no(s), sl + 1,
                   (unsigned)(waited / 1000), g_fxmap[u].id[0] ? g_fxmap[u].id : "-");
       }
       const V3& x = g_v3[s];
@@ -2465,9 +2536,9 @@ bool fx_fresh_pass() {
   return false;
 }
 // UFX u READY: the TYPE list's name and the kits' tag (send_fx.h), the name first, the tag released last
-void fx_named(int u) {
-  int k = g_slot[kSlots + u].pkg;
-  core::fx::UserFx& f = core::fx::user[u];
+void fx_named(int u) {   // (u: every box's effect e)
+  int k = g_slot[kMach + u].pkg;
+  core::fx::UserFx& f = core::fx::user_of(u / kUfx)[u % kUfx];
   __atomic_store_n(&f.tag, (uint16_t)0, __ATOMIC_RELEASE);
   copy(f.name, k >= 0 ? g_pkg[k].desc.name : "", sizeof f.name);
   __atomic_store_n(&f.tag, core::fx::fx_tag(f.name), __ATOMIC_RELEASE);
@@ -2481,7 +2552,7 @@ void fx_stop(int u) {
   uint32_t t0 = core::now_us();
   while (__atomic_load_n(&g_fx_busy[u], __ATOMIC_SEQ_CST)) {
     if (g_fx_dead[u] || core::now_us() - t0 > kFxStopWaitUs) {   // stuck in its render: give up (once), keep its memory
-      if (!g_fx_dead[u]) core::log("um: UFX%d %s: core 2 never left its render (%u ms): left behind", u + 1, g_fxmap[u].id,
+      if (!g_fx_dead[u]) core::log("um: %s%d %s: core 2 never left its render (%u ms): left behind", slot_pfx(kMach + u), slot_no(kMach + u), g_fxmap[u].id,
                                    (unsigned)(kFxStopWaitUs / 1000));
       g_fx_dead[u] = true;
       break;
@@ -2491,7 +2562,7 @@ void fx_stop(int u) {
   g_fx_fault[u] = 0, g_fx_slow_us[u] = 0, g_fx_over[u][0] = g_fx_over[u][1] = 0, g_fx_total[u] = 0;
 }
 bool fx_any_dead() {
-  for (int u = 0; u < kUfx; ++u)
+  for (int u = 0; u < kFx; ++u)
     if (g_fx_dead[u] && __atomic_load_n(&g_fx_busy[u], __ATOMIC_SEQ_CST)) return true;
   return false;
 }
@@ -2501,11 +2572,12 @@ template <class F> struct FxCall {
 };
 // Core 2 (the send FX's core, after its block): UFX u in send slot sl (0 FX 1, 1 FX 2) over x[n], its wet stereo
 // return added into y. The knobs: k[2..5] (the slot's P2..P5) are the effect's P1..P4, in b->p. Silent unless live.
-bool fx_ready(int u) { return u >= 0 && u < kUfx && __atomic_load_n(&g_fx_live[u], __ATOMIC_ACQUIRE) && !muted(kSlots + u); }
+bool fx_ready(int u) { return u >= 0 && u < kFx && __atomic_load_n(&g_fx_live[u], __ATOMIC_ACQUIRE) && !muted(kMach + u); }
 // Core 2, after each effect call: the block's sum of every effect's time (N4). A block whose effects together ran over
 // kFxTotal (scaled by its frames) counts; kFxOverMax such blocks in a row mute the dearest effect of the last one.
 void fx_account(uint32_t gen, int u, uint32_t us, int n) {
-  FxAcct& a = g_fxa;
+  const int xb = u / kUfx, base = xb * kUfx;   // (its box's account: the dearest of that box's effects mutes)
+  FxAcct& a = g_fxa[xb];
   if (gen != a.gen) {   // a new block: the last one's verdict
     if (a.frames) {
       uint32_t share = g_fx_total_us * (a.frames > 12 ? a.frames : 12) / 12u;
@@ -2514,9 +2586,10 @@ void fx_account(uint32_t gen, int u, uint32_t us, int n) {
           int w = 0;
           for (int k = 1; k < kUfx; ++k)
             if (a.us_u[k] > a.us_u[w]) w = k;
+          w += base;
           g_fx_total[w] = 1;
-          g_fx_slow_us[w] = a.us_u[w] ? a.us_u[w] : 1;
-          __atomic_or_fetch(&g_muted, 1u << (kSlots + w), __ATOMIC_RELEASE);
+          g_fx_slow_us[w] = a.us_u[w - base] ? a.us_u[w - base] : 1;
+          __atomic_or_fetch(&g_muted, 1u << (kMach + w), __ATOMIC_RELEASE);
           a.over = 0;
         }
       } else {
@@ -2526,14 +2599,14 @@ void fx_account(uint32_t gen, int u, uint32_t us, int n) {
     a.gen = gen, a.us = 0, a.frames = 0;
     for (uint32_t& x : a.us_u) x = 0;
   }
-  a.us += us, a.us_u[u] += us;
+  a.us += us, a.us_u[u - base] += us;
   if ((uint32_t)n > a.frames) a.frames = (uint32_t)n;
 }
 void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t* k) {
-  if (u < 0 || u >= kUfx || sl < 0 || sl > 1) return;
+  if (u < 0 || u >= kFx || sl < 0 || sl > 1) return;
   __atomic_store_n(&g_fx_busy[u], 1, __ATOMIC_SEQ_CST);
-  if (__atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) && !muted(kSlots + u)) {
-    int s = kSlots + u;
+  if (__atomic_load_n(&g_fx_live[u], __ATOMIC_SEQ_CST) && !muted(kMach + u)) {
+    int s = kMach + u;
     const uint32_t era = __atomic_load_n(&g_fx_era[u], __ATOMIC_SEQ_CST);
     // what this call learns about the effect counts only while it is still the same load (N2: a late return after
     // fx_stop gave up mutes nothing of the next one)
@@ -2555,22 +2628,23 @@ void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t
     // the transport: one snapshot for the whole call; its edges (START, STOP, JUMP) once for this state, in the first
     // sub-block - core 2's send FX runs out of step with the blocks, so it may see a snapshot twice or skip one
     uint32_t g = __atomic_load_n(&g_xp_gen, __ATOMIC_ACQUIRE);
-    rmp3_transport tr = g_xp[g & 1], tr0;
+    const int xb = u / kUfx;   // (its box's transport)
+    rmp3_transport tr = g_xp[xb][g & 1], tr0;
     tr.flags &= ~(uint32_t)(RMP3_T_START | RMP3_T_STOP | RMP3_T_JUMP);
     tr0 = tr;
     static const uint32_t kEdge[3] = {RMP3_T_START, RMP3_T_STOP, RMP3_T_JUMP};
     // a state not called for more than two blocks (its send slot played something else): older edges are not news
     if (g - g_fx_lastgen[u][sl] > 2u)
-      for (int q = 0; q < 3; ++q) g_fx_ev[u][sl][q] = g_xp_ev[g & 1][q] - ((g_xp[g & 1].flags & kEdge[q]) ? 1u : 0u);
+      for (int q = 0; q < 3; ++q) g_fx_ev[u][sl][q] = g_xp_ev[xb][g & 1][q] - ((g_xp[xb][g & 1].flags & kEdge[q]) ? 1u : 0u);
     g_fx_lastgen[u][sl] = g;
     for (int q = 0; q < 3; ++q)
-      if (g_xp_ev[g & 1][q] != g_fx_ev[u][sl][q]) tr0.flags |= kEdge[q], g_fx_ev[u][sl][q] = g_xp_ev[g & 1][q];
+      if (g_xp_ev[xb][g & 1][q] != g_fx_ev[u][sl][q]) tr0.flags |= kEdge[q], g_fx_ev[u][sl][q] = g_xp_ev[xb][g & 1][q];
     uint32_t t0 = core::now_us();
     for (int at = 0; at < n; at += 16) {   // blocks of 16 frames at most
       int m = n - at < 16 ? n - at : 16;
       float l[16], r[16];
       rmp3_block b;
-      block_fill(&b, m, l, r, RMP3_AT_SEND);
+      block_fill(&b, m, l, r, RMP3_AT_SEND, xb);
       b.flags |= RMP3_B_WET_ONLY;
       b.gen = g;
       b.transport = at ? &tr : &tr0;
@@ -2606,30 +2680,33 @@ void fx_run(int u, int sl, const float* xin, int n, float (*y)[2], const uint8_t
         g_fx_over[u][sl] = 0;
       }
       fx_account(g, u, us, n);
+      core::fx::guard::note_user(u, us);   // (the measured guard of every effect: this core's dearest, fx_guard.h)
     }
   }
   __atomic_store_n(&g_fx_busy[u], 0, __ATOMIC_SEQ_CST);
 }
 // the control core: a fault core 2 noted, in words (a fault mutes the slots sharing its image too)
 void fx_faults() {
-  for (int u = 0; u < kUfx; ++u) {
+  for (int u = 0; u < kFx; ++u) {
     uint32_t slow = g_fx_slow_us[u];
-    if (slow && strncmp(g_why[kSlots + u], "muted", 5)) {
+    if (slow && strncmp(g_why[kMach + u], "muted", 5)) {
       char w[96];
-      if (g_fx_total[u])
+      if (g_fx_total[u] == 2)   // (fx_guard.h: its core hot 16 blocks in a row, this the dearest effect on it)
+        sniprintf(w, sizeof w, "muted: ran %u us, dearest on core %u while hot", (unsigned)slow, (unsigned)g_fx_dear_core[u]);
+      else if (g_fx_total[u])
         sniprintf(w, sizeof w, "muted: ran %u us, dearest over core 2's share (%u us)",
                   (unsigned)slow, (unsigned)g_fx_total_us);
       else
         sniprintf(w, sizeof w, "muted: render ran %u us, over its budget (%u us a block)", (unsigned)slow, (unsigned)g_fx_budget_us);
-      slot_mute(kSlots + u, w, false);
+      slot_mute(kMach + u, w, false);
       continue;
     }
     uint64_t pc = g_fx_fault[u];
-    if (!pc || !strncmp(g_why[kSlots + u], "muted", 5)) continue;
+    if (!pc || !strncmp(g_why[kMach + u], "muted", 5)) continue;
     char w[96], at[32];
-    fault_where(kSlots + u, pc == 1 ? 0 : pc, at, sizeof at);
+    fault_where(kMach + u, pc == 1 ? 0 : pc, at, sizeof at);
     sniprintf(w, sizeof w, "muted: crashed in render at %s", at);
-    slot_mute(kSlots + u, w);
+    slot_mute(kMach + u, w);
   }
   // voices whose render faulted on a render core (the board's guard: render_fault): their slot, and its sharers
   uint32_t rf = __atomic_exchange_n(&g_render_faults, 0u, __ATOMIC_ACQ_REL);
@@ -2713,7 +2790,7 @@ uint8_t* pool_take(uint64_t total, uint32_t* cap) {
 void arena_release(int s) {
   V3& x = g_v3[s];
   if (!x.base || !x.cap) return;
-  if (s >= kSlots && g_fx_dead[s - kSlots]) return;   // (core 2 may still be in it)
+  if (s >= kMach && g_fx_dead[s - kMach]) return;   // (core 2 may still be in it)
   uint8_t* b = x.base;
   uint32_t c = x.cap;
   x.base = nullptr, x.cap = 0;
@@ -2753,8 +2830,8 @@ bool arena_reserve(int s, uint32_t* need) {
   uint64_t sw = al(q->shared_want > q->shared_min ? q->shared_want : q->shared_min), vw = al(q->voice_want > q->voice_min ? q->voice_want : q->voice_min);
   uint64_t sm = al(q->shared_min), vm = al(q->voice_min);
   if (!has) sw = vw = sm = vm = 0;
-  if (s >= kSlots && !g_pool_bytes) { *need = 1; return false; }   // (an effect's states live in the pool)
-  uint64_t fxs = s >= kSlots ? al(g_slot[s].state_bytes) : 0;   // an effect's two states (send FX 1, 2) at the end
+  if (s >= kMach && !g_pool_bytes) { *need = 1; return false; }   // (an effect's states live in the pool)
+  uint64_t fxs = s >= kMach ? al(g_slot[s].state_bytes) : 0;   // an effect's two states (send FX 1, 2) at the end
   uint64_t lim = arena_limit();
   uint64_t want = sw + states * vw + 2 * fxs, least = sm + states * vm + 2 * fxs;
   uint64_t sb = 0, vb = 0, total = 0;
@@ -2766,9 +2843,9 @@ bool arena_reserve(int s, uint32_t* need) {
   else if (least <= lim && (base = pool_take(pg(least), &cap))) sb = sm, vb = vm, total = pg(least);
   else if (least) { *need = (uint32_t)(least > 0xFFFFFFFFu ? 0xFFFFFFFFu : least); return false; }
   if (!total) base = nullptr, cap = 0;
-  if (s >= kSlots) {
-    g_fxst[s - kSlots][0] = base + sb + states * vb;
-    g_fxst[s - kSlots][1] = g_fxst[s - kSlots][0] + fxs;
+  if (s >= kMach) {
+    g_fxst[s - kMach][0] = base + sb + states * vb;
+    g_fxst[s - kMach][1] = g_fxst[s - kMach][0] + fxs;
   }
   x.states = states;
   x.base = base, x.cap = cap;
@@ -2818,7 +2895,7 @@ void arena_step() {
     rmp3_setup su;
     su.host = host_for(p), su.host3 = &g_h3;
     su.shared = x.shared, su.shared_bytes = x.shared_bytes, su.voice_bytes = x.voice_bytes, su.states = x.states;
-    su.slot = s < kSlots ? s + 1 : 64 + (s - kSlots);
+    su.slot = s < kMach ? ul(s) + 1 : 64 + ul(s);
     int32_t r = 0;
     uint64_t pc = 0;
     uint32_t us = 0;
@@ -2841,19 +2918,19 @@ void arena_step() {
     }
     if (r != 0) { job_end(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg, "its setup() refused"); return; }
   }
-  if (s >= kSlots && !fx_states(s)) return;   // (BAD: job_end ran)
+  if (s >= kMach && !fx_states(s)) return;   // (BAD: job_end ran)
   char w[64];
   sniprintf(w, sizeof w, "ready (API 3, arena %u KB: %u states)", (unsigned)(x.zero_len >> 10), (unsigned)x.states);
   job_end(s, RMP_SLOT_READY, p, g_slot[s].pkg, w);
-  if (s >= kSlots) {
-    fx_named(s - kSlots);
-    __atomic_store_n(&g_fx_live[s - kSlots], 1, __ATOMIC_SEQ_CST);   // core 2 may run it from now
+  if (s >= kMach) {
+    fx_named(s - kMach);
+    __atomic_store_n(&g_fx_live[s - kMach], 1, __ATOMIC_SEQ_CST);   // core 2 may run it from now
   }
 }
 // Starts slot s's load, or settles it at once (empty, missing, shared). True when a job runs.
 bool job_begin(int s) {
   const rmp_slot_entry& m = entry_of(s);
-  if (s >= kSlots) fx_stop(s - kSlots);
+  if (s >= kMach) fx_stop(s - kMach);
   else slot_stop(s);
   arena_release(s);   // (API 3: its arena block back for any load it fits)
   g_v3[s] = V3{};     // (a fresh start: no table, no arena, not muted)
@@ -2865,7 +2942,7 @@ bool job_begin(int s) {
   if (k < 0) {
     slot_set(s, RMP_SLOT_MISSING, nullptr, -1);
     copy(g_why[s], "missing: not installed", sizeof g_why[s]);
-    core::log("um: %s%d %s %s: not installed", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1, m.id, vstr(m.version, b1));
+    core::log("um: %s%d %s %s: not installed", slot_pfx(s), slot_no(s), m.id, vstr(m.version, b1));
     return false;
   }
   const Pkg& e = g_pkg[k];
@@ -2873,7 +2950,7 @@ bool job_begin(int s) {
     slot_set(s, RMP_SLOT_MISSING, nullptr, k);
     sniprintf(g_why[s], sizeof g_why[s], "missing: the slot wants %s, installed %s (from %s)", vstr(m.version, b1),
               vstr(e.version, b2), vstr(e.compat, b3));
-    core::log("um: U%d %s: the slot wants %s, installed %s (from %s)", s + 1, m.id, vstr(m.version, b1),
+    core::log("um: U%d %s: the slot wants %s, installed %s (from %s)", slot_no(s), m.id, vstr(m.version, b1),
               vstr(e.version, b2), vstr(e.compat, b2));
     return false;
   }
@@ -2888,13 +2965,13 @@ bool job_begin(int s) {
         V3& x = g_v3[s];
         x.p = g_slot[t].p, x.p3 = g_v3[t].p3, x.code = g_v3[t].code, x.code_bytes = g_v3[t].code_bytes;
         slot_set(s, RMP_SLOT_LOADING, nullptr, k);
-        core::log("um: %s%d %s: shares %s%d's image, its own arena", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1,
-                  m.id, t < kSlots ? "U" : "UFX", t < kSlots ? t + 1 : t - kSlots + 1);
+        core::log("um: %s%d %s: shares %s%d's image, its own arena", slot_pfx(s), slot_no(s),
+                  m.id, slot_pfx(t), slot_no(t));
         return v3_start(s);
       }
       g_v3[s].p = g_slot[t].p, g_v3[s].code = g_v3[t].code, g_v3[s].code_bytes = g_v3[t].code_bytes;   // (fault offsets)
       slot_set(s, RMP_SLOT_READY, g_slot[t].p, k);
-      core::log("um: U%d %s: ready (shares U%d's image)", s + 1, m.id, t + 1);
+      core::log("um: U%d %s: ready (shares U%d's image)", slot_no(s), m.id, slot_no(t));
       return false;
     }
 #if CORE_MSAMP
@@ -2906,7 +2983,7 @@ bool job_begin(int s) {
 #endif
     slot_set(s, RMP_SLOT_BAD, nullptr, k);
     copy(g_why[s], "bad: cannot read the package", sizeof g_why[s]);
-    core::log("um: U%d %s: cannot read %s", s + 1, m.id, e.file);
+    core::log("um: U%d %s: cannot read %s", slot_no(s), m.id, e.file);
     return false;
   }
   slot_set(s, RMP_SLOT_LOADING, nullptr, k);
@@ -2926,7 +3003,7 @@ void job_step() {
     if (g_jrq.got != 1) {
       slot_set(s, RMP_SLOT_BAD, nullptr, g_slot[s].pkg);
       copy(g_why[s], "bad: cannot read the package", sizeof g_why[s]);
-      core::log("um: U%d %s: cannot read %s", s + 1, g_map.slot[s].id, e.file);
+      core::log("um: U%d %s: cannot read %s", slot_no(s), mslot(s).id, e.file);
       g_job = -1;
       return;
     }
@@ -3024,14 +3101,14 @@ void job_step() {
     return;
   }
   char b[12];
-  core::log("um: U%d %s %s: ready (%u B code at 0x%x, %u B state a voice)", s + 1, e.id, vstr(e.version, b),
+  core::log("um: U%d %s %s: ready (%u B code at 0x%x, %u B state a voice)", slot_no(s), e.id, vstr(e.version, b),
             (unsigned)bytes, (unsigned)(uintptr_t)img, (unsigned)e.state);
   job_end(s, RMP_SLOT_READY, p, g_slot[s].pkg, "loaded");
 }
 
 // ---- a 1E's answer
 int result_of(int s) {
-  if (!g_map.slot[s].id[0]) return RMP_RES_READY;
+  if (!mslot(s).id[0]) return RMP_RES_READY;
   switch (g_slot[s].st) {
     case RMP_SLOT_READY: return RMP_RES_READY;
     case RMP_SLOT_MISSING: return RMP_RES_NOT_INSTALLED;
@@ -3040,19 +3117,21 @@ int result_of(int s) {
     default: return RMP_RES_BAD;
   }
 }
-void answer(int s, int r) {
-  send_1d(s + 1, r);
+void answer(int s, int r) {   // (a load slot L: to its box)
+  BoxIn in(bx(s));
+  send_1d(ul(s) + 1, r);
   g_ans[s] = -1;
-  core::log("um: U%d answered %d (%u ms after the 1E)", s + 1, r, (unsigned)(core::now_ms() - g_ans_t[s]));
+  core::log("um: %s%d answered %d (%u ms after the 1E)", slot_pfx(s), slot_no(s), r, (unsigned)(core::now_ms() - g_ans_t[s]));
 }
-bool assign_id(int s, const char* id, uint32_t version) {
+bool assign_id(int s, const char* id, uint32_t version) {   // (a load slot L: its box's map)
   if (id && id[0] && !rmp_id_ok(id)) return false;
-  rmp_resolve_set(&g_map, &g_notes, s, id, version, RMP_SRC_SAVED);   // the user's: saved (empty: explicitly)
-  g_fresh = false;
+  BoxIn in(bx(s));
+  rmp_resolve_set(&M().map, &M().notes, ul(s), id, version, RMP_SRC_SAVED);   // the user's: saved (empty: explicitly)
+  M().fresh = false;
   g_need |= 1u << s;
   g_pub = true;
   g_mp = true;
-  if (!map_save()) core::log("um: %s not written (the slot changes until the next project load)", g_map_file);
+  if (!map_save()) core::log("um: %s not written (the slot changes until the next project load)", M().map_file);
   return true;
 }
 
@@ -3062,33 +3141,35 @@ bool assign_id(int s, const char* id, uint32_t version) {
 // the card core does. One 1E a slot (the newest), kHeldCmds commands.
 constexpr int kHeldCmds = 8;
 struct HeldAssign { bool on; rmp_assign a; };
-HeldAssign g_held_as[kSlots];
+HeldAssign g_held_as[kMach];
 char g_held_cmd[kHeldCmds][96];
 int g_nheld_cmd = 0;
 #endif
-void assign_run(const rmp_assign& a);
+void assign_run(int s, const rmp_assign& a);
 #if CORE_MSAMP
 void held_run();
 #endif
-void on_assign(const uint8_t* d, int len) {
+void on_assign(const uint8_t* d, int len) {   // (the box whose message it is: the slot in hand)
   rmp_assign a;
   if (!rmp_parse_assign(d, len, &a) || a.slot < 1 || a.slot > kSlots) return;
-  g_ans_t[a.slot - 1] = core::now_ms();
+  BoxIn in(hand());
+  const int s = lslot(g_bw, a.slot - 1);
+  g_ans_t[s] = core::now_ms();
 #if CORE_MSAMP
-  if (g_mr) {
-    g_held_as[a.slot - 1] = HeldAssign{true, a};
+  if (M().mr) {
+    g_held_as[s] = HeldAssign{true, a};
     return;
   }
 #endif
-  assign_run(a);
+  assign_run(s, a);
 }
-void assign_run(const rmp_assign& a) {
-  int s = a.slot - 1;
+void assign_run(int s, const rmp_assign& a) {   // (s: the load slot L the 1E names)
+  BoxIn in(bx(s));
   if (a.op == RMP_OP_CLEAR) {
     assign_id(s, "", 0);
     g_ans[s] = (int8_t)a.op;
   } else if (a.op == RMP_OP_ASSIGN) {
-    if (a.installed_gen != g_meta.store_gen || a.arg >= g_ninst) { g_ans[s] = 0; answer(s, RMP_RES_NOT_INSTALLED); return; }
+    if (a.installed_gen != M().meta.store_gen || a.arg >= g_ninst) { g_ans[s] = 0; answer(s, RMP_RES_NOT_INSTALLED); return; }
     const Pkg& e = g_pkg[g_inst[a.arg]];
     if (!assign_id(s, e.id, e.version)) { g_ans[s] = 0; answer(s, RMP_RES_BAD); return; }
     g_ans[s] = (int8_t)a.op;
@@ -3097,16 +3178,17 @@ void assign_run(const rmp_assign& a) {
     answer(s, g_slot[s].st == RMP_SLOT_READY ? RMP_RES_READY : RMP_RES_NOT_ON_CARD);
   }
 }
-void on_ask(const uint8_t* d, int len) {
+void on_ask(const uint8_t* d, int len) {   // (the box whose message it is: the slot in hand)
   rmp_ask a;
   if (!rmp_parse_ask(d, len, &a) || a.slot > kSlots) return;
-  if (a.what == RMP_ASK_INSTALLED || core::now_ms() - g_1d_ms >= 3000) g_1d_owed = true;
-  int s = a.slot - 1;
+  BoxIn in(hand());
+  if (a.what == RMP_ASK_INSTALLED || core::now_ms() - M().d1_ms >= 3000) M().d1_owed = true;
+  int s = a.slot >= 1 ? lslot(g_bw, a.slot - 1) : -1;
   if (a.what == RMP_ASK_META && a.slot >= 1) {
-    g_rytm_names36 = a.arg & 1;
-    core::ui::remote_rytm_040(g_rytm_names36);   // (and SMP on its knob A: rytm-mods 7h, the same flash)
+    M().names36 = a.arg & 1;
+    if (!g_bw) core::ui::remote_rytm_040(M().names36);   // (the Rytm's: and SMP on its knob A, rytm-mods 7h, the same flash)
     meta_poll();
-    if (a.gen && a.gen == g_meta.gen[s] && settled(s)) {
+    if (a.gen && a.gen == mgen(s) && settled(s)) {
       uint8_t m[RMP_MSG_MAX];
       core::to_rytm(m, rmp_build_meta_unchanged(m, a.slot, a.gen));
     } else {
@@ -3117,13 +3199,15 @@ void on_ask(const uint8_t* d, int len) {
   } else if (a.what == RMP_ASK_PRESETS && a.slot >= 1 && a.arg <= 7) {   // page arg of the names, from idle()
     g_pre_page[s] |= (uint8_t)(1u << a.arg);
   } else if (a.what == RMP_ASK_INSTALLED) {
-    if (g_scan && g_npkg == 0) g_list_owed = true;   // an empty list now would turn the Rytm's YES into a clear
+    if (g_scan && g_npkg == 0) M().list_owed = true;   // an empty list now would turn the Rytm's YES into a clear
     else send_installed();
   }
 }
-void on_project_seen() { g_1d_owed = true; }
-void on_project_changed() {
-  for (int vi = 0; vi < core::kVoices; ++vi) voice_leave(vi);
+void on_project_seen() { BoxIn in(hand()); M().d1_owed = true; }
+void on_project_changed() {   // the slot in hand's project (3(c): its own box's voices and map only)
+  BoxIn in(hand());
+  for (int vi = 0; vi < core::kVoices; ++vi)
+    if (core::slot_of_voice(vi) == g_bw || kBoxes == 1) voice_leave(vi);
   project_reload();
 }
 
@@ -3149,7 +3233,7 @@ struct Js {
 void slot_shown(int s, char* out, int cap) {
   rmp_desc d;
   const rmp_desc* p = nullptr;
-  if (s < kSlots) p = slot_desc(s, &d);
+  if (s < kMach) p = slot_desc(s, &d);
   else if (entry_of(s).id[0]) {   // a user effect: its package's description, else what the id says (slot_desc is the machines')
     const int k = find_slot(s);
     if (k >= 0) d = g_pkg[k].desc, memcpy(d.name, g_pkg[k].name, sizeof g_pkg[k].name);
@@ -3183,7 +3267,7 @@ void publish() {
     j.put(","); j.num("image", e.image);
     j.put(","); j.num("bss", e.bss); j.put(","); j.num("state", e.state); j.put(","); j.num("cpu", e.cpu);
     uint32_t ns = 0, nb = 0;   // measured: the slowest slot playing it
-    for (int s = 0; s < kSlots; ++s)
+    for (int s = 0; s < kMach; ++s)
       if (g_slot[s].st == RMP_SLOT_READY && g_slot[s].pkg == i) {
         uint32_t b = 0, x = cost_ns(s, &b);
         if (x > ns) ns = x;
@@ -3193,10 +3277,10 @@ void publish() {
     j.put(",\"name\":"); j.str(e.name[0] ? e.name : e.desc.name);
     j.put(",\"slots\":[");
     bool first = true;
-    for (int s = 0; s < kSlots; ++s)
-      if (e.id[0] && !strncmp(g_map.slot[s].id, e.id, 32)) {
+    for (int s = lslot(hand(), 0); s < lslot(hand(), kSlots); ++s)   // (the base box's U numbers)
+      if (e.id[0] && !strncmp(mslot(s).id, e.id, 32)) {
         char t[8];
-        sniprintf(t, sizeof t, "%s%d", first ? "" : ",", s + 1);
+        sniprintf(t, sizeof t, "%s%d", first ? "" : ",", ul(s) + 1);
         j.put(t);
         first = false;
       }
@@ -3209,12 +3293,13 @@ void publish() {
     j.put(",\"status\":"); j.str(e.ok ? "ok" : e.why);
     j.put("},");
   }
-  for (int s = 0; s < kSlots; ++s) {
-    const rmp_slot_entry& m = g_map.slot[s];
+  for (int s = 0; s < kMach; ++s) {
+    const rmp_slot_entry& m = mslot(s);
     rmp_desc d;
     const rmp_desc* p = slot_desc(s, &d);
     if (g_slot[s].st == RMP_SLOT_READY) state_used += g_slot[s].state_bytes;
-    j.put("{\"t\":\"slot\","); j.num("slot", (uint32_t)s + 1);
+    j.put("{\"t\":\"slot\","); j.num("slot", (uint32_t)ul(s) + 1);
+    j.put(","); j.num("box", (uint32_t)bx(s));   // (3(c): the voice slot whose U numbers these are)
     j.put(",\"id\":"); j.str(m.id);
     j.put(",\"ver\":"); j.str(m.id[0] ? vstr(m.version, vb) : "");
     j.put(",\"state\":"); j.str(state_name(g_slot[s].st));
@@ -3236,7 +3321,7 @@ void publish() {
     j.put(","); j.num("fp", g_slot[s].fp);
     uint32_t nb = 0, ns = g_slot[s].st == RMP_SLOT_READY ? cost_ns(s, &nb) : 0;
     j.put(","); j.num("ns", ns); j.put(","); j.num("blocks", nb);
-    const rmp_slot_note& e = g_notes.slot[s];   // where the assignment came from, what the sounds want
+    const rmp_slot_note& e = nslot(s);   // where the assignment came from, what the sounds want
     j.put(",\"src\":"); j.str(rmp_src_name(e.src));
     j.put(",\"updated\":"); j.put(e.flags & RMP_RF_UPDATED ? "true" : "false");
     j.put(",\"collision\":"); j.put(e.flags & RMP_RF_COLLISION ? "true" : "false");
@@ -3251,10 +3336,11 @@ void publish() {
     j.put(",\"pre_ext\":"); j.str(p ? p->preset_ext : "");
     j.put("},");
   }
-  for (int u = 0; u < kUfx; ++u) {   // API 3's user effects (UFX1..UFX4), when one is assigned
-    int s = kSlots + u;
+  for (int u = 0; u < kFx; ++u) {   // API 3's user effects (each box's UFX1..UFX4), when one is assigned
+    int s = kMach + u;
     if (!g_fxmap[u].id[0]) continue;
-    j.put("{\"t\":\"ufx\","); j.num("ufx", (uint32_t)u + 1);
+    j.put("{\"t\":\"ufx\","); j.num("ufx", (uint32_t)ul(s) + 1);
+    if (bx(s)) { j.put(","); j.num("slot", (uint32_t)bx(s)); }   // (3(c): another box's own; none: box 0's, as before)
     j.put(",\"id\":"); j.str(g_fxmap[u].id);
     j.put(",\"state\":"); j.str(state_name(g_slot[s].st));
     if (g_why[s][0]) { j.put(",\"why\":"); j.str(g_why[s]); }
@@ -3263,11 +3349,12 @@ void publish() {
     j.put(","); j.num("arena", g_v3[s].zero_len);
     j.put("},");
   }
+  const Bx& hb = g_bx[hand()];   // (the base box's: outside a Scope the slot in hand)
   j.put("{\"t\":\"plugins\","); j.num("n", (uint32_t)g_npkg);
-  j.put(",\"prints\":"); j.str(g_prints_have ? "rytm" : g_prints_rytm ? "waiting" : "trigs");
+  j.put(",\"prints\":"); j.str(hb.prints_have ? "rytm" : hb.prints_rytm ? "waiting" : "trigs");
   j.put(","); j.num("resolves", g_resolve_n);
-  j.put(",\"fresh\":"); j.put(g_fresh ? "true" : "false");
-  j.put(",\"project\":"); j.str(core::project[0] ? core::project : "_default");
+  j.put(",\"fresh\":"); j.put(hb.fresh ? "true" : "false");
+  j.put(",\"project\":"); j.str(core::prj().key[0] ? core::prj().key : "_default");
   char t[96];
   sniprintf(t, sizeof t, ",\"arena\":[%u,%u],", (unsigned)(ex ? ex->total : 0), (unsigned)g_arena_used);
   j.put(t);
@@ -3275,7 +3362,7 @@ void publish() {
   j.put(t);
   j.num("state_limit", kStateMax);
   j.put(","); j.num("block_ns", (uint32_t)(core::kBlock * 1000000000ull / 48000));   // a voice block's real time
-  j.put(","); j.num("listed", (uint32_t)g_ninst); j.put(","); j.num("gen", g_meta.store_gen);
+  j.put(","); j.num("listed", (uint32_t)g_ninst); j.put(","); j.num("gen", hb.meta.store_gen);
   j.put(",\"dir\":"); j.str(g_dir);
   j.put(",\"scanning\":"); j.put(g_scan ? "true" : "false");
   j.put(","); j.num("ufx_slots", (uint32_t)kUfx);   // API 3: this build has the user effects UFX1..UFX4 (the web page's Effects card)
@@ -3290,11 +3377,13 @@ void publish() {
   j.put(t);
   j.put("{\"t\":\"mem_end\"}]");
   g_jlen[w] = j.n;
-  UiView& u = g_ui[w];   // the display's view, in the same buffer half
-  copy(u.project, core::project[0] ? core::project : "_default", sizeof u.project);
-  for (int s = 0; s < kSlots; ++s) {
-    u.slot[s].state = (uint8_t)g_slot[s].st;
-    slot_shown(s, u.slot[s].name, sizeof u.slot[s].name);
+  for (int b = 0; b < kBoxes; ++b) {   // each box's display view, in the same buffer half
+    UiView& u = g_ui[w][b];
+    copy(u.project, core::prj(b).key[0] ? core::prj(b).key : "_default", sizeof u.project);
+    for (int k = 0; k < kSlots; ++k) {
+      u.slot[k].state = (uint8_t)g_slot[lslot(b, k)].st;
+      slot_shown(lslot(b, k), u.slot[k].name, sizeof u.slot[k].name);
+    }
   }
   __atomic_store_n(&g_jseq, seq + 2, __ATOMIC_RELEASE);   // the reader takes buffer (seq/2) & 1
 }
@@ -3310,10 +3399,11 @@ bool ui_machine(int i, char* name, int cap, const char** id) {
   *id = e.id;
   return true;
 }
-const char* ui_slot(int s, char* name, int cap) {
+const char* ui_slot(int s, char* name, int cap) {   // s: U(s + 1) of the box whose page it is (the slot in hand)
   if (s < 0 || s >= kSlots) { copy(name, "", cap); return ""; }
+  s = lslot(hand(), s);
   slot_shown(s, name, cap);
-  return g_map.slot[s].id;
+  return mslot(s).id;
 }
 // The effects: the installed list (API 3 effect packages), and UFX u (0..3) as the display shows it
 int ui_effects() { return g_neff; }
@@ -3324,28 +3414,30 @@ bool ui_effect(int i, char* name, int cap, const char** id) {
   *id = e.id;
   return true;
 }
-const char* ui_ufx(int u, char* name, int cap) {
+const char* ui_ufx(int u, char* name, int cap) {   // (the slot in hand's box's UFX u + 1)
   if (u < 0 || u >= kUfx) { copy(name, "", cap); return ""; }
-  slot_shown(kSlots + u, name, cap);
+  u += hand() * kUfx;
+  slot_shown(kMach + u, name, cap);
   return g_fxmap[u].id;
 }
 const core::ui::RemoteSlots kUiSlots = {ui_machines, ui_machine, ui_slot, command, ui_effects, ui_effect, ui_ufx};
 
 }  // namespace
 
-void rekey(const char* key) {
+void rekey(const char* key) {   // (the slot in hand's box)
+  BoxIn in(hand());
 #if CORE_MSAMP
-  if (g_mr) {   // a read under way: of the name just moved; g_map_file stays g_map's until it ends
-    sniprintf(g_mr_map, sizeof g_mr_map, "/.rytm/slots/%s.txt", key);
-    notes_file(g_mr_notes, g_mr_map, sizeof g_mr_notes);
-    fx_file(g_mr_fx, g_mr_map, sizeof g_mr_fx);
-    g_mr_again = true;
+  if (M().mr) {   // a read under way: of the name just moved; M().map_file stays M().map's until it ends
+    sniprintf(M().mr_map, sizeof M().mr_map, "/.rytm/slots/%s.txt", key);
+    notes_file(M().mr_notes, M().mr_map, sizeof M().mr_notes);
+    fx_file(M().mr_fx, M().mr_map, sizeof M().mr_fx);
+    M().mr_again = true;
     return;
   }
 #endif
-  sniprintf(g_map_file, sizeof g_map_file, "/.rytm/slots/%s.txt", key);
-  notes_file(g_notes_file, g_map_file, sizeof g_notes_file);
-  fx_file(g_fx_file, g_map_file, sizeof g_fx_file);
+  sniprintf(M().map_file, sizeof M().map_file, "/.rytm/slots/%s.txt", key);
+  notes_file(M().notes_file, M().map_file, sizeof M().notes_file);
+  fx_file(M().fx_file, M().map_file, sizeof M().fx_file);
 }
 
 void begin(const Exec* e, const char* d) {
@@ -3363,12 +3455,12 @@ void begin(const Exec* e, const char* d) {
     g_cur[vi] = -1;
   }
   for (int i = 0; i < kInst; ++i) g_istate[i] = (uint8_t*)um_heap(kStateMax), g_icur[i] = -1, g_ivi[i] = -1;
-  for (int s = 0; s < kSlots; ++s) g_lbl_vi[s] = g_lbl_cur[s] = -1, g_lbl_ms[s] = 0, g_lbl_key[s] = 0;
-  for (int s = 0; s < kSlots; ++s) g_ans[s] = -1;
+  for (int s = 0; s < kMach; ++s) g_lbl_vi[s] = g_lbl_cur[s] = -1, g_lbl_ms[s] = 0, g_lbl_key[s] = 0;   // (every box's)
+  for (int s = 0; s < kMach; ++s) g_ans[s] = -1;
   for (int s = 0; s < kAll; ++s) g_slot[s] = Slot{RMP_SLOT_EMPTY, nullptr, -1, 0, 0, 0};
   for (int c = 0; c < kCores; ++c) g_vnow[c] = -1;
   rmp_preset_names_init(&g_pnames);
-  for (int s = 0; s < kSlots; ++s) rmp_preset_index_init(&g_pix[s]), rmp_knobs_from_desc(&g_knobs[s], nullptr);
+  for (int s = 0; s < kMach; ++s) rmp_preset_index_init(&g_pix[s]), rmp_knobs_from_desc(&g_knobs[s], nullptr);
   for (int vi = 0; vi < core::kVoices; ++vi) rmp_pv_reset(&g_pv[vi]);
   g_host2.reserved[RMP_H_POOL_INFO] = RMP_FN(h_pool_info);   // API 2: the project's pool (the sample RAM's copies)
   g_host2.reserved[RMP_H_POOL_READ] = RMP_FN(h_pool_read);
@@ -3383,10 +3475,12 @@ void begin(const Exec* e, const char* d) {
   g_host2.reserved[RMP_H_V3] = &g_h3;
   g_host3 = g_host2;
   g_host3.api = RMP_API3;
-  for (rmp3_transport& t : g_xp) t = rmp3_transport{0, 120.0f, 20833.333f, 0.0f, -1, 0.0f, 0, kLeadFrames};
+  for (auto& x : g_xp)
+    for (rmp3_transport& t : x) t = rmp3_transport{0, 120.0f, 20833.333f, 0.0f, -1, 0.0f, 0, kLeadFrames};
+  for (int b = 0; b < kBoxes; ++b) g_xp_song[b] = -1;
   for (rmp3_sig_in& x : g_sig_none) x = rmp3_sig_in{g_sig_zero, 0.0f, 0};
   core::hooks.pool_changed = on_pool_changed;
-  rmp_meta_init(&g_meta, core::random_seed() | 1u);
+  for (Bx& b : g_bx) rmp_meta_init(&b.meta, core::random_seed() | 1u);
   core::hooks.user_report = on_report;
   core::hooks.user_leave = on_leave;
   core::hooks.user_note_off = on_note_off;
@@ -3395,17 +3489,36 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_render2 = on_render2;
   core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)
   core::fx::user_run = fx_run;
+  // the measured guard of every effect (fx_guard.h): a user effect it picks as the dearest on a hot core is muted here,
+  // as the box's own share does (fx_faults words it); /status "fxMuted" lists it beside the built-ins
+  core::fx::guard::user_mute = [](int u, uint32_t us, int core) {
+    if (u < 0 || u >= kFx || muted(kMach + u)) return;
+    g_fx_dear_core[u] = (uint8_t)core;
+    g_fx_total[u] = 2;
+    g_fx_slow_us[u] = us ? us : 1;
+    __atomic_or_fetch(&g_muted, 1u << (kMach + u), __ATOMIC_RELEASE);
+  };
+  core::fx::guard::user_state = [](int u, const char** why, const char** id) {
+    if (u < 0 || u >= kFx || !g_fxmap[u].id[0] || !muted(kMach + u)) return false;
+    *why = g_why[kMach + u];
+    *id = g_fxmap[u].id;
+    return true;
+  };
   core::fx::user_fresh_req = fx_fresh_req;
   core::fx::user_fresh_done = fx_fresh_done;
   core::fx::user_labels = fx_labels;
-  core::fx::user_loaded = [](int u) { return u >= 0 && u < kUfx && g_slot[kSlots + u].st == RMP_SLOT_READY && g_fxmap[u].id[0] != 0; };
+  core::fx::user_loaded = [](int u) { return u >= 0 && u < kFx && g_slot[kMach + u].st == RMP_SLOT_READY && g_fxmap[u].id[0] != 0; };
   core::hooks.slot_ask = on_ask;
   core::hooks.slot_assign = on_assign;
   core::hooks.project_seen = on_project_seen;
   core::hooks.project_changed = on_project_changed;
   core::hooks.slot_prints = on_prints;
   core::ui::remote_slots(&kUiSlots);   // the USER SLOTS page on the box's screen
-  project_reload();
+  for (int b = 0; b < kBoxes; ++b)   // slot 0's map at boot, a box's already here too (later ones at their attach:
+    if (box_on(b)) {                 // core/pool/pool.cpp project_attach_step's project_changed)
+      BoxIn in(b);
+      project_reload();
+    }
 #if CORE_MSAMP
   g_scan_at = core::now_ms();   // (not the 0 it starts as: now_ms() - 0 reads as in the future after 24.8 days of uptime)
 #endif
@@ -3420,10 +3533,14 @@ bool idle() {
   bool did = true;
 #if CORE_MSAMP
   if (g_jdrop) jf_drain();
-  if (g_mr) {
+  int mrb = -1;   // a box whose map is being read (each box's in its own Scope: its folder)
+  for (int b = 0; b < kBoxes && mrb < 0; ++b)
+    if (g_bx[b].mr) mrb = b;
+  if (mrb >= 0) {
     UMT("um.map");
+    BoxIn in(mrb);
     map_step();
-    if (!g_mr) held_run();
+    if (!M().mr) held_run();
   } else
 #endif
   if (g_scan && !scan_wait()) { UMT("um.scan"); scan_step(); }
@@ -3431,7 +3548,7 @@ bool idle() {
     did = false;
   } else if (g_full) {
     for (int vi = 0; vi < core::kVoices; ++vi) voice_leave(vi);
-    for (int u = 0; u < kUfx; ++u) fx_stop(u);   // (core 2 out of the effects before their images go)
+    for (int u = 0; u < kFx; ++u) fx_stop(u);   // (core 2 out of the effects before their images go)
     for (int s = 0; s < kAll; ++s) slot_set(s, entry_of(s).id[0] ? RMP_SLOT_LOADING : RMP_SLOT_EMPTY, nullptr, -1);
     jf_close();
     g_job = -1;
@@ -3443,15 +3560,25 @@ bool idle() {
     g_jph = kJphImage;
     for (int s = 0; s < kAll; ++s) g_v3[s] = V3{};
     g_full = false;
-    g_need = (1u << kSlots) - 1;
-    for (int u = 0; u < kUfx; ++u)
-      if (g_fxmap[u].id[0]) g_need |= 1u << (kSlots + u);
-  } else if (g_prints_pending) { UMT("um.prints"); prints_apply(); }
-  else if (g_fresh && (int32_t)(core::now_ms() - g_fresh_until) >= 0) { UMT("um.inherit"); inherit_now(); }
-  else if (g_resolve_save) {
-    g_resolve_save = false;
-    UMT("um.mapsave");
-    if (!map_save()) core::log("um: %s not written (the slots change until the next project load)", g_map_file);
+    g_need = (1u << kMach) - 1;
+    for (int u = 0; u < kFx; ++u)
+      if (g_fxmap[u].id[0]) g_need |= 1u << (kMach + u);
+  } else if ([] {   // each box's map work: its fingerprints, its inheritance, its resolve's save
+               for (int b = 0; b < kBoxes; ++b) {
+                 const Bx& x = g_bx[b];
+                 if (!box_on(b)) continue;
+                 if (x.prints_pending) { BoxIn in(b); UMT("um.prints"); prints_apply(); return true; }
+                 if (x.fresh && (int32_t)(core::now_ms() - x.fresh_until) >= 0) { BoxIn in(b); UMT("um.inherit"); inherit_now(); return true; }
+                 if (x.resolve_save) {
+                   BoxIn in(b);
+                   M().resolve_save = false;
+                   UMT("um.mapsave");
+                   if (!map_save()) core::log("um: %s not written (the slots change until the next project load)", M().map_file);
+                   return true;
+                 }
+               }
+               return false;
+             }()) {
   } else if ([] { UMT("um.prepass"); return pre_pass(); }()) {
   } else if (g_job >= 0) { UMT("um.job"); job_step(); }
   else if (g_need) {
@@ -3470,9 +3597,9 @@ bool idle() {
   { UMT("um.upool"); if (upool_pass()) did = true; }
   if (g_pre_again && (int32_t)(core::now_ms() - g_pre_again_ms) >= 0 && !core::fmt::pending(g_pre_path)) {   // a preset written: the lists again
     g_pre_again = false;
-    for (int s = 0; s < kSlots; ++s) pre_invalidate(s);
+    for (int s = 0; s < kMach; ++s) pre_invalidate(s);
   }
-  for (int s = 0; s < kSlots; ++s) {   // answers: settled, or late
+  for (int s = 0; s < kMach; ++s) {   // answers: settled, or late
     if (g_ans[s] < 0) continue;
     if (settled(s)) { answer(s, result_of(s)); did = true; }
     else if (core::now_ms() - g_ans_t[s] > kAnsMs) { answer(s, RMP_RES_LOADING); did = true; }
@@ -3483,12 +3610,16 @@ bool idle() {
     UMT("um.meta");
     meta_poll();
   }
-  uint32_t age = core::now_ms() - g_1d_ms;
-  if (g_meta.dirty || (g_1d_owed && age >= 1000) || age >= 5000 || !g_1d_sent) { UMT("um.1d"); send_1d(0, 0); did = true; }
+  for (int b = 0; b < kBoxes; ++b) {   // each box's 1D (a box on its link; one slot: always, as before)
+    if (kBoxes > 1 && !core::device::held(b)) continue;
+    const Bx& x = g_bx[b];
+    uint32_t age = core::now_ms() - x.d1_ms;
+    if (x.meta.dirty || (x.d1_owed && age >= 1000) || age >= 5000 || !x.d1_sent) { BoxIn in(b); UMT("um.1d"); send_1d(0, 0); did = true; }
+  }
   if (core::now_ms() - g_cost_ms >= 1000) {   // the measured cost moves while something plays
     g_cost_ms = core::now_ms();
     uint32_t tot = 0;
-    for (int s = 0; s < kSlots; ++s) { uint64_t c; uint32_t b; cost_sum(s, &c, &b); tot += b; }
+    for (int s = 0; s < kMach; ++s) { uint64_t c; uint32_t b; cost_sum(s, &c, &b); tot += b; }
     if (tot != g_cost_blk) { g_cost_blk = tot; g_pub = true; }
   }
   if (g_pub && core::now_ms() - g_pub_ms >= 100) {
@@ -3503,37 +3634,40 @@ void call_stall_limit(uint32_t us) { g_call_stall_us = us ? us : kCallStallUs; }
 void render_fault(int vi) {
   if (vi >= 0 && vi < core::kVoices) __atomic_or_fetch(&g_render_faults, 1u << vi, __ATOMIC_ACQ_REL);
 }
-// API 3: the block's transport snapshot (see um.h). The newest becomes the render cores' at the release store.
+// API 3: the block's transport snapshot (see um.h), each box's from its own clock. The newest becomes the render cores' at
+// the release store.
 void pre_block() {
   if (!ex) return;
-  core::lfo::ClockState c;
-  core::lfo::clock_state(&c);
   uint32_t g = g_xp_gen + 1;
-  rmp3_transport& t = g_xp[g & 1];
-  uint32_t since = core::now_us() - c.last_us;
-  bool clocked = c.ticking && since < 250000;
-  bool locked = c.run && clocked && c.pos >= 0;
-  float tu = c.tick_us > 100.0f ? c.tick_us : 20833.333f;
-  uint32_t f = (c.run ? (uint32_t)RMP3_T_RUNNING : 0u) | (clocked ? (uint32_t)RMP3_T_CLOCKED : 0u) | (locked ? (uint32_t)RMP3_T_LOCKED : 0u);
-  if (c.starts != g_xp_starts) f |= RMP3_T_START;
-  if (c.stops != g_xp_stops) f |= RMP3_T_STOP;
-  int32_t song = locked ? c.pos : -1;
-  // a song position message, or the position going back (a restart the Rytm sent no F2 for)
-  if (c.jumps != g_xp_jumps || (song >= 0 && g_xp_song >= 0 && song < g_xp_song)) f |= RMP3_T_JUMP;
-  g_xp_starts = c.starts, g_xp_stops = c.stops, g_xp_jumps = c.jumps, g_xp_song = song;
-  float frac = locked ? (float)since / tu : 0.0f;
-  t.flags = f;
-  t.tick_us = tu;
-  t.bpm = 60e6f / (24.0f * tu);
-  t.free_tick = c.tp;
-  t.song_tick = song;
-  t.song_frac = frac < 0.0f ? 0.0f : frac > 0.999f ? 0.999f : frac;
-  t.step16 = locked ? (uint32_t)c.pos / 6u : 0u;
-  t.lead_frames = kLeadFrames;
-  if (f & RMP3_T_START) ++g_xp_evn[0];
-  if (f & RMP3_T_STOP) ++g_xp_evn[1];
-  if (f & RMP3_T_JUMP) ++g_xp_evn[2];
-  for (int k = 0; k < 3; ++k) g_xp_ev[g & 1][k] = g_xp_evn[k];
+  for (int b = 0; b < kBoxes; ++b) {
+    core::lfo::ClockState c;
+    core::lfo::clock_state(b, &c);
+    rmp3_transport& t = g_xp[b][g & 1];
+    uint32_t since = core::now_us() - c.last_us;
+    bool clocked = c.ticking && since < 250000;
+    bool locked = c.run && clocked && c.pos >= 0;
+    float tu = c.tick_us > 100.0f ? c.tick_us : 20833.333f;
+    uint32_t f = (c.run ? (uint32_t)RMP3_T_RUNNING : 0u) | (clocked ? (uint32_t)RMP3_T_CLOCKED : 0u) | (locked ? (uint32_t)RMP3_T_LOCKED : 0u);
+    if (c.starts != g_xp_starts[b]) f |= RMP3_T_START;
+    if (c.stops != g_xp_stops[b]) f |= RMP3_T_STOP;
+    int32_t song = locked ? c.pos : -1;
+    // a song position message, or the position going back (a restart the box sent no F2 for)
+    if (c.jumps != g_xp_jumps[b] || (song >= 0 && g_xp_song[b] >= 0 && song < g_xp_song[b])) f |= RMP3_T_JUMP;
+    g_xp_starts[b] = c.starts, g_xp_stops[b] = c.stops, g_xp_jumps[b] = c.jumps, g_xp_song[b] = song;
+    float frac = locked ? (float)since / tu : 0.0f;
+    t.flags = f;
+    t.tick_us = tu;
+    t.bpm = 60e6f / (24.0f * tu);
+    t.free_tick = c.tp;
+    t.song_tick = song;
+    t.song_frac = frac < 0.0f ? 0.0f : frac > 0.999f ? 0.999f : frac;
+    t.step16 = locked ? (uint32_t)c.pos / 6u : 0u;
+    t.lead_frames = kLeadFrames;
+    if (f & RMP3_T_START) ++g_xp_evn[b][0];
+    if (f & RMP3_T_STOP) ++g_xp_evn[b][1];
+    if (f & RMP3_T_JUMP) ++g_xp_evn[b][2];
+    for (int k = 0; k < 3; ++k) g_xp_ev[b][g & 1][k] = g_xp_evn[b][k];
+  }
   __atomic_store_n(&g_xp_gen, g, __ATOMIC_RELEASE);
 }
 
@@ -3551,20 +3685,26 @@ void rescan() {
   }
 }
 
-bool tag_ok(int s, int tag) { return s >= 0 && s < kSlots && g_slot[s].st == RMP_SLOT_READY && tag == g_slot[s].fp; }
+// The public calls below name a slot as its box does - U(s + 1), 0..4, of the slot in hand's box (5..8: UFX1..UFX4) -
+// and take it to the load slot here
+int pub(int s) { return s < 0 ? -1 : s < kSlots ? lslot(hand(), s) : s < kSlots + kUfx ? kMach + hand() * kUfx + (s - kSlots) : -1; }
+bool tag_ok(int s, int tag) {
+  s = s >= 0 && s < kSlots ? pub(s) : -1;
+  return s >= 0 && g_slot[s].st == RMP_SLOT_READY && tag == g_slot[s].fp;
+}
 
 // ---- E0: instances (core/inst.h)
 static_assert(kInst == core::inst::kTotal, "um's instance states: one per core::inst instance");
 bool inst_decl(int vi, uint32_t* flags, uint32_t* cpu, uint32_t* state) {
-  int s = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
-  if (s < 0 || s >= kSlots || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p || g_slot[s].pkg < 0) return false;
+  int s = lv(vi);
+  if (s < 0 || s >= kMach || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p || g_slot[s].pkg < 0) return false;
   const Pkg& e = g_pkg[g_slot[s].pkg];
   *flags = e.hflags, *cpu = e.cpu, *state = e.state;
   return true;
 }
 bool inst_note_on(int vi, int i, float note, float vel) {
-  int s = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
-  if (i < 0 || i >= kInst || !g_istate[i] || s < 0 || s >= kSlots) return false;
+  int s = lv(vi);
+  if (i < 0 || i >= kInst || !g_istate[i] || s < 0 || s >= kMach) return false;
   Slot& sl = g_slot[s];
   if (sl.st != RMP_SLOT_READY || !sl.p || (g_mis >> vi & 1) || muted(s) || !state_room(s, i, vi)) return false;
   void* st = g_istate[i];
@@ -3588,8 +3728,8 @@ void inst_note_off(int vi, int i) {
   if (sl.st == RMP_SLOT_READY && sl.p) c_note_off(g_icur[i], g_istate[i]);
 }
 void inst_params(int vi) {
-  int s = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
-  if (s < 0 || s >= kSlots || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p) return;
+  int s = lv(vi);
+  if (s < 0 || s >= kMach || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p) return;
   float q[16];
   pv_params(vi, s, false, q);
   VNow now(vi);
@@ -3602,7 +3742,7 @@ void inst_stop(int vi) {
 }
 // A render core: instance i of voice vi, kBlock samples (silence when its state is not the voice's slot's)
 void inst_render(int vi, int i, float* o) {
-  int s = vi >= 0 && vi < core::kVoices ? core::v[vi].user : -1;
+  int s = lv(vi);
   if (i < 0 || i >= kInst || s < 0 || g_icur[i] != s || g_ivi[i] != vi || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p ||
       muted(s)) {
     for (int k = 0; k < core::kBlock; ++k) o[k] = 0.0f;
@@ -3618,7 +3758,7 @@ void inst_render(int vi, int i, float* o) {
     const rmp3_plugin* p3 = g_v3[s].p3;
     if (p3) {
       rmp3_block b;
-      block_fill(&b, core::kBlock, o, nullptr, RMP3_AT_VOICE);
+      block_fill(&b, core::kBlock, o, nullptr, RMP3_AT_VOICE, bx(s));
       p3->render(g_istate[i], &b);
     } else {
       g_slot[s].p->render(g_istate[i], o, core::kBlock);
@@ -3631,10 +3771,10 @@ void inst_render(int vi, int i, float* o) {
 #if CORE_MSAMP
 namespace {
 void held_run() {   // the map is here
-  for (int s = 0; s < kSlots; ++s)
-    if (g_held_as[s].on) {
+  for (int s = 0; s < kMach; ++s)
+    if (g_held_as[s].on && bx(s) == g_bw) {   // (the box whose map is here)
       g_held_as[s].on = false;
-      assign_run(g_held_as[s].a);
+      assign_run(s, g_held_as[s].a);
     }
   for (int i = 0; i < g_nheld_cmd; ++i) {
     char o[160];
@@ -3649,10 +3789,11 @@ bool map_cmd(const char* c) {   // a command that changes the map
 }  // namespace
 #endif
 
-bool command(const char* c, char* out, int cap) {
+bool command(const char* c, char* out, int cap) {   // (the slot in hand's box: U1..U5 its own)
   out[0] = 0;
+  BoxIn in(hand());
 #if CORE_MSAMP
-  if (g_mr && map_cmd(c)) {
+  if (M().mr && map_cmd(c)) {
     if (g_nheld_cmd >= kHeldCmds || strlen(c) >= sizeof g_held_cmd[0]) { sniprintf(out, cap, "the project's map is loading: again in a moment"); return true; }
     copy(g_held_cmd[g_nheld_cmd++], c, sizeof g_held_cmd[0]);
     sniprintf(out, cap, "after the project's map is read");
@@ -3664,10 +3805,10 @@ bool command(const char* c, char* out, int cap) {
     for (int i = 0; i < g_npkg; ++i)
       core::log("um: %s %s %s %u B, state %u B, cpu %u, %s", g_pkg[i].file, g_pkg[i].id, vstr(g_pkg[i].version, vb),
                 (unsigned)g_pkg[i].size, (unsigned)g_pkg[i].state, (unsigned)g_pkg[i].cpu, g_pkg[i].ok ? "ok" : g_pkg[i].why);
-    for (int s = 0; s < kSlots; ++s)
-      core::log("um: U%d %s %s (%s, sounds' fingerprint %u)", s + 1, g_map.slot[s].id[0] ? g_map.slot[s].id : "-",
-                state_name(g_slot[s].st), rmp_src_name(g_notes.slot[s].src), (unsigned)g_notes.slot[s].fp);
-    sniprintf(out, cap, "%d packages, project %s, code %u/%u B", g_npkg, core::project[0] ? core::project : "_default",
+    for (int s = lslot(g_bw, 0); s < lslot(g_bw, kSlots); ++s)
+      core::log("um: U%d %s %s (%s, sounds' fingerprint %u)", ul(s) + 1, mslot(s).id[0] ? mslot(s).id : "-",
+                state_name(g_slot[s].st), rmp_src_name(nslot(s).src), (unsigned)nslot(s).fp);
+    sniprintf(out, cap, "%d packages, project %s, code %u/%u B", g_npkg, core::prj().key[0] ? core::prj().key : "_default",
               (unsigned)g_arena_used, (unsigned)(ex ? ex->total : 0));
     return true;
   }
@@ -3675,19 +3816,20 @@ bool command(const char* c, char* out, int cap) {
     int u = c[6] - '1';
     if (u < 0 || u >= kUfx || c[7] != ':') { sniprintf(out, cap, "usage: um=fx:<1..4>:<id|->"); return true; }
     const char* id = c + 8;
-    fx_stop(u);   // (core 2 out of the one it plays, before anything about it changes)
-    rmp_slot_entry& m = g_fxmap[u];
+    const int e = g_bw * kUfx + u;   // (the slot in hand's box's own UFX)
+    fx_stop(e);   // (core 2 out of the one it plays, before anything about it changes)
+    rmp_slot_entry& m = g_fxmap[e];
     if (!strcmp(id, "-")) {
       m.id[0] = 0;
     } else {
       int k = find_pkg(id);
-      if (k < 0) { sniprintf(out, cap, "UFX%d: %s is not installed", u + 1, id); return true; }
+      if (k < 0) { sniprintf(out, cap, "%s%d: %s is not installed", slot_pfx(kMach + e), u + 1, id); return true; }
       copy(m.id, g_pkg[k].id, sizeof m.id);
       m.version = g_pkg[k].version;
     }
-    __atomic_store_n(&core::fx::user[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
-    g_need |= 1u << (kSlots + u);
-    g_fx_txt[u][0] = 0;
+    __atomic_store_n(&core::fx::user_of(g_bw)[u].tag, (uint16_t)0, __ATOMIC_RELEASE);   // (named again once it is READY: fx_named)
+    g_need |= 1u << (kMach + e);
+    M().fx_txt[u][0] = 0;
     if (m.id[0]) {   // the project's file: the kit's tag and name, then the package as the slot map names it
       rmp_slot_map one;
       memset(&one, 0, sizeof one);
@@ -3699,10 +3841,10 @@ bool command(const char* c, char* out, int cap) {
       copy(nm, g_pkg[find_pkg(id)].desc.name, sizeof nm);
       for (char* c = nm; *c; ++c)
         if ((uint8_t)*c < 0x20) *c = '_';
-      sniprintf(g_fx_txt[u], sizeof g_fx_txt[u], "%04x %s\t%s", (unsigned)core::fx::fx_tag(nm), nm, f + 3);
+      sniprintf(M().fx_txt[u], sizeof M().fx_txt[u], "%04x %s\t%s", (unsigned)core::fx::fx_tag(nm), nm, f + 3);
     }
-    if (!fx_save(u)) core::log("um: %s not written (UFX%d changes until the next project load)", g_fx_file, u + 1);
-    sniprintf(out, cap, "UFX%d: %s", u + 1, m.id[0] ? m.id : "empty");
+    if (!fx_save(u)) core::log("um: %s not written (%s%d changes until the next project load)", M().fx_file, slot_pfx(kMach + e), u + 1);
+    sniprintf(out, cap, "%s%d: %s", slot_pfx(kMach + e), u + 1, m.id[0] ? m.id : "empty");
     return true;
   }
   if (strncmp(c, "um=fxbudget:", 12) == 0) {   // API 3: the effects' budgets, us a 12-frame block: one call, all of core 2's
@@ -3717,20 +3859,22 @@ bool command(const char* c, char* out, int cap) {
     return true;
   }
   if (strncmp(c, "um=reload:", 10) == 0) {   // API 3: load the slot again (a muted slot back, its states and arena fresh)
-    int s = c[10] == 'f' ? kSlots + (c[11] - '1') : c[10] - '1';   // um=reload:f<1..4>: UFX<n>
-    if (s < 0 || s >= kAll || (s >= kSlots && c[12]) || (s < kSlots && c[11])) { sniprintf(out, cap, "usage: um=reload:<1..5> or f<1..4>"); return true; }
+    const bool f = c[10] == 'f';
+    int s = f ? c[11] - '1' : c[10] - '1';   // um=reload:f<1..4>: UFX<n>
+    if (s < 0 || (f ? s >= kUfx || c[12] : s >= kSlots || c[11])) { sniprintf(out, cap, "usage: um=reload:<1..5> or f<1..4>"); return true; }
+    s = f ? kMach + g_bw * kUfx + s : lslot(g_bw, s);
     g_need |= 1u << s;
-    sniprintf(out, cap, "%s%d: loading again%s", s < kSlots ? "U" : "UFX", s < kSlots ? s + 1 : s - kSlots + 1, muted(s) ? " (it was muted)" : "");
+    sniprintf(out, cap, "%s%d: loading again%s", slot_pfx(s), slot_no(s), muted(s) ? " (it was muted)" : "");
     return true;
   }
   if (strncmp(c, "um=save:", 8) == 0) {   // a generic preset of what the slot's voice plays now
     int s = c[8] - '1';
     if (s < 0 || s >= kSlots || c[9] != ':') { sniprintf(out, cap, "usage: um=save:<1..5>:<name>"); return true; }
-    pre_save(s, c + 10, out, cap);
+    pre_save(lslot(g_bw, s), c + 10, out, cap);
     return true;
   }
   if (strcmp(c, "um=presets") == 0) {   // the card's /PRESETS changed (the web's rename / delete): every list again
-    for (int s = 0; s < kSlots; ++s) pre_invalidate(s);
+    for (int s = 0; s < kMach; ++s) pre_invalidate(s);
     sniprintf(out, cap, "presets: rescanning");
     return true;
   }
@@ -3740,12 +3884,12 @@ bool command(const char* c, char* out, int cap) {
     return true;
   }
   if (strcmp(c, "um=empty") == 0) {   // "start this project empty": every slot explicitly empty
-    for (int s = 0; s < kSlots; ++s) rmp_resolve_set(&g_map, &g_notes, s, "", 0, RMP_SRC_SAVED);
-    g_fresh = false;
-    g_need = (1u << kSlots) - 1;
+    for (int s = 0; s < kSlots; ++s) rmp_resolve_set(&M().map, &M().notes, s, "", 0, RMP_SRC_SAVED);
+    M().fresh = false;
+    g_need |= ((1u << kSlots) - 1) << lslot(g_bw, 0);
     g_pub = g_mp = true;
-    if (!map_save()) core::log("um: %s not written", g_map_file);
-    sniprintf(out, cap, "project %s starts empty", core::project[0] ? core::project : "_default");
+    if (!map_save()) core::log("um: %s not written", M().map_file);
+    sniprintf(out, cap, "project %s starts empty", core::prj().key[0] ? core::prj().key : "_default");
     return true;
   }
   if (strncmp(c, "um=put:", 7) == 0) {   // an imported slot list's entry: um=put:<1..5>:<id|->:<a.b.c>[:<name>]
@@ -3772,11 +3916,11 @@ bool command(const char* c, char* out, int cap) {
     }
     bool empty = ok && !strcmp(id, "-");
     if (!ok || (!empty && !rmp_id_ok(id))) { sniprintf(out, cap, "usage: um=put:<1..5>:<id|->:<a.b.c>[:<name>]"); return true; }
-    rmp_resolve_import(&g_map, &g_notes, s, empty ? "" : id, a << 16 | b << 8 | v, 0, name);
-    g_fresh = false;
-    g_need |= 1u << s;
+    rmp_resolve_import(&M().map, &M().notes, s, empty ? "" : id, a << 16 | b << 8 | v, 0, name);
+    M().fresh = false;
+    g_need |= 1u << lslot(g_bw, s);
     g_pub = g_mp = true;
-    if (!map_save()) core::log("um: %s not written", g_map_file);
+    if (!map_save()) core::log("um: %s not written", M().map_file);
     int k = empty ? 0 : find_pkg(id);
     sniprintf(out, cap, empty ? "U%d empty" : k >= 0 ? "U%d = %s" : "U%d = %s (not installed: MISSING)", s + 1, id);
     return true;
@@ -3786,14 +3930,15 @@ bool command(const char* c, char* out, int cap) {
     const char* p = c + (clear ? 9 : 10);
     int s = *p - '1';
     if (s < 0 || s >= kSlots || (!clear && p[1] != ':')) { sniprintf(out, cap, "usage: um=assign:<1..5>:<id> | um=clear:<1..5>"); return true; }
+    const int L = lslot(g_bw, s);
     if (clear) {
-      assign_id(s, "", 0);
+      assign_id(L, "", 0);
       sniprintf(out, cap, "U%d cleared", s + 1);
       return true;
     }
     int k = find_pkg(p + 2);
     if (k < 0) { sniprintf(out, cap, "%s is not installed", p + 2); return true; }
-    assign_id(s, g_pkg[k].id, g_pkg[k].version);
+    assign_id(L, g_pkg[k].id, g_pkg[k].version);
     sniprintf(out, cap, "U%d = %s", s + 1, g_pkg[k].id);
     return true;
   }
@@ -3814,11 +3959,13 @@ int json_copy(char* out, int cap) {
   return 0;
 }
 
-bool ui_view(UiView* out) {
+bool ui_view(UiView* out) {   // the base box's (any core: g_base read once)
+  const core::device::Link* bl = __atomic_load_n(&core::device::g_base, __ATOMIC_RELAXED);
+  const int b = bl && bl->index < kBoxes ? bl->index : 0;
   for (int tries = 0; tries < 8; ++tries) {
     uint32_t a = __atomic_load_n(&g_jseq, __ATOMIC_ACQUIRE);
     if (a == 0) return false;
-    memcpy(out, &g_ui[(a / 2) & 1], sizeof *out);
+    memcpy(out, &g_ui[(a / 2) & 1][b], sizeof *out);
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (__atomic_load_n(&g_jseq, __ATOMIC_ACQUIRE) - a < 2) return true;
   }
@@ -3827,10 +3974,12 @@ bool ui_view(UiView* out) {
 void publish_now() { g_pub = false; g_pub_ms = core::now_ms(); publish(); }
 const char* dir() { return g_dir; }
 uint32_t code_epoch() { return __atomic_load_n(&g_epoch, __ATOMIC_ACQUIRE); }
-SlotView slot_view(int s) {
-  if (s >= kSlots && s < kAll) {   // UFX1..UFX4: kSlots + u
+SlotView slot_view(int s) {   // (U(s + 1) of the slot in hand's box; 5..8 UFX1..UFX4)
+  s = pub(s);
+  if (s < 0) s = lslot(hand(), 0);
+  if (s >= kMach && s < kAll) {   // UFX1..UFX4: kMach + u
     const V3& x = g_v3[s];
-    return SlotView{g_slot[s].st, g_fxmap[s - kSlots].id, g_fxmap[s - kSlots].version, 0, "", 0, 0, 0, muted(s), x.p3 ? 3 : 0,
+    return SlotView{g_slot[s].st, g_fxmap[s - kMach].id, g_fxmap[s - kMach].version, 0, "", 0, 0, 0, muted(s), x.p3 ? 3 : 0,
                     x.zero_len, g_why[s]};
   }
   rmp_desc d;
@@ -3839,16 +3988,17 @@ SlotView slot_view(int s) {
   copy(name, p ? p->name : "", sizeof name);
   const V3& x = g_v3[s];
   int api = g_v3[s].p3 ? 3 : g_slot[s].p ? (int)g_slot[s].p->api : 0;
-  return SlotView{g_slot[s].st, g_map.slot[s].id, g_map.slot[s].version, g_slot[s].fp, name, g_notes.slot[s].src,
-                  g_notes.slot[s].flags, g_notes.slot[s].fp, muted(s), api, x.zero_len, g_why[s]};
+  return SlotView{g_slot[s].st, mslot(s).id, mslot(s).version, g_slot[s].fp, name, nslot(s).src,
+                  nslot(s).flags, nslot(s).fp, muted(s), api, x.zero_len, g_why[s]};
 }
 int installed() { return g_ninst; }
-uint8_t store_gen() { return g_meta.store_gen; }
+uint8_t store_gen() { return g_bx[hand()].meta.store_gen; }
 
 // 0.5.0 FILL (core/seq/filltargets.h): the targets a slot's knobs imply - its preset knob, its pool knobs, its list
 // knobs - in p order, at most max. No manifest key of its own yet (0.5.1's "fill" block).
-int fill_knobs(int s, FillKnob* out, int max) {
-  if (s < 0 || s >= kSlots) return 0;
+int fill_knobs(int s, FillKnob* out, int max) {   // (U(s + 1) of the slot in hand's box, as below)
+  s = s >= 0 && s < kSlots ? pub(s) : -1;
+  if (s < 0) return 0;
   rmp_desc d;
   const rmp_desc* p = slot_desc(s, &d);
   int n = 0;
@@ -3864,7 +4014,8 @@ int fill_knobs(int s, FillKnob* out, int max) {
   return n;
 }
 int knob_names(int s, int p1, char names[RMP_ENUM_MAX][8]) {   // as send_enum reads them
-  int k = s >= 0 && s < kSlots ? find_slot(s) : -1;
+  s = s >= 0 && s < kSlots ? pub(s) : -1;
+  int k = s >= 0 ? find_slot(s) : -1;
   if (k < 0) return 0;
   const rmp_desc& d = g_pkg[k].desc;
   int q = rmp_desc_find(&d, p1);
@@ -3882,9 +4033,13 @@ int knob_names(int s, int p1, char names[RMP_ENUM_MAX][8]) {   // as send_enum r
 #endif
   return n < 0 ? 0 : n;
 }
-int presets(int s) { return s >= 0 && s < kSlots && rmp_preset_index_ok(&g_pix[s]) ? g_pix[s].n : 0; }
+int presets(int s) {
+  s = s >= 0 && s < kSlots ? pub(s) : -1;
+  return s >= 0 && rmp_preset_index_ok(&g_pix[s]) ? g_pix[s].n : 0;
+}
 const char* preset_name(int s, int i) {
-  if (s < 0 || s >= kSlots || i < 0 || !rmp_preset_names_ok(&g_pnames, &g_pix[s], s) || i >= g_pix[s].n) return "";
+  s = s >= 0 && s < kSlots ? pub(s) : -1;
+  if (s < 0 || i < 0 || !rmp_preset_names_ok(&g_pnames, &g_pix[s], s) || i >= g_pix[s].n) return "";
   return g_pnames.name[i];
 }
 

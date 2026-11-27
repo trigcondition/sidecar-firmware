@@ -111,7 +111,7 @@ static lib::Resolved res(const char* sha_hex, uint64_t size, const char* hint) {
   lib::resolve(r, &o);
   return o;
 }
-static std::string log_txt() { return card("/.rytm/library/log.txt"); }
+static std::string log_txt() { return card("/.sidecar/library/log.txt"); }
 static void boot() {   // a reboot: the RAM index gone, the card as it is
   lib::reset_for_tests();
   lib::Env e{};
@@ -204,13 +204,13 @@ int main() {
   CHECK(st.state == lib::kReady && st.files == 5 && st.hashed == 4 && st.unhashed == 0 && st.recordings == 1);
   CHECK(st.bytes == kick.size() + snare.size() + pad.size() + sfz.size() + 120000 && st.dups == 0 && st.gone == 0);
   CHECK(st.pct == 100);   // (the recording is indexed only: not counted as pending, open question 6)
-  CHECK(exists("/.rytm/library/index.bin") && exists("/.rytm/library/state.txt") && exists("/.rytm/library/log.txt"));
+  CHECK(exists("/.sidecar/library/index.bin") && exists("/.sidecar/library/state.txt") && exists("/.sidecar/library/log.txt"));
   {
-    std::string s = card("/.rytm/library/state.txt");
+    std::string s = card("/.sidecar/library/state.txt");
     CHECK(s.rfind("format=library-state/1\n", 0) == 0 && s.find("files=5\n") != std::string::npos && s.find("tree=") != std::string::npos);
     CHECK(log_txt().rfind("#sidecar library-log 1\n", 0) == 0);
     // the registry reads all three
-    std::string ix = card("/.rytm/library/index.bin");
+    std::string ix = card("/.sidecar/library/index.bin");
     fmt::Info info;
     fmt::Bytes b = {(const uint8_t*)ix.data(), (uint32_t)ix.size()};
     CHECK(fmt::load(*fmt::find("library"), b, nullptr, &info) == fmt::kOk);
@@ -248,7 +248,7 @@ int main() {
   boot();
   run();
   if (lib::work().files_hashed || host_changes() != ch)
-    fprintf(stderr, "hashed %u changes %llu\n%s\n", lib::work().files_hashed, (unsigned long long)(host_changes() - ch), card("/.rytm/library/state.txt").c_str());
+    fprintf(stderr, "hashed %u changes %llu\n%s\n", lib::work().files_hashed, (unsigned long long)(host_changes() - ch), card("/.sidecar/library/state.txt").c_str());
   CHECK(lib::work().files_hashed == 0 && host_changes() == ch);
   CHECK(lib::stats().files == 5 && lib::stats().hashed == 4);
   CHECK(res(sha_of(kick).c_str(), kick.size(), "/Samples/Drums/kick.wav").st == lib::kExact);
@@ -390,7 +390,7 @@ int main() {
   // ---- (review) a log whose last line was cut by a power cut: the next line still whole after a reboot
   {
     std::string lg = log_txt();
-    put("/.rytm/library/log.txt", lg + "+ 0123456789abcdef");   // (no newline: cut mid-line)
+    put("/.sidecar/library/log.txt", lg + "+ 0123456789abcdef");   // (no newline: cut mid-line)
     boot();
     run();
     std::string t2 = blob(9000, 61);
@@ -410,14 +410,14 @@ int main() {
   {
     std::string lg = log_txt();
     std::string newer = "#sidecar library-log 2\n? a line this build does not know\n";
-    put("/.rytm/library/log.txt", newer);
+    put("/.sidecar/library/log.txt", newer);
     put("/Samples/Copies/x2.wav", blob(3000, 71));
     boot();
     run();
-    CHECK(card("/.rytm/library/log.txt") == newer);
+    CHECK(card("/.sidecar/library/log.txt") == newer);
     char out[400];
     CHECK(lib::command("lib=status", out, sizeof out) && strstr(out, "newer"));
-    put("/.rytm/library/log.txt", lg);
+    put("/.sidecar/library/log.txt", lg);
     boot();
     run();
   }
@@ -428,29 +428,29 @@ int main() {
     boot();
     run();
     CHECK(lib::stats().files == files && lib::work().files_hashed == 0);
-    std::string ix = card("/.rytm/library/index.bin");
+    std::string ix = card("/.sidecar/library/index.bin");
     ix[ix.size() / 2] ^= 0x40;   // a damaged body (its CRC)
-    put("/.rytm/library/index.bin", ix);
+    put("/.sidecar/library/index.bin", ix);
     boot();
     run();
     CHECK(lib::stats().files == files && lib::work().files_hashed == lib::stats().hashed);   // every file again
     fmt::Info info;
-    std::string nx = card("/.rytm/library/index.bin");
+    std::string nx = card("/.sidecar/library/index.bin");
     fmt::Bytes b = {(const uint8_t*)nx.data(), (uint32_t)nx.size()};
     CHECK(fmt::load(*fmt::find("library"), b, nullptr, &info) == fmt::kOk);
   }
   {   // a newer build's index: used read-only, never written over
-    std::string ix = card("/.rytm/library/index.bin");
+    std::string ix = card("/.sidecar/library/index.bin");
     std::string newer = ix;
     newer[4] = 2, newer[6] = 2;   // version 2, min_reader 2
-    put("/.rytm/library/index.bin", newer);
+    put("/.sidecar/library/index.bin", newer);
     put("/Samples/newer-build.wav", blob(3000, 31));
     boot();
     run();
-    CHECK(card("/.rytm/library/index.bin") == newer);
+    CHECK(card("/.sidecar/library/index.bin") == newer);
     char out[300];
     CHECK(lib::command("lib=status", out, sizeof out) && strstr(out, "newer"));
-    put("/.rytm/library/index.bin", ix);
+    put("/.sidecar/library/index.bin", ix);
     boot();
     run();
   }
@@ -553,8 +553,8 @@ int main() {
       snprintf(l, sizeof l, "+ - %d 00000000 00000000 00000000 0000 /Late/L%05d.wav\n", 100 + i, i);
       lg += l;
     }
-    sh("rm -rf '" + g_card + "/.rytm/library' '" + g_card + "/Samples' '" + g_card + "/Big'");
-    put("/.rytm/library/log.txt", lg);
+    sh("rm -rf '" + g_card + "/.sidecar/library' '" + g_card + "/Samples' '" + g_card + "/Big'");
+    put("/.sidecar/library/log.txt", lg);
     lib::Env e{};
     e.rules = rules;
     lib::set_env(e);
@@ -595,8 +595,8 @@ int main() {
       snprintf(l, sizeof l, "+ - 7 00000000 00000000 00000000 0000 /Flat/%s\n", n);
       lg += l;
     }
-    sh("rm -rf '" + g_card + "/.rytm/library' '" + g_card + "/Flat' '" + g_card + "/Late' '" + g_card + "/Early'");
-    put("/.rytm/library/log.txt", lg);
+    sh("rm -rf '" + g_card + "/.sidecar/library' '" + g_card + "/Flat' '" + g_card + "/Late' '" + g_card + "/Early'");
+    put("/.sidecar/library/log.txt", lg);
     lib::Env e{};
     e.rules = rules;
     lib::set_env(e);
@@ -657,8 +657,8 @@ int main() {
     lg += "+ - 5 00000000 00000000 00000000 0000 /Big/F07/sub/deep/x.wav\n";
     lg += "+ - 6 00000000 00000000 00000000 0000 /Big/F07 b.wav\n";   // (' ' before '/': between F07 and F07/...)
     lg += "+ - 7 00000000 00000000 00000000 0000 /Big/f07.aif\n";
-    sh("rm -rf '" + g_card + "/.rytm/library' '" + g_card + "/Samples' '" + g_card + "/Big'");
-    put("/.rytm/library/log.txt", lg);
+    sh("rm -rf '" + g_card + "/.sidecar/library' '" + g_card + "/Samples' '" + g_card + "/Big'");
+    put("/.sidecar/library/log.txt", lg);
     lib::Env e{};
     e.rules = rules;
     lib::set_env(e);
@@ -716,8 +716,8 @@ int main() {
       snprintf(l, sizeof l, "+ %s %d 00000000 00000000 00000000 0000 /Samples/Big/F%03d/file %06d.wav\n", sha, 1000 + i % 977, i / 1000, i);
       lg += l;
     }
-    sh("rm -rf '" + g_card + "/.rytm/library' '" + g_card + "/Samples'");
-    put("/.rytm/library/log.txt", lg);
+    sh("rm -rf '" + g_card + "/.sidecar/library' '" + g_card + "/Samples'");
+    put("/.sidecar/library/log.txt", lg);
     lib::Env e{};
     e.rules = rules;
     lib::set_env(e);

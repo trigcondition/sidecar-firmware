@@ -241,7 +241,7 @@ static void fixture() {
   put("/Plugins/other.rmp", package("sc.other", 0x020000, 2));
   put("/Bundles/Rytm/AR PERC.arprj", std::string(5000, 'R'));
   put("/.rytm/sendfx.txt", "out=fx\n");
-  put("/.rytm/wifi.txt", "secret=1\n");   // never in a bundle
+  put("/.sidecar/wifi.txt", "secret=1\n");   // never in a bundle
 }
 
 // ---- the environment: full rate, the current project

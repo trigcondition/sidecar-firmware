@@ -1,7 +1,7 @@
 // pi/ui/touch_cal.h - the touch screen's 4-point calibration (Settings > Display > Calibrate, docs/pi-display.md
 // "Touch calibration"): raw touch values -> the UI's pixels, per axis an offset and a scale, the raw axes swapped or not
 // (an axis inverted: its edge values reversed). Plain C, no LVGL: the UI computes it (sidecar_ui.c), the display maps
-// with it (sidecar_display.cpp), the kernel stores it ("touchcal=" in /.rytm/display.txt); tested on the Mac.
+// with it (sidecar_display.cpp), the kernel stores it ("touchcal=" in /.sidecar/display.txt); tested on the Mac.
 #ifndef TOUCH_CAL_H
 #define TOUCH_CAL_H
 

@@ -291,7 +291,7 @@ static void test_banks() {
   // GRANULAR and DSP SAMPLE on the same bank A row: A005 is SMP 5 and SRC A005
   CHECK(pu::put(pools::kSamples, "A005", "/Samples/Drums/Kicks/kick.wav") == pools::kOk);
   pool_sync();
-  CHECK(npool >= 5 && !strcmp(pool[4].path, "Drums/Kicks/kick.wav"));   // (rui1045: npool counts every bank's rows)
+  CHECK(prj().npool >= 5 && !strcmp(pool[4].path, "Drums/Kicks/kick.wav"));   // (rui1045: npool counts every bank's rows)
   CHECK(!strcmp(gr::entry_path(5), "/Samples/Drums/Kicks/kick.wav"));
   // an input in bank A: GRANULAR plays it, DSP SAMPLE's slot is empty
   CHECK(pu::put(pools::kSamples, "A006", "@MAIN") == pools::kOk);
@@ -301,7 +301,7 @@ static void test_banks() {
   CHECK(pu::put(pools::kSamples, "C007", "/Samples/Keys/table16.wav") == pools::kOk);
   pool_sync();
   int c7 = pool_slot(7 + 32 / 128.0f);
-  CHECK(c7 == 2 * kPool + 7 && npool >= c7 && !strcmp(pool[c7 - 1].path, "Keys/table16.wav"));   // (written after the card
+  CHECK(c7 == 2 * kPool + 7 && prj().npool >= c7 && !strcmp(pool[c7 - 1].path, "Keys/table16.wav"));   // (written after the card
                                                                                                     // index: no folder yet)
   CHECK(pool_slot(5.0f) == 5 && pool_slot(0.0f) == 0 && pool_slot(0 + 32 / 128.0f) == 0 && pool_slot(127 + 112 / 128.0f) == 7 * kPool + 127);
   printf("test_srclib: banks: GRANULAR C002 + H004 + E (fill), MULTISAMPLE B001, WAVETABLE D009, DSP SAMPLE A005 + C007\n");
@@ -350,13 +350,13 @@ static void test_shared_ram() {
   CHECK(pu::put(pools::kSamples, "B050", "/Samples/Drums/clap.aif") == pools::kOk);
   pools::seen(pools::kSamples, pools::code(1, 50));
   tick(1500);   // (the used set written)
-  snprintf(core::project, sizeof core::project, "%s", "ELSEWHERE");
+  snprintf(core::prj().key, sizeof core::prj().key, "%s", "ELSEWHERE");
   for (int i = 0; i < 400 && strcmp(pools::project(), "ELSEWHERE"); ++i) tick(10);
   lib::Ref cr;
   lib::ref_for_path("/Samples/Drums/clap.aif", &cr);
   pcache::forget(cr);
   CHECK(pcache::find(cr, 0) < 0);
-  snprintf(core::project, sizeof core::project, "%s", "");
+  snprintf(core::prj().key, sizeof core::prj().key, "%s", "");
   for (int i = 0; i < 400 && (strcmp(pools::project(), "_default") || !pools::ready()); ++i) tick(10);
   tick(500);
   CHECK(pcache::find(cr, pcache::kWhole) < 0);

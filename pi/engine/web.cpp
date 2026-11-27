@@ -32,6 +32,7 @@
 #include "sidecar_gadget.h"	// usbmidi=os: /cmd refuses link=tcp:<address> while it is on
 #include "wifi_conf.h"
 #include "web_cmd.h"		// the commands the web may send (/cmd and /ws)
+#include "teensy_flash.h"	// the Pi writes the Teensy relay's program: /teensy/put, /teensy/flash, /teensy/state
 #include "web_ws.h"		// /ws (docs/web-ws.md)
 #include "ws_frame.h"		// its handshake
 #include "webnext_path.h"	// /next: the new app from the card
@@ -439,7 +440,7 @@ static boolean Open (const char *pPath)
 static boolean NewAppOnCard (void)
 {
 	FILINFO fi;
-	return f_stat ("SD:/.rytm/www-next/index.html", &fi) == FR_OK || f_stat ("SD:/.rytm/www-next/index.html.gz", &fi) == FR_OK;
+	return f_stat ("SD:/.sidecar/www-next/index.html", &fi) == FR_OK || f_stat ("SD:/.sidecar/www-next/index.html.gz", &fi) == FR_OK;
 }
 
 static const char NewAppHop[] = "<!doctype html><meta charset=utf-8><title>Sidecar</title>"
@@ -481,7 +482,8 @@ static THTTPStatus NextFile (const char *pPath, u8 *pBuffer, unsigned *pLength, 
 // in one place, so the Content-Type and the body can never disagree.
 static boolean WantsText (const char *pPath)
 {
-	return strncmp (pPath, "/fs/", 4) == 0 || strcmp (pPath, "/cmd") == 0 || strcmp (pPath, "/update/put") == 0;
+	return strncmp (pPath, "/fs/", 4) == 0 || strcmp (pPath, "/cmd") == 0 || strcmp (pPath, "/update/put") == 0
+	       || strcmp (pPath, "/teensy/put") == 0 || strcmp (pPath, "/teensy/flash") == 0;
 }
 
 // The session token a request carries: the X-Sidecar-Auth header (what the page sends: a header cannot be set by
@@ -609,7 +611,7 @@ size_t CWebServer::WsBuild (void *pParam, wsproto::Topic Topic, char *pOut, size
 		g_PeakFan.feed_master (g_Output.TakePeak ());
 		float X[peakfan::Fan::kExtra];
 		g_Output.TakeTrkPeaks (X);			// each voice on its own track (only the web reads these)
-		sendfx_pi::TakeBusPeaks (X + 8);		// B1..B3
+		sendfx_pi::TakeBusPeaks (bridge::base_slot (), X + 8);	// B1..B3: the base box's (whose voices g_Output carries)
 		g_PeakFan.feed_extra (X, 0, peakfan::Fan::kExtra);
 		peakfan::Reader r = (peakfan::Reader) (peakfan::kWeb + pThis->m_nWsSlot);
 		g_PeakFan.take_voices (r, Pk);
@@ -877,7 +879,7 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 	else if (strcmp (pPath, "/prevboot") == 0)	// the last crashed boot's report and log tail (kernel.cpp CrumbToCard; paired only)
 	{
 		core::File f;
-		if (!f.open ("/.rytm/prevboot.txt", core::kRead)) return HTTPNotFound;
+		if (!f.open ("/.sidecar/prevboot.txt", core::kRead)) return HTTPNotFound;
 		const unsigned nMax = *pLength < 65536 ? *pLength : 65536;
 		int n = f.read (pBuffer, nMax);
 		f.close ();
@@ -1193,6 +1195,48 @@ THTTPStatus CWebServer::GetContent (const char *pPath, const char *pParams, cons
 		if (r.status == 404 && strcmp (pPath, "/bundle/zip") == 0) return HTTPNotFound;	// (the download's end)
 		*pLength = r.len;	// other refusals: HTTP 200 with {"ok":false,...} (Circle's error pages carry no message)
 		*ppContentType = r.type;
+	}
+	else if (strncmp (pPath, "/teensy/", 8) == 0)		// the Teensy relay's program (teensy_flash.h, docs/teensy-flash.md)
+	{
+		// paired (the gate above), and the writes from this page or a tool (the lenient same-origin check, as /cmd):
+		// the PC's tools/teensy_flash.py sends a build without a browser
+		const char *op = pPath + 8;
+		char Num[24];
+		if (strcmp (op, "state") == 0)
+		{
+			int n = teensy_flash::StateJson ((char *) pBuffer, *pLength);
+			if (n <= 0) return HTTPInternalServerError;
+			*pLength = n;
+			*ppContentType = "application/json";
+		}
+		else if (!FromPage (m_pNet, GetRequestHost (), GetRequestOrigin (), GetRequestReferer (), FALSE))
+		{
+			fsweb::Result rf = {403, "refused: not from this page (the same-origin check)"};
+			Reply (rf, pBuffer, pLength, ppContentType);
+		}
+		else if (strcmp (op, "put") == 0)		// off=, total=, crc= ; the chunk as the multipart's one part (as /update/put)
+		{
+			const char *pHead;
+			const u8 *pData = 0;
+			unsigned nData = 0;
+			if (!GetMultipartFormPart (&pHead, &pData, &nData)) { pData = (const u8 *) ""; nData = 0; }
+			u64 nOff = FormValue (pParams, "off", Num, sizeof Num) ? ParseU64 (Num) : 0;
+			u64 nTotal = FormValue (pParams, "total", Num, sizeof Num) ? ParseU64 (Num) : 0;
+			u32 nCrc = FormValue (pParams, "crc", Num, sizeof Num) ? (u32) ParseU64 (Num) : 0;
+			fsweb::Result r = {400, "bad request"};
+			teensy_flash::Put (nOff, nTotal, nCrc, pData, nData, &r);
+			Reply (r, pBuffer, pLength, ppContentType);
+		}
+		else if (strcmp (op, "flash") == 0)		// expect= (body or query): the build the relay must name afterwards
+		{
+			char Expect[24];
+			if (!FormValue (pFormData, "expect", Expect, sizeof Expect) && !FormValue (pParams, "expect", Expect, sizeof Expect))
+				Expect[0] = 0;
+			fsweb::Result r = {400, "bad request"};
+			teensy_flash::Start (Expect, &r);
+			Reply (r, pBuffer, pLength, ppContentType);
+		}
+		else return HTTPNotFound;
 	}
 	else if (strncmp (pPath, "/update/", 8) == 0)		// the firmware update (update.h, docs/web-update.md)
 	{

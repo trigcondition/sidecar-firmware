@@ -4,7 +4,7 @@
 //   CLASS COMPLIANT ("class"; cmdline usb=sidecar): the Sidecar's own device, UAC2 12 x 12 + USB MIDI (sidecar_gadget.h)
 //   OVERBRIDGE ("overbridge"; cmdline usb=mirror): the attached box itself while it is there (docs/usb-mirror.md)
 //
-// Where it comes from, first match wins: usbmode= in /.rytm/display.txt (stored by the web page's Sound tab, Settings >
+// Where it comes from, first match wins: usbmode= in /.sidecar/display.txt (stored by the web page's Sound tab, Settings >
 // Sound on the touchscreen, or the Rytm's SIDECAR MENU > USB-C: the console's usbmode=), then cmdline.txt's usb=, then
 // CLASS COMPLIANT. So a card with usb=mirror in cmdline.txt and nothing stored stays OVERBRIDGE, and a choice made on
 // the Sidecar wins over cmdline.txt until usbmode=cmdline drops it again. MIDI only and off are still cmdline.txt's

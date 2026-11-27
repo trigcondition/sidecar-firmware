@@ -14,6 +14,7 @@
 #include "pools.h"
 
 namespace core {
+int prj_slot();   // (core/pool/pool.h)
 namespace srclib {
 
 namespace {
@@ -239,10 +240,11 @@ inline void cpy(char* d, int cap, const char* s) {
   d[i] = 0;
 }
 }  // namespace
-CORE_COLD int compose(int k, Entry* out) {
+CORE_COLD int compose(int k, Entry* out) { return compose(prj_slot(), k, out); }
+CORE_COLD int compose(int s, int k, Entry* out) {
   static const char* const kGrp[kBanks] = {"BANK A", "BANK B", "BANK C", "BANK D", "BANK E", "BANK F", "BANK G", "BANK H"};
   for (int c = 0; c < kEntries; ++c) {
-    const pools::Entry& p = pools::at(k, c);
+    const pools::Entry& p = pools::at(s, k, c);
     Entry& e = out[c];
     e.path[0] = 0, e.fixed = -1, e.type = p.type, e.st = p.st, e.size = 0;
     cpy(e.grp, sizeof e.grp, kGrp[bank_of(c)]);
@@ -266,6 +268,7 @@ CORE_COLD int compose(int k, Entry* out) {
   return kEntries;
 }
 CORE_COLD uint32_t pool_sig(int k) { return pools::sig(k); }
+CORE_COLD uint32_t pool_sig(int s, int k) { return pools::sig(s, k); }
 
 CORE_COLD bool hidden_name(const char* n) {
   for (const char* h : kHidden)

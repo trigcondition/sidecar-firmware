@@ -288,7 +288,7 @@ int main() {
     rm(P);
     project_load();
     CHECK(rd(P) == "PWR" && !exists(std::string(P) + ".prev"));
-    CHECK(!strcmp(project, "PWR"));
+    CHECK(!strcmp(prj().key, "PWR"));
     printf("powercut: /.rytm/project: the previous name back, never a half name to open\n");
   }
 

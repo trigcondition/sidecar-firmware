@@ -20,6 +20,10 @@ int track_channel(const MidiConfig& c, int a) {
   if (a == kFxTrack) return c.fx_ch ? c.fx_ch : 13;
   return a < kTracks && c.track_ch[a] ? c.track_ch[a] : a + 1;
 }
+// the channel a pattern is selected on: the Rytm's auto channel, another box's PROG CH IN CH (step 10c)
+int pc_ch(const MidiConfig& c) { return c.pc_in_ch ? c.pc_in_ch : c.auto_ch ? c.auto_ch : 14; }
+// another box's config (step 10c): only its tracks with a channel of their own take a mute (CC 94)
+bool mute_ok(const MidiConfig& c, int k) { return !c.ntracks || c.ntracks == kTracks || (k < c.ntracks && c.track_ch[k]); }
 }  // namespace
 
 CORE_COLD uint32_t pc_time(const Take& t, int sw) {
@@ -57,7 +61,7 @@ CORE_COLD void Replayer::begin(const Take* t) {
 
 CORE_COLD void Replayer::mute_to(uint32_t mask, Port& p) {
   for (int k = 0; k < kTracks; ++k)
-    if ((mask ^ mutes) >> k & 1) cc(p, track_channel(take->cfg, k), 94, mask >> k & 1);
+    if ((mask ^ mutes) >> k & 1 && mute_ok(take->cfg, k)) cc(p, track_channel(take->cfg, k), 94, mask >> k & 1);
   mutes = mask;
 }
 
@@ -96,7 +100,7 @@ CORE_COLD void Replayer::advance(uint32_t t_now, Port& p) {
   if (!running || !take) return;
   int64_t rec = (int64_t)t_now + offset;
   if (next_sw >= 0 && !pc_sent && rec >= (int64_t)pc_time(*take, next_sw)) {
-    uint8_t m[2] = {(uint8_t)(0xC0 | (((take->cfg.auto_ch ? take->cfg.auto_ch : 14) - 1) & 15)), (uint8_t)(take->ev[next_sw].b & 127)};
+    uint8_t m[2] = {(uint8_t)(0xC0 | ((pc_ch(take->cfg) - 1) & 15)), (uint8_t)(take->ev[next_sw].b & 127)};
     p.send(m, 2);
     pc_sent = true;
     ++pcs;
@@ -158,10 +162,15 @@ CORE_COLD bool same_dump(const Buf& a, const Buf& b) {
 
 namespace {
 void pc(Port& p, const MidiConfig& c, int pattern) {   // a pattern selected (stopped: at once; PROG CH RECEIVE on)
-  uint8_t m[2] = {(uint8_t)(0xC0 | (((c.auto_ch ? c.auto_ch : 14) - 1) & 15)), (uint8_t)(pattern & 127)};
+  uint8_t m[2] = {(uint8_t)(0xC0 | ((pc_ch(c) - 1) & 15)), (uint8_t)(pattern & 127)};
   p.send(m, 2);
 }
 void mutes_to(Port& p, const MidiConfig& c, uint32_t mask) {   // every track's mute (CC 94 on its channel)
+  if (c.ntracks && c.ntracks != kTracks) {   // (another box's tracks: those with a channel only)
+    for (int k = 0; k < c.ntracks && k < kTracks; ++k)
+      if (c.track_ch[k]) cc(p, c.track_ch[k], 94, (int)(mask >> k & 1));
+    return;
+  }
   for (int k = 0; k < kTracks; ++k) cc(p, c.track_ch[k] ? c.track_ch[k] : k + 1, 94, (int)(mask >> k & 1));
 }
 bool whole(const Buf& d, int id) {
@@ -301,6 +310,12 @@ CORE_COLD void Restore::relink_done(bool ok, uint32_t ms, Port& p) {
   st = kPattern, at = ms;
 }
 
+CORE_COLD int Restore::sel_target() const {
+  if (st == kBackupSel) return vi < nvisit ? visit[vi] : -1;
+  if (st == kSelect) return take && take->pattern >= 0 ? take->pattern : -1;
+  return -1;
+}
+
 CORE_COLD bool Restore::cancel(Port& p) {
   if (!busy()) return true;
   if (wrote || st > kSelect) return false;
@@ -335,6 +350,12 @@ CORE_COLD void Restore::tick(uint32_t ms, Port& p) {
     return;
   }
   if (ms - at < (st == kSelect || st == kBackupSel ? 4 * kGapMs : kGapMs)) return;
+  if ((st == kSelect || st == kBackupSel) && p.pattern() != -2 && sel_target() >= 0 && p.pattern() != sel_target()) {
+    if (ms - at <= kTimeoutMs) return;   // (step 10c: the box reports its pattern selected first)
+    if (wrote) st = kFailed, want = -1, sniprintf(msg, sizeof msg, "the box did not select the pattern: stopped part way");
+    else fail_unwritten("the box did not select the pattern", p);
+    return;
+  }
   at = ms;
   switch (st) {
     case kBackupSel: st = kBackupReq1, want = kReqKit, tries = 1, p.request(kReqKit); break;
@@ -400,6 +421,13 @@ CORE_COLD void UndoRun::tick(uint32_t ms, Port& p) {
     return;
   }
   if (ms - at < (st == kSelect ? 4 * Restore::kGapMs : Restore::kGapMs)) return;
+  if (st == kSelect && p.pattern() != -2 && list[i]->pattern >= 0 && p.pattern() != list[i]->pattern) {
+    if (ms - at <= Restore::kTimeoutMs) return;   // (step 10c: the box reports its pattern selected first)
+    st = kFailed;
+    sniprintf(msg, sizeof msg, wrote ? "the box did not select the pattern: the undo stopped part way"
+                                     : "the box did not select the pattern: nothing written");
+    return;
+  }
   at = ms;
   const Take& e = *list[i];
   switch (st) {

@@ -11,6 +11,7 @@
 #include "hooks.h"
 #include "machines.h"
 #include "midim/midim.h"
+#include "pool/pool.h"
 #if CORE_MSAMP
 #include "nmach.h"
 #endif
@@ -59,9 +60,16 @@ Echo echoes[16];
 int echo_w = 0;
 uint32_t guard_ms[kVoices];   // a forwarded key's release on a Sidecar voice: the Rytm's 0x04s there swallowed kEchoMs after
 void (*fwd_fn)(uint8_t, uint8_t, uint8_t) = nullptr;
-Mode mode = kSelected;
-int auto_ch = kAutoCh;
-bool mac_on = true, dirty = false;
+// 3(c) step 8: the settings (mode, auto channel, the computer keys) per box, the slot in hand's (prj_slot): each in its own
+// folder's keys.txt (slot 0's loaded at boot, another's at its attach)
+struct Set {
+  Mode mode = kSelected;
+  int auto_ch = kAutoCh;
+  bool mac_on = true, dirty = false;
+  fmt::KvKeep keep;   // the lines a newer build wrote that this one does not read (fmt.h, class S: kept)
+};
+Set g_set[kVoiceSlots];
+inline Set& K() { return g_set[prj_slot()]; }
 int learned = -1;
 uint32_t last_key_ms = 0;
 int last_src_track = -1;
@@ -122,11 +130,11 @@ struct Target {
 };
 CORE_COLD Target target(int src, int ch) {
   Target r = {-1, -1, ch, false};
-  r.by_channel = mode == kChannel || (src == kComputer && ch != auto_ch - 1);
+  r.by_channel = K().mode == kChannel || (src == kComputer && ch != K().auto_ch - 1);
   if (r.by_channel) {
     if (ch < 12) r.track = ch;
   } else {
-    r.fwd = auto_ch - 1;
+    r.fwd = K().auto_ch - 1;
     r.track = selected();
   }
   int vi;
@@ -294,9 +302,9 @@ CORE_COLD void learn(int vi) {
 
 CORE_COLD void set_forward(void (*f)(uint8_t, uint8_t, uint8_t)) { fwd_fn = f; }
 CORE_COLD void forward_note(uint8_t st, uint8_t d1, uint8_t d2) { if (fwd_fn) fwd_fn(st, d1, d2); }
-CORE_COLD bool computer_on() { return mac_on; }
+CORE_COLD bool computer_on() { return K().mac_on; }
 
-CORE_COLD int auto_channel() { return auto_ch; }
+CORE_COLD int auto_channel() { return K().auto_ch; }
 CORE_COLD const char* source_name(int src) { return src >= 0 && src < kSrcs && srcs[src].present ? srcs[src].name : ""; }
 CORE_COLD int selected() {
   int t = ui::remote_src_track();
@@ -308,7 +316,7 @@ CORE_COLD int selected() {
 
 CORE_COLD void midi(int src, uint8_t status, uint8_t d1, uint8_t d2) {
   if (src < 0 || src >= kSrcs || status < 0x80 || status >= 0xF0) return;
-  if (src == kComputer && !mac_on) return;
+  if (src == kComputer && !K().mac_on) return;
   Src& s = srcs[src];
   if (!s.present) {
     s.present = true;
@@ -389,7 +397,7 @@ CORE_COLD View view() {
   v.held = held_count();
   v.present = 0;
   for (int i = 0; i < kSrcs; ++i) v.present |= srcs[i].present << i;
-  v.mode = mode;
+  v.mode = K().mode;
   return v;
 }
 
@@ -397,7 +405,7 @@ CORE_COLD const char* line(char* b, int cap) {
   View v = view();
   if (!v.present) return nullptr;
   if (v.src < 0) {
-    sniprintf(b, cap, CORE_STR("KEYS %s"), mode == kChannel ? "BY CHANNEL" : "> SELECTED");
+    sniprintf(b, cap, CORE_STR("KEYS %s"), K().mode == kChannel ? "BY CHANNEL" : "> SELECTED");
     return b;
   }
   const char* r = v.route == kPoly ? "POLY" : v.route == kProbe ? "RYTM ?" : "RYTM";
@@ -408,9 +416,24 @@ CORE_COLD const char* line(char* b, int cap) {
 
 const Stats& stats() { return st; }
 
-fmt::KvKeep g_keep;   // the lines a newer build wrote that this one does not read (fmt.h, class S: kept)
+// the file's text into the slot in hand's settings (a missing key: its default)
+CORE_COLD void take_text(const char* b, int got) {
+  Set& x = K();
+  x.keep.n = 0;
+  x.mode = kSelected, x.auto_ch = kAutoCh, x.mac_on = true;
+  if (got <= 0) return;
+  static const char* const kKnown[] = {"mode", "auto", "mac", nullptr};
+  fmt::kv_keep(b, (uint32_t)got, kKnown, &x.keep);
+  x.mode = strstr(b, "mode=channel") ? kChannel : kSelected;
+  const char* a = strstr(b, "auto=");
+  if (a) {
+    int c = atoi(a + 5);
+    if (c >= 1 && c <= 16) x.auto_ch = c;
+  }
+  x.mac_on = !strstr(b, "mac=0");
+}
 CORE_COLD void load() {
-  g_keep.n = 0;
+  K().keep.n = 0;
   File f;
   fmt::post_wait(kFile);   // 0.3.0: a posted save of it lands before we read it back (fmt.h)
   fmt::recover(kFile);   // a power cut between write_atomic's renames: the previous file back, a stray .tmp removed
@@ -419,28 +442,20 @@ CORE_COLD void load() {
   memset(b, 0, sizeof b);
   int got = f.read(b, sizeof b - 1);
   f.close();
-  static const char* const kKnown[] = {"mode", "auto", "mac", nullptr};
-  if (got > 0) fmt::kv_keep(b, (uint32_t)got, kKnown, &g_keep);
-  mode = strstr(b, "mode=channel") ? kChannel : kSelected;
-  const char* a = strstr(b, "auto=");
-  if (a) {
-    int c = atoi(a + 5);
-    if (c >= 1 && c <= 16) auto_ch = c;
-  }
-  mac_on = !strstr(b, "mac=0");
+  take_text(b, got);
 }
 
 // 0.3.0 power-cut safety: posted to the card core as one atomic write (fmt.h), the keys a newer build wrote appended
 // unchanged (class S, kv_append) - so a cut leaves keys.txt whole and a downgrade does not drop 0.4's settings.
 CORE_COLD bool save() {
-  if (!dirty) return false;
+  if (!K().dirty) return false;
   char* t = fmt::post_begin();
   if (!t) return false;   // another settings write is in flight: at a later pass (still dirty)
   uint32_t n = (uint32_t)sniprintf(t, 64, CORE_STR("mode=%s\nauto=%d\nmac=%d\n"),
-                                   mode == kChannel ? "channel" : "selected", auto_ch, mac_on ? 1 : 0);
-  n = fmt::kv_append(g_keep, t, n, fmt::kPostMax);
+                                   K().mode == kChannel ? "channel" : "selected", K().auto_ch, K().mac_on ? 1 : 0);
+  n = fmt::kv_append(K().keep, t, n, fmt::kPostMax);
   if (!fmt::post_end(kFile, n)) return false;
-  dirty = false;
+  K().dirty = false;
   return true;
 }
 
@@ -449,15 +464,15 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     const char* a = p + 5;
     if (!strcmp(a, "selected") || !strcmp(a, "channel")) {
       Mode m = a[0] == 'c' ? kChannel : kSelected;
-      if (m != mode) dirty = true;
-      mode = m;
+      if (m != K().mode) K().dirty = true;
+      K().mode = m;
     } else if (!strncmp(a, "auto:", 5) && atoi(a + 5) >= 1 && atoi(a + 5) <= 16) {
-      if (atoi(a + 5) != auto_ch) dirty = true;
-      auto_ch = atoi(a + 5);
+      if (atoi(a + 5) != K().auto_ch) K().dirty = true;
+      K().auto_ch = atoi(a + 5);
     } else if (!strcmp(a, "mac:on") || !strcmp(a, "mac:off")) {
       bool on = !strcmp(a, "mac:on");
-      if (on != mac_on) dirty = true;
-      mac_on = on;
+      if (on != K().mac_on) K().dirty = true;
+      K().mac_on = on;
     } else {
       sniprintf(out, cap, CORE_STR("keys=selected|channel, keys=auto:1..16, keys=mac:on|off"));
       return true;
@@ -472,7 +487,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   int n = sniprintf(out, cap, CORE_STR("keys: %s (auto channel %d, computer %s), selected %s; %s; %lu notes (%lu Sidecar, "
                                        "%lu to the Rytm, %lu probes, %lu learned, %lu swallowed, %lu sustained, %lu chords "
                                        "written, %lu dropped); sources"),
-                    mode == kChannel ? "by channel" : "the selected track", auto_ch, mac_on ? "on" : "off",
+                    K().mode == kChannel ? "by channel" : "the selected track", K().auto_ch, K().mac_on ? "on" : "off",
                     sel >= 0 ? kTrackNames[sel] : "unknown", ln ? ln : "no source", (unsigned long)st.notes,
                     (unsigned long)st.poly, (unsigned long)st.forwarded, (unsigned long)st.probes,
                     (unsigned long)st.learned, (unsigned long)st.swallowed, (unsigned long)st.sustained,
@@ -489,7 +504,7 @@ CORE_COLD void reset() {
   memset(guard_ms, 0, sizeof guard_ms);
   memset(&st, 0, sizeof st);
   echo_w = 0;
-  mode = kSelected, auto_ch = kAutoCh, mac_on = true, dirty = false;
+  for (Set& x : g_set) x.mode = kSelected, x.auto_ch = kAutoCh, x.mac_on = true, x.dirty = false, x.keep.n = 0;
   learned = -1, last_key_ms = 0, last_src_track = -1;
   v_last = {-1, "", -1, -1, kNone, 0, 0, kSelected};
 }

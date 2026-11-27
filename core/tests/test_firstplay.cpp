@@ -201,7 +201,7 @@ int main() {
   char tmpl[] = "/tmp/firstplay-XXXXXX";
   CHECK(mkdtemp(tmpl));
   g_card = tmpl;
-  CHECK(system(("mkdir -p '" + g_card + "/MULTISAMPLE/fp' '" + g_card + "/.rytm'").c_str()) == 0);
+  CHECK(system(("mkdir -p '" + g_card + "/MULTISAMPLE/fp' '" + g_card + "/.rytm' '" + g_card + "/.sidecar'").c_str()) == 0);
   for (int i = 0; i < kSamples; ++i) wav(g_card + "/MULTISAMPLE/fp/s" + std::to_string(i) + ".wav", kFrames, 2, 24, i);
   std::string stream = inst("streamed", "stream"), ram = inst("inram", "ram"), first = inst("first", "auto");
   // another instrument in RAM, and a sample of its own (other contents than fp's: nothing of it in the cache)
@@ -405,7 +405,7 @@ int main() {
     bool w = cardq::worker();
     cardq::set_worker(false);
     for (int i = 0; i < 3000 && pools::saving(); ++i) pu::steps(1), g_us += 1000, host_fake_time(true, g_us);
-    snprintf(core::project, sizeof core::project, "%s", "ELSEWHERE");
+    snprintf(core::prj().key, sizeof core::prj().key, "%s", "ELSEWHERE");
     for (int i = 0; i < 4000 && (strcmp(pools::project(), "ELSEWHERE") || !pools::ready()); ++i) pu::steps(1), g_us += 1000, host_fake_time(true, g_us);
     CHECK(!strcmp(pools::project(), "ELSEWHERE"));
     cardq::set_worker(w);
@@ -413,7 +413,7 @@ int main() {
     CHECK(msamp::keep_waiting() == 0 && msamp::voice_slot(0) < 0);
     CHECK(whole("fp", 0) && !whole("fp", 1));   // the whole one stays, the fill's is gone
     cardq::set_worker(false);
-    snprintf(core::project, sizeof core::project, "%s", "");
+    snprintf(core::prj().key, sizeof core::prj().key, "%s", "");
     for (int i = 0; i < 4000 && (strcmp(pools::project(), "_default") || !pools::ready()); ++i) pu::steps(1), g_us += 1000, host_fake_time(true, g_us);
     cardq::set_worker(w);
     settle();
@@ -648,7 +648,7 @@ int main() {
   }
   // ---- the card test's stream limits read at begin through the card core
   {
-    text(g_card + "/.rytm/sdtest.txt", "verdict=x\nahead_ms=250\nstreams=12\n");
+    text(g_card + "/.sidecar/sdtest.txt", "verdict=x\nahead_ms=250\nstreams=12\n");
     msamp::begin(true);
     for (int i = 0; i < 1000 && msamp::load_phase(); ++i) render(1);
     render(100);

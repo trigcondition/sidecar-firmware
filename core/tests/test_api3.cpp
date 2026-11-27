@@ -790,7 +790,7 @@ int main() {
     sysex({0xf0, 0x7d, 0x52, 0x54, 0x10, 'B', '3', 0xf7});   // another project: its fxslots file names nothing
     idle_all();
     for (int i = 0; i < 20; ++i) g_t += 1000, host_fake_time(true, g_t), sendfx_step();
-    CHECK(!strcmp(core::project, "B3"));
+    CHECK(!strcmp(core::prj().key, "B3"));
     CHECK(listed(64, "PINGPONG") && fx::user[0].tag == fx::fx_tag("PINGPONG"));
     sysex({0xf0, 0x7d, 0x52, 0x54, 0x10, 'A', '3', 0xf7});
     idle_all();

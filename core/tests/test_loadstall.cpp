@@ -180,10 +180,10 @@ int main() {
   // a project switch: the old project's lists flushed, the new one's three lists and its used set read - every card
   // operation on the card core
   Run sw;
-  snprintf(project, sizeof project, "%s", "OTHER");
+  snprintf(prj().key, sizeof prj().key, "%s", "OTHER");
   for (int i = 0; i < 2000 && (!pools::ready() || strcmp(pools::project(), "OTHER")); ++i) step(sw);
   CHECK(pools::ready() && !strcmp(pools::project(), "OTHER"));
-  snprintf(project, sizeof project, "%s", "");
+  snprintf(prj().key, sizeof prj().key, "%s", "");
   for (int i = 0; i < 2000 && (!pools::ready() || strcmp(pools::project(), "_default")); ++i) step(sw);
   CHECK(pools::ready() && pools::at(pools::kSamples, pools::code(2, 5)).type == pools::kSample);
   print("project switch and back (the lists read)", sw);

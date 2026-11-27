@@ -210,7 +210,7 @@ taken (`pi/ui/touch_cal.c`, unit test `pi/engine/tests/test_touch_cal.cpp`):
 
 - Which raw axis runs along the screen's x (swapped axes), and per axis the raw values at the screen's edges
   (an inverted axis: its edge values reversed).
-- Stored as `touchcal=X0,X1,Y0,Y1,SWAP` in `/.rytm/display.txt` (also a console command; `touchcal=off` or **RESET**
+- Stored as `touchcal=X0,X1,Y0,Y1,SWAP` in `/.sidecar/display.txt` (also a console command; `touchcal=off` or **RESET**
   goes back to the default). Logged as `display: touchcal=...` and `touch: calibration x X0..X1, y Y0..Y1`.
 - It wins over cmdline `touchscreen=` and the descriptor's range. It maps straight to the UI's pixels (with a UI
   centred on a bigger frame buffer too).
@@ -233,7 +233,7 @@ The size follows the **frame buffer**, which the firmware sets from config.txt b
   prefers 1024x600, else 800x480. A frame buffer of exactly 1024x600 or 800x480 is not scaled. [inferred: the Pi 5's
   answer to the EDID property is not yet seen on hardware.]
 - Touch Display 2 (a portrait panel turned, "Touch Display 2 on the Pi 5"): 1280x720, the whole panel. HDMI at any size never picks 1280x720 by itself.
-- **Override:** `res=800x480`, `res=1024x600`, `res=1280x720` or `res=auto` in `/.rytm/display.txt` (a line of its own, added by hand; kept
+- **Override:** `res=800x480`, `res=1024x600`, `res=1280x720` or `res=auto` in `/.sidecar/display.txt` (a line of its own, added by hand; kept
   when the engine rewrites the file) or in `cmdline.txt` (wins). Read once at boot, before LVGL starts: a change needs a
   reboot. A size that does not fit the frame buffer is refused (log line) and the choice is automatic. Example: a
   1024x600 frame buffer with `res=800x480` shows the 800x480 layout centred (bigger margins, the same pixel sizes).
@@ -269,7 +269,7 @@ The log (Pi 4, GeeekPi, expected):
 
     display: firmware 1 display(s): 0=HDMI0 -> frame buffer on 0 1024x600
     display: EDID: <name> preferred 1024x600 (60 Hz), the frame buffer's size
-    display: UI 1024x600 on the frame buffer's 1024x600 (res=800x480|1024x600 in /.rytm/display.txt or cmdline.txt)
+    display: UI 1024x600 on the frame buffer's 1024x600 (res=800x480|1024x600 in /.sidecar/display.txt or cmdline.txt)
     display: 1024x600, LVGL 9.4
     engine: display: 1024x600, input touch (USB), longest update N us      (every 10 s)
 
@@ -385,7 +385,7 @@ The log:
     display: DSI: DISP0: display regulator id 0xNN (Touch Display 2, 7")
     rp1touch2: Touch controller GT911 at I2C 0x5D
     display: DSI: DISP0 1280x720 (rp1dsi, no scaling), rotation 270, touch Goodix polled
-    display: UI 1280x720 on the frame buffer's 1280x720 (res=800x480|1024x600|1280x720 in /.rytm/display.txt or cmdline.txt)
+    display: UI 1280x720 on the frame buffer's 1280x720 (res=800x480|1024x600|1280x720 in /.sidecar/display.txt or cmdline.txt)
     display: touch: DSI (rp1dsi)
     display: touch: down raw 360,640 -> 512,299
     engine: display: 1024x600, input touch (DSI), longest update N us, rotate 270 longest N us, total N us
@@ -563,7 +563,7 @@ A USB mouse on this panel still moves in the panel's portrait range: not handled
     `brightness=PCT`.
 - **Touch test:** shown by default; `touchtest=0` hides it (the Touch works button, the console, or `touchtest=0` in the file), `touchtest=1` shows it again (About page toggle or console).
 - Settings > **System** (the former Service tab: FIFO target and the test drone for testing) also holds the CPU clock, 1500 / 1200 / 1000 MHz (`cpumhz=`, docs/pi-engine.md "CPU clock"); it is stored in the same file when it is not the default.
-- The settings are stored in `/.rytm/display.txt` (`screensaver=60`, `brightness=100`, `touchtest=1`, `uistyle=oled`, and
+- The settings are stored in `/.sidecar/display.txt` (`screensaver=60`, `brightness=100`, `touchtest=1`, `uistyle=oled`, and
   `res=` when one was added by hand: "Screen sizes"), written by core 0 as a whole file (tmp + rename). `screensaver=`, `brightness=`, `touchtest=` and `uistyle=` in cmdline.txt override
   the file at boot.
 - **UI style:** `uistyle=oled|sidecar|guide` (console, web page, the Display page; an older card's `classic` reads as `sidecar`, a `square`, `2` or `3` from the 0.5.1 test build as `guide`, the stored word of GRID, which `grid` also reads): the theme, switched live (docs/UI-THEMES.md).

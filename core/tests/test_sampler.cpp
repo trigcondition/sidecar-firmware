@@ -418,8 +418,8 @@ int main() {
   setenv("CORE_POOL_RAM_MB", "64", 1);
   setenv("CORE_SAMPLE_RAM_MB", "16", 1);   // the Pi: the sample plays from the sample RAM
   CHECK(engine_begin() && card_ok && psram && engines);
-  for (int i = 0; i < 2000 && npool < 2; ++i) idle_stream();
-  CHECK(npool == 2 && pool[0].folder >= 0 && pool[1].folder >= 0);
+  for (int i = 0; i < 2000 && prj().npool < 2; ++i) idle_stream();
+  CHECK(prj().npool == 2 && pool[0].folder >= 0 && pool[1].folder >= 0);
   CHECK(kLong > (int)rytm::SampleRamPool::kMaxFrames);
 
   t_long_sample();   // first: A002 not in the sample RAM yet

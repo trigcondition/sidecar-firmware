@@ -66,7 +66,7 @@ constexpr unsigned kHeadMax = 256, kLineMax = 2 + kIdHex + 1 + 64 + 1 + kNameMax
 constexpr unsigned kFileMax = kHeadMax + kClients * kLineMax + 1;
 constexpr unsigned kSessions = 16;		// sessions at once (the least recently used goes)
 
-constexpr const char *kPath = "/.rytm/pair.txt";		// the remembered clients (as /.rytm/wifi.txt is written)
+constexpr const char *kPath = "/.sidecar/pair.txt";		// the remembered clients (as /.sidecar/wifi.txt is written)
 // The recourse file at the card root, written ONLY when there is genuinely no display to show the code on. Every
 // read of the card is behind the gate (web.cpp's Open()), so it is not reachable over the network; it is readable by
 // whoever holds the card, which is the documented and deliberate limit of this scheme (docs/pi-engine.md "Pairing

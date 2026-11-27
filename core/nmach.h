@@ -26,13 +26,13 @@ inline int forced(int vi) {
 }
 // The note machine voice vi plays: its state, else a forced one before the voice's first report; 0 none.
 inline int of(int vi) {
-  const V& x = v[vi & 7];
+  const V& x = v[voice_wrap(vi)];
   if (x.ms) return kMultiMachine;
   if (x.wt) return kWaveMachine;
   if (x.gr) return kGranMachine;
   if (x.cp) return kChopMachine;
   if (x.mi) return kMidiMachine;
-  return forced(vi & 7);
+  return forced(voice_wrap(vi));
 }
 inline bool is(int vi) { return of(vi) != 0; }
 
@@ -88,11 +88,11 @@ inline int voice_notes(int vi) {
 }
 // CC 120 / the link reset: every note machine's notes of voice vi gone (whichever it plays)
 inline void silence_all(int vi) {
-  if (v[vi & 7].ms) msamp::silence(vi & 7);
-  if (v[vi & 7].wt) wt::silence(vi & 7);
-  if (v[vi & 7].gr) gr::silence(vi & 7);
-  if (v[vi & 7].cp) chop::silence(vi & 7);
-  midim::silence(vi & 7);   // (whatever the voice plays now: its notes were sent)
+  if (v[voice_wrap(vi)].ms) msamp::silence(voice_wrap(vi));
+  if (v[voice_wrap(vi)].wt) wt::silence(voice_wrap(vi));
+  if (v[voice_wrap(vi)].gr) gr::silence(voice_wrap(vi));
+  if (v[voice_wrap(vi)].cp) chop::silence(voice_wrap(vi));
+  midim::silence(voice_wrap(vi));   // (whatever the voice plays now: its notes were sent)
 }
 // The render core's, a voice on OUT PRE / POST: the notes' pair added into l / r (MULTISAMPLE, GRANULAR: true;
 // WAVETABLE has no stereo of its own: false, the caller renders it mono)

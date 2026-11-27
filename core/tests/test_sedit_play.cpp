@@ -421,7 +421,7 @@ static void t_preview() {
 static void check_row_plays(int c, double lvl) {
   float smp = (float)(c % srclib::kBankRows) + srclib::lo_of(c) / 128.0f;
   const int slot = pool_slot(smp);
-  CHECK(slot > 0 && slot <= npool);
+  CHECK(slot > 0 && slot <= prj().npool);
   int st = 0, pr = 0;
   CHECK(ui::wave_of_slot(slot, &st, &pr) != nullptr);   // (null: the WAVE page's EMPTY SLOT)
   card::FileRec r;   // the index's record: the file's own length (the WAVE page reads frames = data_len / bpf)
@@ -925,7 +925,7 @@ int main() {
   cardq::reset();
   cardq::set_worker(true);
   CHECK(engine_begin() && card_ok && psram && engines);
-  snprintf(core::project, sizeof core::project, "LIVE");
+  snprintf(core::prj().key, sizeof core::prj().key, "LIVE");
   lib::begin(true);
   for (int i = 0; i < 200000 && (i < 50 || lib::busy() || lib::stats().state != lib::kReady); ++i) pass();
   for (int i = 0; i < 4000 && !(pools::ready() && !strcmp(pools::project(), "LIVE")); ++i) pass();

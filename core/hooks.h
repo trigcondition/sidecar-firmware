@@ -33,9 +33,15 @@ struct Hooks {
   // as MIDI realtime: 0xFA start, 0xFB continue, 0xFC stop (pause too). The control core; null: ignored. The Pi's
   // recorder arms on it as on the MIDI messages (its gate is idempotent: both may arrive).
   void (*transport)(uint8_t status);
+  // 3(c): every voice slot's sequencer transport, as transport (slot 0's comes through both): the box's own clock out to
+  // the platform. The Pi arms its recorder on the base box's (rec_pi.cpp). Null: ignored.
+  void (*transport_box)(int slot, uint8_t status);
   // Another box needs another state folder (core/device/device.h): saved, restart the Sidecar. Null: a board that cannot.
   void (*device_restart)();
-  // The recent log copied to the card once, as /.rytm/logs/<name>.log (the Rytm's first freeze probe of a boot,
+  // True on the control core (the Pi: core 3). Read by the file layer to pick the link a path is for (device::path_link):
+  // the control core's own Scope, or the card core's request. Null: one thread, always the control core.
+  bool (*control_core)();
+  // The recent log copied to the card once, as /.sidecar/logs/<name>.log (the Rytm's first freeze probe of a boot,
   // core/host_link.cpp). Any core; only asks: the platform writes it later, off the audio path. Null: nothing kept.
   void (*log_snapshot)(const char* name);
 };

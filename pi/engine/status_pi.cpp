@@ -9,16 +9,17 @@
 namespace status_pi {
 
 void Core(sidecar_status_view_t* o) {
+  const int b = bridge::out_base();   // the page's voices: the base box's (slot 1's 8..15 while a box is alone)
   for (int v = 0; v < SST_VOICES; ++v)   // LIVE IN: its input level / gate / feedback mute instead ("LIVE -18DB")
-    if (!bridge::livein_status(v, o->mach[v], sizeof o->mach[v]))
-      sniprintf(o->mach[v], sizeof o->mach[v], "%s", bridge::machine_name(v));
+    if (!bridge::livein_status(b + v, o->mach[v], sizeof o->mach[v]))
+      sniprintf(o->mach[v], sizeof o->mach[v], "%s", bridge::machine_name(b + v));
   // E0 (core/inst.h): a voice playing the sequencer's instances shows how many ("PLAITS x4"); the pool's use, the
   // measured cost of one instance (their render time over the instances that rendered), the RAM of one
   int used = 0, meas = 0, n = 0;
   for (int v = 0; v < SST_VOICES; ++v) {
-    core::inst::VoiceStat s = core::inst::stat(v);
+    core::inst::VoiceStat s = core::inst::stat(b + v);
     if (s.path == 3 && s.instances > 1)
-      sniprintf(o->mach[v], sizeof o->mach[v], "%.6s x%d", bridge::machine_name(v), s.instances);
+      sniprintf(o->mach[v], sizeof o->mach[v], "%.6s x%d", bridge::machine_name(b + v), s.instances);
     if (s.path == 3) used += s.sounding;
     if (s.path == 3 && s.meas100 > 0 && s.sounding > 0) meas += s.meas100, n += s.sounding;
   }

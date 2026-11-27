@@ -1,7 +1,7 @@
 // pi/engine/blackbox_pi.cpp - see blackbox.h. Core 0 only (FatFs on this core, the loop's own task); each write is
 // open (append) / write / close, so a reset loses at most the ~2 s not yet written. Each write is timed (mbtrace 42,
 // also its crumb section): a slow card shows up in /status's mbtrace like the loop's other steps.
-// No reboot loop on a card that hangs a write: the first write of a boot is bracketed by /.rytm/blackbox.try (made
+// No reboot loop on a card that hangs a write: the first write of a boot is bracketed by /.sidecar/blackbox.try (made
 // before, removed after); a boot that finds it (the one before hung there, the crumb's RAM not kept on the Pi 4's
 // sdboot path) leaves the black box off and removes it, so the boot after tries again. Also off after the crumb says
 // core 0 died in section 42.
@@ -19,7 +19,7 @@ extern "C" int core_snprintf (char *out, size_t n, const char *fmt, ...);
 namespace blackbox_pi {
 namespace {
 const char From[] = "blackbox";
-const char kPath[] = "SD:/.rytm/blackbox.log", kOld[] = "SD:/.rytm/blackbox.1.log", kTry[] = "SD:/.rytm/blackbox.try";
+const char kPath[] = "SD:/.sidecar/blackbox.log", kOld[] = "SD:/.sidecar/blackbox.1.log", kTry[] = "SD:/.sidecar/blackbox.try";
 enum { kWait, kOn, kOff } s_State = kWait;
 uint64_t s_nDone, s_nLost, s_nLostShown, s_nBytes, s_nFile, s_nLastMs, s_nRetryMs;
 unsigned s_nWrites, s_nFails, s_nFailsInRow;
@@ -40,7 +40,19 @@ void Off (const char *pWhy)
 }
 
 // one write: the bytes logged since the last one (a chunk at most); FALSE when the card refused it (nothing taken then)
+volatile bool s_bWriting;		// inside WriteOnce: a panic from the card's own path must not write again
+
+boolean WriteOnceInner (void);
+
 boolean WriteOnce (void)
+{
+	s_bWriting = true;
+	boolean b = WriteOnceInner ();
+	s_bWriting = false;
+	return b;
+}
+
+boolean WriteOnceInner (void)
 {
 	mbtrace::Scope Mb (42, 200);
 	const uint64_t nDone = s_nDone, nLost = s_nLost, nShown = s_nLostShown;
@@ -79,7 +91,7 @@ boolean WriteOnce (void)
 	return bOK;
 }
 
-// The freeze snapshot (SnapshotAsk): the last kSnap bytes of blackbox.log copied to /.rytm/logs/<name>.log, one piece a
+// The freeze snapshot (SnapshotAsk): the last kSnap bytes of blackbox.log copied to /.sidecar/logs/<name>.log, one piece a
 // pass of the loop (the SD's streams first), so the minutes before a freeze outlive the rotation. Without the black box
 // (off): the crumb's log ring (~30 s) at once.
 constexpr unsigned kSnap = 256 * 1024;
@@ -92,14 +104,14 @@ void SnapDone (unsigned nBytes, const char *pWhy)
 {
 	s_nSnap = 3;
 	if (pWhy != 0) CLogger::Get ()->Write (From, LogWarning, "the log before the freeze not kept: %s", pWhy);
-	else CLogger::Get ()->Write (From, LogNotice, "the log before the freeze is in /.rytm/logs/%s.log (%u KB)", s_SnapName, nBytes / 1024);
+	else CLogger::Get ()->Write (From, LogNotice, "the log before the freeze is in /.sidecar/logs/%s.log (%u KB)", s_SnapName, nBytes / 1024);
 }
 
 boolean SnapCreate (void)
 {
-	f_mkdir ("SD:/.rytm");
-	f_mkdir ("SD:/.rytm/logs");
-	core_snprintf (s_SnapPath, sizeof s_SnapPath, "SD:/.rytm/logs/%s.log", s_SnapName);
+	f_mkdir ("SD:/.sidecar");
+	f_mkdir ("SD:/.sidecar/logs");
+	core_snprintf (s_SnapPath, sizeof s_SnapPath, "SD:/.sidecar/logs/%s.log", s_SnapName);
 	FIL f;
 	if (f_open (&f, s_SnapPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return FALSE;
 	return f_close (&f) == FR_OK;
@@ -160,21 +172,21 @@ void SnapshotAsk (const char *pName)
 
 boolean Start (void)
 {
-	if (crumb::PrevDiedIn (42)) { Off ("the previous boot hung writing /.rytm/blackbox.log"); return FALSE; }
+	if (crumb::PrevDiedIn (42)) { Off ("the previous boot hung writing /.sidecar/blackbox.log"); return FALSE; }
 	mbtrace::Scope Mb (42, 200);
-	f_mkdir ("SD:/.rytm");
+	f_mkdir ("SD:/.sidecar");
 	FILINFO Info;
 	if (f_stat (kTry, &Info) == FR_OK)
 	{
 		f_unlink (kTry);
-		Off ("the previous boot did not finish its first write to /.rytm/blackbox.log (on again next boot)");
+		Off ("the previous boot did not finish its first write to /.sidecar/blackbox.log (on again next boot)");
 		return FALSE;
 	}
 	s_nFile = f_stat (kPath, &Info) == FR_OK ? Info.fsize : 0;
 	FIL f;
 	if (f_open (&f, kTry, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) { Off ("the card cannot be written"); return FALSE; }
 	f_close (&f);
-	CLogger::Get ()->Write (From, LogNotice, "the log goes to /.rytm/blackbox.log too (%u KB there; blackbox.1.log the one before)",
+	CLogger::Get ()->Write (From, LogNotice, "the log goes to /.sidecar/blackbox.log too (%u KB there; blackbox.1.log the one before)",
 				(unsigned) (s_nFile / 1024));
 	s_State = kOn;
 	for (int i = 0; i < 8 && s_State == kOn && crumb::area ()->log_total != s_nDone; ++i)	// the boot's log so far
@@ -207,7 +219,7 @@ void Poll (void)
 	}
 	s_nFails++;			// the card gone or full: again in 30 s; off after 10 in a row (until the next boot)
 	s_nRetryMs = 30000;
-	if (++s_nFailsInRow == 10) Off ("/.rytm/blackbox.log could not be written 10 times in a row");
+	if (++s_nFailsInRow == 10) Off ("/.sidecar/blackbox.log could not be written 10 times in a row");
 }
 
 #ifdef SIDECAR_PI5_TESTMODE
@@ -245,6 +257,18 @@ void Flush (void)
 {
 	for (int i = 0; i < 4 && s_State == kOn && crumb::area ()->log_total != s_nDone; ++i)
 		if (!WriteOnce ()) break;
+}
+
+// A panic (CLogger's panic handler, kernel.cpp): its line is in the crumb's ring but would never reach the card, as
+// core 0 halts before its loop's next write and the reset loses the ring (the Pi 4's sdboot / rpiboot path keeps no
+// RAM). Written out only on core 0, with the black box on, no write of its own under way and no disk transfer in
+// flight (a panic from the card's path itself). A write that hangs ends as the panic would anyway: the watchdog.
+void PanicFlush (void)
+{
+	unsigned long nMpidr;
+	asm volatile ("mrs %0, mpidr_el1" : "=r" (nMpidr));
+	if ((nMpidr & 0xFF) != 0 || s_State != kOn || s_bWriting || crumb::area ()->disk.busy != 0) return;
+	Flush ();
 }
 
 unsigned Status (char *pOut, unsigned nMax)

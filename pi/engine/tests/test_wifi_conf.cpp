@@ -112,8 +112,8 @@ static void test_save ()
 	char tmpl[] = "/tmp/wificonf-XXXXXX";
 	CHECK (mkdtemp (tmpl));
 	g_root = tmpl;
-	mkdir (mac ("/.rytm").c_str (), 0755);
-	const char *P = "/.rytm/wifi.txt";
+	mkdir (mac ("/.sidecar").c_str (), 0755);
+	const char *P = "/.sidecar/wifi.txt";
 	Conf a, b, r;
 	defaults (&a); a.on = true; strcpy (a.ssid, "Fake-A"); strcpy (a.psk, FakeKey);
 	defaults (&b); b.on = true; strcpy (b.ssid, "Fake-B"); b.open = true;
@@ -121,40 +121,40 @@ static void test_save ()
 	CHECK (save (kFs, P, &a, true));
 	parse (slurp (P).c_str (), &r);
 	CHECK (strcmp (r.ssid, "Fake-A") == 0);
-	parse (slurp ("/.rytm/wifi.txt.prev").c_str (), &r);
+	parse (slurp ("/.sidecar/wifi.txt.prev").c_str (), &r);
 	CHECK (!r.on && !has_network (&r));
-	CHECK (!f_exists ("/.rytm/wifi.txt.part"));
+	CHECK (!f_exists ("/.sidecar/wifi.txt.part"));
 	// A to B, A kept
 	CHECK (save (kFs, P, &b, true));
 	parse (slurp (P).c_str (), &r);
 	CHECK (strcmp (r.ssid, "Fake-B") == 0 && r.open);
-	parse (slurp ("/.rytm/wifi.txt.prev").c_str (), &r);
+	parse (slurp ("/.sidecar/wifi.txt.prev").c_str (), &r);
 	CHECK (strcmp (r.ssid, "Fake-A") == 0);
 	// restore: A back, no .prev left
 	CHECK (restore (kFs, P));
 	parse (slurp (P).c_str (), &r);
-	CHECK (strcmp (r.ssid, "Fake-A") == 0 && !f_exists ("/.rytm/wifi.txt.prev"));
+	CHECK (strcmp (r.ssid, "Fake-A") == 0 && !f_exists ("/.sidecar/wifi.txt.prev"));
 	CHECK (!restore (kFs, P));
 	// a failing write or rename: the file as it was
 	std::string before = slurp (P);
 	g_failWrite = 1;
 	CHECK (!save (kFs, P, &b, true));
-	CHECK (slurp (P) == before && !f_exists ("/.rytm/wifi.txt.part"));
+	CHECK (slurp (P) == before && !f_exists ("/.sidecar/wifi.txt.part"));
 	g_failRename = 2;			// the second rename (.part to wifi.txt): wifi.txt.prev goes back
 	CHECK (!save (kFs, P, &b, true));
-	CHECK (slurp (P) == before && !f_exists ("/.rytm/wifi.txt.part"));
+	CHECK (slurp (P) == before && !f_exists ("/.sidecar/wifi.txt.part"));
 	// no prev: in place (wifi=on/off/band), .prev untouched
 	CHECK (save (kFs, P, &b, true));
-	std::string prev = slurp ("/.rytm/wifi.txt.prev");
+	std::string prev = slurp ("/.sidecar/wifi.txt.prev");
 	b.on = false;
 	CHECK (save (kFs, P, &b, false));
 	parse (slurp (P).c_str (), &r);
-	CHECK (!r.on && slurp ("/.rytm/wifi.txt.prev") == prev);
+	CHECK (!r.on && slurp ("/.sidecar/wifi.txt.prev") == prev);
 	// recover: cut between the renames
-	f_rename (P, "/.rytm/wifi.txt.part");
+	f_rename (P, "/.sidecar/wifi.txt.part");
 	recover (kFs, P);
 	parse (slurp (P).c_str (), &r);
-	CHECK (strcmp (r.ssid, "Fake-B") == 0 && !f_exists ("/.rytm/wifi.txt.part"));
+	CHECK (strcmp (r.ssid, "Fake-B") == 0 && !f_exists ("/.sidecar/wifi.txt.part"));
 	// the trial marker
 	char t[128], why[24];
 	CHECK (format_trial (kTrying, 0, t, sizeof t) > 0 && parse_trial (t, why, sizeof why) == kTrying && why[0] == 0);
@@ -178,8 +178,8 @@ static void test_import ()
 	char tmpl[] = "/tmp/wificonf-XXXXXX";
 	CHECK (mkdtemp (tmpl));
 	g_root = tmpl;
-	mkdir (mac ("/.rytm").c_str (), 0755);
-	const char *P = "/.rytm/wifi.txt", *T = "/.rytm/wifi.try";
+	mkdir (mac ("/.sidecar").c_str (), 0755);
+	const char *P = "/.sidecar/wifi.txt", *T = "/.sidecar/wifi.try";
 	Conf cur, r;
 	char why[160];
 	defaults (&cur);
@@ -204,7 +204,7 @@ static void test_import ()
 		CHECK (w.find ("not-a-real-pass") == std::string::npos);
 		CHECK (slurp (T).find ("trying") != std::string::npos);
 		CHECK (strcmp (cur.psk, k) == 0);
-		CHECK (f_exists ("/.rytm/wifi.txt.prev"));
+		CHECK (f_exists ("/.sidecar/wifi.txt.prev"));
 	}
 	// band, hex key kept as is, open
 	put (kImportPath, "ssid=Fake-5\npsk=" + std::string (FakeKey) + "\nband=5g\n");

@@ -11,6 +11,7 @@
 
 #include "../fmt/fmt.h"
 #include "../msamp/cardq.h"
+#include "../pool/pool.h"
 #include "../wavetable/wav_read.h"
 
 namespace core {
@@ -63,9 +64,16 @@ Job j;
 Status g_st{};
 // PREVIEW LEVEL, a Sidecar setting (the control side's)
 const char kFile[] = "/.rytm/preview.txt";
-int g_level_db = kLevelDefDb;
-bool g_dirty = false;
-fmt::KvKeep g_keep;   // the lines a newer build wrote that this one does not read (fmt.h, class S: kept)
+// 3(c) step 8: PREVIEW LEVEL per box (its preview.txt in its own folder: slot 0's loaded at boot, another's at its
+// attach), the slot in hand's (prj_slot). The gain the audio side plays (g_level) is the slot in hand's at its last set
+// or at a preview's start.
+struct Sl {
+  int level_db = kLevelDefDb;
+  bool dirty = false;
+  fmt::KvKeep keep;   // the lines a newer build wrote that this one does not read (fmt.h, class S: kept)
+};
+Sl g_sl[kVoiceSlots];
+inline Sl& P() { return g_sl[prj_slot()]; }
 
 inline uint32_t ld(const uint32_t* p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 inline void st(uint32_t* p, uint32_t v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
@@ -176,31 +184,25 @@ CORE_COLD bool headed() {
 
 CORE_COLD void set_level_db(int db) {
   db = db < kLevelMinDb ? kLevelMinDb : db > kLevelMaxDb ? kLevelMaxDb : db;
-  if (db != g_level_db) g_dirty = true;
-  g_level_db = db;
+  if (db != P().level_db) P().dirty = true;
+  P().level_db = db;
   float g = powf(10.0f, (float)db / 20.0f);
   __atomic_store(&g_level, &g, __ATOMIC_RELAXED);
 }
-CORE_COLD int level_db() { return g_level_db; }
+CORE_COLD int level_db() { return P().level_db; }
 CORE_COLD float level() {
   float g;
   __atomic_load(&g_level, &g, __ATOMIC_RELAXED);
   return g;
 }
-CORE_COLD void load() {
-  g_keep.n = 0;
-  fmt::post_wait(kFile);   // a posted save of it lands before we read it back (fmt.h)
-  fmt::recover(kFile);     // a power cut between write_atomic's renames: the previous file back
-  File f;
-  if (!f.open(kFile, kRead)) return;
-  static char b[512];
-  memset(b, 0, sizeof b);
-  int got = f.read(b, sizeof b - 1);
-  f.close();
+// the file's text into the slot in hand's PREVIEW LEVEL (a missing or corrupt value: the default)
+CORE_COLD void take_text(const char* b, int got) {
+  P().keep.n = 0;
+  P().level_db = kLevelDefDb;
   static const char* const kKnown[] = {"level", nullptr};
-  if (got > 0) fmt::kv_keep(b, (uint32_t)got, kKnown, &g_keep);
+  if (got > 0) fmt::kv_keep(b, (uint32_t)got, kKnown, &P().keep);
   // "level=<dB>" at a line's start (not the tail of a longer key); an empty or corrupt value keeps the default
-  for (const char* l = b; l && *l; l = strchr(l, '\n'), l = l ? l + 1 : nullptr) {
+  for (const char* l = b; got > 0 && l && l < b + got && *l; l = strchr(l, '\n'), l = l ? l + 1 : nullptr) {
     if (strncmp(l, "level=", 6)) continue;
     // parsed by hand: the Pi's bare-metal build has no strtol
     const char* e = l + 6;
@@ -213,25 +215,40 @@ CORE_COLD void load() {
     if (e != d && (*e == 0 || *e == '\n' || *e == '\r')) set_level_db(v < -999 ? -999 : v > 999 ? 999 : (int)v);
     break;
   }
-  g_dirty = false;
+  P().dirty = false;
+}
+CORE_COLD void load() {
+  P().keep.n = 0;
+  fmt::post_wait(kFile);   // a posted save of it lands before we read it back (fmt.h)
+  fmt::recover(kFile);     // a power cut between write_atomic's renames: the previous file back
+  File f;
+  if (!f.open(kFile, kRead)) return;
+  static char b[512];
+  memset(b, 0, sizeof b);
+  int got = f.read(b, sizeof b - 1);
+  f.close();
+  take_text(b, got);
 }
 CORE_COLD bool save() {
-  if (!g_dirty) return false;
+  if (!P().dirty) return false;
   char* t = fmt::post_begin();
   if (!t) return false;   // another settings write is in flight: at a later pass (still dirty)
-  uint32_t n = (uint32_t)sniprintf(t, 32, CORE_STR("level=%d\n"), g_level_db);
-  n = fmt::kv_append(g_keep, t, n, fmt::kPostMax);
+  uint32_t n = (uint32_t)sniprintf(t, 32, CORE_STR("level=%d\n"), P().level_db);
+  n = fmt::kv_append(P().keep, t, n, fmt::kPostMax);
   if (!fmt::post_end(kFile, n)) return false;
-  g_dirty = false;
+  P().dirty = false;
   return true;
 }
 
 CORE_COLD void begin() {
-  set_level_db(g_level_db);
+  set_level_db(P().level_db);
   if (!g_buf) g_buf = (int16_t*)msamp_ram_alloc((uint64_t)kBufFrames * 2 * sizeof(int16_t));
   if (!g_buf) log(CORE_STR("preview: no buffer (sample RAM arena full): previews off"));
 }
-CORE_COLD int start(const char* path) { return begin_job(path, true); }
+CORE_COLD int start(const char* path) {
+  set_level_db(P().level_db);   // the slot in hand's PREVIEW LEVEL plays (unchanged: not marked)
+  return begin_job(path, true);
+}
 CORE_COLD int info(const char* path) { return begin_job(path, false); }
 
 CORE_COLD void stop() {
@@ -419,7 +436,8 @@ CORE_COLD void reset_for_tests() {
   g_v = Voice();
   g_gen = g_filled = g_end = g_inc = g_stop = g_done = g_seen = 0;
   g_stats = Stats{};
-  g_lvl = -1.0f, g_level_db = kLevelDefDb, g_dirty = false, g_keep.n = 0;
+  g_lvl = -1.0f;
+  for (Sl& x : g_sl) x.level_db = kLevelDefDb, x.dirty = false, x.keep.n = 0;
   begin();
 }
 

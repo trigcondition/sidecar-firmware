@@ -163,7 +163,7 @@ CORE_COLD int lst_machine(int k) { return k == 0 ? kGranMachine : k == 1 ? kWave
 bool push_seen = false;       // rui1036's pushes came (31 0x70 on the SRC view): no rest-to-open fallback
 constexpr int kRows = 6, kRowH = 7, kSlotRowL = kSlotFree + 8, kSlotRowR = kSlotFree + 16, kSlotName = kSlotFree + 24;
 CORE_COLD uint32_t list_key(const Cell& c, const Source& s) {
-  int k = lst_kind(c.arg), vi = s.voice() < 0 ? 0 : s.voice() & 7, sel = lst_sel(k, vi, s.code(0));
+  int k = lst_kind(c.arg), vi = s.voice() < 0 ? 0 : voice_wrap(s.voice()), sel = lst_sel(k, vi, s.code(0));
   uint32_t h = (uint32_t)(sel + 2) * 2654435761u ^ (uint32_t)lst_n(k) << 4;
   char b[24];
   h ^= lst_gen(k) * 40503u ^ (uint32_t)push_seen << 30;
@@ -171,7 +171,7 @@ CORE_COLD uint32_t list_key(const Cell& c, const Source& s) {
   return h | 1;
 }
 CORE_COLD void draw_list(Canvas& c, const Rect& r, const Cell& cell, const Source& s) {
-  int k = lst_kind(cell.arg), vi = s.voice() < 0 ? 0 : s.voice() & 7, n = lst_n(k), sel = lst_sel(k, vi, s.code(0));
+  int k = lst_kind(cell.arg), vi = s.voice() < 0 ? 0 : voice_wrap(s.voice()), n = lst_n(k), sel = lst_sel(k, vi, s.code(0));
   int b0 = sel >= 0 ? sel & ~127 : 0;   // the pool: the selected row's bank (128 rows, OFF at 000)
   if (n > 0) n = b0 + srclib::kBankRows;
   for (int i = 0; i < kRows; ++i) c.put_text(kSlotRowL + i, kRSmall, 0, 0, nullptr), c.put_text(kSlotRowR + i, kRSmall, 0, 0, nullptr);
@@ -217,13 +217,13 @@ constexpr uint32_t kFrameMs = 83;   // GRANULAR's picture: a new one ~12 times a
 struct GrKey {
   uint32_t ms = 0, key = 0;
 };
-GrKey gr_keys[8];
-LiveKey wt_keys[8];   // WAVETABLE's picture (0.4.3: its POS at most every kLiveMs)
+GrKey gr_keys[kVoices];
+LiveKey wt_keys[kVoices];   // WAVETABLE's picture (0.4.3: its POS at most every kLiveMs)
 
 CORE_COLD uint32_t mixk(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }
 
 CORE_COLD void draw_gran(Canvas& c, const Rect& r, const Source& s, int slot) {
-  int vi = s.voice() < 0 ? 0 : s.voice() & 7;
+  int vi = s.voice() < 0 ? 0 : voice_wrap(s.voice());
   int x0 = r.x + 1, wd = r.w - 2, y0 = r.y + 1, h = kLabelDy - 2, mid = y0 + h / 2;
   static gr::Viz z;   // ~1.2 KB: not on the stack
   int se = gr::src_entry(vi, s.code(0));   // the source's name top left (the Rytm's SRC, or the voice's pick)
@@ -258,7 +258,7 @@ CORE_COLD void draw_gran(Canvas& c, const Rect& r, const Source& s, int slot) {
 }
 
 CORE_COLD void draw_wt(Canvas& c, const Rect& r, const Source& s, int slot) {
-  int vi = s.voice() < 0 ? 0 : s.voice() & 7;
+  int vi = s.voice() < 0 ? 0 : voice_wrap(s.voice());
   int x0 = r.x + 2, wd = r.w - 4, y0 = r.y + 1, h = kLabelDy - 4, mid = y0 + h / 2;
   int nf = 0;
   float pos = wt::viz_pos(vi, &nf);
@@ -522,7 +522,7 @@ CORE_COLD void draw_bank(Canvas& c, const Rect& r) {
 
 CORE_COLD uint32_t wavegrain_key(const Cell& c, const Source& s) {
 #if CORE_MSAMP
-  int vi = s.voice() < 0 ? 0 : s.voice() & 7;
+  int vi = s.voice() < 0 ? 0 : voice_wrap(s.voice());
   if (c.arg == kDrawGrList || c.arg == kDrawWtList || c.arg == kDrawMsList) return list_key(c, s);
   if (c.arg == kDrawBankList) return bank_key();
   if (c.arg == kDrawWt) {
@@ -792,7 +792,7 @@ CORE_COLD void src_bank_list(int t, int vi, int machine, int code, int on, int w
     int commits = bl.commits;
     batch_new = true;   // FILL: the next quick load starts a batch
     bl = BankList();
-    bl.on = true, bl.track = t, bl.vi = vi & 7, bl.machine = machine, bl.commits = commits;
+    bl.on = true, bl.track = t, bl.vi = voice_wrap(vi), bl.machine = machine, bl.commits = commits;
     bl.param = param == 12 && machine == kWaveMachine ? 12 : 0;
     if (machine == kJuno || machine == kFm) {
       bl.preset = machine == kJuno ? presets::kIxJuno : presets::kIxFm;
@@ -1271,7 +1271,7 @@ CORE_COLD const char* src_value_name(const Page& p, int param, const Source& s) 
   int k = p.machine == kGranMachine || p.machine == kChopMachine ? 0 : p.machine == kWaveMachine ? 1
         : p.machine == kMultiMachine ? 2 : -1;
   if (k < 0) return nullptr;
-  int vi = s.voice() < 0 ? 0 : s.voice() & 7, e = lst_sel(k, vi, s.code(0));
+  int vi = s.voice() < 0 ? 0 : voice_wrap(s.voice()), e = lst_sel(k, vi, s.code(0));
   return e >= 0 ? lst_name(k, e) : "-";
 #else
   (void)p, (void)param, (void)s;

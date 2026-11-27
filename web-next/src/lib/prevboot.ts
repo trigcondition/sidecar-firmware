@@ -1,4 +1,4 @@
-// The last crashed boot's report and log tail (GET /prevboot = /.rytm/prevboot.txt on the card, kernel.cpp CrumbToCard):
+// The last crashed boot's report and log tail (GET /prevboot = /.sidecar/prevboot.txt on the card, kernel.cpp CrumbToCard):
 // paired devices only (unlike /log, which is open) - the api adds the pairing token as a header, so a plain link would be refused and
 // the page fetches it. The file holds no pairing code or Wi-Fi key (the engine never logs them); fixed `paircode=`
 // values and long digit runs after "code" are masked here as well, in case a log line ever carries one.

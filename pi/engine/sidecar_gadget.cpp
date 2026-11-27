@@ -1052,15 +1052,17 @@ unsigned CSidecarGadget::MIDIForHost (u8 *pBuffer, unsigned nMax)
 boolean (*g_pSidecarKeysTap) (const u8 *pPacket) = 0;
 
 // the computer's packets (gadget IRQ) -> the keys tap (its notes) -> the Rytm-bound filter -> the queue core 0's loop
-// sends from
+// sends from. The A4 on USB-C (usb=mirror): the port is the A4's own, so its notes skip the keys tap (core::keys plays
+// them here or passes them on to the Rytm) and go to the A4 with everything else; the tap ate them, uncounted: T374/T375
 void CSidecarGadget::MIDIFromHost (const u8 *pBuffer, size_t nLength)
 {
+	const boolean bKeys = g_pSidecarKeysTap != 0 && !(Mirror () && !CObUsb::UsbcShowsHostLink ());
 	for (size_t i = 0; i + 4 <= nLength; i += 4)
 	{
 		if (pBuffer[i] == 0) continue;				// padding
 		m_Stats.nMidiFromHost++;
 		if (m_bUsbReboot) m_Reboot.Feed (pBuffer + i);		// the request is a host-link SysEx: dropped below
-		if (g_pSidecarKeysTap != 0 && (*g_pSidecarKeysTap) (pBuffer + i)) continue;
+		if (bKeys && (*g_pSidecarKeysTap) (pBuffer + i)) { m_Stats.nMidiToKeys++; continue; }
 		if (!m_ToRytmPath.FromHost (pBuffer + i)) m_Stats.nMidiFull++;
 	}
 }
@@ -1205,8 +1207,10 @@ void CSidecarGadget::Poll (void)
 			LeaveCritical ();
 		}
 	}
-	else if (!m_bRytmMIDI)
+	else if (!m_bRytmMIDI && !(Mirror () && !CObUsb::UsbcShowsHostLink ()))
 	{
+		// (the A4 on USB-C: the computer's packets are the A4's, taken by core 0's loop for link1 (kernel.cpp); draining
+		// them here while no Rytm MIDI is up left the A4 deaf to the computer: PD2, T354)
 		u32 w;
 		while (ForRytm (&w)) m_Stats.nMidiNoRytm++;		// nowhere to go: counted
 	}
@@ -2050,12 +2054,13 @@ void CSidecarGadget::MirrorLogStats (CLogger *pLogger)
 	pLogger->Write (From, LogNotice,
 		"mirror %s box %s | in ch %u blocks %u sent %u drop %u | out ch %u blocks %u bad %u under %u over %u extra %u lost %u late %u anchor %u | "
 		"ctl %u stall %u abort %u (setup %u) late %u stray %u | pipe in %u drop %u out %u drop %u gone %u reset %u parked %u | alt bad %u | "
-		"midi from %u to-mac %u to-rytm %u filtered %u/%u (last %s) full %u norytm %u | ep disabled %u dropped %u in timeout %u",
+		"midi from %u to-mac %u to-rytm %u filtered %u/%u (last %s) full %u norytm %u to-keys %u | ep disabled %u dropped %u in timeout %u",
 		"shown", m_bMirBoxUp ? "up" : "none", m_nMirInCh, s.nInBlocks, s.nInSent, s.nInDrop,
 		m_nMirOutCh, s.nOutBlocks, s.nOutBad, nOutUnder, nOutOver, s.nOutExtra, m_MirExtra.dropped, m_MirExtra.late, s.nOutAnchor, s.nCtl, s.nCtlStall, s.nCtlAbort, nSetupAborts, s.nCtlLate, nStray,
 		s.nPipeIn, s.nPipeInDrop, s.nPipeOut, s.nPipeOutDrop, s.nBoxGoneDrop, CObUsb::MirrorPipeResets (), CObUsb::MirrorParked (), s.nAltBad,
 		m_Stats.nMidiFromHost, m_Stats.nMidiToHost, m_Stats.nMidiToRytm,
-		m_ToRytmFilter.DroppedMessages (), m_ToRytmFilter.DroppedPackets (), LastHex, m_Stats.nMidiFull, m_Stats.nMidiNoRytm, nEpIrq, nEpDrop, nEpTimeout);
+		m_ToRytmFilter.DroppedMessages (), m_ToRytmFilter.DroppedPackets (), LastHex, m_Stats.nMidiFull, m_Stats.nMidiNoRytm,
+		m_Stats.nMidiToKeys, nEpIrq, nEpDrop, nEpTimeout);
 }
 
 #endif	// CIRCLE_GADGET_MIRROR

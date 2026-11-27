@@ -37,16 +37,16 @@ const char* unx(uint8_t* p) {   // once each (check_kernel's statics)
 }
 const char kOurs[] = "# sidecar web update";   // tryboot.txt's first line: ours to delete
 
-const char kDir[] = "/.rytm/update";
-const char kFile[] = "/.rytm/update/update.scu";
-const char kUpload[] = "/.rytm/update/upload.part";
-const char kState[] = "/.rytm/update/state.txt";
-const char kStatePart[] = "/.rytm/update/state.txt.part";
-const char kPrevInfo[] = "/.rytm/update/prev.txt";
-const char kWeb[] = "/.rytm/www-next";
-const char kWebNew[] = "/.rytm/www-next.new";
-const char kWebPrev[] = "/.rytm/www-next.prev";
-const char kWebSwap[] = "/.rytm/www-next.swp";
+const char kDir[] = "/.sidecar/update";
+const char kFile[] = "/.sidecar/update/update.scu";
+const char kUpload[] = "/.sidecar/update/upload.part";
+const char kState[] = "/.sidecar/update/state.txt";
+const char kStatePart[] = "/.sidecar/update/state.txt.part";
+const char kPrevInfo[] = "/.sidecar/update/prev.txt";
+const char kWeb[] = "/.sidecar/www-next";
+const char kWebNew[] = "/.sidecar/www-next.new";
+const char kWebPrev[] = "/.sidecar/www-next.prev";
+const char kWebSwap[] = "/.sidecar/www-next.swp";
 const char kCmdTry[] = "/cmdline-try.txt";
 const char kTryboot[] = "/tryboot.txt";
 const char kWebMagic[] = "SCWEB001";
@@ -101,7 +101,7 @@ bool write_text(const Env& e, const char* p, const char* text) {
   return e.b->rename(part, p);
 }
 
-// ---- the state (/.rytm/update/state.txt, key=value lines)
+// ---- the state (/.sidecar/update/state.txt, key=value lines)
 struct State {
   char state[16];   // idle staging trying committing swapping committed reverted failed
   char kind[12];    // update previous
@@ -161,7 +161,7 @@ void mirror(const Env& e, const State& s, bool changed) {
 bool save(const Env& e, const State& s) {
   static char t[1024];
   mirror(e, s, true);
-  if (!exists(e, kDir) && !e.b->mkdir(kDir)) return false;
+  if (!exists(e, kDir) && (e.b->mkdir("/.sidecar"), !e.b->mkdir(kDir))) return false;
   sniprintf(t, sizeof t, "state=%s\nkind=%s\ntv=%s\ntc=%s\nfv=%s\nfc=%s\nweb=%d\nws=%d\nwsha=%s\nmsg=%s\n", s.state, s.kind,
             s.tv, s.tc, s.fv, s.fc, s.web, s.ws, s.wsha, s.msg);
   return write_text(e, kState, t);
@@ -371,9 +371,10 @@ bool rmtree(const Env& e, const char* p, int depth = 0) {
   return e.b->remove(p);
 }
 
-// the web app from the file's part to /.rytm/www-next.new
+// the web app from the file's part to /.sidecar/www-next.new
 const char* unpack_web(const Env& e, const Part& w) {
   if (!rmtree(e, kWebNew)) return "could not clear www-next.new";
+  e.b->mkdir("/.sidecar");   // (made at boot: a card the engine has not booted from yet)
   if (!e.b->mkdir(kWebNew)) return "could not make www-next.new";
   uint8_t h[12];
   uint32_t got = 0;
@@ -680,7 +681,7 @@ void put(const Env& e, uint64_t off, uint64_t total, uint32_t crc, const uint8_t
   if (n > fsweb::kChunkMax || off + n > total) return say(r, 400, "chunk too big or past the total");
   if (off == 0) {
     uint64_t fr = 0, tot = 0;
-    if (!exists(e, kDir) && !e.b->mkdir(kDir)) return say(r, 500, "could not make /.rytm/update");
+    if (!exists(e, kDir) && (e.b->mkdir("/.sidecar"), !e.b->mkdir(kDir))) return say(r, 500, "could not make /.sidecar/update");
     rm(e, kFile);   // an older upload: its space first
     if (e.b->space(&fr, &tot) && total + (1u << 20) > fr) return say(r, 507, "not enough free space on the card");
     next = 0, want_total = total, run = 0, on = true;
@@ -775,7 +776,7 @@ Reboot install(const Env& e, bool force, fsweb::Result* r) {
   s.web = unpack != 0;
   memcpy(s.wsha, wsha, sizeof wsha);
   set(&s, "staging", "");
-  if (!save(e, s)) { say(r, 500, "could not write /.rytm/update/state.txt"); return kNone; }
+  if (!save(e, s)) { say(r, 500, "could not write /.sidecar/update/state.txt"); return kNone; }
   why = stage_trial(e, kFile, mine->off, mine->size, mine->sha, want);
   if (why) {
     clean_trial(e);
@@ -785,7 +786,7 @@ Reboot install(const Env& e, bool force, fsweb::Result* r) {
     return kNone;
   }
   set(&s, "trying", "");
-  if (!save(e, s)) { clean_trial(e); say(r, 500, "could not write /.rytm/update/state.txt"); return kNone; }
+  if (!save(e, s)) { clean_trial(e); say(r, 500, "could not write /.sidecar/update/state.txt"); return kNone; }
   sniprintf(r->msg, sizeof r->msg, "restarting into %s (%s) as a trial", hd.version, hd.commit);
   r->status = 200;
   return kTry;
@@ -831,13 +832,13 @@ Reboot previous(const Env& e, bool force, fsweb::Result* r) {
     uint64_t fr = 0, tot = 0;
     if (e.b->space(&fr, &tot) && size + (1u << 20) > fr) { say(r, 507, "not enough free space on the card"); return kNone; }
     set(&s, "staging", "");
-    if (!save(e, s)) { say(r, 500, "could not write /.rytm/update/state.txt"); return kNone; }
+    if (!save(e, s)) { say(r, 500, "could not write /.sidecar/update/state.txt"); return kNone; }
     char want[80];
     stamp_of(want, sizeof want, pv, pc);
     why = stage_trial(e, kp, 0, size, sha, pv[0] ? want : nullptr);
     if (why) { clean_trial(e); set(&s, "failed", why); save(e, s); say(r, 500, why); return kNone; }
     set(&s, "trying", "");
-    if (!save(e, s)) { clean_trial(e); say(r, 500, "could not write /.rytm/update/state.txt"); return kNone; }
+    if (!save(e, s)) { clean_trial(e); say(r, 500, "could not write /.sidecar/update/state.txt"); return kNone; }
     say(r, 200, "restarting into the previous version as a trial");
     return kTry;
   }
@@ -849,7 +850,7 @@ Reboot previous(const Env& e, bool force, fsweb::Result* r) {
   char sw[fsweb::kPath + 8];
   sniprintf(sw, sizeof sw, "%s.swp", boot_name(e.board));
   set(&s, "swapping", "");
-  if (!save(e, s)) { say(r, 500, "could not write /.rytm/update/state.txt"); return kNone; }
+  if (!save(e, s)) { say(r, 500, "could not write /.sidecar/update/state.txt"); return kNone; }
   rm(e, sw);
   if (!e.b->rename(boot_name(e.board), sw)) { say(r, 500, "could not move the kernel aside"); return kNone; }
   if (!e.b->rename(kp, boot_name(e.board))) { e.b->rename(sw, boot_name(e.board)); say(r, 500, "could not put the previous kernel in place"); return kNone; }

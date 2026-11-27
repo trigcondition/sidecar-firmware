@@ -94,7 +94,7 @@ static boolean QueueWrite (const char *pPath, const void *pData, u32 n)
 // before. It writes <path>.tmp, reads it back and compares it, keeps the old file as <path>.prev until .tmp is in
 // place, and makes the folders - so a cut anywhere leaves the file old or new, never missing. It did unlink the old
 // file and then rename over it: a cut in between left no file at all, which for /.rytm/slots/<K>.txt is the U-slot
-// map and for /.rytm/display.txt the screen settings. A cut between the renames leaves a .prev that the reader's
+// map and for /.sidecar/display.txt the screen settings. A cut between the renames leaves a .prev that the reader's
 // fmt::recover puts back. (Called by core 0's loop for display.txt and by the umwrite task for the slot maps.)
 boolean SdWriteWhole (const char *pPath, const char *pData, unsigned n)
 {

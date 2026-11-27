@@ -186,6 +186,9 @@ grep -q circle-http-auth include/circle/net/httpdaemon.h || patch -p1 < /repo/pi
 # "content-type" for a fetch() with a Headers object, and the form was then not read: /cmd refused every paired change;
 # after circle-http-auth.patch, idempotent)
 grep -q circle-http-case lib/net/httpdaemon.cpp || patch -p1 < /repo/pi/circle/circle-http-case.patch
+# a TCP accept that wakes for a connection already gone fails instead of asserting on its unset foreign address
+# (pi/circle/circle-tcp-accept.patch: ipaddress.cpp(112) from CHTTPDaemon::Listener, seen under QEMU; idempotent)
+grep -q circle-tcp-accept lib/net/tcpconnection.cpp || patch -p1 < /repo/pi/circle/circle-tcp-accept.patch
 # then the WebSocket upgrade (pi/circle/circle-http-ws.patch: the Upgrade / Sec-WebSocket-* headers and the
 # UpgradeConnection hook that hands the socket to web_ws.cpp, docs/web-ws.md; after circle-http-case.patch, idempotent).
 # web.cpp overrides UpgradeConnection, so a tree without this patch does not build.
@@ -227,6 +230,10 @@ grep -q circle-hid-reenum3 include/circle/usb/usbhiddevice.h || patch -p1 < /rep
 # then any Elektron device reaches the Overbridge driver, which asks the device profiles (circle-usbdevicefactory2.patch, not an edit
 # to the spike2 patch: the same reason as -reenum2; a box with no audio row is 0 and Circle goes on to its interfaces); idempotent
 grep -q circle-usbdevicefactory2 lib/usb/usbdevicefactory.cpp || patch -p1 < /repo/pi/circle/circle-usbdevicefactory2.patch
+# then the Teensy mirror relay (1209:0002) reaches its driver (pi/engine/teensy_target.cpp, docs/teensy-mirror.md); idempotent
+grep -q circle-usbdevicefactory3 lib/usb/usbdevicefactory.cpp || patch -p1 < /repo/pi/circle/circle-usbdevicefactory3.patch
+# then a Teensy in its bootloader (16C0:0478) reaches the flasher (pi/engine/teensy_flash.cpp, docs/teensy-flash.md); idempotent
+grep -q circle-usbdevicefactory4 lib/usb/usbdevicefactory.cpp || patch -p1 < /repo/pi/circle/circle-usbdevicefactory4.patch
 # a device that drops off USB and comes back before the change is handled (the Rytm rebooting after an OS update) is
 # enumerated again (pi/circle/circle-replug.patch: the hub and xHCI root port; idempotent)
 grep -q circle-replug lib/usb/usbstandardhub.cpp || patch -p1 < /repo/pi/circle/circle-replug.patch
@@ -261,7 +268,61 @@ grep -q circle-hub-rearm lib/usb/usbstandardhub.cpp || patch -p1 < /repo/pi/circ
 # (pi/circle/circle-hub-rearm2.patch: the recovery of an unplugged hub could otherwise leave an event for freed memory;
 # after circle-hub-rearm, idempotent)
 grep -q circle-hub-rearm2 lib/usb/usbhostcontroller.cpp || patch -p1 < /repo/pi/circle/circle-hub-rearm2.patch
+# then no USB request leaked when a device leaves (pi/circle/circle-usb-urb-free.patch: the USB MIDI host'"'"'s IN and OUT
+# URBs in flight are freed with the device, as ob_usb.cpp and ob_follow.cpp now free their own; and CUSBRequest counts its
+# instances for /status usbreq: Circle'"'"'s allocator holds 256 and its LogPanic past that rebooted the Pi after ~15 Rytm
+# restarts on one boot; after circle-midi-reset2, idempotent)
+grep -q circle-usb-urb-free include/circle/usb/usbrequest.h || patch -p1 < /repo/pi/circle/circle-usb-urb-free.patch
+# then no halt on a failed request to the hub (circle-hub-noportpanic.patch: a port read or a change clear that fails
+# while a device restarts was a LogPanic - core 0 halted, the 15 s watchdog rebooted the Pi, the panic line lost; now
+# logged, and the hub status-change request armed again from the recovery timer, so the latched change is read again;
+# after circle-hub-rearm, idempotent)
+grep -q circle-hub-noportpanic lib/usb/usbstandardhub.cpp || patch -p1 < /repo/pi/circle/circle-hub-noportpanic.patch
+# then the ports of a hub read on request (pi/circle/circle-hub-poll.patch: CUSBStandardHub::RequestPortPoll; the Teensy
+# flash polls the VL805 hub while it waits for the relay to leave or come back: beside a streaming Rytm the status-change
+# endpoint of the hub went unserved and the move of the Teensy to its bootloader was never seen (BL3, T411); after
+# circle-hub-noportpanic, idempotent)
+grep -q circle-hub-poll lib/usb/usbstandardhub.cpp || patch -p1 < /repo/pi/circle/circle-hub-poll.patch
+# then the async USB MIDI send takes 512 bytes, one high-speed bulk packet (pi/circle/circle-midi-async512.patch: link1'"'"'s
+# transfers to the second box were 64 bytes, an A4 OS image through the relay ran at 28.5 KiB/s, RF2; after
+# circle-midi-async, idempotent; the object is rebuilt, as a header constant is not tracked by lib/usb'"'"'s make)
+grep -q circle-midi-async512 include/circle/usb/usbmidihost.h || { patch -p1 < /repo/pi/circle/circle-midi-async512.patch && rm -f lib/usb/usbmidihost.o lib/usb/libusb.a; }
+# then the USB MIDI IN kept served on the xHCI (pi/circle/circle-midi-rxqueue.patch: both receive buffers in flight, and a
+# zero-length completion asks again at once instead of after 10 ms; the Rytm overran its own 4 KB transmit buffer while
+# the Pi did not read, one event packet replaced by the one 1008 later in a Data RPC reply, T464; the DWHCI keeps one
+# request and the pause; after circle-usb-urb-free and circle-midi-async512, idempotent; the class layout changes, so
+# the objects that use it are rebuilt)
+grep -q circle-midi-rxqueue include/circle/usb/usbmidihost.h || { patch -p1 < /repo/pi/circle/circle-midi-rxqueue.patch && rm -f lib/usb/usbmidihost.o lib/usb/usbdevicefactory.o lib/usb/libusb.a; }
+# then the endpoints polled every microframe counted (pi/circle/circle-xhci-iv1count.patch: "xhciep: periodic iv1 N (+ slot S
+# ep 0xAA ...)" each time one is configured or removed, a warning past 5, and CXHCIEndpoint::GetPeriodicIv1 for ob_usb.cpp'"'"'s
+# "periodic starvation" line: the VL805 starved one of them at 6 busy, XV1/XR1, diagnosis-periodic-starvation.md; no change to
+# the class layout; after circle-xhci-dropurbs, idempotent)
+grep -q circle-xhci-iv1count include/circle/usb/xhciendpoint.h || patch -p1 < /repo/pi/circle/circle-xhci-iv1count.patch
+# then a device whose slot is gone is no halt (pi/circle/circle-xhci-slotgone.patch: ~CXHCIUSBDevice frees the slot before the
+# base class deletes the functions, so the "periodic iv1 -" line of every removed Overbridge endpoint asserted in GetSlotID
+# when a Rytm came back after its restart - core 0 halted, the 15 s watchdog rebooted the Pi; GetSlotID gives 0 then, and
+# Transfer, ResetFromHalted, GetEPState and the endpoint setup fail on it instead; after circle-xhci-iv1count, idempotent)
+grep -q circle-xhci-slotgone lib/usb/xhciusbdevice.cpp || patch -p1 < /repo/pi/circle/circle-xhci-slotgone.patch
+# then Stop Endpoint and the queued URBs dropped, for a box stream restarted on the Pi (pi/circle/circle-xhci-stopep.patch:
+# CObUsb::RestartStream, attach_gate.h - a box the VL805 starves gets its endpoints added again; after
+# circle-xhci-slotgone, idempotent)
+grep -q circle-xhci-stopep include/circle/usb/xhciendpoint.h || patch -p1 < /repo/pi/circle/circle-xhci-stopep.patch
+# then a USB MIDI device names its USB device (pi/circle/circle-midi-usbdevice.patch: CUSBMIDIDevice::GetUSBDevice, set by the USB
+# MIDI host; CObUsb::SetMidiDevices matches a box'"'"'s MIDI to its stream by it: two boxes of one type have the same USB strings,
+# design 2026-11-26; after circle-midi-reset2, idempotent). The class grows a member, so every object that makes one is
+# rebuilt: lib/usb, and the gadget library when the tree has one
+if ! grep -q circle-midi-usbdevice include/circle/usb/usbmidi.h; then
+  patch -p1 < /repo/pi/circle/circle-midi-usbdevice.patch
+  G=; [ -f lib/usb/gadget/libusbgadget.a ] && G=1
+  rm -f lib/usb/*.o lib/usb/libusb.a lib/usb/gadget/*.o lib/usb/gadget/libusbgadget.a
+  [ -z "$G" ] || make -C lib/usb/gadget -j$J >/dev/null
+fi
 make -C lib/usb -j$J >/dev/null
+# then PCIe config access for the VL805 (pi/circle/circle-pcie-config.patch: ob_usb.cpp keeps the VL805 ASPM bits off, its
+# own link power saving: with it on, the whole periodic schedule stopped for one MFINDEX wrap, 2.048 s, PW1; lib/, so
+# libcircle.a again; idempotent)
+grep -q circle-pcie-config include/circle/bcmpciehostbridge.h || patch -p1 < /repo/pi/circle/circle-pcie-config.patch
+make -C lib -j$J >/dev/null
 # the WLAN driver (the Plan 9 ether4330 port) and wpa_supplicant, once (libwlan.a, libwpa_supplicant.a)
 [ -f addon/wlan/libwlan.a ] || make -C addon/wlan -j$J >/dev/null
 [ -f addon/wlan/hostap/wpa_supplicant/libwpa_supplicant.a ] || make -C addon/wlan/hostap/wpa_supplicant -f Makefile.circle -j$J >/dev/null

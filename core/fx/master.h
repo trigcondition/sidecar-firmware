@@ -11,7 +11,7 @@
 // 0.5.0, send FX as insert FX: the bus chains B1..B3 take the send TYPEs too, under one cap with the master's slots
 // (kFxSlots, 4 at once, anywhere among the master's 4 slots and the buses' 6). The room is booked here (accept): a slot
 // with a send TYPE holds one of the kFxSlots SendFx slots, on two more fx::SendFx (kFxUnits, 5.9 MB each, the send FX's
-// own SendFx untouched). Every chain that runs them runs on the send FX's core (the Pi's render core 2: the buses inside
+// own SendFx untouched). Every chain that runs them runs on the send FX's core (the Pi: slot 0's render core 2, slot 1's core 1; the buses inside
 // sendfx_pi::Render, the master in masterfx_pi::Render, one after the other), so the bookings and the SendFx are that
 // core's alone. The voice chains stay refused: they run on the core that renders the voice (core 1 for voices 1..4).
 // A bus slot's MIX is kept here (mix[] after the master's 4) and saved on its slot line ("B3 A RINGS P1 P2 P3 P4 MIX").
@@ -24,6 +24,9 @@
 #include "fx/insert.h"
 
 namespace core {
+namespace fx {
+class SendFx;
+}
 namespace master {
 
 constexpr int kSlots = ins::kMasters * ins::kSlots;   // 4
@@ -71,18 +74,37 @@ struct Control {
   volatile uint8_t known;
 };
 extern Control control;
-inline int played_lev() { int x = control.lev + control.mod_lev; return x < 0 ? 0 : x > 127 ? 127 : x; }
-inline int played_mix(int i) {   // slot_index i's MIX with its modulation (MFX:MIX1..4, MFX:B1A..B3B)
+// Two links (phase 3(d), decided 2026-11-14: the boxes work independently and identically): slot 1's master settings
+// (3(c) loads its MFX line into it), played on slot 1's chains (ins::engine(1), ins::control_of(1)) with its own rooms and
+// SendFx units (kBoxes: 16-voice builds). `control` is slot 0's. The settings code below (set_*, accept, the rooms, the
+// console, the card line, json) works on the slot in hand's (ins::slot_in_hand, 3(c)'s prj_slot): cur(). report,
+// link_lost and stems_on_main are the Rytm's: rytm(), its slot's control (core::device::rytm_home: slot 0 or 1, whichever
+// it holds; slot 0 while it holds none).
+extern Control control1;
+inline Control& control_of(int box) { return box ? control1 : control; }
+Control& cur();   // the slot in hand's
+Control& rytm();  // the Rytm's slot's (its report: pan, off_main, known). The control core's
+// ... which slot that is: core/pool/pool.cpp sets it to device::rytm_home (this side builds without core/device); null: 0
+extern int (*rytm_slot_fn)();
+constexpr int kBoxes = kVoiceSlots;   // 2 on 16 voices, 1 on 8
+inline int played_lev(const Control& m) { int x = m.lev + m.mod_lev; return x < 0 ? 0 : x > 127 ? 127 : x; }
+inline int played_lev() { return played_lev(control); }
+inline int played_mix(const Control& m, int i) {   // slot_index i's MIX with its modulation (MFX:MIX1..4, MFX:B1A..B3B)
   if (i < 0 || i >= kAllSlots) return 0;
-  int x = control.mix[i] + control.mod_mix[i];
+  int x = m.mix[i] + m.mod_mix[i];
   return x < 0 ? 0 : x > 127 ? 127 : x;
 }
+inline int played_mix(int i) { return played_mix(control, i); }
 void mod_offset(int param, int off);   // core/mod kMfx: param 0 LEV, 1 + slot_index the MIX (1..4 the master's, 5..10 B1A..B3B); -127..127
 extern volatile float lim_gain;    // core 0's: the limiter's lowest gain of the last second or so, 1 while it is out
+extern volatile float lim_gain1;   // ... slot 1's (its stream's masterfx_pi instance)
+inline volatile float& lim_gain_of(int box) { return box ? lim_gain1 : lim_gain; }
 int gr10();                        // ... as its reduction, in tenths of a dB (any core but the audio's: a log)
+int gr10(int box);
 
 // ---- the control side (the Pi's core 3)
 bool on();                         // a slot has a TYPE, or the POST EQ is set: the chain runs
+bool on(int box);                  // ... box's chain (ins::control_of(box))
 bool accept(int c, int s, int t);  // ins::set_type's question: chain c's slot s may take TYPE t (the room for send TYPEs is
                                    // booked here; the answer is no past kFxSlots, and on a voice chain: the slot keeps what it has)
 int fx_used();                     // send TYPE slots booked now (0..kFxSlots)
@@ -120,6 +142,10 @@ bool from_line(const char* const* w, int n);
 // y's peaks, in and out, kept for the meters.
 void render(float (*y)[2], int n);
 void take_peaks(float* in, float* out);   // the largest |sample| since the last call
+// ... box `box`'s chain (ins::engine(box)) with its settings (control_of(box)), rooms, LEV ramp and meters. AMP is serviced
+// for the base box only (out::g_base_slot; AMP is keyed by chain).
+void render(int box, float (*y)[2], int n);
+void take_peaks(int box, float* in, float* out);
 // The boot benches. Call them only while no other core can load a project or edit (the Pi: core 0 before cores 1-3 start,
 // pi/engine/kernel.cpp BenchChains: the project's inserts are applied by core 3's store fill, later). Each sets its bytes
 // directly (no file marked) and gives back only the bytes that still hold what it set, then runs silence until the fades
@@ -133,7 +159,13 @@ uint64_t bench(uint32_t* worst_block);
 // buses 1 / 2, ins::bus3, render()). Ticks as bench(). 0 (nothing touched) unless every insert slot of the buses and the
 // master is OFF and no room is taken.
 uint64_t sfx_bench(int set, uint32_t* worst_block);
-const char* sfx_bench_name(int set);   // "RINGS CLOUD SPACE HALO", "CLOUD x4"; null past the last set
+const char* sfx_bench_name(int set);   // "RINGS CLOUD SPACE HALO", "CLOUD x4", "CHORUS x4" .. "HALO x4"; null past the last set
+int sfx_bench_type(int set);           // the send TYPE (ins::kMChorus..) a set runs x4, -1 a mixed set or none
+// The boot bench of one box's chains as core 2 runs them, at the worst insert set the rooms allow together (LT1's config A
+// without its AMP pair, which the caller adds from the amp row): send (the box's send FX, at CLOUDSEED x2, every track sent)
+// with buses 1 / 2's chains inside it, bus 3's, the master chain, over 1 s in 12-frame blocks. Ticks as bench(). 0 (nothing
+// touched) unless every bus and master slot is OFF, no room is taken and box 0's send FX are off. send is left Reset.
+uint64_t box_bench(fx::SendFx* send, uint32_t* worst_block);
 unsigned long heap_bytes();        // the inserts' SendFx (on CORE_HEAP_BUFFERS ports; else built on first use)
 void heap_place(void* mem);
 

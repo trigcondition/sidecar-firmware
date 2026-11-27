@@ -33,6 +33,13 @@
 // projects (its ACTIVE on another slot, a LOAD of another slot, a 10 with another name: project_changing) makes the
 // waiting ones stale - dropped (logged, counted), never applied to the next project; a RELOAD ALL under way stops.
 // A LOST from the Rytm (its events dropped) is logged: a kit SAVE / RELOAD may have been missed (lost()).
+//
+// 3(c) step 9, per voice slot (option A: nothing shared between the boxes): each slot has its own queue, generation,
+// RELOAD ALL, last name and counts, and works on its own project's files in its own folder (the paths above go through
+// state_path: another box's are under its state_dir, /.a4/kits/<key>/...). Every call is the slot in hand's
+// (device::cur(): a box's 4C and 10 are handled in its link's Scope); engine.cpp ticks each slot in its Scope. Another
+// box's 10 is always a project change by name (the slot reports, prjslot, are the Rytm's). The A4's mod sends no 4C
+// today (its profile's in_allow does not list it): its slot's records exist once it reports SAVE / RELOAD KIT.
 #pragma once
 #include <stdint.h>
 
@@ -49,12 +56,13 @@ void project_changing();                 // the Rytm is on another project now (
 void name_seen(const uint8_t* n, int len);   // the Rytm's 10 <name> (host_link): another name -> project_changing
                                              // (name mode only: in slot mode ACTIVE / LOAD say it, in order)
 void lost(int n);                        // the Rytm's LOST (prjslot): kit reports may be among them (logged)
-void reset();                            // tests
+void reset();                            // tests: every slot's
 
 // kept_aside: .prv sections kept from the old .prv (a reload again after a cut); stale: events (or a RELOAD ALL) of a
 // project the Rytm left; lost: LOSTs seen
 struct Stats { uint32_t saves, reloads, restores, reload_alls, kept, refused, dropped, kept_aside, stale, lost, scan_max; };
-const Stats& stats();
+const Stats& stats();            // the slot in hand's
+const Stats& stats(int slot);
 
 }  // namespace kits
 }  // namespace core

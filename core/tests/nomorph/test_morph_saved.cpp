@@ -82,12 +82,12 @@ static void to_project(const char* name) {   // 0x10: the Rytm's project; its fi
   for (const char* c = name; *c; ++c) m[k++] = (uint8_t)*c;
   m[k++] = 0xF7;
   engine_sysex(m, k);
-  for (int i = 0; i < 400 && strcmp(core::project, name); ++i) {
+  for (int i = 0; i < 400 && strcmp(core::prj().key, name); ++i) {
     if (rename::state() == rename::kAsk) rename::answer(false);
     at(g_us + 20000), idle_save(), card_core_turn();
   }
   loaded();
-  CHECK(!strcmp(core::project, name));
+  CHECK(!strcmp(core::prj().key, name));
 }
 
 int main() {

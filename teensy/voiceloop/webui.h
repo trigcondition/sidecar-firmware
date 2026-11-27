@@ -553,7 +553,7 @@ FLASHMEM bool web_plugins_step() {
   wj_begin(PSTR("plugins"));
   wj(PSTR(",\"n\":%d,\"more\":%d,\"prints\":\"%s\",\"fresh\":%s,\"project\":"), web_pk_n, web_pk_over,
      plug_prints_have ? PSTR("rytm") : plug_prints_rytm ? PSTR("waiting") : PSTR("trigs"), plug_fresh ? PSTR("true") : PSTR("false"));
-  wj_str(project);
+  wj_str(prj().key);
   if (rmp_arena_psram_size())
     wj(PSTR(",\"parena\":[%lu,%lu]"), (unsigned long)rmp_arena_psram_size(), (unsigned long)rmp_arena_psram_used());
   wj(PSTR(",\"arena\":[%lu,%lu],\"state_limit\":%lu,\"store\":[%lu,%lu],\"api\":%d,\"safe_mode\":%s,\"transport\":%s}"),

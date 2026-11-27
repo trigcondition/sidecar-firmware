@@ -3,7 +3,7 @@
 // card known by the sha256 of its bytes, the path a hint. Pools, instruments, takes and bundles refer to samples by
 // hash (lib::Ref); resolve() finds where that content is now.
 //
-// On the card, /.rytm/library/ (core/fmt: formats "library", "library-log", "library-state"):
+// On the card, /.sidecar/library/ (core/fmt: formats "library", "library-log", "library-state"):
 //   index.bin   SLIB v1: 64-byte records sorted by sha256 (unhashed ones after), then the path table; CRC-32 of the body
 //   log.txt     "#sidecar library-log 1", then the changes since index.bin: "+ <sha|-> <size> <fatdt> <crc> <quick>
 //               <flags> <path>", "- <path>", "> <old> <new>" (a move: the record keeps its hash). Compacted into a new

@@ -1001,6 +1001,13 @@ static void test_rytm_export_layout() {
 
 // ---- 8. RESAMPLE: slice 2 of voice 0 through its INSERT chain (a DRIVE) into a new sample, offered, accepted
 static int16_t g_ring[kBlock][kVoices];
+// one box's columns of the engine's block (the output stage's: what the sampler hears), slot 0's
+static const int16_t (*box_cols(const int16_t (*r)[kVoices]))[kBoxVoices] {
+  static int16_t b[kBlock][kBoxVoices];
+  for (int s = 0; s < kBlock; ++s)
+    for (int k = 0; k < kBoxVoices; ++k) b[s][k] = r[s][k];
+  return b;
+}
 static void test_resample() {
   const int vi = 0;
   ins::set_type(vi, 0, ins::kDrive);
@@ -1023,12 +1030,12 @@ static void test_resample() {
     for (int b = 0; b < 48000 / kBlock && chop::resample_state() == chop::kRsPlaying; ++b) {
       render_voices(g_ring, kBlock, 0, 0, kVoices, mach);
       for (int s = 0; s < kBlock; ++s) rows.push_back(g_ring[s][vi] / (32768.0f * kVoiceGain));
-      samp::voice_block(g_ring, kBlock, lr);
+      samp::voice_block(box_cols(g_ring), kBlock, lr);
       if (b % 4 == 0) run(1);
     }
     for (int i = 0; i < 3000 && chop::resample_state() == chop::kRsWriting; ++i) {   // (the OUT fill keeps feeding the
       if (samp::wants_voices())                                                         // sampler: its stop lands there)
-        for (int b = 0; b < 4; ++b) render_voices(g_ring, kBlock, 0, 0, kVoices, mach), samp::voice_block(g_ring, kBlock, lr);
+        for (int b = 0; b < 4; ++b) render_voices(g_ring, kBlock, 0, 0, kVoices, mach), samp::voice_block(box_cols(g_ring), kBlock, lr);
       run(1);
     }
   };
@@ -1388,7 +1395,7 @@ int main() {
   hooks.to_rytm = [](const uint8_t*, int) {};
   voices_init();
   card_ok = true;
-  snprintf(core::project, sizeof core::project, "LIVE");
+  snprintf(core::prj().key, sizeof core::prj().key, "LIVE");
   cardq::reset();
   cardq::set_worker(true);   // the Pi: the card core runs every card request (run() is its turn)
   lib::begin(true);

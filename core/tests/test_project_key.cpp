@@ -99,7 +99,7 @@ int main() {
   cardq::reset();
 
   // ---- every per-project file uses the key: the pool file, the song folder
-  strcpy(project, "AR PERC");
+  strcpy(prj().key, "AR PERC");
   char fn[96];
   pool_file(fn, sizeof fn);
   CHECK(!strcmp(fn, "/.rytm/pools/AR PERC.txt"));
@@ -108,7 +108,7 @@ int main() {
 
   // ---- the song folder's migration: the old rule's folder renamed once to the key's, nothing else touched
   put("/.rytm/songs/LIVE_SET/take-001.json", "{}");
-  strcpy(project, "LIVE SET");
+  strcpy(prj().key, "LIVE SET");
   song::folder(fn, sizeof fn);
   while (song::idle()) {}   // (the rename: requests, from idle)
   CHECK(!strcmp(fn, "/.rytm/songs/LIVE SET"));
@@ -116,27 +116,27 @@ int main() {
   // both there: the key's stays, the old one is left alone (no merge)
   put("/.rytm/songs/JAM_2/take-001.json", "old");
   put("/.rytm/songs/JAM 2/take-001.json", "new");
-  strcpy(project, "JAM 2");
+  strcpy(prj().key, "JAM 2");
   song::folder(fn, sizeof fn);
   while (song::idle()) {}   // (the rename: requests, from idle)
   CHECK(slurp("/.rytm/songs/JAM 2/take-001.json") == "new" && slurp("/.rytm/songs/JAM_2/take-001.json") == "old");
   // a name the two rules agree on: nothing to do
   put("/.rytm/songs/PLAIN/take-001.json", "p");
-  strcpy(project, "PLAIN");
+  strcpy(prj().key, "PLAIN");
   song::folder(fn, sizeof fn);
   while (song::idle()) {}   // (the rename: requests, from idle)
   CHECK(slurp("/.rytm/songs/PLAIN/take-001.json") == "p");
   // no project: _none -> _default
   put("/.rytm/songs/_none/take-001.json", "n");
-  project[0] = 0;
+  prj().key[0] = 0;
   song::folder(fn, sizeof fn);
   while (song::idle()) {}   // (the rename: requests, from idle)
   CHECK(!strcmp(fn, "/.rytm/songs/_default") && slurp("/.rytm/songs/_default/take-001.json") == "n");
 
   // ---- the project index: each 10 counts, the line written by the card queue (one write for back-to-back names)
   projects::reset_for_tests();
-  project[0] = 0;
-  project_seen = false;
+  prj().key[0] = 0;
+  prj().seen = false;
   name_project("AR PERC");
   name_project("A/B");
   for (int i = 0; i < 8 && idle_save(); ++i) {}
@@ -205,12 +205,12 @@ int main() {
   cardq::set_worker(true);
   projects::note("WAITING");
   CHECK(fmt::post_queue("/waits-a.txt", "a\n", 2) && fmt::post_queue("/waits-b.txt", "b\n", 2));
-  strcpy(project, "WAITING"), project_dirty = true;   // (a 10 that changes it)
+  strcpy(prj().key, "WAITING"), prj().dirty = true;   // (a 10 that changes it)
   int steps = 0;
   for (int i = 0; i < 50; ++i) steps += idle_save();
   CHECK(steps <= 2 && fmt::post_busy() && !idle_save());
   CHECK(!projects::save());                                 // the index's own write, waiting
-  for (int i = 0; i < 40 && (fmt::post_busy() || project_dirty || cardq::pending()); ++i) {
+  for (int i = 0; i < 40 && (fmt::post_busy() || prj().dirty || cardq::pending()); ++i) {
     while (cardq::service()) {}
     idle_save();
   }

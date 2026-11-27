@@ -72,6 +72,7 @@ void kit_changed(int kit);          // the Rytm's active kit (0..127): released,
 void project_changed();             // released, the old project's (kit's) edits saved (queued), the new loaded
 void save_due();                    // the unsaved edits due now (a rename's flush, a restart)
 bool dirty();
+bool dirty_any();   // any slot's (the idle pass's settled; 3(c): each voice slot has its own pad)
 bool locked();
 int kit();                          // the kit the setup is of, -1 none named
 void reset();                       // tests: no slots, HOLD off, nothing touching

@@ -148,13 +148,14 @@ int main() {
   CHECK(slurp(mac("/config.txt")).size() == 12);
 
   // ---- what this API can reach at all: content only, every operation (fsweb.h "WHAT IT CAN REACH"). /fs/get
-  // served /.rytm/wifi.txt before this, and a write could land on /.rytm/pair.txt, which is a way past the
+  // served /.sidecar/wifi.txt before this, and a write could land on /.sidecar/pair.txt, which is a way past the
   // pairing code itself.
   mkdir(mac("/.rytm").c_str(), 0755);
-  b_write("/.rytm/wifi.txt", 0, "ssid=Fake\npsk=not-a-real-pass\n", 30, true);
-  b_write("/.rytm/pair.txt", 0, "v=1\n", 4, true);
+  mkdir(mac("/.sidecar").c_str(), 0755);
+  b_write("/.sidecar/wifi.txt", 0, "ssid=Fake\npsk=not-a-real-pass\n", 30, true);
+  b_write("/.sidecar/pair.txt", 0, "v=1\n", 4, true);
   mkdir(mac("/Recordings").c_str(), 0755);
-  for (const char* p : {"/.rytm", "/.rytm/wifi.txt", "/.rytm/pair.txt", "/.rytm/slots/X.txt", "/config.txt",
+  for (const char* p : {"/.rytm", "/.sidecar", "/.sidecar/wifi.txt", "/.sidecar/pair.txt", "/.rytm/slots/X.txt", "/config.txt",
                         "/cmdline.txt", "/engine.img", "/sdboot.img", "/overlays", "/overlays/x.dtbo", "/notes.txt",
                         "/System Volume Information", "/Sample", "/Samples2", "/samplesx"})
   {
@@ -176,9 +177,9 @@ int main() {
     CHECK(q.status == 404);
   }
   {								// untouched
-    auto w = slurp(mac("/.rytm/wifi.txt"));
+    auto w = slurp(mac("/.sidecar/wifi.txt"));
     std::string ws(w.begin(), w.end());
-    auto pr = slurp(mac("/.rytm/pair.txt"));
+    auto pr = slurp(mac("/.sidecar/pair.txt"));
     CHECK(ws.find("psk=") != std::string::npos && pr.size() == 4);
   }
   // the content folders themselves are reachable, and so is everything under them
@@ -207,7 +208,7 @@ int main() {
     CHECK(n > 0 && q.status == 200);
     std::string j(buf, (size_t)n);
     CHECK(j.find("\"n\":\"Samples\"") != std::string::npos && j.find("\"n\":\"Plugins\"") != std::string::npos);
-    for (const char* hid : {"config.txt", ".rytm", "overlays", "cmdline.txt"})
+    for (const char* hid : {"config.txt", ".rytm", ".sidecar", "overlays", "cmdline.txt"})
       CHECK(j.find(std::string("\"n\":\"") + hid + "\"") == std::string::npos);
   }
 
@@ -225,7 +226,7 @@ int main() {
     CHECK(!fsweb::volume_path("/Samples/a.wav", vp, 8));
     for (const char* p : {"/USB/Recordings", "/USB/Recordings/take_004", "/USB2/Recordings/t/00_MASTER.wav", "/NVME/Recordings"})
       CHECK(fsweb::reachable(p));
-    for (const char* p : {"/USB", "/USB/", "/USB/SIDECAR/x.zip", "/USB/.rytm/wifi.txt", "/USB/config.txt", "/USB/Recordings/../x",
+    for (const char* p : {"/USB", "/USB/", "/USB/SIDECAR/x.zip", "/USB/.sidecar/wifi.txt", "/USB/config.txt", "/USB/Recordings/../x",
                           "/USBX/Recordings", "/USB/RecordingsX", "/USB:/Recordings"})
       CHECK(!fsweb::reachable(p));
     mkdir(mac("/USB").c_str(), 0755);
@@ -499,7 +500,7 @@ int main() {
     fsweb::rename(B, k, "/Samples/Moved", &r);
     CHECK(r.status == want);
   }
-  CHECK(fsweb::kept_dir("/.digitakt") && fsweb::kept_dir("/.a4") && fsweb::kept_dir("/.A4"));   // each box's state folder
+  CHECK(fsweb::kept_dir("/.dt") && fsweb::kept_dir("/.a4") && fsweb::kept_dir("/.A4"));   // each box's state folder
   CHECK(!fsweb::kept_dir("/Samples/kit") && !fsweb::kept_dir("/Samples2") && !fsweb::kept_dir("/x/Samples"));
   CHECK(!fsweb::kept_dir("/Bundles/a.sidecar.zip"));   // a bundle itself can go
   // the boot files are not reachable here at all now (the root is content only), so these are 404, not 403

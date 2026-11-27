@@ -187,7 +187,7 @@ if [ -n "${CONTENT:-}" ]; then
   cp "$CONTENT/NOTICE.txt" "$SD/STARTER-CONTENT-NOTICE.txt"
 fi
 find "$SD" -name .DS_Store -delete
-[ ! -e "$SD/wifi.txt" ] && [ ! -e "$SD/.rytm" ] && [ ! -e "$SD/sidecar-wifi.txt" ] || { echo "a Wi-Fi file is in the card set"; exit 1; }
+[ ! -e "$SD/wifi.txt" ] && [ ! -e "$SD/.rytm" ] && [ ! -e "$SD/.sidecar" ] && [ ! -e "$SD/sidecar-wifi.txt" ] || { echo "a Wi-Fi file is in the card set"; exit 1; }
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 Z=$OUT/sidecar-pi-sd-$VER-$COMMIT.zip

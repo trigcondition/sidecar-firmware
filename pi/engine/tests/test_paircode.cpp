@@ -258,7 +258,7 @@ static void test_card ()
 	char tmpl[] = "/tmp/paircode-XXXXXX";
 	CHECK (mkdtemp (tmpl));
 	g_root = tmpl;
-	CHECK (mkdir (mac ("/.rytm").c_str (), 0755) == 0);
+	CHECK (mkdir (mac ("/.sidecar").c_str (), 0755) == 0);	// (the engine makes it at boot: core/device/sidecar_dir.h)
 	g_ms = 0;
 	Gate g = make ();
 	char id[kIdHex + 1], sec[kSecretHex + 1], tok[kTokenHex + 1];
@@ -268,7 +268,7 @@ static void test_card ()
 	CHECK (g.pair (g.code (), "iPad", true, id2, sec2, tok2) == kOk);
 	CHECK (g.save (kFs, kPath));
 	g.saved ();
-	CHECK (!g.dirty () && !f_exists ("/.rytm/pair.txt.part"));
+	CHECK (!g.dirty () && !f_exists ("/.sidecar/pair.txt.part"));
 	std::string on_card = slurp (kPath);
 	CHECK (on_card.find (g.code ()) == std::string::npos);
 	CHECK (on_card.find (sec) == std::string::npos && on_card.find (sec2) == std::string::npos);
@@ -347,13 +347,13 @@ static void test_card ()
 	CHECK (s.pair (s.code (), "second", true, id2, sec2, tok2) == kOk);
 	g_failWrite = 1;
 	CHECK (!s.save (kFs, kPath));
-	CHECK (slurp (kPath) == before && !f_exists ("/.rytm/pair.txt.part"));
+	CHECK (slurp (kPath) == before && !f_exists ("/.sidecar/pair.txt.part"));
 	g_failRename = 2;			// the .part to pair.txt rename: pair.txt.prev goes back
 	CHECK (!s.save (kFs, kPath));
-	CHECK (slurp (kPath) == before && !f_exists ("/.rytm/pair.txt.part"));
+	CHECK (slurp (kPath) == before && !f_exists ("/.sidecar/pair.txt.part"));
 	g_failRename = 0;
 	CHECK (s.save (kFs, kPath));
-	CHECK (slurp (kPath) != before && slurp ("/.rytm/pair.txt.prev") == before);
+	CHECK (slurp (kPath) != before && slurp ("/.sidecar/pair.txt.prev") == before);
 	CHECK (s.format (text, 60) == -1);	// does not fit: nothing written
 	CHECK (text[0] == 0);
 
@@ -768,7 +768,7 @@ static void test_load_prev ()
 	char tmpl[] = "/tmp/paircode-prev-XXXXXX";
 	CHECK (mkdtemp (tmpl));
 	g_root = tmpl;
-	CHECK (mkdir (mac ("/.rytm").c_str (), 0755) == 0);
+	CHECK (mkdir (mac ("/.sidecar").c_str (), 0755) == 0);
 	g_ms = 0;
 	Gate g = make ();
 	char id[kIdHex + 1], sec[kSecretHex + 1], tok[kTokenHex + 1];
@@ -777,7 +777,7 @@ static void test_load_prev ()
 	CHECK (g.save (kFs, kPath));
 	Gate n = make ();
 	CHECK (n.load_card (kFs, kPath) == 1 && n.clients () == 1 && !n.dirty () && !n.web_on ());
-	CHECK (f_rename (kPath, "/.rytm/pair.txt.prev"));	// the cut: only .prev left
+	CHECK (f_rename (kPath, "/.sidecar/pair.txt.prev"));	// the cut: only .prev left
 	Gate p = make ();
 	CHECK (p.load_card (kFs, kPath) == 2 && p.clients () == 1 && p.dirty () && !p.web_on ());
 	char ntok[kTokenHex + 1];
@@ -785,7 +785,7 @@ static void test_load_prev ()
 	CHECK (p.save (kFs, kPath) && f_exists (kPath));
 	p.saved ();
 	CHECK (f_remove (kPath));
-	f_remove ("/.rytm/pair.txt.prev");
+	f_remove ("/.sidecar/pair.txt.prev");
 	Gate e = make ();
 	CHECK (e.load_card (kFs, kPath) == 0 && e.clients () == 0 && !e.dirty () && e.web_on ());
 }

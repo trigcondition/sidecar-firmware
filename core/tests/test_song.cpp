@@ -1333,9 +1333,9 @@ static void test_cardcore(const std::string& card) {
     x.free(), b.free();
     cmd("song=list");
     step(40);
-    strcpy(project, "SONGTES2");   // another project and back: the journals looked for
+    strcpy(prj().key, "SONGTES2");   // another project and back: the journals looked for
     step(5);
-    strcpy(project, "SONGTEST");
+    strcpy(prj().key, "SONGTEST");
     // the first .json.tmp on the card: a load now, while the writer has e.g. its source still to remove
     bool loaded = false;
     for (int i = 0; i < 1000 && !loaded; ++i) {

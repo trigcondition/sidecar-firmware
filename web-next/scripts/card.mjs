@@ -1,5 +1,5 @@
 // web-next/scripts/card.mjs - puts the built app (dist/, `npm run build`) on the Sidecar's SD card, where the Pi serves
-// it at /next (pi/engine/webnext_path.h): <card>/.rytm/www-next/. Text files go gzipped only (name.gz: the Pi sends
+// it at /next (pi/engine/webnext_path.h): <card>/.sidecar/www-next/. Text files go gzipped only (name.gz: the Pi sends
 // them with Content-Encoding: gzip), fonts and images as they are. The folder is replaced as a whole, so no stale
 // hashed files stay behind. Names the Pi would refuse (anything outside A-Z a-z 0-9 - _ . /, a part starting with a dot,
 // longer than 120 characters) stop the copy.
@@ -44,7 +44,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(1);
   }
   const files = cardFiles(fileURLToPath(new URL("../dist", import.meta.url)));
-  const dest = join(card, ".rytm", "www-next");
+  const dest = join(card, ".sidecar", "www-next");
   let total = 0;
   for (const [n, b] of files) total += b.length;
   if (!dry) {

@@ -58,14 +58,18 @@ void live_off(int vi, int ch, int mnote);                      // mnote -1: ever
 int voice_notes(int vi);
 void silence(int vi);                                          // every note of the voice off now
 void leave(int vi);                                            // the voice left the machine: silence, its state forgotten
-void kit_changed();                                            // every note off; what was sent forgotten (the new kit's PRG goes out)
-void kit_switched();                                           // the Rytm's 3B named another kit: as kit_changed, but a trig of the last 100 ms stays (the new kit's own step: the 3B comes after it)
+void kit_changed(int slot = -1);                               // every note off; what was sent forgotten (the new kit's PRG goes out). slot >= 0: that box's voices only
+void kit_switched(int slot = -1);                              // a box's 3B named another kit: as kit_changed, but a trig of the last 100 ms stays (the new kit's own step: the 3B comes after it); slot: its voices only
 void link_lost();                                              // the Rytm's USB gone (no hello to come): as kit_changed
 void resync();                                                 // records for the Rytm were lost, sending is on again: DIN's recent note-offs go again
 void link_state(bool up);                                      // each control pass: records can reach the Rytm
 bool echo(int dest, int ch, int note, int vel);                // a note-on came in from dest's port: true when it is our own, drop it
-void stop();                                                   // the Rytm's transport left PLAY: trig and sequencer notes off
-void realtime(uint8_t status);                                 // the Rytm's F8 FA FB FC: to USB-A while a voice sends there
+void stop(int slot = -1);                                      // slot's transport left PLAY: its voices' trig and sequencer notes off (-1 every voice's)
+// Box slot's F8 FA FB FC: to USB-A while that box's voices, and no other box's, send there (decided 2026-11-26: with
+// both boxes on USB-A no clock goes). realtime(status) is slot 0's.
+void realtime(int slot, uint8_t status);
+void realtime(uint8_t status);
+int usba_slots();                                              // bit s: a voice of box slot s sends to USB-A
 void tick(uint32_t ms);                                        // every control pass: what the budget held back
 
 struct Stats {

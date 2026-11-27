@@ -39,18 +39,29 @@ constexpr int kRows = core::kBlock * kBlocks;
 using Ring = int16_t[kRows][core::kVoices];
 
 static const int kFmVoices[4] = {0, 1, 4, 5};
+// Each slot's box (16 voices: slot 1's 8..15 too, voice_report_at its engine voices), the same set a few notes up
 static void trigs(int round) {   // per half: two FM voices (each its own ROM voice), PARTICLE, DAISYSP
-  for (int k = 0; k < 4; ++k) {
-    auto t = report(0x04, core::kFm | kFmVoices[k], 48 + 3 * k, 100,
-                    {(float)(7 * k + round % 5), 64, 64, 100, 64, 64, 120, 0});
-    core::voice_report(0x04, t.data(), (int)t.size());
+  for (int sl = 0; sl < core::kVoiceSlots; ++sl) {
+    const int b = sl * core::kBoxVoices, up = 5 * sl;
+    for (int k = 0; k < 4; ++k) {
+      auto t = report(0x04, core::kFm | kFmVoices[k], 48 + 3 * k + up, 100,
+                      {(float)(7 * k + round % 5 + sl), 64, 64, 100, 64, 64, 120, 0});
+      core::voice_report_at(b + kFmVoices[k], 0x04, t.data(), (int)t.size());
+    }
+    for (int h = 0; h < 2; ++h) {
+      // P1 106: zone 14 of 17, PARTICLE (Plaits' engine 18); DAISYSP STRING (P1 64: its noise burst and dispersion)
+      auto p = report(0x04, core::kPlaits | (2 + 4 * h), 60 + h + up, 100, {106, 64, 64, 64, 64, 64, 64, 100, 64, 64, 0, 0, 0, 120, 0, 100});
+      core::voice_report_at(b + 2 + 4 * h, 0x04, p.data(), (int)p.size());
+      auto d = report(0x04, core::kDaisy | (3 + 4 * h), 57 + h + up, 100, {64, 64, 64, 64, 0, 64, 64, 100});
+      core::voice_report_at(b + 3 + 4 * h, 0x04, d.data(), (int)d.size());
+    }
   }
-  for (int h = 0; h < 2; ++h) {
-    // P1 106: zone 14 of 17, PARTICLE (Plaits' engine 18); DAISYSP STRING (P1 64: its noise burst and dispersion)
-    auto p = report(0x04, core::kPlaits | (2 + 4 * h), 60 + h, 100, {106, 64, 64, 64, 64, 64, 64, 100, 64, 64, 0, 0, 0, 120, 0, 100});
-    core::voice_report(0x04, p.data(), (int)p.size());
-    auto d = report(0x04, core::kDaisy | (3 + 4 * h), 57 + h, 100, {64, 64, 64, 64, 0, 64, 64, 100});
-    core::voice_report(0x04, d.data(), (int)d.size());
+}
+// Core c's voices, as the Pi splits them (split=4): 4c..4c+3 of each slot's eight
+static void render_core(Ring& ring, int g, int c, uint64_t* mach) {
+  for (int sl = 0; sl < core::kVoiceSlots; ++sl) {
+    const int v0 = sl * core::kBoxVoices + 4 * c;
+    core::render_voices(ring, kRows, (g - 1) * core::kBlock, v0, v0 + 4, mach);
   }
 }
 
@@ -66,7 +77,7 @@ static void run(bool two, Ring& ring) {
     t_core = c;
     for (int g = 1; g <= kBlocks; ++g) {
       while (gen.load(std::memory_order_acquire) != g) {}
-      core::render_voices(ring, kRows, (g - 1) * core::kBlock, 4 * c, 4 * c + 4, mach[c]);
+      render_core(ring, g, c, mach[c]);
       done.fetch_add(1, std::memory_order_acq_rel);
     }
   };
@@ -81,7 +92,7 @@ static void run(bool two, Ring& ring) {
     } else {
       for (int c = 0; c < 2; ++c) {
         t_core = c;
-        core::render_voices(ring, kRows, (g - 1) * core::kBlock, 4 * c, 4 * c + 4, mach[c]);
+        render_core(ring, g, c, mach[c]);
       }
       t_core = 2;
     }
@@ -113,7 +124,7 @@ int main() {
     if (first >= 0) fprintf(stderr, "voice %d: two cores differ from one from frame %d\n", vi, first);
     CHECK(first < 0);
   }
-  printf("test_render_cores: PASS (8 voices on two threads - FM reloading %d times, PARTICLE, DAISYSP - "
-         "bit-identical to one)\n", kBlocks / 3);
+  printf("test_render_cores: PASS (%d voices on two threads - FM reloading %d times, PARTICLE, DAISYSP - "
+         "bit-identical to one)\n", core::kVoices, kBlocks / 3);
   return 0;
 }

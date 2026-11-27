@@ -93,9 +93,25 @@ bool saving();              // a write waits or runs
 // (prjslot::moving) no list is saved (a write landing in a folder being copied).
 void rekey(const char* from, const char* to);
 const char* project();      // the key the lists are of ("" before the first)
+const char* project(int s); // voice slot s's
 uint32_t sig(int list);     // changes with every change of the list (an entry, a state, the lock)
 const Entry& at(int list, int code);   // any core (racy for drawing)
 const Member* members(int list, int code, int* n);
+// The same for voice slot s's lists (core/pool/pool.h), whatever slot is in hand: the machines' copies for a voice
+// (slot_of_voice), and any reader off the control core (device::cur() is the control core's, it moves under them).
+uint32_t sig(int s, int list);
+const Entry& at(int s, int list, int code);
+const Member* members(int s, int list, int code, int* n);
+bool always_ram(int s, int list, int code);
+int count(int s, int list);
+bool locked(int s, int list);
+const char* lock_why(int s, int list);
+int find_hash(int s, int list, const lib::Ref& r);
+bool used(int s, int list, int code);
+int users(int s, int list, int code);
+bool in_use(int s, int list, int code);
+int select_unused(int s, int list, int16_t* out, int max);
+bool resident(int s, int list, int code);
 bool locked(int list);      // refused (newer / damaged): never written, no edits
 bool read_only(int list);   // foreign-newer: read, edits in RAM only
 const char* lock_why(int list);
@@ -143,6 +159,7 @@ bool filling();
 bool pending();             // an instrument's .sfz read waits
 int last_result(int* out);  // the last instrument's outcome once it is read (kPending while it waits; *out its row)
 void note_info(int list, int code, uint32_t frames, uint8_t ch, uint32_t rate);   // a loader's cached extras
+void note_info(int s, int list, int code, uint32_t frames, uint8_t ch, uint32_t rate);   // slot s's
 // "Always in RAM" (docs/STEREO.md): a row (code) or a whole list (code -1) held whole in the pool RAM, never streamed
 // (MULTISAMPLE plays it in RAM mode whatever the streaming budget says). Kept in pool-used.txt ("ram smp A001",
 // "ram inst *"); the console's pool=K:ram:ROW|all:on|off.
@@ -153,6 +170,7 @@ void accept_changed(int list, int code);   // a CHANGED entry: its ref takes the
 
 // ---- the used set and P3
 void seen(int list, int code);             // a report / commit / the Sidecar's pattern played this code
+void seen_in(int s, int list, int code);   // in slot s's used set (a voice's: slot_of_voice)
 bool used(int list, int code);             // seen in this project
 uint32_t used_count(int list, int code);
 void voice_on(int list, int vi, int code); // the code voice vi's machine plays now (-1 none): "USED BY 3 SOUNDS"
@@ -170,6 +188,7 @@ extern const char* const kUnusedWarning;   // "NOT SEEN PLAYING - A RYTM LOCK MA
 // visited, or -1 when a row kept changing and was left out (the caller tries again, or reads the list files).
 typedef void (*RefFn)(void* ctx, int list, int code, int member, const lib::Ref& r);
 int refs(int list, RefFn fn, void* ctx);
+int refs(int s, int list, RefFn fn, void* ctx);   // slot s's (the library's "current project first": every slot's)
 
 // ---- the console: "pool" (stats), "pool=smp|wt|inst:set:A010:PATH", ":clear:A010", ":fill:B:FOLDER", ":unused",
 // ":unload:A010[,A011..]", ":replace:A010:PATH[:yes|:force]", ":add:B:PATH", ":input:H001:IN", ":builtin:H011:PAD",

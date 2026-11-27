@@ -322,7 +322,7 @@ void CSidecarDisplay::ChooseUi (void)
 			delete [] pRow;
 		}
 	}
-	LOGNOTE ("UI %ux%u%s on the frame buffer's %ux%u%s (res=800x480|1024x600|1280x720 in /.rytm/display.txt or cmdline.txt)", W, H,
+	LOGNOTE ("UI %ux%u%s on the frame buffer's %ux%u%s (res=800x480|1024x600|1280x720 in /.sidecar/display.txt or cmdline.txt)", W, H,
 		 m_nOffX || m_nOffY ? " centred" : "", FW, FH, bReq ? ", res= given" : "");
 }
 

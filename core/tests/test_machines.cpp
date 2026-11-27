@@ -6,7 +6,8 @@
 
 int main() {
   using namespace core;
-  CHECK(kVoices == 8 && kBlock == 12);
+  CHECK(kBoxVoices == 8 && kVoices == CORE_VOICES && kBlock == 12);
+  CHECK(slot_of_voice(9) == 1 && box_voice(9) == 1 && voice_wrap(kVoices + 3) == 3);
   CHECK(machine_of(0x00 | 3) == kPlaits && machine_of(0x08 | 7) == kJuno && machine_of(0x10) == kDaisy);
   CHECK(machine_of(0x20 | 5) == kDspSample && machine_of(0x40 | 1) == kMd && machine_of(0x48 | 2) == kFm);
   CHECK(user_slot_of(0x50) == 0 && user_slot_of(0x58) == 1 && user_slot_of(0x70) == 4);

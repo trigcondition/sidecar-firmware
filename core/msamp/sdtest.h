@@ -11,7 +11,7 @@
 //   result   MB/s, IOPS and latency (p50 / p99 / worst) per size, the mixed reads' latency, and the verdict:
 //            streaming voices (stereo 24-bit 48 kHz at unity pitch: 288 KB/s, 9 reads of 32 KB a second each) with
 //            and without the recorder (13 files of 24-bit: 1.97 MB/s, docs/pi-engine.md), the read-ahead it will use
-//            (1.5 x the worst read seen, with the writes too, + 30 ms; 100..600) and the stream count; written to /.rytm/sdtest.txt
+//            (1.5 x the worst read seen, with the writes too, + 30 ms; 100..600) and the stream count; written to /.sidecar/sdtest.txt
 //            (key=value lines) and given to msamp (set_stream_limits). A one-line summary in the log.
 //   ui       the console's `sdtest` (the last result), `sdtest=start` (refused while MULTISAMPLE notes play;
 //            `sdtest=start!` anyway: audio may drop while it runs), `sdtest=cancel`; json() for the web page and the
@@ -69,7 +69,7 @@ State state();
 int progress();                                    // 0..100
 const char* why();                                 // the failure or the phase
 const Measured& measured();
-const Verdict& verdict();                          // the last one (also read back from /.rytm/sdtest.txt at load())
+const Verdict& verdict();                          // the last one (also read back from /.sidecar/sdtest.txt at load())
 void load();                                       // boot: the last result from the card, if any
 int json(char* out, int cap);                      // {"state":..,"progress":..,"verdict":..,...}
 const char* line();                                // the remote UI's SYSTEM page: "SD OK 24" (streams with the recorder),

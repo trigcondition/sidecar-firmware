@@ -165,6 +165,7 @@ void CConsole::Command (const char *pText)
 	if (paircode_pi::Command (pText)) return;			// core 0's (paircode_pi.h): pair, pair=show, pair=revoke
 	if (midibridge_pi::Command (pText)) return;			// core 0's (midibridge_pi.h): midibridge, midibridge=on|off|os:on|os:off
 	if (lib_pi::command (pText)) return;				// core 0's (lib_pi.h): lib=status|rescan|verify|bench (srclib's browse= / lib=changed:, pool= below)
+	if (CObUsb::Command (pText)) return;				// core 0's (ob_usb.h): obreenum, obreenum=0|1, obhubreset!, obhubnoanswer=0|1 (ob_freeze.h), obfsnext=0|1 (ob_speed.h)
 	if (strlen (pText) >= sizeof (TCmd::text))
 	{
 		L->Write (From, LogWarning, "command too long (max %u characters): dropped", (unsigned) sizeof (TCmd::text) - 1);

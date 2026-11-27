@@ -122,10 +122,10 @@ build of 0.4.1 did not, its `/status` `usbMode.modes` was `["class"]`), both wit
 refuses it too, with "not here (no circle-gadget-mirror.patch)" (also logged at boot for `usb=mirror` or a stored
 `usbmode=overbridge`: "not in this build", CLASS COMPLIANT runs).
 
-**Stored, and which wins.** The choice is kept on the card as `usbmode=class|overbridge` in `/.rytm/display.txt` (written
+**Stored, and which wins.** The choice is kept on the card as `usbmode=class|overbridge` in `/.sidecar/display.txt` (written
 only once one is chosen). Where the mode comes from, first match wins:
 
-1. `usbmode=` in `/.rytm/display.txt` (chosen on the Sidecar);
+1. `usbmode=` in `/.sidecar/display.txt` (chosen on the Sidecar);
 2. cmdline.txt's `usb=` (`mirror`: OVERBRIDGE, anything else: CLASS COMPLIANT), as before the setting;
 3. CLASS COMPLIANT.
 

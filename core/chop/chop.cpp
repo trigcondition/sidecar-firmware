@@ -8,6 +8,7 @@
 #include <strings.h>
 
 #if CORE_MSAMP
+#include "../device/device.h"
 #include "../fmt/fmt.h"
 #include "../fx/out.h"
 #include "../lib/library.h"
@@ -178,6 +179,7 @@ struct MapSlot {
   uint32_t dirty_ms, gen, used_ms;
   char file[kPathLen];          // where it is written / was read
   int inst;                     // its INSTRUMENTS row (-1 not known)
+  int8_t ls;                    // the voice slot whose project it belongs to (its pool rows, its folder)
   int find_code;                // the scan's next INSTRUMENTS code
   char found[kPathLen];         // the scan's best file
   int found_rank;               // 2 a .chop.sfz, 1 a -slices.sfz (v1)
@@ -412,10 +414,10 @@ CORE_COLD void src_ready(int s, const int16_t* pcm, uint32_t frames, uint32_t ra
 }
 
 // ---- maps
-CORE_COLD int map_find_slot(const lib::Ref& r, const char* path) {
+CORE_COLD int map_find_slot(int ls, const lib::Ref& r, const char* path) {
   for (int m = 0; m < kMaps; ++m) {
     const MapSlot& x = maps[m];
-    if (x.state == kMFree || x.ram) continue;
+    if (x.state == kMFree || x.ram || x.ls != ls) continue;   // (each box's project its own maps)
     if (r.has_sha && x.has_sha && !memcmp(x.sha, r.sha, 32)) return m;
     if (!r.has_sha && !x.has_sha && path && !strcasecmp(x.key_path, path)) return m;
   }
@@ -477,7 +479,7 @@ CORE_COLD void map_fit(int m, int s) {
 }
 CORE_COLD void fill_sample_info(int m, int code) {
   MapSlot& x = maps[m];
-  const pools::Entry& e = pools::at(pools::kSamples, code);
+  const pools::Entry& e = pools::at(x.ls, pools::kSamples, code);
   x.m.has_sha = e.ref.has_sha;
   if (e.ref.has_sha) memcpy(x.m.sha, e.ref.sha, 32);
   x.m.size = e.ref.size;
@@ -486,8 +488,9 @@ CORE_COLD void fill_sample_info(int m, int code) {
 }
 // the voice's map for SRC's sample: held already, else a new slot that looks for its file in the INSTRUMENTS pool
 CORE_COLD int map_for(int vi, int code) {
-  const pools::Entry& e = pools::at(pools::kSamples, code);
-  int m = map_find_slot(e.ref, e.path);
+  const int ls = slot_of_voice(vi);
+  const pools::Entry& e = pools::at(ls, pools::kSamples, code);
+  int m = map_find_slot(ls, e.ref, e.path);
   if (m >= 0) {
     maps[m].used_ms = now_ms();
     return m;
@@ -500,10 +503,10 @@ CORE_COLD int map_for(int vi, int code) {
   if (e.ref.has_sha) memcpy(x.sha, e.ref.sha, 32);
   sniprintf(x.key_path, sizeof x.key_path, "%s", e.path);
   map_clear(&x.m);
+  x.ls = (int8_t)ls;
   fill_sample_info(m, code);
   x.inst = -1, x.find_code = 0, x.found_rank = 0, x.found[0] = 0;
   x.state = kMFind, x.used_ms = now_ms();
-  (void)vi;
   return m;
 }
 CORE_COLD bool ends_with(const char* s, const char* t) {
@@ -516,12 +519,12 @@ CORE_COLD bool map_find_step(int m) {
   MapSlot& x = maps[m];
   int end = x.find_code + 128 < pools::kCodes ? x.find_code + 128 : pools::kCodes;
   for (int c = x.find_code; c < end; ++c) {
-    const pools::Entry& e = pools::at(pools::kInstr, c);
+    const pools::Entry& e = pools::at(x.ls, pools::kInstr, c);
     if (e.type != pools::kInstrument || !e.path[0]) continue;
     int rank = ends_with(e.path, ".chop.sfz") ? 2 : ends_with(e.path, "-slices.sfz") ? 1 : 0;
     if (rank <= x.found_rank) continue;
     int nm = 0;
-    const pools::Member* mem = pools::members(pools::kInstr, c, &nm);
+    const pools::Member* mem = pools::members(x.ls, pools::kInstr, c, &nm);
     bool match = false;
     for (int i = 0; mem && i < nm && !match; ++i)
       match = x.has_sha ? mem[i].ref.has_sha && !memcmp(mem[i].ref.sha, x.sha, 32)
@@ -592,7 +595,7 @@ CORE_COLD void map_path(const MapSlot& x, char* out, int cap) {
   static const char kHex[] = "0123456789abcdef";
   if (x.has_sha)
     for (int i = 0; i < 4; ++i) h[2 * i] = kHex[x.sha[i] >> 4], h[2 * i + 1] = kHex[x.sha[i] & 15];
-  const char* key = pools::project();
+  const char* key = pools::project(x.ls);
   char dir[kPathLen];
   if (!fmt::path("slicemap", key && key[0] ? key : "default", 0, dir, sizeof dir)) sniprintf(dir, sizeof dir, "/CHOP/default");
   sniprintf(out, cap, "%s/%s-%s.chop.sfz", dir, nm, h);
@@ -604,7 +607,7 @@ CORE_COLD bool start_load() {
   for (int vi = 0; vi < kVoices; ++vi) {
     VS& x = vs[vi];
     if (!(v[vi].cp || x.force || x.pre) || x.code < 0 || x.src >= 0 || x.buf_src >= 0 || x.code == x.fail_code) continue;
-    const pools::Entry& e = pools::at(pools::kSamples, x.code);
+    const pools::Entry& e = pools::at(slot_of_voice(vi), pools::kSamples, x.code);
     if (e.type != pools::kSample || !pools::playable(e) || !e.path[0]) continue;
     int s = src_find(e.ref, e.path);
     if (s >= 0 && srcs[s].ready) { x.src = s; continue; }
@@ -673,7 +676,7 @@ CORE_COLD bool step_load() {
     for (int vi = 0; vi < kVoices; ++vi) {
       VS& x = vs[vi];
       if (x.code >= 0 && x.src < 0 && x.buf_src < 0) {
-        const pools::Entry& e = pools::at(pools::kSamples, x.code);
+        const pools::Entry& e = pools::at(slot_of_voice(vi), pools::kSamples, x.code);
         if (same_ref(e.ref, sr.ref) || !strcasecmp(e.path, sr.path)) x.src = job->slot;
       }
       if (x.map >= 0)
@@ -692,7 +695,7 @@ CORE_COLD bool step_load() {
     for (int vi = 0; vi < kVoices; ++vi) {
       VS& x = vs[vi];
       if (x.code < 0) continue;
-      const pools::Entry& e = pools::at(pools::kSamples, x.code);
+      const pools::Entry& e = pools::at(slot_of_voice(vi), pools::kSamples, x.code);
       if (same_ref(e.ref, sr.ref) || !strcasecmp(e.path, sr.path)) x.fail_code = x.code, x.pend.on = false;
     }
     src_drop(job->slot);
@@ -806,16 +809,19 @@ CORE_COLD void accept_step() {
   for (int m = 0; m < kMaps; ++m) {
     MapSlot& x = maps[m];
     if (!x.accept || x.inst < 0) continue;
-    const pools::Entry& e = pools::at(pools::kInstr, x.inst);
+    const pools::Entry& e = pools::at(x.ls, pools::kInstr, x.inst);
     if (e.type != pools::kInstrument || strcasecmp(e.ref.hint, x.file)) { x.accept = false; continue; }
-    if (e.st == lib::kChanged) pools::accept_changed(pools::kInstr, x.inst), x.accept = false;
+    if (e.st == lib::kChanged) {
+      device::Scope in(device::g_links[x.ls]);   // (an edit of the map's own box's list)
+      pools::accept_changed(pools::kInstr, x.inst), x.accept = false;
+    }
   }
 }
 CORE_COLD void find_inst_row(int m) {   // the row a map's file went into (add_take's .sfz read finishes later)
   MapSlot& x = maps[m];
   if (x.inst >= 0 || !x.file[0] || !x.saved_once) return;
   for (int c = 0; c < pools::kCodes; ++c) {
-    const pools::Entry& e = pools::at(pools::kInstr, c);
+    const pools::Entry& e = pools::at(x.ls, pools::kInstr, c);
     if (e.type == pools::kInstrument && (!strcasecmp(e.ref.hint, x.file) || !strcasecmp(e.path, x.file))) {
       x.inst = c;
       return;
@@ -1029,7 +1035,7 @@ CORE_COLD void set_source(int vi) {
   VS& x = vs[vi];
   if (x.buf_src >= 0) return;
   int code = srclib::code_of(x.p[0]);
-  const pools::Entry& e = pools::at(pools::kSamples, code);
+  const pools::Entry& e = pools::at(slot_of_voice(vi), pools::kSamples, code);
   bool file = e.type == pools::kSample && pools::playable(e) && e.path[0];
   if (v[vi].cp || x.force) pools::voice_on(pools::kSamples, vi, file ? code : -1);
   if (!file) {
@@ -1137,7 +1143,7 @@ CORE_COLD bool step() {
   if (rs.state == kRsPlaying && (int32_t)(now_ms() - rs.until_ms) >= 0) {
     samp::stop();
     for (int k = 0; k < kPerVoice; ++k)   // the take is over: its player ends (a LOOP slice would not)
-      if (notes[rs.vi & 7][k].keep) kill_note(notes[rs.vi & 7][k]);
+      if (notes[voice_wrap(rs.vi)][k].keep) kill_note(notes[voice_wrap(rs.vi)][k]);
     rs.state = kRsWriting;
   }
   if (rs.state == kRsWriting) {
@@ -1157,8 +1163,11 @@ CORE_COLD bool step() {
     if (vs[vi].pend.on && now_ms() - vs[vi].pend.ms > kLateMs && !ready_now(vi)) vs[vi].pend.on = false, ++st.late;
   switch (job->kind) {
     case kJLoad: return step_load();
-    case kJMapRead: return step_map_read();
-    case kJMapWrite: return step_map_write();
+    case kJMapRead:
+    case kJMapWrite: {   // a map's card work and its pool row: in its own box's Scope (its folder, its INSTRUMENTS)
+      device::Scope in(device::g_links[maps[job->slot].ls]);
+      return job->kind == kJMapRead ? step_map_read() : step_map_write();
+    }
     default: break;
   }
   if (start_map_job()) return true;
@@ -1181,10 +1190,10 @@ CORE_COLD bool step() {
   return pcache::step();
 }
 
-CORE_COLD bool forced(int vi) { return vs[vi & 7].force; }
+CORE_COLD bool forced(int vi) { return vs[voice_wrap(vi)].force; }
 
 CORE_COLD void report(int vi, int note, int vel, const float* p) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!job) return;
   VS& x = vs[vi];
   for (int k = 0; k < 16; ++k) x.p[k] = p[k];
@@ -1192,7 +1201,7 @@ CORE_COLD void report(int vi, int note, int vel, const float* p) {
   x.reported = true;
   v[vi].live = true;
   set_source(vi);
-  if (x.code >= 0) pools::seen(pools::kSamples, x.code);
+  if (x.code >= 0) pools::seen_in(slot_of_voice(vi), pools::kSamples, x.code);   // (its box's used set)
   if (note < 0) return;
   if (x.lazy.on) {   // LAZY: a trig is a tap
     lazy_tap(vi);
@@ -1202,7 +1211,7 @@ CORE_COLD void report(int vi, int note, int vel, const float* p) {
 }
 
 CORE_COLD void live_on(int vi, int key, int vel, int ch, int mnote) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!job || key < 0 || key > 127) return;
   VS& x = vs[vi];
   if (x.code < 0 && x.buf_src < 0) set_source(vi);
@@ -1228,7 +1237,7 @@ CORE_COLD void live_on(int vi, int key, int vel, int ch, int mnote) {
 }
 
 CORE_COLD void live_off(int vi, int ch, int mnote) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   for (int k = 0; k < kPerVoice; ++k) {
     Note& n = notes[vi][k];
     if (!n.live || n.ch != ch || (mnote >= 0 && n.mnote != mnote)) continue;
@@ -1238,18 +1247,18 @@ CORE_COLD void live_off(int vi, int ch, int mnote) {
 }
 
 CORE_COLD void seq_hit(int vi, int note, int vel) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!job) return;
   if (vs[vi].code < 0 && vs[vi].buf_src < 0) set_source(vi);
   hit(vi, note, vel, true);
 }
 CORE_COLD int voice_notes(int vi) {
   int a = 0;
-  for (int k = 0; k < kPerVoice; ++k) a += !note_free(notes[vi & 7][k]);
+  for (int k = 0; k < kPerVoice; ++k) a += !note_free(notes[voice_wrap(vi)][k]);
   return a;
 }
 CORE_COLD void note_off(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   vs[vi].pend.on = false;
   // The 0x11 carries only the voice: it ends the NEWEST held trig note (identical under MONO; a POLY note of an older trig
   // keeps its own trig's 0x11). A GATE note that started under kStaleOffMs ago is not released: that 0x11 is the previous trig's
@@ -1284,7 +1293,7 @@ CORE_COLD void release_gates() {
     }
 }
 CORE_COLD void silence(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   vs[vi].pend.on = false;
   if (vs[vi].lazy.on) vs[vi].lazy.on = false;
   for (int k = 0; k < kPerVoice; ++k) kill_note(notes[vi][k]);
@@ -1300,19 +1309,19 @@ CORE_COLD int slices(int vi) {
   const Map* m = map_of(vi);
   return m ? m->n : 0;
 }
-CORE_COLD int slice_of_hit(int vi, int note, bool seq_note) { return job ? hit_slice(vi & 7, note, seq_note) : -1; }
-CORE_COLD int played_slice(int vi) { return vs[vi & 7].last; }
-CORE_COLD bool sample_ready(int vi) { return job && voice_src(vi & 7) != nullptr; }
+CORE_COLD int slice_of_hit(int vi, int note, bool seq_note) { return job ? hit_slice(voice_wrap(vi), note, seq_note) : -1; }
+CORE_COLD int played_slice(int vi) { return vs[voice_wrap(vi)].last; }
+CORE_COLD bool sample_ready(int vi) { return job && voice_src(voice_wrap(vi)) != nullptr; }
 CORE_COLD uint32_t sample_frames(int vi) {
-  const Src* s = job ? voice_src(vi & 7) : nullptr;
+  const Src* s = job ? voice_src(voice_wrap(vi)) : nullptr;
   return s ? s->frames : 0;
 }
 CORE_COLD uint32_t sample_rate(int vi) {
-  const Src* s = job ? voice_src(vi & 7) : nullptr;
+  const Src* s = job ? voice_src(voice_wrap(vi)) : nullptr;
   return s ? s->rate : 48000;
 }
 CORE_COLD int outline(int vi, uint32_t a, uint32_t b, int cols, float* mn, float* mx) {
-  const Src* s = job ? voice_src(vi & 7) : nullptr;
+  const Src* s = job ? voice_src(voice_wrap(vi)) : nullptr;
   if (!s || cols <= 0 || b <= a) return 0;
   if (b > s->frames) b = s->frames;
   if (a >= b) return 0;
@@ -1341,25 +1350,25 @@ CORE_COLD int outline(int vi, uint32_t a, uint32_t b, int cols, float* mn, float
 CORE_COLD int playheads(int vi, int32_t* pos, int max) {
   int n = 0;
   for (int k = 0; k < kPerVoice && n < max; ++k) {
-    int32_t h = g_head[vi & 7][k];
+    int32_t h = g_head[voice_wrap(vi)][k];
     if (h >= 0) pos[n++] = h;
   }
   return n;
 }
 CORE_COLD uint32_t map_gen(int vi) {
-  int m = job ? vs[vi & 7].map : -1;
+  int m = job ? vs[voice_wrap(vi)].map : -1;
   return m >= 0 ? maps[m].gen * 2 + (maps[m].state == kMReady) : 0;
 }
 CORE_COLD const char* map_file(int vi) {
-  int m = job ? vs[vi & 7].map : -1;
+  int m = job ? vs[voice_wrap(vi)].map : -1;
   return m >= 0 && maps[m].saved_once ? maps[m].file : "";
 }
 CORE_COLD int map_row(int vi) {
-  int m = job ? vs[vi & 7].map : -1;
+  int m = job ? vs[voice_wrap(vi)].map : -1;
   return m >= 0 ? maps[m].inst : -1;
 }
 CORE_COLD bool map_dirty(int vi) {
-  int m = job ? vs[vi & 7].map : -1;
+  int m = job ? vs[voice_wrap(vi)].map : -1;
   return m >= 0 && maps[m].dirty;
 }
 
@@ -1380,7 +1389,7 @@ CORE_COLD bool edit_transient(int vi, int sens) {
   return true;
 }
 CORE_COLD bool transient_busy(int vi) {
-  int m = job ? vs[vi & 7].map : -1;
+  int m = job ? vs[voice_wrap(vi)].map : -1;
   return m >= 0 && maps[m].on_busy;
 }
 CORE_COLD bool edit_add(int vi, uint32_t frame) {
@@ -1457,7 +1466,7 @@ CORE_COLD int latency() {
 }
 CORE_COLD void set_latency(int frames) { g_lat = frames < 0 ? -1 : frames > 9600 ? 9600 : frames; }
 CORE_COLD bool lazy_arm(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   const Src* s = job ? voice_src(vi) : nullptr;
   if (!s || vs[vi].map < 0 || maps[vs[vi].map].state != kMReady) return false;
   VS& x = vs[vi];
@@ -1475,7 +1484,7 @@ CORE_COLD bool lazy_arm(int vi) {
   return true;
 }
 CORE_COLD int32_t lazy_tap(int vi) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   VS& x = vs[vi];
   const Src* s = job ? voice_src(vi) : nullptr;
   if (!s || !x.lazy.on) return -1;
@@ -1498,9 +1507,9 @@ CORE_COLD int32_t lazy_tap(int vi) {
   }
   return at;
 }
-CORE_COLD bool lazy_undo(int vi) { return vs[vi & 7].lazy.on && chop::lazy_undo(&vs[vi & 7].lazy); }
+CORE_COLD bool lazy_undo(int vi) { return vs[voice_wrap(vi)].lazy.on && chop::lazy_undo(&vs[voice_wrap(vi)].lazy); }
 CORE_COLD bool lazy_stop(int vi, bool keep) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   VS& x = vs[vi];
   if (!x.lazy.on) return false;
   x.lazy.on = false;
@@ -1517,11 +1526,11 @@ CORE_COLD bool lazy_stop(int vi, bool keep) {
   log(CORE_STR("chop: LAZY: %d slices at%s"), m->m.n, b);
   return true;
 }
-CORE_COLD bool lazy_on(int vi) { return job && vs[vi & 7].lazy.on; }
-CORE_COLD const Lazy* lazy_state(int vi) { return job ? &vs[vi & 7].lazy : nullptr; }
-CORE_COLD uint32_t lazy_playhead(int vi) { return ld_acq(&g_lazy_t[vi & 7]); }
+CORE_COLD bool lazy_on(int vi) { return job && vs[voice_wrap(vi)].lazy.on; }
+CORE_COLD const Lazy* lazy_state(int vi) { return job ? &vs[voice_wrap(vi)].lazy : nullptr; }
+CORE_COLD uint32_t lazy_playhead(int vi) { return ld_acq(&g_lazy_t[voice_wrap(vi)]); }
 CORE_COLD void audition(int vi, int k) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!job || vs[vi].lazy.on) return;
   live_off(vi, kPreviewCh, -1);
   live_on(vi, k, 110, kPreviewCh, k);
@@ -1531,7 +1540,7 @@ CORE_COLD void audition(int vi, int k) {
 
 // ---- RESAMPLE
 CORE_COLD bool resample(int vi, int k, bool fx) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   // review M5: one take at a time - an offer not yet answered (YES / NO) holds the next one off
   if (!job || rs.state == kRsPlaying || rs.state == kRsWriting || rs.state == kRsOffer) return false;
   const Map* mp = map_of(vi);
@@ -1609,7 +1618,7 @@ CORE_COLD bool resample_answer(bool yes) {
 }
 
 CORE_COLD bool use_buffer(int vi, const int16_t* pcm, uint32_t frames, int ch, uint32_t rate) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!job) return false;
   VS& x = vs[vi];
   for (int k = 0; k < kPerVoice; ++k) kill_note(notes[vi][k]);
@@ -1967,8 +1976,8 @@ void render_voice(int vi, float* l, float* r, int cnt) {
 }
 }  // namespace
 
-void render_add(int vi, float* out, int n) { render_voice(vi & 7, out, nullptr, n); }
-void render_add2(int vi, float* l, float* r, int n) { render_voice(vi & 7, l, r, n); }
+void render_add(int vi, float* out, int n) { render_voice(voice_wrap(vi), out, nullptr, n); }
+void render_add2(int vi, float* l, float* r, int n) { render_voice(voice_wrap(vi), l, r, n); }
 #endif
 
 }  // namespace chop

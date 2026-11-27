@@ -194,7 +194,7 @@ void begin_scenario() {
   g_seq = false;
   g_wire.clear();
   hooks.user_report = nullptr;
-  for (int vi = 0; vi < kVoices; ++vi) voice_at(0x03, vi, kPlaits, vi);
+  for (int vi = 0; vi < kBoxVoices; ++vi) voice_at(0x03, vi, kPlaits, vi);
   sendfx_at(0);
 }
 
@@ -474,11 +474,11 @@ uint64_t run(int scenario, std::vector<uint64_t>* checkpoints, bool dump) {
     lfo::tick(now_us());
     uint64_t g[6];
     g[0] = kFnv0;
-    for (int vi = 0; vi < kVoices; ++vi) g[0] = fnv(g[0], v[vi].p, sizeof v[vi].p);
+    for (int vi = 0; vi < kBoxVoices; ++vi) g[0] = fnv(g[0], v[vi].p, sizeof v[vi].p);
     g[1] = fnv_v(kFnv0, &fx::control.knob[0][0], sizeof fx::control.knob);
     g[2] = fnv_v(fnv_v(kFnv0, &ins::control.play[0][0][0], sizeof ins::control.play), &ins::control.peq[0][0],
                  sizeof ins::control.peq);
-    g[3] = fnv_v(fnv_v(fnv_v(kFnv0, out::control.lev, kVoices), out::control.pan, kVoices), out::control.wid, kVoices);
+    g[3] = fnv_v(fnv_v(fnv_v(kFnv0, out::control.lev, kBoxVoices), out::control.pan, kBoxVoices), out::control.wid, kBoxVoices);
     g[4] = fnv(kFnv0, &g_internal, sizeof g_internal);
     g[5] = g_rytm;
     h = fnv(h, g, sizeof g);

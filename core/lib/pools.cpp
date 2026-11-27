@@ -11,6 +11,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "../device/device.h"
 #include "../fmt/fmt.h"
 #include "../msamp/cardq.h"
 #include "../msamp/sfz.h"
@@ -37,7 +38,7 @@ constexpr int kResolvePer = 128;           // refs resolved a step
 constexpr uint32_t kPieceRead = 65536;     // a read request's bytes (cardq::kPiece)
 constexpr uint32_t kSfzMax = 1u << 20;     // an .sfz's bytes at most
 constexpr int kSfzRegions = 4096;
-constexpr int kVoicesMax = 8;
+constexpr int kVoicesMax = kVoices;   // the engine's voices (a row each)
 
 struct Lst {
   Entry* e;              // [kCodes]
@@ -62,12 +63,6 @@ struct Lst {
   Member* undo_m;        // [kMembersPer]
   int16_t voice[kVoicesMax];   // the code each voice plays now (-1 none)
 };
-Lst L[kLists];
-struct UsedSet {
-  uint32_t* n;           // [kLists * kCodes]
-  bool dirty;
-  uint32_t dirty_ms;
-} U = {nullptr, false, 0};
 
 enum Io : uint8_t { kIoIdle, kIoOpen, kIoExists, kIoRead, kIoClose, kIoParse, kIoFormat, kIoWrite };
 constexpr int kParseLines = 64;   // lines parsed a step (the control core renders between steps)
@@ -90,14 +85,11 @@ struct Job {
   text::Parser ps;
   int fc;                // the format's next code
   uint8_t fst;           // the load's fmt verdict (fmt::Status)
+  int8_t slot;           // the voice slot whose lists it reads / writes (its folder)
 };
 Job J = {};
 char* text = nullptr;    // [kFileMax + 1] one card job's bytes (a read, or a write's text until it is done)
-// the project the lists are of, and the load's progress
-char cur_key[kKeyMax] = {1, 0};   // "\1": none yet
-char cur_name[24] = {};
-int load_next = -1;      // 0..2 the lists, 3 the used set, 4 done; -1 not loading
-bool g_ready = false, card_on = false;
+bool card_on = false;
 volatile bool began = false;
 bool (*play_fn)() = nullptr;
 Stats st;
@@ -108,7 +100,7 @@ struct SfzJob {
   int confirm;
   char path[lib::kPath];
   int result, out;       // the last one's outcome (UI)
-} SJ = {};
+};
 msamp::Region* sfz_regions = nullptr;
 char (*sfz_samples)[msamp::kPath] = nullptr;
 // a fill: the folder listed by srclib's browser (the list's kind), then its files into the bank
@@ -117,7 +109,7 @@ struct FillJob {
   int list, bank, i, filled;   // i: the next item of its listing
   char folder[lib::kPath];
   uint32_t t0;
-} FJ = {};
+};
 // instruments waiting for the card job (a take's slice map while a list is written): added in turn
 struct PendAdd {
   int list, code, bank, confirm;
@@ -125,8 +117,29 @@ struct PendAdd {
   char path[lib::kPath];
 };
 constexpr int kPend = 8;
-PendAdd PQ[kPend];
-int npq = 0;
+
+struct UsedSet {
+  uint32_t* n;           // [kLists * kCodes]
+  bool dirty;
+  uint32_t dirty_ms;
+};
+// One voice slot's lists (core/pool/pool.h: each box's project its own): the slot in hand's (S(), device::cur()), every
+// call from the control core. The card job (J) and its text buffer are one, for the slot that posted it (J.slot).
+struct Sl {
+  Lst L[kLists];
+  UsedSet U;
+  char key[kKeyMax];     // the project the lists are of ("\1": none yet)
+  char name[24];
+  int load_next;         // 0..2 the lists, 3 the used set, 4 done; -1 not loading
+  bool ready;
+  SfzJob SJ;
+  FillJob FJ;
+  PendAdd PQ[kPend];
+  int npq;
+  int shown[kLists];     // the bank last shown on a view of each list
+};
+Sl g_sl[kVoiceSlots];
+inline Sl& S() { return g_sl[prj_slot()]; }
 
 CORE_COLD void begin_change(Lst& l) {
   __atomic_store_n(&l.seq, l.seq + 1, __ATOMIC_RELEASE);
@@ -139,17 +152,21 @@ CORE_COLD void end_change(Lst& l, bool bump = true) {
 }
 CORE_COLD void ensure() {
   if (began) return;   // (set at the end: another core reading at() / refs() sees the lists only once they exist)
-  for (int l = 0; l < kLists; ++l) {
-    L[l].e = new Entry[kCodes];
-    memset(L[l].e, 0, sizeof(Entry) * kCodes);
-    L[l].m = l == kInstr ? new Member[kMembers] : nullptr;
-    L[l].undo_m = l == kInstr ? new Member[kMembersPer] : nullptr;
-    L[l].nm = 0, L[l].seq = 0, L[l].sig = 1, L[l].rgen = ~0u;
-    for (int b = 0; b < kBanks; ++b) L[l].e[code(b, 0)].type = kOff;
-    for (int v = 0; v < kVoicesMax; ++v) L[l].voice[v] = -1;
+  for (Sl& x : g_sl) {
+    for (int l = 0; l < kLists; ++l) {
+      Lst& y = x.L[l];
+      y.e = new Entry[kCodes];
+      memset(y.e, 0, sizeof(Entry) * kCodes);
+      y.m = l == kInstr ? new Member[kMembers] : nullptr;
+      y.undo_m = l == kInstr ? new Member[kMembersPer] : nullptr;
+      y.nm = 0, y.seq = 0, y.sig = 1, y.rgen = ~0u;
+      for (int b = 0; b < kBanks; ++b) y.e[code(b, 0)].type = kOff;
+      for (int v = 0; v < kVoicesMax; ++v) y.voice[v] = -1;
+    }
+    x.U.n = new uint32_t[kLists * kCodes];
+    memset(x.U.n, 0, sizeof(uint32_t) * kLists * kCodes);
+    x.key[0] = 1, x.key[1] = 0, x.load_next = -1;
   }
-  U.n = new uint32_t[kLists * kCodes];
-  memset(U.n, 0, sizeof(uint32_t) * kLists * kCodes);
   text = new char[kFileMax + 1];
   __atomic_store_n(&began, true, __ATOMIC_RELEASE);
 }
@@ -170,12 +187,12 @@ CORE_COLD bool same_ref(const lib::Ref& a, const lib::Ref& b) {
   return !strcasecmp(a.hint, b.hint);
 }
 CORE_COLD void clear_entry(Entry& e, int c) {
-  if (e.ram) U.dirty = true, U.dirty_ms = now_ms();   // its "always in RAM" line goes with it
+  if (e.ram) S().U.dirty = true, S().U.dirty_ms = now_ms();   // its "always in RAM" line goes with it
   memset(&e, 0, sizeof e);
   e.type = row_of(c) ? kEmpty : kOff;
 }
 CORE_COLD void clear_list(int l) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   begin_change(x);
   for (int c = 0; c < kCodes; ++c) clear_entry(x.e[c], c);
   x.nm = 0;
@@ -186,7 +203,7 @@ CORE_COLD void clear_list(int l) {
   end_change(x);
 }
 CORE_COLD void template_of(int l) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   begin_change(x);
   if (l == kSamples) {
     for (int i = 0; i < kInputs; ++i) {
@@ -211,12 +228,12 @@ CORE_COLD void template_of(int l) {
   ++st.templates;
 }
 CORE_COLD void mark(int l) {
-  L[l].dirty = true;
-  L[l].dirty_ms = now_ms();
-  L[l].from_template = false;
+  S().L[l].dirty = true;
+  S().L[l].dirty_ms = now_ms();
+  S().L[l].from_template = false;
 }
 CORE_COLD void mark_info(int l) {   // a resolution change only: written later, never while the Rytm plays
-  if (!L[l].info_dirty) L[l].info_dirty = true, L[l].dirty_ms = now_ms();
+  if (!S().L[l].info_dirty) S().L[l].info_dirty = true, S().L[l].dirty_ms = now_ms();
 }
 // one ref resolved into its state (and an entry's path); a "-" ref takes its hash once the library has it (the list
 // written at the next save). True when something shown changed.
@@ -247,7 +264,7 @@ CORE_COLD void inst_state(Lst& x, Entry& e, uint8_t sfz_st) {
   e.st = sfz_st;
 }
 CORE_COLD bool resolve_entry(int l, int c) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   Entry& e = x.e[c];
   if (!has_file(e)) return false;
   begin_change(x);
@@ -269,7 +286,7 @@ CORE_COLD bool resolve_entry(int l, int c) {
 CORE_COLD bool resolve_step() {
   uint32_t g = lib::gen();
   for (int l = 0; l < kLists; ++l) {
-    Lst& x = L[l];
+    Lst& x = S().L[l];
     if (!x.rrun && x.rgen == g) continue;
     if (!x.rrun) x.rrun = true, x.rpos = 0, x.rgen = g;
     int done = 0;
@@ -294,7 +311,7 @@ CORE_COLD bool resolve_step() {
 // up to max rows of list l from *fc into out at *n (refs moved: their hints rewritten now, under the sequence counter);
 // 1 done, 0 more to do, -1 does not fit
 CORE_COLD int format_rows(int l, int* fc, char* out, uint32_t cap, uint32_t* n, int max) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   int rows = 0;
   for (; *fc < kCodes && rows < max; ++*fc) {
     int c = *fc;
@@ -332,7 +349,7 @@ CORE_COLD uint32_t format_used(char* out, uint32_t cap) {
   uint32_t n = (uint32_t)fmt::put_text_header(out, (int)cap, "poolused", 1, 1);
   for (int l = 0; l < kLists; ++l)
     for (int c = 0; c < kCodes; ++c) {
-      uint32_t k = U.n[l * kCodes + c];
+      uint32_t k = S().U.n[l * kCodes + c];
       if (!k) continue;
       text::Used u = {l, c, k, 0};
       int w = text::put_used(u, out + n, (int)(cap - n));
@@ -340,14 +357,14 @@ CORE_COLD uint32_t format_used(char* out, uint32_t cap) {
       n += (uint32_t)w;
     }
   for (int l = 0; l < kLists; ++l) {   // "always in RAM" (docs/STEREO.md), after the counts: an older reader keeps those
-    if (L[l].ram_all) {
+    if (S().L[l].ram_all) {
       text::Used u = {l, -1, 0, 2};
       int w = text::put_used(u, out + n, (int)(cap - n));
       if (!w) return n;
       n += (uint32_t)w;
     }
-    for (int c = 0; L[l].e && c < kCodes; ++c) {
-      if (!L[l].e[c].ram) continue;
+    for (int c = 0; S().L[l].e && c < kCodes; ++c) {
+      if (!S().L[l].e[c].ram) continue;
       text::Used u = {l, c, 0, 1};
       int w = text::put_used(u, out + n, (int)(cap - n));
       if (!w) return n;
@@ -365,7 +382,7 @@ struct Fill {
 };
 CORE_COLD bool take_line(void* c, const text::Line& t) {
   Fill* f = (Fill*)c;
-  Lst& x = L[f->l];
+  Lst& x = S().L[f->l];
   if (t.member) {
     if (f->cur < 0) return true;
     Entry& e = x.e[f->cur];
@@ -394,10 +411,10 @@ CORE_COLD bool take_line(void* c, const text::Line& t) {
 // damaged, too big, a read error: locked), then the parse in pieces (parse_step). True: a parse follows.
 CORE_COLD bool loaded_list(int l, uint32_t n, bool absent) {
   clear_list(l);
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   if (absent) {
     template_of(l);
-    log(CORE_STR("pools: %s: no list for %s: the template"), list_name(l), cur_key);
+    log(CORE_STR("pools: %s: no list for %s: the template"), list_name(l), S().key);
     return false;
   }
   ++st.reads;
@@ -431,7 +448,7 @@ CORE_COLD bool loaded_list(int l, uint32_t n, bool absent) {
 }
 // kParseLines lines of the list's text into it (its sig bumped only at the end: the machines compose once)
 CORE_COLD bool parse_step(int l, uint32_t n) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   uint32_t a = J.pos, b = a;
   for (int k = 0; k < kParseLines && b < n; ++k) {
     while (b < n && text[b] != '\n') ++b;
@@ -463,18 +480,18 @@ CORE_COLD bool parse_step(int l, uint32_t n) {
   return true;
 }
 CORE_COLD bool take_used(void* c, const text::Used& u) {
-  if (u.ram == 2) return L[u.list].ram_all = true, true;
-  if (u.ram == 1) return L[u.list].e[u.code].ram = 1, true;
-  uint32_t& k = U.n[u.list * kCodes + u.code];
+  if (u.ram == 2) return S().L[u.list].ram_all = true, true;
+  if (u.ram == 1) return S().L[u.list].e[u.code].ram = 1, true;
+  uint32_t& k = S().U.n[u.list * kCodes + u.code];
   k = u.count ? u.count : 1;
   return true;
 }
 CORE_COLD void loaded_used(uint32_t n, bool absent) {
-  memset(U.n, 0, sizeof(uint32_t) * kLists * kCodes);
-  U.dirty = false;
+  memset(S().U.n, 0, sizeof(uint32_t) * kLists * kCodes);
+  S().U.dirty = false;
   for (int l = 0; l < kLists; ++l) {   // the "always in RAM" flags come with the file
-    L[l].ram_all = false;
-    for (int c = 0; L[l].e && c < kCodes; ++c) L[l].e[c].ram = 0;
+    S().L[l].ram_all = false;
+    for (int c = 0; S().L[l].e && c < kCodes; ++c) S().L[l].e[c].ram = 0;
   }
   if (absent) return;
   const fmt::Format* f = fmt::find("poolused");
@@ -492,10 +509,10 @@ CORE_COLD void loaded_used(uint32_t n, bool absent) {
 
 // ---- the card job (one at a time): a read is open, reads of kPieceRead, close; a write is one kAtomicReq
 CORE_COLD bool path_of(int l, What w, char* out, int cap) {
-  return fmt::path(w == kWUsed ? "poolused" : format_of(l), cur_key, 0, out, cap) != nullptr;
+  return fmt::path(w == kWUsed ? "poolused" : format_of(l), S().key, 0, out, cap) != nullptr;
 }
 CORE_COLD void start_read(What w, int l, const char* path) {
-  J.what = w, J.list = l, J.prev = false, J.got = 0, J.too_big = false, J.read_err = false;
+  J.what = w, J.list = l, J.prev = false, J.got = 0, J.too_big = false, J.read_err = false, J.slot = (int8_t)prj_slot();
   sniprintf(J.path, sizeof J.path, "%s", path);
   J.rq.state = cardq::kFree;
   J.io = kIoOpen;
@@ -503,11 +520,11 @@ CORE_COLD void start_read(What w, int l, const char* path) {
 CORE_COLD void sfz_done(uint32_t n);
 // the read finished (absent: neither the file nor its .prev could be opened)
 CORE_COLD void list_loaded() {   // a list (or the used set) of the project's load done: the next one
-  if (load_next < 0) return;
-  ++load_next;
-  if (load_next > kLists) {
-    load_next = -1, g_ready = true;
-    log(CORE_STR("pools: %s: samples %d, wavetables %d, instruments %d"), cur_key, count(kSamples), count(kTables),
+  if (S().load_next < 0) return;
+  ++S().load_next;
+  if (S().load_next > kLists) {
+    S().load_next = -1, S().ready = true;
+    log(CORE_STR("pools: %s: samples %d, wavetables %d, instruments %d"), S().key, count(kSamples), count(kTables),
         count(kInstr));
   }
 }
@@ -612,14 +629,14 @@ CORE_COLD bool io_step() {
       if (!cardq::async(&J.rq, cardq::kAtomicReq, &J.f, J.path, 0, (uint8_t*)text, J.got)) return true;
       if (J.rq.got < 0) {
         ++st.save_fails;
-        bool give_up = J.what != kWUsed && ++L[J.list].fails >= kMaxFails;
+        bool give_up = J.what != kWUsed && ++S().L[J.list].fails >= kMaxFails;
         log(CORE_STR("pools: cannot write %s (%s)"), J.path, give_up ? "given up: the list stays in RAM" : "kept for the next save");
-        if (J.what == kWUsed) U.dirty = true, U.dirty_ms = now_ms();
+        if (J.what == kWUsed) S().U.dirty = true, S().U.dirty_ms = now_ms();
         else if (!give_up) mark(J.list);
       } else if (J.what == kWUsed) {
         ++st.used_saves;
       } else {
-        L[J.list].fails = 0;
+        S().L[J.list].fails = 0;
         ++st.saves;
       }
       J.io = kIoIdle;
@@ -631,7 +648,7 @@ CORE_COLD bool io_step() {
 CORE_COLD bool start_write(What w, int l) {
   char p[200];
   if (!path_of(l, w, p, sizeof p)) return false;
-  J.what = w, J.list = l;
+  J.what = w, J.list = l, J.slot = (int8_t)prj_slot();
   sniprintf(J.path, sizeof J.path, "%s", p);
   J.rq.state = cardq::kFree;
   if (w == kWUsed) {   // (small: at once)
@@ -650,38 +667,38 @@ CORE_COLD bool save_due(bool force) {
   if (!card_on || J.io != kIoIdle) return false;
   uint32_t now = now_ms();
   for (int l = 0; l < kLists; ++l) {
-    Lst& x = L[l];
+    Lst& x = S().L[l];
     bool info = x.info_dirty && (force || !playing());
     if ((!x.dirty && !info) || (!force && (int32_t)(now - x.dirty_ms) < (int32_t)kSaveDelayMs)) continue;
     x.dirty = x.info_dirty = false;
     if (x.locked || x.ro) continue;   // never written
     if (start_write(kWList, l)) return true;
   }
-  if (U.dirty && (force || ((int32_t)(now - U.dirty_ms) >= (int32_t)kUsedDelayMs && !playing()))) {   // (not while it plays)
-    U.dirty = false;
+  if (S().U.dirty && (force || ((int32_t)(now - S().U.dirty_ms) >= (int32_t)kUsedDelayMs && !playing()))) {   // (not while it plays)
+    S().U.dirty = false;
     if (start_write(kWUsed, 0)) return true;
   }
   return false;
 }
 CORE_COLD bool any_dirty() {
   for (int l = 0; l < kLists; ++l)
-    if ((L[l].dirty || L[l].info_dirty) && !L[l].locked && !L[l].ro) return true;
-  return U.dirty;
+    if ((S().L[l].dirty || S().L[l].info_dirty) && !S().L[l].locked && !S().L[l].ro) return true;
+  return S().U.dirty;
 }
 
 // a content still held by a row of the SAMPLES list or an instrument's member (the pool RAM's users)
 CORE_COLD bool referenced(const lib::Ref& r) {
   for (int c = 0; c < kCodes; ++c) {
-    const Entry& e = L[kSamples].e[c];
+    const Entry& e = S().L[kSamples].e[c];
     if (e.type == kSample && same_ref(e.ref, r)) return true;
-    const Entry& f = L[kInstr].e[c];
+    const Entry& f = S().L[kInstr].e[c];
     for (int i = 0; f.type == kInstrument && i < f.nm; ++i)
-      if (same_ref(L[kInstr].m[f.m0 + i].ref, r)) return true;
+      if (same_ref(S().L[kInstr].m[f.m0 + i].ref, r)) return true;
   }
   return false;
 }
 // ---- edits
-CORE_COLD bool can_edit(int l) { return l >= 0 && l < kLists && !L[l].locked && g_ready; }
+CORE_COLD bool can_edit(int l) { return l >= 0 && l < kLists && !S().L[l].locked && S().ready; }
 CORE_COLD int row_check(int c) {
   if (c < 0 || c >= kCodes) return kErrRow;
   if (!row_of(c)) return kErrOff;
@@ -689,7 +706,7 @@ CORE_COLD int row_check(int c) {
 }
 // P3 (the UX review): a row in use is not changed without a confirm, and not while the Rytm plays unless forced
 CORE_COLD int guard(int l, int c, int confirm) {
-  const Entry& e = L[l].e[c];
+  const Entry& e = S().L[l].e[c];
   if (e.type == kEmpty) return kOk;
   if (!in_use(l, c)) return kOk;
   if (playing() && confirm < kForced) return kErrPlaying;
@@ -697,7 +714,7 @@ CORE_COLD int guard(int l, int c, int confirm) {
   return kOk;
 }
 CORE_COLD void keep_undo(int l, int c) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   x.undo_ok = true, x.undo_code = c, x.undo_e = x.e[c];
   if (x.undo_e.type == kInstrument && x.undo_m) {
     int n = x.undo_e.nm < kMembersPer ? x.undo_e.nm : kMembersPer;
@@ -707,7 +724,7 @@ CORE_COLD void keep_undo(int l, int c) {
 }
 // room for n members at the table's end (compacted when full: the live instruments' members moved down)
 CORE_COLD int member_room(int l, int n) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   if (x.nm + n <= kMembers) return x.nm;
   // compact: the instruments in the order of their members' place (m0), each moved down (never over one not moved yet)
   static int16_t order[kCodes];
@@ -731,7 +748,7 @@ CORE_COLD int member_room(int l, int n) {
   return x.nm + n <= kMembers ? x.nm : -1;
 }
 CORE_COLD void put_entry(int l, int c, const Entry& src, const Member* mem, int nm) {
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   int at = 0;
   if (src.type == kInstrument && nm) {
     at = member_room(l, nm);
@@ -766,7 +783,7 @@ CORE_COLD int place(int l, int c, const Entry& ne, const Member* mem, int nm, in
     if (out) *out = ex;
     return kExisting;
   }
-  const Entry& e = L[l].e[c];
+  const Entry& e = S().L[l].e[c];
   if (e.type == kInput || e.type == kBuiltin) return kErrBuiltin;
   int g = guard(l, c, confirm);
   if (g != kOk) return g;
@@ -778,27 +795,27 @@ CORE_COLD int place(int l, int c, const Entry& ne, const Member* mem, int nm, in
 }
 CORE_COLD int start_sfz(int l, int c, int bank, const char* path, int confirm, bool take = false) {
   if (!card_on) return kErrPath;
-  if (SJ.on || J.io != kIoIdle) {   // the card job is busy (a list written): queued, started in turn
-    if (npq >= kPend) return kErrBusy;
-    PendAdd& q = PQ[npq++];
+  if (S().SJ.on || J.io != kIoIdle) {   // the card job is busy (a list written): queued, started in turn
+    if (S().npq >= kPend) return kErrBusy;
+    PendAdd& q = S().PQ[S().npq++];
     q.list = l, q.code = c, q.bank = bank, q.confirm = confirm, q.take = take;
     sniprintf(q.path, sizeof q.path, "%s", path);
     return kPending;
   }
-  SJ.take = take;
-  SJ.on = true, SJ.list = l, SJ.code = c, SJ.bank = bank, SJ.confirm = confirm;
-  sniprintf(SJ.path, sizeof SJ.path, "%s", path);
-  SJ.result = kPending, SJ.out = -1;
+  S().SJ.take = take;
+  S().SJ.on = true, S().SJ.list = l, S().SJ.code = c, S().SJ.bank = bank, S().SJ.confirm = confirm;
+  sniprintf(S().SJ.path, sizeof S().SJ.path, "%s", path);
+  S().SJ.result = kPending, S().SJ.out = -1;
   start_read(kWSfz, l, path);
   return kPending;
 }
 // the .sfz is read: its distinct samples (in mapping order) become the members, the entry placed
 CORE_COLD void sfz_done(uint32_t n) {
-  SJ.on = false;
-  int l = SJ.list;
+  S().SJ.on = false;
+  int l = S().SJ.list;
   if (!n || J.too_big) {
-    SJ.result = kErrPath;
-    log(CORE_STR("pools: %s: cannot read the instrument"), SJ.path);
+    S().SJ.result = kErrPath;
+    log(CORE_STR("pools: %s: cannot read the instrument"), S().SJ.path);
     return;
   }
   if (!sfz_regions) sfz_regions = new msamp::Region[kSfzRegions];
@@ -807,18 +824,18 @@ CORE_COLD void sfz_done(uint32_t n) {
   memset(&d, 0, sizeof d);
   d.regions = sfz_regions, d.max_regions = kSfzRegions, d.samples = sfz_samples, d.max_samples = kMembersPer;
   char dir[lib::kPath];
-  sniprintf(dir, sizeof dir, "%s", SJ.path);
+  sniprintf(dir, sizeof dir, "%s", S().SJ.path);
   char* sl = strrchr(dir, '/');
   if (sl) *sl = 0;
   if (!msamp::parse(text, (int)n, dir, &d)) {
-    SJ.result = kErrType;
-    log(CORE_STR("pools: %s: not an instrument this reads (%s)"), SJ.path, d.err);
+    S().SJ.result = kErrType;
+    log(CORE_STR("pools: %s: not an instrument this reads (%s)"), S().SJ.path, d.err);
     return;
   }
   Entry ne;
-  int r = make_file_entry(l, SJ.path, &ne);
+  int r = make_file_entry(l, S().SJ.path, &ne);
   if (r != kOk) {
-    SJ.result = r;
+    S().SJ.result = r;
     return;
   }
   static Member mem[kMembersPer];
@@ -829,60 +846,60 @@ CORE_COLD void sfz_done(uint32_t n) {
     mem[nm].st = lib::kPending;
     ++nm;
   }
-  int c = SJ.code;
+  int c = S().SJ.code;
   if (c < 0) {
     int ex = find_hash(l, ne.ref);
     if (ex >= 0) {
-      SJ.result = kExisting, SJ.out = ex;
+      S().SJ.result = kExisting, S().SJ.out = ex;
       return;
     }
-    c = first_free(l, SJ.bank);
-    for (int k = 1; c < 0 && SJ.take && k < kBanks; ++k) c = first_free(l, (SJ.bank + k) % kBanks);   // a take: the next bank
+    c = first_free(l, S().SJ.bank);
+    for (int k = 1; c < 0 && S().SJ.take && k < kBanks; ++k) c = first_free(l, (S().SJ.bank + k) % kBanks);   // a take: the next bank
     if (c < 0) {
-      SJ.result = kErrFull;
+      S().SJ.result = kErrFull;
       return;
     }
   }
-  SJ.result = place(l, c, ne, mem, nm, &SJ.out, SJ.confirm);
-  log(CORE_STR("pools: %s: %d regions, %d samples (%s)"), SJ.path, d.nregions, nm, result_text(SJ.result));
+  S().SJ.result = place(l, c, ne, mem, nm, &S().SJ.out, S().SJ.confirm);
+  log(CORE_STR("pools: %s: %d regions, %d samples (%s)"), S().SJ.path, d.nregions, nm, result_text(S().SJ.result));
 }
 // a fill: its own browser (srclib::kFill: never a user's), kFillItems files a step
 CORE_COLD bool fill_step() {
-  if (!FJ.on) return false;
+  if (!S().FJ.on) return false;
   int k = srclib::kFill;
-  if (strcmp(srclib::cwd(k), FJ.folder)) srclib::cd(k, FJ.folder);
+  if (strcmp(srclib::cwd(k), S().FJ.folder)) srclib::cd(k, S().FJ.folder);
   if (!srclib::listing_done(k)) return false;
   int n = srclib::count(k);
-  for (int done = 0; FJ.i < n && done < kFillItems; ++FJ.i) {
+  for (int done = 0; S().FJ.i < n && done < kFillItems; ++S().FJ.i) {
     const char* nm;
     bool dir;
-    if (!srclib::item(k, FJ.i, &nm, &dir, nullptr) || dir) continue;
+    if (!srclib::item(k, S().FJ.i, &nm, &dir, nullptr) || dir) continue;
     char path[lib::kPath];
-    if (!srclib::item_path(k, FJ.i, path, sizeof path) || !accepts_file(FJ.list, path) || FJ.list == kInstr) continue;
+    if (!srclib::item_path(k, S().FJ.i, path, sizeof path) || !accepts_file(S().FJ.list, path) || S().FJ.list == kInstr) continue;
     ++done;
     Entry ne;
-    if (make_file_entry(FJ.list, path, &ne) != kOk) continue;
-    if (find_hash(FJ.list, ne.ref) >= 0) continue;   // in the list already: it keeps its row
-    int c = first_free(FJ.list, FJ.bank);
+    if (make_file_entry(S().FJ.list, path, &ne) != kOk) continue;
+    if (find_hash(S().FJ.list, ne.ref) >= 0) continue;   // in the list already: it keeps its row
+    int c = first_free(S().FJ.list, S().FJ.bank);
     if (c < 0) {
-      FJ.i = n;
+      S().FJ.i = n;
       break;
     }
-    put_entry(FJ.list, c, ne, nullptr, 0);
-    ++FJ.filled;
+    put_entry(S().FJ.list, c, ne, nullptr, 0);
+    ++S().FJ.filled;
   }
-  if (FJ.i < n) return true;
+  if (S().FJ.i < n) return true;
   ++st.fills;
-  log(CORE_STR("pools: %s bank %c: %d rows filled from %s"), list_name(FJ.list), 'A' + FJ.bank, FJ.filled, FJ.folder);
-  FJ.on = false;
+  log(CORE_STR("pools: %s bank %c: %d rows filled from %s"), list_name(S().FJ.list), 'A' + S().FJ.bank, S().FJ.filled, S().FJ.folder);
+  S().FJ.on = false;
   return true;
 }
 CORE_COLD void project_now(char* key, int cap) {
   char p[24];
-  memcpy(p, (const char*)core::project, sizeof p);
+  memcpy(p, (const char*)core::prj().key, sizeof p);
   p[23] = 0;
   project_key(p, key, cap);
-  sniprintf(cur_name, sizeof cur_name, "%s", p);
+  sniprintf(S().name, sizeof S().name, "%s", p);
 }
 }  // namespace
 
@@ -890,38 +907,55 @@ CORE_COLD void project_now(char* key, int cap) {
 CORE_COLD void begin(bool card) {
   ensure();
   card_on = card;
-  cur_key[0] = 1, cur_key[1] = 0;
-  g_ready = false, load_next = -1;
+  for (Sl& x : g_sl) {
+    x.key[0] = 1, x.key[1] = 0;
+    x.ready = false, x.load_next = -1;
+    x.SJ.on = false, x.FJ.on = false;
+  }
   J.io = kIoIdle;
-  SJ.on = false, FJ.on = false;
 }
+static CORE_COLD bool slot_step();
+// Each slot's lists in turn, in its Scope (its folder): slot 0's always, another slot's once its box has said hello. A card
+// job in progress goes on first, for the slot that posted it.
 CORE_COLD bool step() {
   ensure();
-  if (io_step()) return true;
+  if (J.io != kIoIdle) {
+    device::Scope in(device::g_links[J.slot]);
+    if (io_step()) return true;
+  }
+  for (int k = 0; k < kVoiceSlots; ++k) {
+    if (!device::live(k)) continue;
+    device::Scope in(device::g_links[k]);
+    if (slot_step()) return true;
+  }
+  return false;
+}
+static CORE_COLD bool slot_step() {
+  if (J.io != kIoIdle) return false;   // (another slot's job: one at a time)
   char key[kKeyMax];
   project_now(key, sizeof key);
   if (prjslot::moving()) return false;   // (a slot job moves / copies files: no list written meanwhile)
-  if (strcmp(key, cur_key)) {   // another project: the old one's writes first, then its lists one by one
-    if (any_dirty() && cur_key[0] != 1) return save_due(true);
-    sniprintf(cur_key, sizeof cur_key, "%s", key);
-    g_ready = false;
-    for (int l = 0; l < kLists; ++l) L[l].undo_ok = false;
+  if (strcmp(key, S().key)) {   // another project: the old one's writes first, then its lists one by one
+    if (any_dirty() && S().key[0] != 1) return save_due(true);
+    sniprintf(S().key, sizeof S().key, "%s", key);
+    S().ready = false;
+    for (int l = 0; l < kLists; ++l) S().L[l].undo_ok = false;
     if (!card_on) {
       for (int l = 0; l < kLists; ++l) clear_list(l), template_of(l);
-      memset(U.n, 0, sizeof(uint32_t) * kLists * kCodes);
-      g_ready = true;
+      memset(S().U.n, 0, sizeof(uint32_t) * kLists * kCodes);
+      S().ready = true;
       return true;
     }
-    load_next = 0;
+    S().load_next = 0;
   }
-  if (load_next >= 0) {
+  if (S().load_next >= 0) {
     char p[200];
-    if (load_next < kLists) {
-      if (!path_of(load_next, kWList, p, sizeof p)) {   // (a key too long: cannot happen with project_key)
-        clear_list(load_next), template_of(load_next), ++load_next;
+    if (S().load_next < kLists) {
+      if (!path_of(S().load_next, kWList, p, sizeof p)) {   // (a key too long: cannot happen with project_key)
+        clear_list(S().load_next), template_of(S().load_next), ++S().load_next;
         return true;
       }
-      start_read(kWList, load_next, p);
+      start_read(kWList, S().load_next, p);
     } else {
       path_of(0, kWUsed, p, sizeof p);
       start_read(kWUsed, 0, p);
@@ -929,70 +963,86 @@ CORE_COLD bool step() {
     return io_step();
   }
   if (save_due(false)) return io_step();
-  if (npq && !SJ.on && J.io == kIoIdle) {   // an instrument that waited for the card job
-    PendAdd q = PQ[0];
-    memmove(PQ, PQ + 1, sizeof(PendAdd) * (npq - 1));
-    --npq;
+  if (S().npq && !S().SJ.on && J.io == kIoIdle) {   // an instrument that waited for the card job
+    PendAdd q = S().PQ[0];
+    memmove(S().PQ, S().PQ + 1, sizeof(PendAdd) * (S().npq - 1));
+    --S().npq;
     start_sfz(q.list, q.code, q.bank, q.path, q.confirm, q.take);
     return true;
   }
   if (fill_step()) return true;
   return resolve_step();
 }
-bool ready() { return g_ready; }
+bool ready() { return S().ready; }
 bool saving() { return J.io == kIoWrite || any_dirty(); }
-const char* project() { return cur_key[0] == 1 ? "" : cur_key; }
+const char* project() { return S().key[0] == 1 ? "" : S().key; }
+const char* project(int s) { return s < 0 || s >= kVoiceSlots || g_sl[s].key[0] == 1 ? "" : g_sl[s].key; }
 CORE_COLD void rekey(const char* from, const char* to) {
-  if (cur_key[0] != 1 && !strcmp(cur_key, from)) sniprintf(cur_key, sizeof cur_key, "%s", to);
+  if (S().key[0] != 1 && !strcmp(S().key, from)) sniprintf(S().key, sizeof S().key, "%s", to);
 }
-uint32_t sig(int l) { return l >= 0 && l < kLists && began ? __atomic_load_n(&L[l].sig, __ATOMIC_ACQUIRE) : 0; }
-const Entry& at(int l, int c) {
+inline bool slot_ok(int s) { return s >= 0 && s < kVoiceSlots; }
+uint32_t sig(int s, int l) {
+  return l >= 0 && l < kLists && began && slot_ok(s) ? __atomic_load_n(&g_sl[s].L[l].sig, __ATOMIC_ACQUIRE) : 0;
+}
+uint32_t sig(int l) { return sig(prj_slot(), l); }
+const Entry& at(int s, int l, int c) {
   static Entry none = {};
-  if (!began || l < 0 || l >= kLists || c < 0 || c >= kCodes) return none;
-  return L[l].e[c];
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists || c < 0 || c >= kCodes) return none;
+  return g_sl[s].L[l].e[c];
 }
-const Member* members(int l, int c, int* n) {
+const Entry& at(int l, int c) { return at(prj_slot(), l, c); }
+const Member* members(int s, int l, int c, int* n) {
   *n = 0;
-  if (!began || l != kInstr || c < 0 || c >= kCodes || L[l].e[c].type != kInstrument) return nullptr;
-  *n = L[l].e[c].nm;
-  return L[l].m + L[l].e[c].m0;
+  if (!began || !slot_ok(s) || l != kInstr || c < 0 || c >= kCodes) return nullptr;
+  const Lst& x = g_sl[s].L[l];
+  if (x.e[c].type != kInstrument) return nullptr;
+  *n = x.e[c].nm;
+  return x.m + x.e[c].m0;
 }
-bool locked(int l) { return began && l >= 0 && l < kLists && L[l].locked; }
+const Member* members(int l, int c, int* n) { return members(prj_slot(), l, c, n); }
+bool locked(int s, int l) { return began && slot_ok(s) && l >= 0 && l < kLists && g_sl[s].L[l].locked; }
+bool locked(int l) { return locked(prj_slot(), l); }
 CORE_COLD void set_ram(int l, int c, bool on) {
   if (!began || l < 0 || l >= kLists) return;
-  if (c < 0) L[l].ram_all = on;
-  else if (c < kCodes && L[l].e) L[l].e[c].ram = on ? 1 : 0;
-  U.dirty = true, U.dirty_ms = now_ms();
+  if (c < 0) S().L[l].ram_all = on;
+  else if (c < kCodes && S().L[l].e) S().L[l].e[c].ram = on ? 1 : 0;
+  S().U.dirty = true, S().U.dirty_ms = now_ms();
 }
-CORE_COLD bool ram_all(int l) { return began && l >= 0 && l < kLists && L[l].ram_all; }
-CORE_COLD bool always_ram(int l, int c) {
-  if (!began || l < 0 || l >= kLists) return false;
-  return L[l].ram_all || (c >= 0 && c < kCodes && L[l].e && L[l].e[c].ram);
+CORE_COLD bool ram_all(int l) { return began && l >= 0 && l < kLists && S().L[l].ram_all; }
+CORE_COLD bool always_ram(int s, int l, int c) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists) return false;
+  const Lst& x = g_sl[s].L[l];
+  return x.ram_all || (c >= 0 && c < kCodes && x.e && x.e[c].ram);
 }
-bool read_only(int l) { return began && l >= 0 && l < kLists && L[l].ro; }
-const char* lock_why(int l) { return began && l >= 0 && l < kLists ? L[l].why : ""; }
-int count(int l) {
-  if (!began || l < 0 || l >= kLists) return 0;
+CORE_COLD bool always_ram(int l, int c) { return always_ram(prj_slot(), l, c); }
+bool read_only(int l) { return began && l >= 0 && l < kLists && S().L[l].ro; }
+const char* lock_why(int s, int l) { return began && slot_ok(s) && l >= 0 && l < kLists ? g_sl[s].L[l].why : ""; }
+const char* lock_why(int l) { return lock_why(prj_slot(), l); }
+int count(int s, int l) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists) return 0;
   int n = 0;
-  for (int c = 0; c < kCodes; ++c) n += L[l].e[c].type != kEmpty && L[l].e[c].type != kOff;
+  const Entry* e = g_sl[s].L[l].e;
+  for (int c = 0; c < kCodes; ++c) n += e[c].type != kEmpty && e[c].type != kOff;
   return n;
 }
+int count(int l) { return count(prj_slot(), l); }
 int first_free(int l, int bank) {
   if (!began || l < 0 || l >= kLists || bank < 0 || bank >= kBanks) return -1;
   for (int r = 1; r < kRows; ++r)
-    if (L[l].e[code(bank, r)].type == kEmpty) return code(bank, r);
+    if (S().L[l].e[code(bank, r)].type == kEmpty) return code(bank, r);
   return -1;
 }
-int find_hash(int l, const lib::Ref& r) {
-  if (!began || l < 0 || l >= kLists) return -1;
+int find_hash(int s, int l, const lib::Ref& r) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists) return -1;
   for (int c = 0; c < kCodes; ++c) {
-    const Entry& e = L[l].e[c];
+    const Entry& e = g_sl[s].L[l].e[c];
     if (!has_file(e)) continue;
     if (same_ref(e.ref, r)) return c;
     if (!r.has_sha && e.path[0] && !strcasecmp(e.path, r.hint)) return c;
   }
   return -1;
 }
+int find_hash(int l, const lib::Ref& r) { return find_hash(prj_slot(), l, r); }
 
 // ---- edits
 const char* result_text(int r) {
@@ -1021,7 +1071,7 @@ CORE_COLD int set_file(int l, int c, const char* path, int* out, int confirm) {
   if (r != kOk) return r;
   if (!can_edit(l)) return kErrLocked;
   if (!accepts_file(l, path)) return path && path[0] == '/' ? kErrType : kErrPath;
-  const Entry& e = L[l].e[c];
+  const Entry& e = S().L[l].e[c];
   if (e.type == kInput || e.type == kBuiltin) return kErrBuiltin;
   if (l == kInstr) {
     int g = guard(l, c, confirm);
@@ -1051,11 +1101,10 @@ CORE_COLD int add_file(int l, int bank, const char* path, int* out) {
   if (c < 0) return kErrFull;
   return place(l, c, ne, nullptr, 0, out, kAsk);
 }
-int g_shown[kLists] = {0, 0, 0};
 void shown(int l, int bank) {
-  if (l >= 0 && l < kLists && bank >= 0 && bank < kBanks) g_shown[l] = bank;
+  if (l >= 0 && l < kLists && bank >= 0 && bank < kBanks) S().shown[l] = bank;
 }
-int shown_bank(int l) { return l >= 0 && l < kLists ? g_shown[l] : 0; }
+int shown_bank(int l) { return l >= 0 && l < kLists ? S().shown[l] : 0; }
 CORE_COLD int add_take(int l, const char* path, int* out) {
   int b0 = shown_bank(l), r = kErrFull;
   if (l == kInstr) {   // (its .sfz read first; a full bank: the next ones)
@@ -1074,7 +1123,7 @@ CORE_COLD int set_special(int l, int c, int type, int id, int confirm) {
   if (!can_edit(l)) return kErrLocked;
   if (!takes_type(l, type) || (type != kInput && type != kBuiltin)) return kErrType;
   if ((type == kInput && (id < 0 || id >= kInputs)) || (type == kBuiltin && (id < 0 || id >= builtins(l)))) return kErrType;
-  const Entry& e = L[l].e[c];
+  const Entry& e = S().L[l].e[c];
   if (e.type == kInput || e.type == kBuiltin) return kErrBuiltin;
   int g = guard(l, c, confirm);
   if (g != kOk) return g;
@@ -1092,7 +1141,7 @@ CORE_COLD int unload(int l, int c, int confirm) {
   int r = row_check(c);
   if (r != kOk) return r;
   if (!can_edit(l)) return kErrLocked;
-  Lst& x = L[l];
+  Lst& x = S().L[l];
   if (x.e[c].type == kEmpty) return kErrEmpty;
   int g = guard(l, c, confirm);
   if (g != kOk) return g;
@@ -1111,8 +1160,8 @@ CORE_COLD int unload(int l, int c, int confirm) {
 }
 CORE_COLD bool undo(int l) {
   ensure();
-  if (l < 0 || l >= kLists || !L[l].undo_ok || !can_edit(l)) return false;
-  Lst& x = L[l];
+  if (l < 0 || l >= kLists || !S().L[l].undo_ok || !can_edit(l)) return false;
+  Lst& x = S().L[l];
   Entry e = x.undo_e;
   if (has_file(e)) {   // one entry per hash: not when the content went into another row since
     int ex = find_hash(l, e.ref);
@@ -1127,82 +1176,94 @@ CORE_COLD int fill(int l, int bank, const char* folder) {
   ensure();
   if (l < 0 || l >= kLists || l == kInstr || bank < 0 || bank >= kBanks || !folder || folder[0] != '/' || !can_edit(l))
     return -1;
-  if (FJ.on) return -1;
+  if (S().FJ.on) return -1;
   if (!srclib::cd(srclib::kFill, folder)) return -1;   // (its own browser: nothing opened here; a missing folder lists empty)
-  FJ.on = true, FJ.list = l, FJ.bank = bank, FJ.i = 0, FJ.filled = 0, FJ.t0 = now_ms();
-  sniprintf(FJ.folder, sizeof FJ.folder, "%s", srclib::cwd(srclib::kFill));
+  S().FJ.on = true, S().FJ.list = l, S().FJ.bank = bank, S().FJ.i = 0, S().FJ.filled = 0, S().FJ.t0 = now_ms();
+  sniprintf(S().FJ.folder, sizeof S().FJ.folder, "%s", srclib::cwd(srclib::kFill));
   return 0;
 }
-bool filling() { return FJ.on; }
-bool pending() { return SJ.on || npq > 0; }
+bool filling() { return S().FJ.on; }
+bool pending() { return S().SJ.on || S().npq > 0; }
 int last_result(int* out) {
-  if (out) *out = SJ.out;
-  return SJ.on || npq ? (int)kPending : SJ.result;
+  if (out) *out = S().SJ.out;
+  return S().SJ.on || S().npq ? (int)kPending : S().SJ.result;
 }
-CORE_COLD void note_info(int l, int c, uint32_t frames, uint8_t ch, uint32_t rate) {
-  if (!began || l < 0 || l >= kLists || c < 0 || c >= kCodes) return;
-  Entry& e = L[l].e[c];
+CORE_COLD void note_info(int l, int c, uint32_t frames, uint8_t ch, uint32_t rate) { note_info(prj_slot(), l, c, frames, ch, rate); }
+CORE_COLD void note_info(int s, int l, int c, uint32_t frames, uint8_t ch, uint32_t rate) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists || c < 0 || c >= kCodes) return;
+  Entry& e = g_sl[s].L[l].e[c];
   if (e.type != kSample || (e.frames == frames && e.ch == ch && e.rate == rate)) return;
   e.frames = frames, e.ch = ch, e.rate = rate;   // (no sig change: the machines' lists do not show them; written
                                                  // with the list's next save, no write of its own)
 }
 CORE_COLD void accept_changed(int l, int c) {
   if (!began || l < 0 || l >= kLists || c < 0 || c >= kCodes || !can_edit(l)) return;
-  Entry& e = L[l].e[c];
+  Entry& e = S().L[l].e[c];
   if (!has_file(e) || e.st != lib::kChanged) return;
   lib::Ref r;
   if (!lib::ref_for_path(e.ref.hint, &r) || !r.has_sha) return;
-  begin_change(L[l]);
+  begin_change(S().L[l]);
   e.ref = r;
-  end_change(L[l]);
+  end_change(S().L[l]);
   resolve_entry(l, c);
   mark(l);
 }
 
 // ---- used
-CORE_COLD void seen(int l, int c) {
-  if (!began || l < 0 || l >= kLists || c < 0 || c >= kCodes || !row_of(c)) return;
-  uint32_t& k = U.n[l * kCodes + c];
-  if (!k) U.dirty = true, U.dirty_ms = now_ms();   // a new code: written a second later (a count alone waits for it)
+CORE_COLD void seen(int l, int c) { seen_in(prj_slot(), l, c); }
+CORE_COLD void seen_in(int s, int l, int c) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists || c < 0 || c >= kCodes || !row_of(c)) return;
+  UsedSet& u = g_sl[s].U;
+  uint32_t& k = u.n[l * kCodes + c];
+  if (!k) u.dirty = true, u.dirty_ms = now_ms();   // a new code: written a second later (a count alone waits for it)
   if (k < 0xFFFFFFF0u) ++k;
 }
-bool used(int l, int c) { return began && l >= 0 && l < kLists && c >= 0 && c < kCodes && U.n[l * kCodes + c]; }
-uint32_t used_count(int l, int c) { return used(l, c) ? U.n[l * kCodes + c] : 0; }
+bool used(int s, int l, int c) {
+  return began && slot_ok(s) && l >= 0 && l < kLists && c >= 0 && c < kCodes && g_sl[s].U.n[l * kCodes + c];
+}
+bool used(int l, int c) { return used(prj_slot(), l, c); }
+uint32_t used_count(int l, int c) { return used(l, c) ? S().U.n[l * kCodes + c] : 0; }
 CORE_COLD void voice_on(int l, int vi, int c) {
   ensure();
   if (l < 0 || l >= kLists || vi < 0 || vi >= kVoicesMax) return;
+  Sl& x = g_sl[slot_of_voice(vi)];   // (the voice's own box's lists)
   for (int k = 0; k < kLists; ++k)
-    if (k != l && L[k].voice[vi] >= 0 && c >= 0) L[k].voice[vi] = -1;   // a voice plays one machine at a time
-  L[l].voice[vi] = (int16_t)c;
+    if (k != l && x.L[k].voice[vi] >= 0 && c >= 0) x.L[k].voice[vi] = -1;   // a voice plays one machine at a time
+  x.L[l].voice[vi] = (int16_t)c;
 }
-int users(int l, int c) {
-  if (!began || l < 0 || l >= kLists) return 0;
+int users(int s, int l, int c) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists) return 0;
   int n = 0;
-  for (int vi = 0; vi < kVoicesMax; ++vi) {   // (a voice that plays another machine now holds no row of this list)
+  const int v0 = s * kBoxVoices, v1 = kVoiceSlots > 1 ? v0 + kBoxVoices : kVoicesMax;   // (this slot's voices)
+  for (int vi = v0; vi < v1; ++vi) {   // (a voice that plays another machine now holds no row of this list)
     const V& x = v[vi];
     bool on = l == kSamples ? x.gr || x.cp : l == kTables ? x.wt : x.ms;
-    n += on && L[l].voice[vi] == c;
+    n += on && g_sl[s].L[l].voice[vi] == c;
   }
   return n;
 }
-bool in_use(int l, int c) { return users(l, c) > 0 || used(l, c); }
+int users(int l, int c) { return users(prj_slot(), l, c); }
+bool in_use(int s, int l, int c) { return users(s, l, c) > 0 || used(s, l, c); }
+bool in_use(int l, int c) { return in_use(prj_slot(), l, c); }
 void set_playing_fn(bool (*fn)()) { play_fn = fn; }
 bool playing() { return play_fn && play_fn(); }
-CORE_COLD int select_unused(int l, int16_t* out, int max) {
-  if (!began || l < 0 || l >= kLists) return 0;
+CORE_COLD int select_unused(int s, int l, int16_t* out, int max) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists) return 0;
   int n = 0;
   for (int c = 0; c < kCodes && n < max; ++c) {
-    const Entry& e = L[l].e[c];
-    if (!has_file(e) || in_use(l, c)) continue;   // (inputs / built-ins hold no RAM: never "unused")
+    const Entry& e = g_sl[s].L[l].e[c];
+    if (!has_file(e) || in_use(s, l, c)) continue;   // (inputs / built-ins hold no RAM: never "unused")
     out[n++] = (int16_t)c;
   }
   return n;
 }
+CORE_COLD int select_unused(int l, int16_t* out, int max) { return select_unused(prj_slot(), l, out, max); }
 
 // ---- refs (any core)
-CORE_COLD int refs(int l, RefFn fn, void* ctx) {
-  if (!began || l < 0 || l >= kLists || !fn) return 0;
-  Lst& x = L[l];
+CORE_COLD int refs(int l, RefFn fn, void* ctx) { return refs(prj_slot(), l, fn, ctx); }
+CORE_COLD int refs(int s, int l, RefFn fn, void* ctx) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists || !fn) return 0;
+  Lst& x = g_sl[s].L[l];
   static lib::Ref mem[kMembersPer];   // an instrument's members, copied in the same window as its entry (core 0's)
   int n = 0;
   bool all = true;
@@ -1271,10 +1332,10 @@ CORE_COLD int bank_json(int l, int bank, char* out, int cap) {
   if (!began || l < 0 || l >= kLists || bank < 0 || bank >= kBanks || cap < 64) return 0;
   int n = 0;
   app(out, cap, &n, "{\"list\":\"%s\",\"bank\":%d,\"locked\":%s,\"ro\":%s,\"count\":%d,\"rows\":[", list_tag(l),
-      bank, L[l].locked ? "true" : "false", L[l].ro ? "true" : "false", count(l));
+      bank, S().L[l].locked ? "true" : "false", S().L[l].ro ? "true" : "false", count(l));
   bool first = true;
   for (int r = 1; r < kRows && n < cap - 600; ++r) {
-    const Entry& e = L[l].e[code(bank, r)];
+    const Entry& e = S().L[l].e[code(bank, r)];
     if (e.type == kEmpty) continue;
     app(out, cap, &n, "%s[%d,\"%s\",", first ? "" : ",", r,
         e.type == kSample ? "sample" : e.type == kInput ? "input" : e.type == kBuiltin ? "builtin" : "instrument");
@@ -1293,11 +1354,11 @@ CORE_COLD int status_json(char* out, int cap) {
   int n = 0;
   app(out, cap, &n, "{\"project\":");
   json_str(out, cap, &n, project());
-  app(out, cap, &n, ",\"ready\":%s", g_ready ? "true" : "false");
+  app(out, cap, &n, ",\"ready\":%s", S().ready ? "true" : "false");
   for (int l = 0; l < kLists; ++l) {
     app(out, cap, &n, ",\"%s\":{\"n\":%d,\"locked\":%s,\"ro\":%s,\"why\":", list_tag(l), count(l),
-        L[l].locked ? "true" : "false", L[l].ro ? "true" : "false");
-    json_str(out, cap, &n, L[l].why);
+        S().L[l].locked ? "true" : "false", S().L[l].ro ? "true" : "false");
+    json_str(out, cap, &n, S().L[l].why);
     app(out, cap, &n, "}");
   }
   app(out, cap, &n, "}");
@@ -1311,10 +1372,10 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   if (!*a || !strcmp(a, "status")) {
     sniprintf(out, cap, "pool: project %s%s; samples %d, wavetables %d, instruments %d; %u reads, %u saves (%u failed), "
                         "%u templates, %u fills%s%s",
-              project()[0] ? project() : "-", g_ready ? "" : " (loading)", count(kSamples), count(kTables), count(kInstr),
+              project()[0] ? project() : "-", S().ready ? "" : " (loading)", count(kSamples), count(kTables), count(kInstr),
               (unsigned)st.reads, (unsigned)st.saves, (unsigned)st.save_fails, (unsigned)st.templates, (unsigned)st.fills,
-              L[kSamples].locked || L[kTables].locked || L[kInstr].locked ? "; LOCKED: " : "",
-              L[kSamples].locked ? L[kSamples].why : L[kTables].locked ? L[kTables].why : L[kInstr].locked ? L[kInstr].why : "");
+              S().L[kSamples].locked || S().L[kTables].locked || S().L[kInstr].locked ? "; LOCKED: " : "",
+              S().L[kSamples].locked ? S().L[kSamples].why : S().L[kTables].locked ? S().L[kTables].why : S().L[kInstr].locked ? S().L[kInstr].why : "");
     return true;
   }
   char tag[8];
@@ -1433,7 +1494,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   if (!strncmp(r, "accept:", 7)) {   // a CHANGED row takes its file's new content
     if (!parse_row(r + 7, &c)) return sniprintf(out, cap, "pool: accept:ROW"), true;
     accept_changed(l, c);
-    res(c, kOk, lib::state_name(L[l].e[c].st));
+    res(c, kOk, lib::state_name(S().L[l].e[c].st));
     return true;
   }
   if (!strncmp(r, "ram:", 4)) {   // ram:ROW|all:on|off - always in RAM (docs/STEREO.md)
@@ -1466,7 +1527,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     int n = 0;
     for (int b = b0; b < b1; ++b)
       for (int rr = 1; rr < kRows; ++rr) {
-        const Entry& e = L[l].e[code(b, rr)];
+        const Entry& e = S().L[l].e[code(b, rr)];
         if (e.type == kEmpty) continue;
         char row[5];
         row_text(code(b, rr), row);
@@ -1491,34 +1552,38 @@ CORE_COLD Ram ram() {
   r.pct = r.budget ? (uint8_t)((r.used + r.tables) * 100 / r.budget) : 0;
   return r;
 }
-CORE_COLD bool resident(int l, int c) {
-  if (!began || l < 0 || l >= kLists || c < 0 || c >= kCodes) return false;
-  const Entry& e = L[l].e[c];
+CORE_COLD bool resident(int s, int l, int c) {
+  if (!began || !slot_ok(s) || l < 0 || l >= kLists || c < 0 || c >= kCodes) return false;
+  const Entry& e = g_sl[s].L[l].e[c];
   switch (l) {
     case kSamples:
       if (e.type == kInput || e.type == kBuiltin) return true;
       return e.type == kSample && pcache::find(e.ref, pcache::kWhole) >= 0;
-    case kTables: return e.type == kBuiltin || (e.type == kSample && wt::entry_state(c) == 3);
-    default: return e.type == kInstrument && msamp::entry_state(c) == 3;
+    case kTables: return e.type == kBuiltin || (e.type == kSample && wt::entry_state_in(s, c) == 3);
+    default: return e.type == kInstrument && msamp::entry_state_in(s, c) == 3;
   }
 }
+CORE_COLD bool resident(int l, int c) { return resident(prj_slot(), l, c); }
 
 const Stats& stats() { return st; }
 CORE_COLD void compact_for_tests(int l) {
-  if (began && l >= 0 && l < kLists && L[l].m) {
-    int keep = L[l].nm;
-    L[l].nm = kMembers;   // (as if full: member_room compacts)
+  if (began && l >= 0 && l < kLists && S().L[l].m) {
+    int keep = S().L[l].nm;
+    S().L[l].nm = kMembers;   // (as if full: member_room compacts)
     (void)keep;
     member_room(l, 1);
   }
 }
 CORE_COLD void reset_for_tests() {
   ensure();
-  for (int l = 0; l < kLists; ++l) clear_list(l);
-  cur_key[0] = 1, cur_key[1] = 0;
-  g_ready = false, load_next = -1;
+  for (int k = 0; k < kVoiceSlots; ++k) {
+    device::Scope in(device::g_links[k]);
+    for (int l = 0; l < kLists; ++l) clear_list(l);
+    S().key[0] = 1, S().key[1] = 0;
+    S().ready = false, S().load_next = -1;
+    S().SJ.on = S().FJ.on = false, S().npq = 0;
+  }
   J.io = kIoIdle;
-  SJ.on = FJ.on = false;
 }
 
 }  // namespace pools

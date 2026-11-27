@@ -3,6 +3,7 @@
 // and 2, OUT paced by IN), which is also what the A4's firmware took from a simulated host in an emulator, with no vendor request.
 //
 #include "ob_follow.h"
+#include "ob_usb.h"			// CountDetach, UsbRequests
 #include <circle/usb/usbhostcontroller.h>
 #include <circle/usb/usbdevice.h>
 #include <circle/usb/usb.h>
@@ -50,24 +51,36 @@ CObFollow::CObFollow (CUSBFunction *pFunction)
 	m_pInDesc (0), m_pOutDesc (0), m_pIn (0), m_pOut (0), m_pInURB {}, m_pOutURB {}, m_bInBusy {}, m_bOutBusy {},
 	m_nInPending (0), m_nOutPending (0), m_bStreaming (FALSE), m_nCredit (0), m_nOutCounter (0), m_nExpectIn (0), m_bHaveIn (FALSE),
 	m_nInBlocks (0), m_nInGaps (0), m_nInLost (0), m_nInBad (0), m_nInErrors (0), m_nOutErrors (0), m_nSubmitFail (0),
-	m_nPrevIn (0), m_nSecs (0), m_nLastInUs (0), m_nLastOutUs (0)
+	m_nPrevIn (0), m_nSecs (0), m_nLastInUs (0), m_nLastOutUs (0), m_bConfigured (FALSE)
 {
 	s_pThis = this;
 }
 
+// As ~CObUsb: a box that left has its xHC slot freed already (~CXHCIUSBDevice ran first), so its URBs in flight are never
+// completed and are freed here; after a failed Configure (the slot still runs) one in flight is left allocated.
 CObFollow::~CObFollow (void)
 {
 	s_pThis = 0;
 	m_bStreaming = FALSE;
-	// URBs still queued on the (gone) endpoint are leaked, not freed under the controller
+	unsigned nFreed = 0, nKept = 0;
 	for (unsigned i = 0; i < URBs; i++)
 	{
-		if (!m_bInBusy[i]) delete m_pInURB[i];
-		if (!m_bOutBusy[i]) delete m_pOutURB[i];
+		CUSBRequest *pURB[2] = {m_pInURB[i], m_pOutURB[i]};
+		const boolean bBusy[2] = {m_bInBusy[i], m_bOutBusy[i]};
+		for (unsigned d = 0; d < 2; d++)
+		{
+			if (pURB[d] == 0) continue;
+			if (!bBusy[d] || m_bConfigured) { delete pURB[d]; nFreed += bBusy[d]; }
+			else nKept++;
+		}
+		m_pInURB[i] = m_pOutURB[i] = 0;
 	}
 	delete m_pOut;
 	delete m_pIn;
 	m_pOut = m_pIn = 0;
+	CObUsb::CountDetach (m_bConfigured, nFreed, nKept);
+	CLogger::Get ()->Write (From, LogNotice, "%s: %u URBs in flight freed, %u kept (USB requests now %u)",
+				m_bConfigured ? "box gone" : "not configured", nFreed, nKept, CObUsb::UsbRequests ());
 }
 
 boolean CObFollow::Configure (void)
@@ -157,6 +170,7 @@ boolean CObFollow::Configure (void)
 		return FALSE;
 	}
 	CLogger::Get ()->Write (From, LogNotice, "alt 3 selected: its MAIN into the PRE pair, its OUT silent");
+	m_bConfigured = TRUE;
 	return TRUE;
 }
 

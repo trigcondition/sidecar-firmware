@@ -204,7 +204,7 @@ static std::vector<float> play(const std::vector<float>& x, int chain = 0, bool 
   for (size_t i = 0; i < y.size(); i += 12) {
     if (steps) amp::step(), amp::step();   // the control core between blocks
     host_card_core(1);
-    amp::service(chain);
+    amp::service(0, chain);
     ins::engine().ProcessMono(chain, &y[i], (int)std::min<size_t>(12, y.size() - i), ins::control);
     host_card_core(3);
   }
@@ -381,7 +381,7 @@ int main() {
       amp::step();
       host_card_core(1);
       long n0 = g_news;
-      amp::service(0);
+      amp::service(0, 0);
       ins::engine().ProcessMono(0, &y[i], 12, ins::control);
       CHECK(g_news == n0);   // no allocation on the audio path
       host_card_core(3);
@@ -390,7 +390,7 @@ int main() {
   }
   CHECK(host_card_us(1) == 0);   // no card I/O charged to the render core
   CHECK(host_card_us(3) > 0);    // the load's (posted card requests run at once without a card core)
-  CHECK(amp::status(0, 0) == amp::kPlaying && text(0, 0) == "SYNTHA" && amp::running() == 1);
+  CHECK(amp::status(0, 0, 0) == amp::kPlaying && text(0, 0) == "SYNTHA" && amp::running() == 1);
   CHECK(first_wet > 0);
   printf("async load: the capture plays from frame %d (%.1f ms: listing, read, prewarm in steps); %ld allocations by the steps, none in a block\n",
          first_wet, first_wet / 48.0, g_news - news0);
@@ -415,7 +415,7 @@ int main() {
     ins::set_param(0, 0, 0, amp::knob_for_model(3));
     y = play(guitarish(48000));
     settle();
-    CHECK(amp::stats().xfades == xf + 1 && amp::status(0, 0) == amp::kPlaying && text(0, 0) == "SYNTHB");
+    CHECK(amp::stats().xfades == xf + 1 && amp::status(0, 0, 0) == amp::kPlaying && text(0, 0) == "SYNTHB");
     CHECK(amp::running() == 1);
     // back to A: its instance is reused (a reset and a prewarm, no read)
     uint32_t ld = amp::stats().loads, ru = amp::stats().reuses;
@@ -430,10 +430,10 @@ int main() {
   {
     ins::set_param(0, 0, 0, amp::knob_for_model(0));
     play(guitarish(9600));
-    CHECK(amp::status(0, 0) == amp::kBadFile && text(0, 0) == "BADFILE" && amp::running() == 0);
+    CHECK(amp::status(0, 0, 0) == amp::kBadFile && text(0, 0) == "BADFILE" && amp::running() == 0);
     ins::set_param(0, 0, 0, amp::knob_for_model(1));
     play(guitarish(9600));
-    CHECK(amp::status(0, 0) == amp::kNotLite && text(0, 0) == "NOTLITE");
+    CHECK(amp::status(0, 0, 0) == amp::kNotLite && text(0, 0) == "NOTLITE");
     char o[512];
     CHECK(amp::command("amp", o, sizeof o));
     printf("%s\n", o);
@@ -443,7 +443,7 @@ int main() {
   {
     ins::set_param(0, 0, 0, amp::knob_for_model(2));
     play(guitarish(9600));
-    CHECK(amp::status(0, 0) == amp::kPlaying);
+    CHECK(amp::status(0, 0, 0) == amp::kPlaying);
     std::vector<float> z(48000 * 2, 0.0f);
     auto s = play(z);
     float tail = 0;
@@ -488,40 +488,82 @@ int main() {
     for (int b = 0; b < 3000; ++b) {
       amp::step();
       for (int c = 0; c < 8; ++c) {
-        amp::service(c);
+        amp::service(0, c);
         std::vector<float> v = blk;
         ins::engine().ProcessMono(c, v.data(), 12, ins::control);
       }
     }
     int cap = 0, playing = 0;
     for (int c = 0; c < 8; ++c)
-      for (int s = 0; s < 2; ++s) cap += amp::status(c, s) == amp::kCap, playing += amp::status(c, s) == amp::kPlaying;
+      for (int s = 0; s < 2; ++s) cap += amp::status(0, c, s) == amp::kCap, playing += amp::status(0, c, s) == amp::kPlaying;
     printf("the cap: %d playing, %d refused (MAX 6), refused counted %u\n", playing, cap, amp::stats().refused);
     CHECK(playing == amp::kMaxRunning && cap == 16 - amp::kMaxRunning && amp::running() == amp::kMaxRunning);
     bool seen = false;
     for (int c = 0; c < 8; ++c)
       for (int s = 0; s < 2; ++s)
-        if (amp::status(c, s) == amp::kCap) seen = seen || text(c, s) == "MAX 6";
+        if (amp::status(0, c, s) == amp::kCap) seen = seen || text(c, s) == "MAX 6";
     CHECK(seen);
     // one off: a refused slot takes its place
     ins::set_type(0, 0, ins::kOff);
     for (int b = 0; b < 3000; ++b) {
       amp::step();
       for (int c = 0; c < 8; ++c) {
-        amp::service(c);
+        amp::service(0, c);
         std::vector<float> v = blk;
         ins::engine().ProcessMono(c, v.data(), 12, ins::control);
       }
     }
     playing = 0;
     for (int c = 0; c < 8; ++c)
-      for (int s = 0; s < 2; ++s) playing += amp::status(c, s) == amp::kPlaying;
+      for (int s = 0; s < 2; ++s) playing += amp::status(0, c, s) == amp::kPlaying;
     CHECK(playing == amp::kMaxRunning && amp::running() == amp::kMaxRunning);
     for (int c = 0; c < 8; ++c)
       for (int s = 0; s < 2; ++s) ins::set_type(c, s, ins::kOff);
     for (int b = 0; b < 200; ++b) {
       amp::step();
-      for (int c = 0; c < 8; ++c) amp::service(c);
+      for (int c = 0; c < 8; ++c) amp::service(0, c);
+    }
+    settle();
+    CHECK(amp::running() == 0);
+  }
+  // CPU admission's check (set_cpu_check; core/device/admit.h amp_fits): AMP admitted when a slot loads one. Here room for 2
+  // on voices 0..3 and none on 4..7: those play dry with NO CPU, and one takes its place when the check lets it
+  {
+    static int s_room = 2;
+    amp::set_cpu_check([](int row) {
+      if (row >= 4) return false;
+      int n = 0;
+      for (int c = 0; c < 4; ++c)
+        for (int s = 0; s < amp::kSlots; ++s) n += amp::slot_playing(c, s);
+      return n < s_room;
+    });
+    CHECK(amp::rows() > 8 && amp::master_row() >= 8 && amp::master_row() < amp::rows());
+    for (int c = 0; c < 8; ++c) ins::set_type(c, 0, ins::kAmp), ins::set_param(c, 0, 0, amp::knob_for_model(2 + (c & 1)));
+    auto run = [] {
+      std::vector<float> blk(12, 0.1f);
+      for (int b = 0; b < 3000; ++b) {
+        amp::step();
+        for (int c = 0; c < 8; ++c) {
+          amp::service(0, c);
+          std::vector<float> v = blk;
+          ins::engine().ProcessMono(c, v.data(), 12, ins::control);
+        }
+      }
+    };
+    run();
+    int playing = 0, cpu = 0;
+    for (int c = 0; c < 8; ++c) playing += amp::status(0, c, 0) == amp::kPlaying, cpu += amp::status(0, c, 0) == amp::kCpu;
+    printf("CPU check: %d playing, %d NO CPU\n", playing, cpu);
+    CHECK(amp::refused_cpu() == 6);
+    CHECK(playing == 2 && cpu == 6 && amp::running() == 2 && text(4, 0) == "NO CPU" && amp::slot_playing(0, 0) + amp::slot_playing(1, 0) + amp::slot_playing(2, 0) + amp::slot_playing(3, 0) == 2);
+    s_room = 3;   // room again (a box left): one more of 0..3 plays
+    run();
+    CHECK(amp::running() == 3);
+    amp::set_cpu_check(nullptr);
+    for (int c = 0; c < 8; ++c) ins::set_type(c, 0, ins::kOff);
+    for (int b = 0; b < 200; ++b) {
+      amp::step();
+      for (int c = 0; c < 8; ++c) amp::service(0, c);
     }
     settle();
     CHECK(amp::running() == 0);
@@ -573,7 +615,7 @@ int main() {
   {
     ins::set_type(3, 1, ins::kAmp);
     ins::set_param(3, 1, 0, amp::knob_for_model(3));
-    CHECK(!strcmp(amp::slot_file(3, 1), "synth_b.nam"));
+    CHECK(!strcmp(amp::slot_file(0, 3, 1), "synth_b.nam"));
     ins::settings_due();
     CHECK(ins::save());
     std::string all;   // the project's default file (no kit named)
@@ -589,7 +631,7 @@ int main() {
     ins::load();
     amp::rescan();
     settle();
-    CHECK(amp::models() == 5 && !strcmp(amp::slot_file(3, 1), "synth_b.nam"));
+    CHECK(amp::models() == 5 && !strcmp(amp::slot_file(0, 3, 1), "synth_b.nam"));
     CHECK(amp::model_for_knob(ins::param(3, 1, 0)) == 4);
     printf("card: AMP V4 B synth_b.nam resolved after a new file shifted the list\n");
     ins::set_type(3, 1, ins::kOff);
@@ -639,6 +681,27 @@ int main() {
     CHECK(n > 0 && n < (int)sizeof j);
     CHECK(strstr(j, "\"amp\":{\"models\":5"));
     printf("json: %s\n", strstr(j, "\"amp\""));
+  }
+  // amp=synthetic:on (the two-box load test): a synthetic capture listed beside /NAM/'s files, loaded without the card
+  {
+    char o[256];
+    const int n1 = amp::models();
+    const uint32_t ld = amp::stats().loads;
+    CHECK(amp::command("amp=synthetic:on", o, sizeof o) && strstr(o, "listed"));
+    settle();
+    const int i = amp::find_model("~TSYNTH.namb");
+    CHECK(amp::models() == n1 + 1 && i >= 0);
+    ins::set_type(0, 0, ins::kAmp);
+    ins::set_param(0, 0, 0, amp::knob_for_model(i));
+    std::vector<float> y = play(guitarish(24000));
+    settle();
+    CHECK(amp::status(0, 0, 0) == amp::kPlaying && amp::stats().loads == ld + 1);
+    for (float v : y) CHECK(std::isfinite(v));
+    printf("amp=synthetic:on: %s, slot V1 A plays it (%s)\n", o, text(0, 0).c_str());
+    CHECK(amp::command("amp=synthetic:off", o, sizeof o));
+    ins::set_type(0, 0, ins::kOff);
+    settle();
+    CHECK(amp::models() == n1);
   }
   // the CPU: one instance's cost on this Mac (the Pi 4 estimate: x 4.4, the boot bench's PLAITS ratio)
   {

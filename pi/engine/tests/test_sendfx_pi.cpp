@@ -60,6 +60,7 @@ static void out_block(int32_t (*o)[12]) {
 
 int main() {
   int32_t o[7][12];
+  core::fx::guard::set_clock([] { return 0u; });   // (the measured FX guard's reads would advance the fake cycles() below)
   CHECK(!sendfx_pi::On());
   for (int k = 0; k < 100; ++k) in_block(k), sendfx_pi::Render(), out_block(o);
   for (int c = 0; c < 12; ++c) CHECK(o[6][c] == 1000 * (c + 1));   // off: OUT untouched

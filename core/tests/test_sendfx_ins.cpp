@@ -661,14 +661,14 @@ static void sfx_bench_row() {
   for (int which = 0; which < 3; ++which) {   // master::bench, sfx_bench sets 0 and 1
     ins::reset();
     static int calls;
-    static void (*real)(int, int, const float*, const float*, const float*, float*, float*, int);
+    static void (*real)(int, int, int, const float*, const float*, const float*, float*, float*, int);
     calls = 0, real = ins::send_insert;
-    ins::send_insert = [](int c, int s, const float* p, const float* x, const float* r, float* y0, float* y1, int m) {
+    ins::send_insert = [](int box, int c, int s, const float* p, const float* x, const float* r, float* y0, float* y1, int m) {
       if (++calls == 2000) {   // "the load": a voice chain, a voice's send, a bus EQ, the master's LEV
         ins::control.type[2][1] = ins::kDelay, ins::control.send[2][1] = 77;
         ins::control.peq[kB3][3] = 9, master::control.lev = 88;
       }
-      real(c, s, p, x, r, y0, y1, m);
+      real(box, c, s, p, x, r, y0, y1, m);
     };
     uint32_t w = 0;
     const uint64_t t = which == 0 ? master::bench(&w) : master::sfx_bench(which - 1, &w);
@@ -692,6 +692,44 @@ static void sfx_bench_row() {
   CHECK(!memcmp(&ic, (const void*)&ins::control, sizeof ic) && !memcmp(&mc, (const void*)&master::control, sizeof mc));
   ins::reset();
   printf("test_sendfx_ins: the boot bench row leaves the state as it was\n");
+}
+
+// one box's chains as one row (master::box_bench, the admission's core-2 cost since LT1): measures, leaves both controls
+// and the rooms as it found them, the send FX it ran Reset; refused (0, nothing touched) once a slot or a send FX is set.
+// Its figure is printed beside the master chain and CLOUD x4 rows: it adds the box's own send FX (CLOUDSEED x2), which no
+// earlier row measured (LT1, 2026-11-22: the send FX ran 28.8 % of core 2 for one box)
+static void box_bench_row() {
+  ins::reset();
+  static fx::SendFx* send = new fx::SendFx(48000.0f);
+  static ins::Control ic;
+  static master::Control mc;
+  memcpy(&ic, (const void*)&ins::control, sizeof ic), memcpy(&mc, (const void*)&master::control, sizeof mc);
+  uint32_t w = 0;
+  const uint64_t t = master::box_bench(send, &w);
+  const double hz = (double)cycles_per_second(), pct = 100.0 * (double)t / hz;
+  CHECK(t > 0 && w > 0);
+  CHECK(!memcmp(&ic, (const void*)&ins::control, sizeof ic) && !memcmp(&mc, (const void*)&master::control, sizeof mc));
+  CHECK(master::fx_used() == 0);
+  for (int c = ins::kBus0; c < ins::kChains; ++c)
+    for (int sl = 0; sl < ins::kSlots; ++sl) CHECK(type_of(c, sl) == ins::kOff);
+  uint32_t w2 = 0;
+  const uint64_t tm = master::bench(&w2), t4 = master::sfx_bench(1, &w2);
+  printf("test_sendfx_ins: bench box chains: %.2f %% of a core (this host); mfx + CLOUD x4 rows alone %.2f %%\n", pct,
+         100.0 * (double)(tm + t4) / hz);
+  CHECK(tm > 0 && t4 > 0);
+  // refused: a bus slot set, or box 0's send FX on
+  ins::set_type(ins::kBus0 + 1, 1, ins::kSat);
+  memcpy(&ic, (const void*)&ins::control, sizeof ic);
+  CHECK(master::box_bench(send, &w) == 0 && w == 0);
+  CHECK(!memcmp(&ic, (const void*)&ins::control, sizeof ic));
+  ins::reset();
+  const uint8_t was = fx::control.knob[0][0];
+  fx::control.knob[0][0] = fx::kChorus;
+  CHECK(master::box_bench(send, &w) == 0);
+  fx::control.knob[0][0] = was;
+  CHECK(master::box_bench(nullptr, &w) == 0);
+  ins::reset();
+  printf("test_sendfx_ins: the box chains row leaves the state as it was\n");
 }
 
 // what four send TYPE inserts cost on core 2 (the numbers go to the report)
@@ -761,6 +799,7 @@ int main() {
   rytm_page();
   lows();
   sfx_bench_row();
+  box_bench_row();
   host_fake_time(false, 0);
   cost();
   printf("test_sendfx_ins: PASS\n");

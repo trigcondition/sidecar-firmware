@@ -10,6 +10,7 @@
 #include "hooks.h"
 #include "inst.h"
 #include "machines.h"
+#include "device/device.h"
 #if CORE_MSAMP
 #include "nmach.h"
 #endif
@@ -62,25 +63,60 @@ static_assert(seq::kArpLockMax[0] == kModes - 1 && seq::kArpLockMax[1] == kSpeed
               seq::kArpLockMax[3] == kGates - 1 && seq::kArpLockMax[4] == kSwings - 1, "seq.h's arp lock ranges");
 Vo vo[kVoices];
 Lk lk[kVoices];
-uint16_t code[12];
-uint8_t running = 0;   // bit vi
-Stats st;
-uint32_t rnd = 0x2545F491u;
-uint32_t check_ms = 0;
-uint16_t pins_sent = 0xFFFF;
+uint32_t running = 0;   // bit vi (engine voices)
+// 3(c): per voice slot (each box its own arpeggiator): its tracks' codes, its counters, its random notes, its clock
+// and pins. The voices above are each one slot's already (slot_of_voice). Slot 0's are the Rytm's tracks (its 45s,
+// its remote UI's track table); another slot's box plays its tracks 0..kBoxVoices-1 on its own voices (seq's voice_of).
+struct Sl {
+  uint16_t code[12] = {};
+  Stats st = {};
+  uint32_t rnd = 0x2545F491u;
+  uint32_t check_ms = 0;
+  uint16_t pins_sent = 0xFFFF;
+};
+Sl g_sl[kVoiceSlots];
+inline int vslot(int vi) { return kVoiceSlots > 1 && vi >= 0 && vi < kVoices ? slot_of_voice(vi) : 0; }
+// the slot in hand (prj_slot, read inline as seq's sq_slot: cfg_at runs a block's every voice)
+inline int cur_slot() {
+  if (kVoiceSlots < 2) return 0;
+  const int s = device::g_cur->index;
+  return s < kVoiceSlots ? s : 0;
+}
+inline Sl& S() { return g_sl[cur_slot()]; }   // the slot in hand's (the control core; a box's 45 comes in its Scope)
+inline Sl& SV(int vi) { return g_sl[vslot(vi)]; }
+inline int64_t vframes(int vi) { return (int64_t)seq::frames(vslot(vi)); }
 
-CORE_COLD int rand_below(int n) {
+CORE_COLD int rand_below(Sl& l, int n) {
+  uint32_t& rnd = l.rnd;
   rnd ^= rnd << 13, rnd ^= rnd >> 17, rnd ^= rnd << 5;
   return (int)((rnd >> 8) % (uint32_t)n);
 }
-CORE_COLD bool sidecar_track(int t) {
-  int vb = ui::remote_track_machine(t);
+// The Rytm's track tables (its 33s) are its remote UI's, read in its slot's Scope (10b: the remote UI one per slot, the
+// slot in hand's; attach order: the Rytm's slot either) whatever slot is in hand. s: the Rytm's slot (two Rytms, design
+// 2026-11-26: each its own 33s), else the first Rytm's
+inline bool rytm_slot(int s) { return device::rytm_at(s); }
+template <class F> CORE_COLD auto rytm_ui(int s, F f) -> decltype(f()) {
+  const int r = rytm_slot(s) ? s : device::rytm_slot();
+  if (kVoiceSlots < 2 || r < 0 || cur_slot() == r) return f();
+  device::Scope in(device::g_links[r]);
+  return f();
+}
+// slot s's track t plays on this voice (-1 none): the Rytm's from its 33s, a box's track t on its own voice t
+CORE_COLD int track_voice(int s, int t) {
+  if (rytm_slot(s)) return rytm_ui(s, [&] { return ui::remote_track_voice(t); });
+  return t < kBoxVoices ? s * kBoxVoices + t : -1;
+}
+CORE_COLD bool sidecar_track(int s, int t) {
+  if (!rytm_slot(s)) return t < kBoxVoices;   // (a box's tracks on its own voices: every one a Sidecar voice)
+  int vb = rytm_ui(s, [&] { return ui::remote_track_machine(t); });
   return vb != 0x7F;   // (-1: not reported yet, a test's or a first report's: the voice's reports say it is ours)
 }
 CORE_COLD bool code_on(int c) { return c < kCodes && c % kModes != kOff; }   // (past the table: decode's 0, OFF)
 CORE_COLD int code_of(int vi) {
+  const int s = vslot(vi);
+  const uint16_t* code = g_sl[s].code;
   for (int t = 0; t < 12; ++t)
-    if (ui::remote_track_voice(t) == vi && code_on(code[t]) && sidecar_track(t)) return code[t];
+    if (track_voice(s, t) == vi && code_on(code[t]) && sidecar_track(s, t)) return code[t];
   return 0;
 }
 // The voice's settings at frame h: the code, a lock laid over it. A lock past its step is gone here
@@ -89,7 +125,7 @@ CORE_COLD Cfg cfg_at(int vi, int64_t h) {
   if (l.mask && h >= l.until) l.mask = 0;
   int cc = code_of(vi);
   if (!l.mask) return decode(cc);
-  Cfg c = decode(cc ? cc : code[l.track]);   // (the sound's OFF: its other values still its own)
+  Cfg c = decode(cc ? cc : SV(vi).code[l.track]);   // (the sound's OFF: its other values still its own)
   if (l.mask & 1) c.mode = l.val[0];
   if (l.mask & 2) c.speed = l.val[1];
   if (l.mask & 4) c.range = l.val[2];
@@ -102,16 +138,16 @@ CORE_COLD void wake(int vi) {
     vo[vi].run = true;
     vo[vi].started = false;
     vo[vi].pos = 0;
-    running |= (uint8_t)(1u << vi);
-    ++st.running;
-    ++st.chords;
+    running |= 1u << vi;
+    ++SV(vi).st.running;
+    ++SV(vi).st.chords;
   }
 }
 CORE_COLD void sleep(int vi) {
   if (vo[vi].run) {
     vo[vi].run = false;
-    running &= (uint8_t)~(1u << vi);
-    --st.running;
+    running &= ~(1u << vi);
+    --SV(vi).st.running;
   }
 }
 CORE_COLD void add(int vi, int note, int vel, int src, int key) {
@@ -164,7 +200,7 @@ CORE_COLD void rest(int vi) {
   vo[vi].started = false;
 }
 // The note at position pos of the pattern over c.range octaves
-CORE_COLD int pick(int pos, int n, const Cfg& c, int* idx) {
+CORE_COLD int pick(Sl& l, int pos, int n, const Cfg& c, int* idx) {
   int m = n * (c.range + 1), i;
   switch (c.mode) {
     case kDown: i = m - 1 - pos % m; break;
@@ -173,32 +209,32 @@ CORE_COLD int pick(int pos, int n, const Cfg& c, int* idx) {
       i = k < m ? k : p - k;
       break;
     }
-    case kRandom: i = rand_below(m); break;
+    case kRandom: i = rand_below(l, m); break;
     default: i = pos % m; break;
   }
   *idx = i % n;
   return i / n;   // the octave
 }
 CORE_COLD double grid(double o, double g, int64_t n, double sw) { return o + (double)n * g + (n & 1 ? sw * g : 0); }
-// The frames of a 1/16 now
-CORE_COLD double per16() {
+// The frames of a 1/16 now, on slot s's clock
+CORE_COLD double per16(int s) {
   double origin, per;
   int lat;
-  if (seq::beat_map(&origin, &per, &lat)) return per;
-  return seq::step_frames(seq::tempo() > 1 ? seq::tempo() : 120.0, 2);
+  if (seq::beat_map(s, &origin, &per, &lat)) return per;
+  return seq::step_frames(seq::tempo(s) > 1 ? seq::tempo(s) : 120.0, 2);
 }
 
 CORE_COLD void play(int vi, const Cfg& c) {
   Vo& x = vo[vi];
   uint8_t pit[kHeld], vel[kHeld];
   int n = list_of(x, c.mode, pit, vel), idx = 0;
-  int oct = pick(x.pos++, n, c, &idx);
+  int oct = pick(SV(vi), x.pos++, n, c, &idx);
   int note = pit[idx] + 12 * oct;
   while (note > 127) note -= 12;
   seq::PolyCfg mono = {};
   mono.voices = 1;   // one at a time: a track that is no poly track plays on its own voice
   if (inst::play_on(vi, note, vel[idx], x.seq_cfg ? x.pcfg : mono)) voice_wake(vi), x.note = note;
-  ++st.notes;
+  ++SV(vi).st.notes;
 }
 // A release that empties the hold before it played a note (off the grid, a slow SPD, a short LEN): its first note now, not silence
 CORE_COLD int release(int vi, int src, int key, int note) {
@@ -208,15 +244,15 @@ CORE_COLD int release(int vi, int src, int key, int note) {
   memcpy(save, x.h, sizeof save);
   int gone = drop(vi, src, key, note);
   if (!gone || x.n || !x.run || x.pos || x.note >= 0) return gone;
-  Cfg c = cfg_at(vi, (int64_t)seq::frames());
+  Cfg c = cfg_at(vi, vframes(vi));
   if (c.mode == kOff) return gone;
   memcpy(x.h, save, sizeof save);
   x.n = was;
   play(vi, c);
   x.n = 0;
-  int64_t h = (int64_t)seq::frames(), len = (int64_t)(kInterval[c.speed] * per16() * kGatePct[c.gate] / 100.0);
+  int64_t h = vframes(vi), len = (int64_t)(kInterval[c.speed] * per16(vslot(vi)) * kGatePct[c.gate] / 100.0);
   x.off_at = h + (len > kMinGate ? len : kMinGate);
-  ++st.released;
+  ++SV(vi).st.released;
   return gone;
 }
 }  // namespace
@@ -249,35 +285,36 @@ CORE_COLD const char* speed_name(int s) {
 CORE_COLD int gate_pct(int g) { return kGatePct[g >= 0 && g < kGates ? g : kDefGate]; }
 CORE_COLD int swing_pct(int s) { return kSwingPct[s >= 0 && s < kSwings ? s : 0]; }
 
-CORE_COLD static void changed(int t) {   // track t's code moved: its voice runs by it, or stops
-  int vi = ui::remote_track_voice(t);
-  if (vi >= 0 && vo[vi].run && !on(vi)) end(vi);
-  check_ms = 0;   // the pins and the clock at the next pass
+CORE_COLD static void changed(int t) {   // the slot in hand's track t's code moved: its voice runs by it, or stops
+  int vi = track_voice(cur_slot(), t);
+  if (vi >= 0 && vi < kVoices && vo[vi].run && !on(vi)) end(vi);
+  S().check_ms = 0;   // the pins and the clock at the next pass
 }
 CORE_COLD bool sysex(const uint8_t* d, int len) {
   if (len < 10 || d[4] != kCmd) return false;
   if (d[5] == 1 && len == 10 && d[6] < 12 && !(d[7] & 0x80) && d[8] < 8) {
     int c = d[7] | d[8] << 7;
-    ++st.reports;
-    if (c != code[d[6]]) code[d[6]] = (uint16_t)c, changed(d[6]);
+    Sl& l = S();
+    ++l.st.reports;
+    if (c != l.code[d[6]]) l.code[d[6]] = (uint16_t)c, changed(d[6]);
   }
   return true;
 }
 CORE_COLD void set(int t, const Cfg& c) {
   if (t < 0 || t >= 12) return;
   int v = encode(c);
-  code[t] = (uint16_t)v;
+  S().code[t] = (uint16_t)v;
   changed(t);
   uint8_t m[10] = {0xF0, 0x7D, 0x52, 0x54, kCmd, 0x01, (uint8_t)t, (uint8_t)(v & 0x7F), (uint8_t)(v >> 7), 0xF7};
-  to_rytm(m, 10);
-  ++st.edits;
+  to_rytm(m, 10);   // (the slot in hand's box; a box whose profile does not take 45 filters it)
+  ++S().st.edits;
 }
-CORE_COLD Cfg get(int t) { return decode(t >= 0 && t < 12 ? code[t] : 0); }
+CORE_COLD Cfg get(int t) { return decode(t >= 0 && t < 12 ? S().code[t] : 0); }
 CORE_COLD bool on(int vi) { return vi >= 0 && vi < kVoices && code_of(vi) != 0; }
 
 CORE_COLD bool seq_on(int vi, int note, int vel, const seq::PolyCfg& cfg) {
   if (vi >= 0 && vi < kVoices && lk[vi].mask) {
-    Cfg c = cfg_at(vi, (int64_t)seq::frames());
+    Cfg c = cfg_at(vi, vframes(vi));
     if (c.mode == kOff) {
       if (lk[vi].mask & 1) vo[vi].plain[note >> 5 & 3] |= 1u << (note & 31);
       if (vo[vi].run && !on(vi)) end(vi);   // (its lock gone just now: before the note it could end)
@@ -319,7 +356,7 @@ CORE_COLD bool live_off(int vi, int ch, int key) {
   return release(vi, ch, key, -1) > 0;
 }
 CORE_COLD bool trig(int vi, int note, int vel, const float* p) {
-  vi &= 7;
+  vi = voice_wrap(vi);
   if (!on(vi)) return false;
   drop(vi, kLiveTrig, -1, -1);   // mono on the voice, as a trig is
   if (!vo[vi].n) vo[vi].seq_cfg = false;
@@ -336,7 +373,7 @@ CORE_COLD bool trig(int vi, int note, int vel, const float* p) {
   vo[vi].trig_ms = now_ms();
   return true;
 }
-CORE_COLD int held(int vi) { return vo[vi & 7].n; }
+CORE_COLD int held(int vi) { return vo[voice_wrap(vi)].n; }
 CORE_COLD bool trig_off(int vi) { return vi >= 0 && vi < kVoices && release(vi, kLiveTrig, -1, -1) > 0; }
 
 CORE_COLD void lock(int vi, int track, int mask, const uint8_t* val, int64_t until) {
@@ -344,21 +381,22 @@ CORE_COLD void lock(int vi, int track, int mask, const uint8_t* val, int64_t unt
   Lk& l = lk[vi];
   l.mask = (uint8_t)(mask & 31), l.track = (int8_t)(track >= 0 && track < 12 ? track : 0), l.until = until;
   for (int i = 0; i < seq::kArpLocks; ++i) l.val[i] = (uint8_t)(val[i] <= seq::kArpLockMax[i] ? val[i] : seq::kArpLockMax[i]);
-  if (vo[vi].run && cfg_at(vi, (int64_t)seq::frames()).mode == kOff) {   // now, not at the block: the step's own notes come next
+  if (vo[vi].run && cfg_at(vi, vframes(vi)).mode == kOff) {   // now, not at the block: the step's own notes come next
     if (on(vi)) rest(vi);
     else end(vi);
   }
 }
-CORE_COLD int locked(int vi) { return vi >= 0 && vi < kVoices && (int64_t)seq::frames() < lk[vi].until ? lk[vi].mask : 0; }
+CORE_COLD int locked(int vi) { return vi >= 0 && vi < kVoices && vframes(vi) < lk[vi].until ? lk[vi].mask : 0; }
 
-void block(int64_t h) {
+void block(int64_t h, int slot) {
   if (!running) return;
   uint32_t t0 = now_us();
   double origin = 0, per = 0;
   int lat = 0;
-  bool clk = seq::beat_map(&origin, &per, &lat);
+  bool clk = seq::beat_map(slot, &origin, &per, &lat);
+  Sl& l = g_sl[slot];
   for (int vi = 0; vi < kVoices; ++vi) {
-    if (!(running >> vi & 1)) continue;
+    if (!(running >> vi & 1) || vslot(vi) != slot) continue;
     Vo& x = vo[vi];
     if (x.note >= 0 && h + kBlock / 2 >= x.off_at) sound_off(vi);
     if (!x.n) {   // the hold is over; the note plays out its gate
@@ -372,7 +410,7 @@ void block(int64_t h) {
       else end(vi);
       continue;
     }
-    double p = clk ? per : seq::step_frames(seq::tempo() > 1 ? seq::tempo() : 120.0, 2);
+    double p = clk ? per : seq::step_frames(seq::tempo(slot) > 1 ? seq::tempo(slot) : 120.0, 2);
     double g = kInterval[c.speed] * p, sw = kSwingFrac[c.swing];
     bool placed = x.started && x.clocked == clk && x.speed == c.speed;
     if (!placed) {
@@ -403,7 +441,7 @@ void block(int64_t h) {
     if (!x.pos && lk[vi].mask && !on(vi) && f >= (double)lk[vi].until) f = (double)h;
     if ((double)h + kBlock / 2 < f) continue;
     sound_off(vi);   // (a gate of 100 %, or a late one)
-    if ((double)h - f > kBlock) ++st.late;
+    if ((double)h - f > kBlock) ++l.st.late;
     play(vi, c);
     int64_t off = (int64_t)(f + (f1 - f) * kGatePct[c.gate] / 100.0);
     x.off_at = off > h + kMinGate ? off : h + kMinGate;
@@ -412,13 +450,13 @@ void block(int64_t h) {
     ++x.next;
   }
   uint32_t us = now_us() - t0;
-  if (us > st.worst_us) st.worst_us = us;
+  if (us > l.st.worst_us) l.st.worst_us = us;
 }
 
-CORE_COLD void stop() {
+CORE_COLD void stop(int slot) {
   for (int vi = 0; vi < kVoices; ++vi) {
     Vo& x = vo[vi];
-    if (!x.run) continue;
+    if (!x.run || (slot >= 0 && vslot(vi) != slot)) continue;
     drop(vi, kLiveTrig, -1, -1);
     drop(vi, kLiveSeq, -1, -1);
     if (!x.n) sound_off(vi), sleep(vi);
@@ -432,9 +470,10 @@ CORE_COLD void end(int vi) {
   vo[vi].n = 0;
   sleep(vi);
 }
-CORE_COLD void kit_changed() {
+CORE_COLD void kit_changed(int slot) {
   uint32_t ms = now_ms();
   for (int vi = 0; vi < kVoices; ++vi) {
+    if (slot >= 0 && slot_of_voice(vi) != slot) continue;   // (3(c) step 9: a box's kit, its own voices)
     Vo& x = vo[vi];
     bool fresh = false;
     for (int i = 0; i < x.n; ++i) fresh = fresh || (x.h[i].src == kLiveTrig && ms - x.trig_ms <= kFreshMs);
@@ -453,9 +492,10 @@ CORE_COLD void link_lost() {
 }
 CORE_COLD void machines() {
   for (int vi = 0; vi < kVoices; ++vi) {
+    if (!rytm_slot(vslot(vi))) continue;   // (the Rytm's 33s: its own voices' tracks)
     uint16_t sig = 0;
     for (int t = 0; t < 12; ++t)
-      if (ui::remote_track_voice(t) == vi) sig = (uint16_t)(sig * 31 + (uint16_t)(ui::remote_track_machine(t) + 1));
+      if (track_voice(vslot(vi), t) == vi) sig = (uint16_t)(sig * 31 + (uint16_t)(rytm_ui(vslot(vi), [&] { return ui::remote_track_machine(t); }) + 1));
     if (sig != vo[vi].sig) {
       vo[vi].sig = sig;
       end(vi);
@@ -465,25 +505,31 @@ CORE_COLD void machines() {
 CORE_COLD bool busy(int vi) { return vi >= 0 && vi < kVoices && vo[vi].run; }
 
 CORE_COLD void tick(uint32_t ms) {
-  if ((int32_t)(ms - check_ms) < 200 && check_ms) return;
-  check_ms = ms | 1;
+  const int s = cur_slot();
+  Sl& l = g_sl[s];
+  if ((int32_t)(ms - l.check_ms) < 200 && l.check_ms) return;
+  l.check_ms = ms | 1;
   uint16_t pins = 0;
   for (int t = 0; t < 12; ++t) {
-    if (!code_on(code[t]) || !sidecar_track(t)) continue;
-    int vi = ui::remote_track_voice(t);
+    if (!code_on(l.code[t]) || !sidecar_track(s, t)) continue;
+    int vi = track_voice(s, t);
     bool mi = false;
 #if CORE_MSAMP
     mi = vi >= 0 && v[vi].mi;
 #endif
     pins |= (uint16_t)((mi ? 0x1000u : 1u) << (mi ? 0 : t));   // bit 12: the MIDI machine needs a clock, no VCA
   }
-  if (pins != pins_sent) pins_sent = pins, seq::set_arp_tracks((uint16_t)(pins & 0xFFF), pins != 0);
+  // a box's: no pins (they are the Rytm's VCA words), only its clock (its tracks' ticks: the grid)
+  if (!rytm_slot(s) && pins) pins = 0x1000;
+  if (pins != l.pins_sent) l.pins_sent = pins, seq::set_arp_tracks((uint16_t)(pins & 0xFFF), pins != 0);
 }
 
-CORE_COLD const Stats& stats() { return st; }
+CORE_COLD const Stats& stats(int slot) { return g_sl[slot >= 0 && slot < kVoiceSlots ? slot : 0].st; }
 
 CORE_COLD bool command(const char* p, char* out, int cap) {
   if (strncmp(p, "arp", 3) != 0 || (p[3] && p[3] != '=')) return false;
+  const Stats& st = S().st;
+  const uint16_t* code = S().code;
   if (!p[3]) {
     int n = sniprintf(out, cap, CORE_STR("arp: %d running, %lu notes (%lu late, %lu at a release), %lu holds, %lu reports, %lu edits, a block's worst %lu us; tracks"),
                       st.running, (unsigned long)st.notes, (unsigned long)st.late, (unsigned long)st.released, (unsigned long)st.chords,
@@ -519,9 +565,8 @@ CORE_COLD void reset() {
   memset(vo, 0, sizeof vo);
   memset(lk, 0, sizeof lk);
   for (Vo& x : vo) x.note = -1;
-  memset(code, 0, sizeof code);
-  memset(&st, 0, sizeof st);
-  running = 0, check_ms = 0, pins_sent = 0xFFFF;
+  for (Sl& l : g_sl) l = Sl{};
+  running = 0;
 }
 
 }  // namespace arp

@@ -228,10 +228,13 @@ bool line_fn(void* ctx, const pools::text::Line& l) {
 void collect_pools() {
   Manifest& x = g.x;
   PoolRefs c = {-1};
-  bool live = is_current(E.key) && pools::ready() && !strcmp(pools::project(), E.key);
+  int ps = -1;   // the voice slot whose lists are E.key's (each box's project its own: core/lib/pools.h project(s))
+  for (int s = 0; s < kVoiceSlots && ps < 0; ++s)
+    if (!strcmp(pools::project(s), E.key)) ps = s;
+  bool live = is_current(E.key) && pools::ready() && ps >= 0;
   for (int l = 0; live && l < pools::kLists; ++l) {
     c.inst = -1;
-    if (pools::refs(l, refs_fn, &c) < 0) live = false;   // a row kept changing: the files read too (add_ref merges)
+    if (pools::refs(ps, l, refs_fn, &c) < 0) live = false;   // a row kept changing: the files read too (add_ref merges)
   }
   for (int e = 0; e < x.ne; ++e) {
     MEntry& m = x.e[e];

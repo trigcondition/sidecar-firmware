@@ -73,9 +73,12 @@ void close_in(int p) {
 
 }  // namespace
 
-void start(bool trk, int voice) {
+static volatile int8_t g_slot = 0;
+int slot() { return g_slot; }
+void start(bool trk, int voice, int slot) {
   if (!imp_buf) imp_buf = new float[kImpLen];
   g_voice = voice & 7;
+  g_slot = (int8_t)(slot > 0 ? slot : 0);
   g_req = trk ? 2 : 1;
 }
 void stop() { g_req = 3; }

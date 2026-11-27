@@ -1,0 +1,23 @@
+--- a/lib/usb/usbdevicefactory.cpp
++++ b/lib/usb/usbdevicefactory.cpp
+@@ -117,6 +117,9 @@
+ extern CUSBFunction *RytmObDeviceCreate (CUSBFunction *pParent) __attribute__ ((weak));
+ // sidecar hook (circle-usbdevicefactory3): the Teensy mirror relay (1209:0002, pi/engine/relay_proto.h)
+ extern CUSBFunction *SidecarRelayCreate (CUSBFunction *pParent) __attribute__ ((weak));
++// sidecar hook (circle-usbdevicefactory4): a Teensy in its bootloader (16C0:0478, pi/engine/teensy_flash.h), before
++// its HID interface (int3-0-0) would reach the gamepad driver
++extern CUSBFunction *SidecarTeensyBootCreate (CUSBFunction *pParent) __attribute__ ((weak));
+ 
+ CUSBFunction *CUSBDeviceFactory::GetDevice (CUSBFunction *pParent, CString *pName)
+ {
+@@ -143,6 +146,10 @@
+ 	{
+ 		pResult = SidecarRelayCreate (pParent);
+ 	}
++	else if (SidecarTeensyBootCreate != 0 && pName->Compare ("ven16c0-478") == 0)
++	{
++		pResult = SidecarTeensyBootCreate (pParent);
++	}
+ 	else if (   pName->Compare ("int9-0-0") == 0
+ 	    || pName->Compare ("int9-0-2") == 0)
+ 	{

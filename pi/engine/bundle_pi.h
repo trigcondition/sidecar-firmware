@@ -15,7 +15,7 @@
 
 namespace bundle_pi {
 void init(void (*command)(const char* cmd));   // CKernel::Initialize, after bridge::begin (the boot recovery ran in it)
-void transport(uint8_t status);                // 0xFA / 0xFB play, 0xFC stop (any core)
+void transport(int slot, uint8_t status);      // box slot's 0xFA / 0xFB play, 0xFC stop (any core): writes slow while any box plays
 bool poll(int recorder_state);                 // core 0's loop: rec_pi::UiState (2: recording); true: a step ran
 int status_json(char* out, int cap);           // ,"bundle":{...} for /status
 // the PROJECT pages (core/bundle/feed.h): the console's bundle=... lines (core 0; true when it was one, answered in

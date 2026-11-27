@@ -1,0 +1,188 @@
+diff --git a/include/circle/usb/xhciendpoint.h b/include/circle/usb/xhciendpoint.h
+index e466b41..a1377f1 100644
+--- a/include/circle/usb/xhciendpoint.h
++++ b/include/circle/usb/xhciendpoint.h
+@@ -68,6 +68,12 @@ public:
+ 	unsigned GetErrorCount (void) const	{ return m_nErrors; }		// transfer errors (circle-hid.patch)
+ 	unsigned GetLastErrorCode (void) const	{ return m_nLastError; }	// the xHCI completion code of the last one
+ 
++	// circle-xhci-iv1count: the interrupt and isochronous endpoints the controller polls every microframe
++	// (high speed, bInterval 1) that are configured now. *pBusy (if given): how many of them have URBs queued.
++	// pList (if given, nListSize bytes): "s<slot>:<addr>,<addr> s<slot>:..." (hex addresses, by slot).
++	// The VL805 on the Pi 4 has starved one of them whenever 6 or more were busy (diagnosis-periodic-starvation.md).
++	static unsigned GetPeriodicIv1 (unsigned *pBusy = 0, char *pList = 0, unsigned nListSize = 0);
++
+ #ifndef NDEBUG
+ 	void DumpStatus (void);
+ #endif
+@@ -85,6 +91,9 @@ private:
+ 
+ 	static u8 ConvertInterval (u8 uchInterval, TUSBSpeed Speed);
+ 
++	boolean IsPeriodicIv1 (void) const;			// circle-xhci-iv1count
++	void Iv1Update (boolean bAdd);
++
+ private:
+ 	CXHCIUSBDevice *m_pDevice;
+ 	CXHCIDevice    *m_pXHCIDevice;
+diff --git a/lib/usb/xhciendpoint.cpp b/lib/usb/xhciendpoint.cpp
+index 206e179..bdd63de 100644
+--- a/lib/usb/xhciendpoint.cpp
++++ b/lib/usb/xhciendpoint.cpp
+@@ -33,6 +33,14 @@
+ 
+ static const char From[] = "xhciep";
+ 
++// circle-xhci-iv1count: the configured endpoints polled every microframe (GetPeriodicIv1 reads URB counts that the
++// xHCI IRQ changes without its lock: a snapshot is enough for a log line)
++#define XHCI_IV1_MAX	32
++#define XHCI_IV1_WARN	5		// the most the VL805 has always served in full (diagnosis-periodic-starvation.md)
++static CXHCIEndpoint *s_pIv1[XHCI_IV1_MAX];
++static unsigned s_nIv1;
++static CSpinLock s_Iv1Lock;		// IRQ level: safe wherever a device is removed
++
+ CXHCIEndpoint::CXHCIEndpoint (CXHCIUSBDevice *pDevice, CXHCIDevice *pXHCIDevice)
+ :	m_pDevice (pDevice),
+ 	m_pXHCIDevice (pXHCIDevice),
+@@ -157,6 +165,11 @@ CXHCIEndpoint::CXHCIEndpoint (CXHCIUSBDevice *pDevice, const TUSBEndpointDescrip
+ 	}
+ 
+ 	m_pDevice->RegisterEndpoint (m_uchEndpointID, this);
++
++	if (IsPeriodicIv1 ())
++	{
++		Iv1Update (TRUE);
++	}
+ }
+ 
+ CXHCIEndpoint::~CXHCIEndpoint (void)
+@@ -164,6 +177,8 @@ CXHCIEndpoint::~CXHCIEndpoint (void)
+ 	assert (m_bTransferCompleted);
+ 	assert (m_pInputContextBuffer == 0);
+ 
++	Iv1Update (FALSE);		// only if it is listed (EP0 and a failed endpoint never are)
++
+ 	m_uchEndpointID = 0;
+ 
+ 	delete m_pTransferRing;
+@@ -499,6 +514,120 @@ boolean CXHCIEndpoint::ResetFromHalted (void)
+ 								!!m_pTransferRing->GetCycleState ());
+ }
+ 
++boolean CXHCIEndpoint::IsPeriodicIv1 (void) const
++{
++	// interrupt (3) or isochronous (1) at an xHCI Interval of 0: 2^0 x 125 us (ConvertInterval gives 0 only for
++	// high/super speed bInterval 1; full and low speed come out at 3 or more)
++	return (m_uchAttributes & 1) == 1 && m_uchInterval == 0;
++}
++
++void CXHCIEndpoint::Iv1Update (boolean bAdd)
++{
++	s_Iv1Lock.Acquire ();
++	unsigned i;
++	for (i = 0; i < s_nIv1 && s_pIv1[i] != this; i++) {}
++	boolean bChanged = FALSE;
++	if (bAdd && i == s_nIv1 && s_nIv1 < XHCI_IV1_MAX)
++	{
++		s_pIv1[s_nIv1++] = this;
++		bChanged = TRUE;
++	}
++	else if (!bAdd && i < s_nIv1)
++	{
++		s_pIv1[i] = s_pIv1[--s_nIv1];
++		bChanged = TRUE;
++	}
++	unsigned nCount = s_nIv1;
++	s_Iv1Lock.Release ();
++
++	if (!bChanged)
++	{
++		return;
++	}
++
++	unsigned nSlot = m_pDevice != 0 ? m_pDevice->GetSlotID () : 0;
++	CLogger::Get ()->Write (From, nCount > XHCI_IV1_WARN && bAdd ? LogWarning : LogNotice,
++				"periodic iv1 %u (%c slot %u ep 0x%02x %s %u B)%s", nCount, bAdd ? '+' : '-', nSlot,
++				(unsigned) m_uchEndpointAddress, (m_uchAttributes & 3) == 3 ? "int" : "iso",
++				(unsigned) m_usMaxPacketSize,
++				nCount > XHCI_IV1_WARN && bAdd ? ": over 5, the VL805 has starved one at 6 when all are busy" : "");
++}
++
++unsigned CXHCIEndpoint::GetPeriodicIv1 (unsigned *pBusy, char *pList, unsigned nListSize)
++{
++	s_Iv1Lock.Acquire ();
++	unsigned nCount = s_nIv1, nBusy = 0;
++	unsigned nSlot[XHCI_IV1_MAX];
++	u8 uchAddr[XHCI_IV1_MAX];
++	for (unsigned i = 0; i < nCount; i++)
++	{
++		CXHCIEndpoint *p = s_pIv1[i];
++		if (p->m_nURBCount > 0)
++		{
++			nBusy++;
++		}
++		nSlot[i] = p->m_pDevice != 0 ? p->m_pDevice->GetSlotID () : 0;
++		uchAddr[i] = p->m_uchEndpointAddress;
++	}
++	s_Iv1Lock.Release ();
++
++	if (pBusy != 0)
++	{
++		*pBusy = nBusy;
++	}
++
++	if (pList != 0 && nListSize > 0)
++	{
++		// "s3:83,03,82 s5:81": by slot, in the order the endpoints came (no heap: a plain buffer)
++		static const char Hex[] = "0123456789abcdef";
++		unsigned n = 0;
++		boolean bDone[XHCI_IV1_MAX] = {FALSE};
++		for (unsigned i = 0; i < nCount; i++)
++		{
++			if (bDone[i])
++			{
++				continue;
++			}
++			char Item[16];
++			unsigned k = 0;
++			if (n > 0)
++			{
++				Item[k++] = ' ';
++			}
++			Item[k++] = 's';
++			if (nSlot[i] >= 100) Item[k++] = '0' + nSlot[i] / 100 % 10;
++			if (nSlot[i] >= 10) Item[k++] = '0' + nSlot[i] / 10 % 10;
++			Item[k++] = '0' + nSlot[i] % 10;
++			Item[k++] = ':';
++			boolean bFirst = TRUE;
++			for (unsigned j = i; j < nCount; j++)
++			{
++				if (bDone[j] || nSlot[j] != nSlot[i])
++				{
++					continue;
++				}
++				bDone[j] = TRUE;
++				if (!bFirst)
++				{
++					Item[k++] = ',';
++				}
++				bFirst = FALSE;
++				Item[k++] = Hex[uchAddr[j] >> 4];
++				Item[k++] = Hex[uchAddr[j] & 15];
++				if (k + 4 > sizeof Item)	// flush: slot prefix is not repeated, the addresses follow on
++				{
++					for (unsigned m = 0; m < k && n + 1 < nListSize; m++) pList[n++] = Item[m];
++					k = 0;
++				}
++			}
++			for (unsigned m = 0; m < k && n + 1 < nListSize; m++) pList[n++] = Item[m];
++		}
++		pList[n] = '\0';
++	}
++
++	return nCount;
++}
++
+ unsigned CXHCIEndpoint::DropURBs (void)
+ {
+ 	m_SpinLock.Acquire ();

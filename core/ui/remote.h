@@ -290,6 +290,10 @@ bool remote_display_owned(int page);
 // -> voice_pi::OwnPages). The one signal for it in the engine; UP's map reads it (page_menu.cpp) to leave the pages only
 // the touchscreen has off the map and light only the keys that show something.
 bool remote_display_present();
+// 10b: the remote UI is one per voice slot (each box its own, remote.cpp). The touchscreen follows one of them: the slot
+// whose box opened a page or sent a display report (49) last, the base box's before any. Any core (one byte); off the
+// control core every remote_* reader and the FX settings' slot (core/pool/pool.cpp fx_slot) are this slot's.
+int remote_display_slot();
 int remote_selected_track(uint32_t* gen);
 // 0.5.0 (LFO FINAL): the track the LFO page shows the pair of: remote_selected_track, or 12 while the Rytm has the FX track
 // selected (a 0026 that sends 49 1 2 12: today's sends sound tracks only); *gen counts its changes

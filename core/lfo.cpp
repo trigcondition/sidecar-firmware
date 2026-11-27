@@ -74,13 +74,27 @@ UI_ROM_LFO const char kDivNames[kDivs][6] = {"1/32", "1/16T", "1/16", "1/8T", "1
 constexpr float kWrap = 2304.0f;   // 2^8 x 9 ticks: every synced cycle divides it
 
 // ---- state
-Settings g_set[kLfos];
 struct Run {
   float ph = 0, anchor = 0, a = 0, b = 0, w = 0;
   uint32_t rng = 1;
   bool retrig = false, fresh = true;
 };
-Run g_run[kLfos];
+// 3(c): each voice slot's LFOs (option A: nothing shared between the boxes): its settings, their runs, the file they
+// are of and its save state. The slot in hand's (S(): device::cur() on the control core, core/pool/pool.h prj_slot);
+// a voice's trig names its own slot's (slot_of_voice). The clock is the Sidecar's one MIDI clock input (the Rytm's).
+struct Sl {
+  Settings set[kLfos];
+  Run run[kLfos];
+  bool dirty = false;
+  uint32_t dirty_ms = 0;
+  char proj[24] = "";
+  int kit = -1;        // the kit the settings are of (0..127), -1 unknown
+  int rytm_kit = -1;   // the box's active kit as it last said (kit_changed)
+  bool locked = false; // 1042: the file save() writes had a line this build does not read: never written over
+};
+Sl g_sl[kVoiceSlots];
+CORE_COLD Sl& S() { return g_sl[prj_slot()]; }
+CORE_COLD Sl& S(int slot) { return g_sl[slot > 0 && slot < kVoiceSlots ? slot : 0]; }
 
 #if !CORE_MOD_LFO
 // CORE_MOD_LFO 0 (the rollback, removed in Phase 2): the targets' table of 0.4.0, the LFOs writing their targets
@@ -95,7 +109,7 @@ constexpr int kMaxT = 2 * kLfos;
 Tgt g_t[kMaxT];
 uint32_t g_last_us = 0;
 bool g_started = false;
-uint8_t g_vdirty = 0;
+uint32_t g_vdirty = 0;   // bit vi (the rollback path)
 uint32_t g_user_ms[kVoices];
 #endif
 
@@ -107,11 +121,16 @@ struct Clock {
   float tp = 0;               // the clock position now, in ticks mod kWrap
   bool start = false;         // a Start since the last tick (PLAY retrigs)
   uint32_t starts = 0, stops = 0, jumps = 0;   // FA / FB, FC, F2 since boot (clock_state: API 3's transport flags)
+  bool moved = false;         // 3(c): waves() moved tp at moved_us (once a tick, whatever calls it)
+  uint32_t moved_us = 0;
 };
-Clock g_clk;
+// 3(c) step 10: each voice slot's MIDI clock (option A: nothing shared between the boxes): its box's realtime bytes
+// (send_fx.cpp clock_in's listener, per box), its tempo, transport and position. The slot in hand's (K()); a voice's
+// reader names its own slot (clock_now(slot, ..)).
+Clock g_clk[kVoiceSlots];
+CORE_COLD Clock& K() { return g_clk[prj_slot()]; }
+CORE_COLD Clock& K(int slot) { return g_clk[slot > 0 && slot < kVoiceSlots ? slot : 0]; }
 
-bool g_dirty = false;
-uint32_t g_dirty_ms = 0;
 Stats g_stats;
 
 CORE_COLD float clampf(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
@@ -137,7 +156,7 @@ CORE_COLD uint32_t xorshift(uint32_t& s) {
 }
 CORE_COLD float rnd(uint32_t& s) { return (float)(xorshift(s) >> 8) * (2.0f / 16777216.0f) - 1.0f; }
 
-CORE_COLD bool is_voice(int t) { return t >= kTVoice && t < kTVoice + kVoices; }
+CORE_COLD bool is_voice(int t) { return t >= kTVoice && t < kTVoice + kBoxVoices; }   // the project's voices V1..V8
 CORE_COLD bool is_fx(int t) { return t == kTFx || t == kTFx + 1; }
 // MFX's params: LEV, the master's 4 slots' MIX, the 6 bus slots' (core/fx/master.h slot_index + 1 = core/mod's kMfx param)
 constexpr int kMfxMaster = 4, kMfxParams = 11;
@@ -171,7 +190,7 @@ CORE_COLD int rt_word(int, int) { return -1; }
 CORE_COLD int rt_param(int, int) { return -1; }
 #endif
 
-CORE_COLD void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
+CORE_COLD void changed() { S().dirty = true, S().dirty_ms = now_ms(); }
 
 #if !CORE_MOD_LFO
 CORE_COLD Tgt* find(int target, int param) {
@@ -181,15 +200,15 @@ CORE_COLD Tgt* find(int target, int param) {
 }
 
 CORE_COLD float current(int target, int param) {   // a new target's base: what plays now
-  if (is_voice(target)) return v[target - kTVoice].p[param & 15];
+  if (is_voice(target)) return v[device::voice_in(target - kTVoice)].p[param & 15];
   if (is_ins(target) || is_out(target)) return 0;   // an insert's / OUT's LFO is an offset (mod_offset), its base the knob
-  return fx::control.knob[target - kTFx][2 + (param & 3)];
+  return fx::cur().knob[target - kTFx][2 + (param & 3)];
 }
 #endif
 
 CORE_COLD void retrig(int i) {
-  Run& r = g_run[i];
-  if (g_set[i].sync) r.anchor = g_clk.tp;
+  Run& r = S().run[i];
+  if (S().set[i].sync) r.anchor = K().tp;
   else r.ph = 0;
   r.fresh = true;
 }
@@ -267,12 +286,9 @@ CORE_COLD bool design_from_hex(Settings& s, const char* h) {
   return true;
 }
 
-// The settings' file: "/.rytm/lfo/<project>/kNNN.txt" for kit NNN (1..128) of the project they are of (g_proj, g_kit),
+// The settings' file: "/.rytm/lfo/<project>/kNNN.txt" for kit NNN (1..128) of the project they are of (S().proj, S().kit),
 // "/.rytm/lfo/<project>.txt" (the project's own, from before 1026: every kit's default) while the Rytm has not named
 // its kit (kit < 0), with pool_file's safe name.
-char g_proj[24] = "";
-int g_kit = -1;        // the kit the settings are of (0..127), -1 unknown
-int g_rytm_kit = -1;   // the Rytm's active kit as it last said (kit_changed)
 CORE_COLD void name_of(const char* proj, char* fn, int cap, int kit) {
   char n[kKeyMax];
   project_key(proj, n, sizeof n);
@@ -280,12 +296,12 @@ CORE_COLD void name_of(const char* proj, char* fn, int cap, int kit) {
   else if (kit < 128) sniprintf(fn, cap, CORE_STR("/.rytm/lfo/%s/k%03d.txt"), n, kit + 1);
   else sniprintf(fn, cap, CORE_STR("/.rytm/lfo/%s"), n);   // kit 128: the project's folder
 }
-CORE_COLD void file_name(char* fn, int cap, int kit) { name_of(g_proj, fn, cap, kit); }
+CORE_COLD void file_name(char* fn, int cap, int kit) { name_of(S().proj, fn, cap, kit); }
 
 // one LFO as the file's line: NAME TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN; NAME the LFO's (lfo_name: "T3A",
 // "FXB" on the Pi from 0.5.0's 26 - an older build reads no such line, so it never writes over the file; the Mini's "N")
 CORE_COLD int to_line(int i, char* b, int cap) {
-  const Settings& s = g_set[i];
+  const Settings& s = S().set[i];
   char h[3 * kSteps + 1], nm[6];
   design_hex(s, h);
   int pw = is_rt(s.target) ? rt_word(s.target, s.param) : s.param;   // RT / RFX: the Rytm's word, not the list's index
@@ -317,7 +333,7 @@ CORE_COLD bool from_line(const char* b) {
   if (t < 0) return false;
   if (!target_ok(li, t)) {   // an LFO on a Rytm target: it loads OFF (the line is read, the file not locked; the next save drops it)
     if (!is_rt(t)) return false;
-    defaults(&g_set[li]);
+    defaults(&S().set[li]);
     log(CORE_STR("lfo: line %.4s: an LFO on the Rytm is not allowed, loaded OFF"), b);
     return true;
   }
@@ -343,7 +359,7 @@ CORE_COLD bool from_line(const char* b) {
   s.retrig = (uint8_t)f[4], s.depth = (int8_t)(f[5] < -64 ? -64 : f[5] > 63 ? 63 : f[5]), s.base = (uint8_t)(f[6] & 127);
   design_from_hex(s, h);
   sanitize(s);
-  g_set[li] = s;
+  S().set[li] = s;
   return true;
 }
 
@@ -354,9 +370,9 @@ CORE_COLD void restore(Tgt& e) {
   if (is_voice(e.target)) {
     int vi = e.target - kTVoice;
     v[vi].p[e.param & 15] = e.base;
-    g_vdirty |= (uint8_t)(1u << vi);
+    g_vdirty |= 1u << vi;
   } else if (is_fx(e.target)) {
-    fx::control.knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)e.base;
+    fx::cur().knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)e.base;
   }
 #if CORE_POLY
   else if (is_ins(e.target) && e.param >= 8) ins::eq_mod_offset(e.target - kTIns, (e.param - 8) & 3, 0);
@@ -371,7 +387,7 @@ CORE_COLD void restore(Tgt& e) {
 
 // the send FX's hooks into the LFOs (fx/send_fx.h), set before main
 static struct FxHooks {
-  FxHooks() { fx::knob_filter = fx_knob, fx::clock_listener = clock; }
+  FxHooks() { fx::knob_filter = fx_knob, fx::clock_listener = [](int box, uint8_t st, uint16_t spp) { clock(box, st, spp); }; }
 } g_fx_hooks;
 
 // ---------------------------------------------------------------------------------------------------- settings
@@ -402,7 +418,7 @@ CORE_COLD void preset(Settings* s, int which) {
   }
 }
 
-CORE_COLD const Settings& get(int i) { return g_set[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i]; }
+CORE_COLD const Settings& get(int i) { return S().set[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i]; }
 
 // 0.5.0 owner test (2026-11-13): an LFO on a Rytm param (PAN) made the whole Rytm slow - PLAY, the remote UI - so no
 // LFO, A or B, uses the Rytm link: the XY pad, the scenes and MIDI learn keep it (core/mod/rytm_param.h)
@@ -447,7 +463,7 @@ CORE_COLD bool link_full() {
 #if CORE_POLY
   if (!mod::rp_saturated()) return false;
   for (int i = 0; i < kLfos; ++i)
-    if (is_rt(g_set[i].target) && g_set[i].depth) return true;   // (the LFOs' warning: one of them on the link)
+    if (is_rt(S().set[i].target) && S().set[i].depth) return true;   // (the LFOs' warning: one of them on the link)
 #endif
   return false;
 }
@@ -456,7 +472,7 @@ CORE_COLD bool set(int i, const Settings& s) {
   if (i < 0 || i >= kLfos || !target_ok(i, s.target)) return false;
   Settings n = s;
   sanitize(n);
-  Settings& o = g_set[i];
+  Settings& o = S().set[i];
   bool sync_changed = o.sync != n.sync;
   if (memcmp(&o, &n, sizeof n) != 0) changed();
   o = n;
@@ -479,16 +495,16 @@ static CORE_COLD bool sidecar_on(int t, bool unknown_is_yes) {   // track t play
 }
 // A voice-shared pair (RS/CP, MT/HT, CH/OH, CY/CB) shows its voice under ONE track of the pair: the first that plays a
 // Sidecar machine (not yet known counts as one). A pair with no Sidecar track has no owner: its first track.
-static CORE_COLD int voice_owner(int v) {
+static CORE_COLD int voice_owner(int v) {   // v: the project's voice (the base box's); the tracks name engine voices
   for (int t = 0; t < kTrN; ++t)
-    if (ui::remote_track_voice(t) == v && sidecar_on(t, true)) return t;
+    if (ui::remote_track_voice(t) == device::voice_in(v) && sidecar_on(t, true)) return t;
   return -1;
 }
 static CORE_COLD int track_of_voice(int v) {   // the track a stored voice target is shown under (lfo.h)
   const int o = voice_owner(v);
   if (o >= 0) return o;
   for (int t = 0; t < kTrN; ++t)
-    if (ui::remote_track_voice(t) == v) return t;
+    if (ui::remote_track_voice(t) == device::voice_in(v)) return t;
   return 0;
 }
 #endif
@@ -541,7 +557,7 @@ static CORE_COLD uint32_t voice_params(int t, int keep) {
   const bool wave = ui::remote_voice_machine(t - kTVoice) == kWaveMachine;
   for (int p = 0; p < (wave ? 12 : 16); ++p) {   // (WAVETABLE's P13..P16 are TBL B, POS B, MIX, FTYPE: not targets)
     char b[8];
-    if (ui::voice_label(t - kTVoice, p, b, sizeof b)[0]) m |= 1u << p;
+    if (ui::voice_label(device::voice_in(t - kTVoice), p, b, sizeof b)[0]) m |= 1u << p;
   }
   if (!m) return 0xFFFF;
   return keep >= 0 && keep < 16 ? m | 1u << keep : m;
@@ -615,10 +631,10 @@ CORE_COLD int params_of(int t) {
 CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
   b[0] = 0;
   if (is_voice(t)) {
-    ui::voice_label(t - kTVoice, p & 15, b, cap);
+    ui::voice_label(device::voice_in(t - kTVoice), p & 15, b, cap);
     if (!b[0]) sniprintf(b, cap, "-");   // a P the voice's machine leaves unused
   } else if (is_fx(t)) {
-    const fx::KnobLabels* l = fx::labels(fx::control.knob[t - kTFx][0]);
+    const fx::KnobLabels* l = fx::labels(fx::cur().knob[t - kTFx][0]);
     if (l && l->label[p & 3] && *l->label[p & 3]) sniprintf(b, cap, "%s", l->label[p & 3]);
     else sniprintf(b, cap, "-");   // a knob the TYPE leaves unused
 #if CORE_POLY
@@ -628,7 +644,8 @@ CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
   } else if ((is_ins(t) || is_mchain(t)) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
     sniprintf(b, cap, CORE_STR("Q%.3s"), ins::eq_labels().label[(p - 8) & 3]);
   } else if (is_ins(t) || is_mchain(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
-    int ty = ins::control.type[is_ins(t) ? t - kTIns : ins::kM0 + t - kTMaster][(p >> 2) & 1];
+    const int ch = is_ins(t) ? t - kTIns : ins::kM0 + t - kTMaster;
+    int ty = ins::ctl(ch).type[ch][(p >> 2) & 1];   // (a voice chain: the slot in hand's)
     const char* l = ins::labels(ty).label[p & 3];
     if (ty && l[0]) sniprintf(b, cap, CORE_STR("%c%.4s"), 'A' + ((p >> 2) & 1), l);
     else sniprintf(b, cap, CORE_STR("%c-"), 'A' + ((p >> 2) & 1));   // the slot OFF (or a knob its TYPE leaves unused)
@@ -693,9 +710,9 @@ CORE_COLD float wave_at(const Settings& s, float ph, uint32_t seed) {
   return shaped(s, ph, r, false);
 }
 
-CORE_COLD float phase(int i) { return g_run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].ph; }
-CORE_COLD float out(int i) { return g_run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].w; }
-CORE_COLD bool active(int i) { return i >= 0 && i < kLfos && g_set[i].target && g_set[i].depth; }
+CORE_COLD float phase(int i) { return S().run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].ph; }
+CORE_COLD float out(int i) { return S().run[i < 0 ? 0 : i >= kLfos ? kLfos - 1 : i].w; }
+CORE_COLD bool active(int i) { return i >= 0 && i < kLfos && S().set[i].target && S().set[i].depth; }
 CORE_COLD const Stats& stats() {
 #if CORE_MOD_LFO
   const mod::Stats& m = mod::stats();   // the layer's counts under the LFOs' names (the "lfo" line unchanged)
@@ -707,22 +724,27 @@ CORE_COLD const Stats& stats() {
 
 // ---------------------------------------------------------------------------------------------------- the engine
 
-bool clock_now(float* ticks, float* tick_us) {
-  *ticks = g_clk.tp;
-  *tick_us = g_clk.tick_us;
+bool clock_now(float* ticks, float* tick_us) { return clock_now(0, ticks, tick_us); }
+bool clock_now(int slot, float* ticks, float* tick_us) {
+  const Clock& c = K(slot);
+  *ticks = c.tp;
+  *tick_us = c.tick_us;
 #if CORE_MOD_LFO
   return mod::stats().ticks != 0;
 #else
   return g_stats.ticks != 0;
 #endif
 }
-void clock_state(ClockState* o) {
-  const Clock& c = g_clk;
+void clock_state(ClockState* o) { clock_state(prj_slot(), o); }
+void clock_state(int slot, ClockState* o) {
+  const Clock& c = K(slot);
   *o = ClockState{c.run, c.ticking, c.pos, c.last_us, c.tick_us, c.tp, c.starts, c.stops, c.jumps};
 }
 
-CORE_COLD void clock(uint8_t status, uint16_t spp) {
-  Clock& c = g_clk;
+CORE_COLD void clock(uint8_t status, uint16_t spp) { clock(0, status, spp); }
+CORE_COLD void clock(int slot, uint8_t status, uint16_t spp) {
+  if (slot < 0 || slot >= kVoiceSlots) return;   // (a box with no voice slot of its own: the Teensy's one)
+  Clock& c = K(slot);
   uint32_t now = now_us();
   switch (status) {
     case 0xF8: {
@@ -737,8 +759,8 @@ CORE_COLD void clock(uint8_t status, uint16_t spp) {
     }
     case 0xFA:
       c.run = true, c.pos = -1, c.start = true, ++c.starts;
-      for (int i = 0; i < kLfos; ++i)
-        if (g_set[i].retrig == kOnPlay) g_run[i].retrig = true;
+      for (int i = 0; i < kLfos; ++i)   // (the box's own LFOs: its PLAY)
+        if (S(slot).set[i].retrig == kOnPlay) S(slot).run[i].retrig = true;
       break;
     case 0xFB: c.run = true, ++c.starts; break;
     case 0xFC: c.run = false, ++c.stops; break;
@@ -750,16 +772,17 @@ CORE_COLD void clock(uint8_t status, uint16_t spp) {
 CORE_COLD void midi_in(uint8_t st, uint8_t d1, uint8_t d2) {
   (void)d1;
   if ((st & 0x0F) > 12 || (st & 0xF0) != 0x90 || !d2) return;
+  Sl& l = S(device::rytm_home());   // 3(c): the Rytm's notes (its port), so its slot's LFOs, whatever slot is in hand
 #if CORE_POLY
-  if ((st & 0x0F) < sc::kTracks) sc::trig_track(st & 0x0F);   // 0.5.0: a SIDECHAIN source: the Rytm track's trig (its note out)
+  if ((st & 0x0F) < sc::kTracks) sc::trig_track(device::rytm_home(), st & 0x0F);   // (the Rytm's slot's chains)   // 0.5.0: a SIDECHAIN source: the Rytm track's trig (its note out)
 #endif
   for (int i = 0; i < kLfos; ++i)   // a trig on one of the Rytm's tracks (its note out): the FX targets' TRIG
-    if (g_set[i].retrig == kOnTrig && is_fx(g_set[i].target)) g_run[i].retrig = true;
+    if (l.set[i].retrig == kOnTrig && is_fx(l.set[i].target)) l.run[i].retrig = true;
 #if CORE_POLY
   for (int i = 0; i < kLfos; ++i)   // 0.5.0: an RT target's TRIG: its track's note (the track's channel 1..12), RFX any
-    if (g_set[i].retrig == kOnTrig && is_rt(g_set[i].target) &&
-        (g_set[i].target == kTRfx || g_set[i].target - kTRt == (st & 0x0F)))
-      g_run[i].retrig = true;
+    if (l.set[i].retrig == kOnTrig && is_rt(l.set[i].target) &&
+        (l.set[i].target == kTRfx || l.set[i].target - kTRt == (st & 0x0F)))
+      l.run[i].retrig = true;
 #endif
 }
 
@@ -780,11 +803,12 @@ CORE_COLD mod::Tid tid_of(int t, int p) {
 
 #if CORE_MOD_LFO
 CORE_COLD void voice_params(int vi, float* p, int np, bool trig) {
-  int t = kTVoice + (vi & 7);
+  int t = kTVoice + box_voice(vi);   // (3(c): the voice's own slot's LFOs, its number in its box)
   mod::voice_params(vi, p, np);   // the bases (core/mod)
+  Sl& l = S(slot_of_voice(vi));
   if (trig)
     for (int i = 0; i < kLfos; ++i)
-      if (g_set[i].retrig == kOnTrig && (g_set[i].target == t || is_fx(g_set[i].target))) g_run[i].retrig = true;
+      if (l.set[i].retrig == kOnTrig && (l.set[i].target == t || is_fx(l.set[i].target))) l.run[i].retrig = true;
 }
 CORE_COLD uint8_t fx_knob(int slot, int knob, uint8_t val) { return mod::fx_knob(slot, knob, val); }
 CORE_COLD float base_of(int vi, int k, float cur) { return mod::base_of(vi, k, cur); }
@@ -795,17 +819,21 @@ CORE_COLD void tick(uint32_t us) { mod::tick(us); }
 CORE_COLD void waves(uint32_t us, uint32_t dus) {
   float dt = (float)dus * 1e-6f;
   // the clock position: locked to the song position while the Rytm plays and ticks, else on at the last tempo
-  Clock& c = g_clk;
-  uint32_t since = us - c.last_us;
-  bool locked = c.run && c.ticking && since < 250000;
-  if (locked && c.pos < 0) c.tp = 0;
-  else if (locked) c.tp = (float)(c.pos % (int32_t)kWrap) + clampf((float)since / c.tick_us, 0.0f, 0.999f);
-  else c.tp = modp(c.tp + (float)dus / c.tick_us, kWrap);
-  if (c.start) c.start = false;
+  Clock& c = K();   // (the slot in hand's: mod::tick's pass of that slot)
+  if (!c.moved || c.moved_us != us) {   // (a second call with the same us: the clock moves once)
+    c.moved = true, c.moved_us = us;
+    uint32_t since = us - c.last_us;
+    bool locked = c.run && c.ticking && since < 250000;
+    if (locked && c.pos < 0) c.tp = 0;
+    else if (locked) c.tp = (float)(c.pos % (int32_t)kWrap) + clampf((float)since / c.tick_us, 0.0f, 0.999f);
+    else c.tp = modp(c.tp + (float)dus / c.tick_us, kWrap);
+    if (c.start) c.start = false;
+  }
 
+  Sl& l = S();   // the slot in hand's (mod::tick's pass of that slot)
   for (int i = 0; i < kLfos; ++i) {
-    Settings& s = g_set[i];
-    Run& r = g_run[i];
+    Settings& s = l.set[i];
+    Run& r = l.run[i];
     if (r.retrig) r.retrig = false, retrig(i);
     float ph;
     if (s.sync) {
@@ -838,7 +866,7 @@ CORE_COLD void voice_params(int vi, float* p, int np, bool trig) {
   }
   if (trig)
     for (int i = 0; i < kLfos; ++i)
-      if (g_set[i].retrig == kOnTrig && (g_set[i].target == t || is_fx(g_set[i].target))) g_run[i].retrig = true;
+      if (S().set[i].retrig == kOnTrig && (S().set[i].target == t || is_fx(S().set[i].target))) S().run[i].retrig = true;
 }
 
 CORE_COLD uint8_t fx_knob(int slot, int knob, uint8_t val) {
@@ -870,7 +898,7 @@ CORE_COLD void tick(uint32_t us) {
     float dt = (float)dus * 1e-6f;
     ++g_stats.ticks;
     // the clock position: locked to the song position while the Rytm plays and ticks, else on at the last tempo
-    Clock& c = g_clk;
+    Clock& c = K();
     uint32_t since = us - c.last_us;
     bool locked = c.run && c.ticking && since < 250000;
     if (locked && c.pos < 0) c.tp = 0;
@@ -880,8 +908,8 @@ CORE_COLD void tick(uint32_t us) {
 
     for (Tgt& e : g_t) e.off = 0, e.live_now = false;
     for (int i = 0; i < kLfos; ++i) {
-      Settings& s = g_set[i];
-      Run& r = g_run[i];
+      Settings& s = S().set[i];
+      Run& r = S().run[i];
       if (r.retrig) r.retrig = false, retrig(i);
       float ph;
       if (s.sync) {
@@ -926,7 +954,7 @@ CORE_COLD void tick(uint32_t us) {
         if (fabsf(val - e.applied) >= 1.0f / 256.0f) {
           v[vi].p[e.param & 15] = val;
           e.applied = val;
-          g_vdirty |= (uint8_t)(1u << vi);
+          g_vdirty |= 1u << vi;
           ++g_stats.voice_sets;
         }
 #if CORE_POLY
@@ -949,7 +977,7 @@ CORE_COLD void tick(uint32_t us) {
       } else {
         int iv = rnd0(clampf(e.base + e.off, 0.0f, 127.0f));
         if ((float)iv != e.applied) {
-          fx::control.knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)iv;
+          fx::cur().knob[e.target - kTFx][2 + (e.param & 3)] = (uint8_t)iv;
           e.applied = (float)iv;
           ++g_stats.fx_sets;
         }
@@ -965,7 +993,7 @@ CORE_COLD void tick(uint32_t us) {
       g_user_ms[vi] = ms;
       ++g_stats.user_calls;
     }
-    g_vdirty &= (uint8_t)~(1u << vi);
+    g_vdirty &= ~(1u << vi);
     voice_params_changed(vi);
   }
 }
@@ -975,23 +1003,22 @@ CORE_COLD void tick(uint32_t us) {
 
 // 1042 (data safety): the file save() writes (the kit's) had a line this build does not read, or is there but could not be
 // opened: never written over (before: the next edit rewrote it with defaults in place of those LFOs)
-bool g_locked = false;
 #if CORE_MSAMP
-CORE_COLD void rekey(const char* name) { sniprintf(g_proj, sizeof g_proj, "%s", name ? name : ""); }
+CORE_COLD void rekey(const char* name) { sniprintf(S().proj, sizeof S().proj, "%s", name ? name : ""); }
 CORE_COLD void want_files() {
   char fn[80];
-  for (int k = -1; k < 128; ++k) name_of(project, fn, sizeof fn, k), store::want(fn);
+  for (int k = -1; k < 128; ++k) name_of(prj().key, fn, sizeof fn, k), store::want(fn);
 }
 #endif
 
 CORE_COLD void load() {
-  g_locked = false;
-  for (Settings& s : g_set) defaults(&s);
-  for (Run& r : g_run) r = Run();
-  for (int i = 0; i < kLfos; ++i) g_run[i].rng = 0x9E3779B9u * (uint32_t)(i + 1);
-  g_dirty = false;
-  strcpy(g_proj, project);   // the settings are this project's and the Rytm's kit's from now on
-  g_kit = g_rytm_kit;
+  S().locked = false;
+  for (Settings& s : S().set) defaults(&s);
+  for (Run& r : S().run) r = Run();
+  for (int i = 0; i < kLfos; ++i) S().run[i].rng = 0x9E3779B9u * (uint32_t)(i + 1);
+  S().dirty = false;
+  strcpy(S().proj, prj().key);   // the settings are this project's and the Rytm's kit's from now on
+  S().kit = S().rytm_kit;
   char fn[80], b[96];
   int n = 0, bad = 0;
   auto take = [&](int k) {
@@ -1000,17 +1027,17 @@ CORE_COLD void load() {
     else ++bad;
   };
   auto done = [&](bool own) {
-    if (bad && own) g_locked = true;
+    if (bad && own) S().locked = true;
     log(CORE_STR("lfo: %d from %s%s"), n, fn, bad ? (own ? " (lines it does not read: the file is kept, not written)" : " (lines it does not read)") : "");
   };
-  file_name(fn, sizeof fn, g_kit);
+  file_name(fn, sizeof fn, S().kit);
 #if CORE_MSAMP
   {   // 2026-10-26: the RAM store (a project load fills it before this runs): no card call on this core
     const uint8_t* d;
     uint32_t len, at = 0;
     bool own = true;   // the file read is the one save() writes
     store::State st = store::get(fn, &d, &len);
-    if (st == store::kAbsent && g_kit >= 0) {   // a kit without its own file: the project's (from before 1026)
+    if (st == store::kAbsent && S().kit >= 0) {   // a kit without its own file: the project's (from before 1026)
       file_name(fn, sizeof fn, -1), own = false;
       st = store::get(fn, &d, &len);
     }
@@ -1018,7 +1045,7 @@ CORE_COLD void load() {
     if (st != store::kPresent) {   // there but unreadable (kLocked), or never filled (kUnknown): never taken for absent
       // (as the card path: only the kit's own file is never written over; the project's one, the default, is not the
       // file save() writes, so a kit without its own starts from the defaults and may save them)
-      if (own) g_locked = true;
+      if (own) S().locked = true;
       log(CORE_STR("lfo: %s %s: the defaults%s"), fn, st == store::kLocked ? "cannot be read" : "not in the store",
           own ? ", nothing written" : "");
       return;
@@ -1033,8 +1060,8 @@ CORE_COLD void load() {
   bool own = true;   // the file read is the one save() writes
   bool opened = f.open(fn, kRead);
   if (!opened) {   // a kit without its own file: the project's (from before 1026) is its default
-    if (cards.sd().exists(fn)) g_locked = true;
-    if (g_kit < 0) return;
+    if (cards.sd().exists(fn)) S().locked = true;
+    if (S().kit < 0) return;
     file_name(fn, sizeof fn, -1);
     fmt::post_wait(fn), fmt::recover(fn);
     own = false;
@@ -1047,8 +1074,16 @@ CORE_COLD void load() {
 #endif
 }
 
-CORE_COLD void save_due() { if (g_dirty) g_dirty_ms = now_ms() - 1000; }
-CORE_COLD bool dirty() { return g_dirty; }
+CORE_COLD void save_due() {   // (every slot's: a restart or a power-off is coming)
+  for (Sl& l : g_sl)
+    if (l.dirty) l.dirty_ms = now_ms() - 1000;
+}
+CORE_COLD bool dirty() { return S().dirty; }
+CORE_COLD bool dirty_any() {
+  for (const Sl& l : g_sl)
+    if (l.dirty) return true;
+  return false;
+}
 
 // 0.3.0 power-cut safety: posted to the card core as one atomic write (fmt.h post_begin / post_end), so a cut leaves
 // the file whole - old or new - and core 3 does no card I/O for it (the mkdirs went too: write_atomic makes the
@@ -1061,9 +1096,9 @@ CORE_COLD bool dirty() { return g_dirty; }
 static char g_text[fmt::kPostMax];   // the text built (the post slot may be busy: post_queue copies it)
 #endif
 static CORE_COLD bool save_text(bool queue) {
-  if (!g_dirty || now_ms() - g_dirty_ms < 1000) return false;
-  if (g_locked) {   // 1042
-    g_dirty = false;
+  if (!S().dirty || now_ms() - S().dirty_ms < 1000) return false;
+  if (S().locked) {   // 1042
+    S().dirty = false;
     log(CORE_STR("lfo: not saved: its file has lines this build does not read (kept as it is)"));
     return true;
   }
@@ -1074,7 +1109,7 @@ static CORE_COLD bool save_text(bool queue) {
   if (!t) return false;   // another settings write is in flight: at a later pass (still dirty)
 #endif
   char fn[80], b[96];
-  file_name(fn, sizeof fn, g_kit);
+  file_name(fn, sizeof fn, S().kit);
   static UI_ROM_LFO const char kHead[] = "# Sidecar LFOs: NAME TARGET PARAM WAVE RATE SYNC RETRIG DEPTH BASE DESIGN\n";
   uint32_t n = sizeof kHead - 1;
   memcpy(t, kHead, n);
@@ -1082,7 +1117,7 @@ static CORE_COLD bool save_text(bool queue) {
     int k = to_line(i, b, sizeof b);
     if (k <= 0 || n + (uint32_t)k > fmt::kPostMax) {   // (cannot happen at kLfos lines: never a half file)
       log(CORE_STR("lfo: %s not written: its text does not fit (kept as it is)"), fn);
-      g_dirty = false;
+      S().dirty = false;
       return true;
     }
     memcpy(t + n, b, (size_t)k), n += (uint32_t)k;
@@ -1090,7 +1125,7 @@ static CORE_COLD bool save_text(bool queue) {
 #if CORE_MSAMP
   // the store is the project's now named (filled, or filling: the fill keeps this newer text); an old project's file
   // saved while the next one's store fills is not put in it
-  if (!strcmp(g_proj, project)) store::put(fn, (const uint8_t*)t, n);
+  if (!strcmp(S().proj, prj().key)) store::put(fn, (const uint8_t*)t, n);
   // (a held slot, phase 3: queued too, so the edit is on its way rather than dirty for the whole hold)
   if (queue || fmt::post_stalled()) {
     if (!fmt::post_queue(fn, t, n)) log(CORE_STR("lfo: %s not written to the card (refused or out of memory: in RAM only)"), fn);
@@ -1103,7 +1138,7 @@ static CORE_COLD bool save_text(bool queue) {
 #else
   if (!fmt::post_end(fn, n)) return false;   // not posted: still dirty, again at a later pass
 #endif
-  g_dirty = false;
+  S().dirty = false;
   return true;
 }
 CORE_COLD bool save() { return save_text(false); }
@@ -1119,19 +1154,19 @@ CORE_COLD void project_changed() {
     if (g_vdirty >> vi & 1) voice_params_changed(vi);
   g_vdirty = 0;
 #endif
-  // the old one's unsaved edits first, into its own file - never deferred past the load that clears g_dirty
+  // the old one's unsaved edits first, into its own file - never deferred past the load that clears S().dirty
 #if CORE_MSAMP
   // 2026-10-26: its write posted or queued (no wait on the card), its text into the store when the store is its
-  if (g_dirty) g_dirty_ms = now_ms() - 1000, save_text(true);
+  if (S().dirty) S().dirty_ms = now_ms() - 1000, save_text(true);
 #else
-  if (g_dirty) fmt::post_wait(), g_dirty_ms = now_ms() - 1000, save();   // post_wait frees the slot for this save
+  if (S().dirty) fmt::post_wait(), S().dirty_ms = now_ms() - 1000, save();   // post_wait frees the slot for this save
 #endif
   load();
 }
 
 CORE_COLD void kit_changed(int kit) {
   if (kit < 0 || kit > 127) return;
-  g_rytm_kit = kit;
+  S().rytm_kit = kit;
 #if CORE_MSAMP
   // a project load's store still filling: its load (project_fill_step) takes this kit. Likewise while a rename moves
   // the old key's files (final review): a save now would queue a write under the old name that lands after the
@@ -1139,9 +1174,9 @@ CORE_COLD void kit_changed(int kit) {
   // switch that follows the move loads this kit, its project_changed saving the old kit's edits under the new name
   if (!store::ready() || rename::moving()) return;
 #endif
-  if (kit != g_kit) project_changed();   // the same switch: the old kit's edits saved, the new kit's LFOs loaded
+  if (kit != S().kit) project_changed();   // the same switch: the old kit's edits saved, the new kit's LFOs loaded
 }
-CORE_COLD int kit() { return g_kit; }
+CORE_COLD int kit() { return S().kit; }
 
 // ---------------------------------------------------------------------------------------------------- console
 
@@ -1150,7 +1185,7 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   if (!p[3]) {
     int n = 0;
     for (int i = 0; i < kLfos; ++i) {
-      const Settings& s = g_set[i];
+      const Settings& s = S().set[i];
       char pn[8], rn[8], nm[6];
       param_name(s.target, s.param, pn, sizeof pn);
       rate_name(s, rn, sizeof rn);
@@ -1179,7 +1214,7 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   }
   ++key;
   const char* val = strchr(key, ':');
-  Settings s = g_set[i];
+  Settings s = S().set[i];
   bool ok = true;
   if (!strncmp(key, "off", 3)) {
     s.target = 0;
@@ -1228,7 +1263,7 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
     return true;
   }
   set(i, s);
-  const Settings& n = g_set[i];
+  const Settings& n = S().set[i];
   char pn[8], rn[8], nm[6];
   param_name(n.target, n.param, pn, sizeof pn);
   rate_name(n, rn, sizeof rn);
@@ -1238,16 +1273,18 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   return true;
 }
 
-CORE_COLD int json(char* o, int cap) {
+CORE_COLD int json(char* o, int cap) { return json(o, cap, prj_slot()); }
+CORE_COLD int json(char* o, int cap, int slot) {
+  const Sl& l = S(slot);
 #if RYTM_SENDFX_LARGE
   const int trk = ui::remote_lfo_track(nullptr);   // the Rytm's selected track (12 FX), -1 none named yet
 #else
   const int trk = -1;
 #endif
   int n = sniprintf(o, cap, CORE_STR("\"lfo\":{\"n\":%d,\"pt\":%d,\"kit\":%d,\"full\":%d,\"trk\":%d,\"l\":["), kLfos,
-                    kPerTrack ? 1 : 0, g_kit < 0 ? 0 : g_kit + 1, link_full() ? 1 : 0, trk);
+                    kPerTrack ? 1 : 0, l.kit < 0 ? 0 : l.kit + 1, link_full() ? 1 : 0, trk);
   for (int i = 0; i < kLfos && n < cap; ++i) {
-    const Settings& s = g_set[i];
+    const Settings& s = l.set[i];
     char pn[8], rn[8], h[3 * kSteps + 1];
     param_name(s.target, s.param, pn, sizeof pn);
     rate_name(s, rn, sizeof rn);
@@ -1256,7 +1293,7 @@ CORE_COLD int json(char* o, int cap) {
                       CORE_STR("%s{\"tgt\":\"%s\",\"par\":%d,\"pn\":\"%s\",\"np\":%d,\"wav\":%d,\"rate\":%d,\"rn\":\"%s\","
                                "\"sync\":%d,\"trig\":%d,\"dep\":%d,\"base\":%d,\"des\":\"%s\",\"ph\":%d}"),
                       i ? "," : "", target_name(s.target), s.param, pn, params_of(s.target), s.wave, s.rate, rn, s.sync,
-                      s.retrig, s.depth, s.base, h, (int)(g_run[i].ph * 1000));
+                      s.retrig, s.depth, s.base, h, (int)(l.run[i].ph * 1000));
     if (k < 0 || k >= cap - n) return cap;
     n += k;
 #if CORE_POLY   // (the Pi: the Mini's console line has no room for them)
@@ -1276,10 +1313,12 @@ CORE_COLD int json(char* o, int cap) {
 }
 
 CORE_COLD void reset() {
-  for (Settings& s : g_set) defaults(&s);
-  for (int i = 0; i < kLfos; ++i) g_run[i] = Run(), g_run[i].rng = 0x9E3779B9u * (uint32_t)(i + 1);
-  g_clk = Clock();
-  g_dirty = false, g_kit = g_rytm_kit = -1;
+  for (Sl& l : g_sl) {   // (every slot's)
+    for (Settings& s : l.set) defaults(&s);
+    for (int i = 0; i < kLfos; ++i) l.run[i] = Run(), l.run[i].rng = 0x9E3779B9u * (uint32_t)(i + 1);
+    l.dirty = false, l.kit = l.rytm_kit = -1;
+  }
+  for (Clock& c : g_clk) c = Clock();
   g_stats = Stats();
 #if CORE_MOD_LFO
   mod::reset();   // the targets, the tick's clock, the voice flush, the counts: the layer's

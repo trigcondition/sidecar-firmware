@@ -107,7 +107,7 @@ static void test_runner() {
   CHECK(v.level == j.level && v.voices == j.voices && v.ahead_ms == j.ahead_ms && v.level >= 1);
   CHECK(command("sdtest", false, o, sizeof o) && strstr(o, v.text));
   // the result on the card, read back at the next boot
-  FILE* fp = fopen((g_dir + "/.rytm/sdtest.txt").c_str(), "r");
+  FILE* fp = fopen((g_dir + "/.sidecar/sdtest.txt").c_str(), "r");
   CHECK(fp);
   char t[800] = {0};
   fread(t, 1, sizeof t - 1, fp);

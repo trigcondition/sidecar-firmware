@@ -1,0 +1,191 @@
+diff -ruN a/include/circle/usb/usbmidihost.h b/include/circle/usb/usbmidihost.h
+--- a/include/circle/usb/usbmidihost.h
++++ b/include/circle/usb/usbmidihost.h
+@@ -46,8 +46,9 @@ public:
+ 
+ private:
+ 	boolean StartRequest (void);
++	void StartRequests (void);		// circle-midi-rxqueue.patch: up to RXDepth IN requests in flight
+ 
+-	void CompletionRoutine (CUSBRequest *pURB);
++	void CompletionRoutine (CUSBRequest *pURB, unsigned nBuffer);	// circle-midi-rxqueue.patch: nBuffer
+ 	static void CompletionStub (CUSBRequest *pURB, void *pParam, void *pContext);
+ 	static void TxCompletionStub (CUSBRequest *pURB, void *pParam, void *pContext);
+ 
+@@ -64,6 +65,15 @@ private:
+ 	static const unsigned RXBufferCount = 2;
+ 	u8 *m_pPacketBuffer[RXBufferCount];
+ 	unsigned m_nNextBuffer;
++	// circle-midi-rxqueue.patch: on the xHCI (a Pi 4 and later) both buffers are in flight, so the endpoint always has a
++	// request while a completion is handled; and an empty completion (a zero-length packet: the xHCI does not complete
++	// on NAK) asks again at once, not 10 ms later. A device that kept sending meanwhile (a Rytm's RPC reply, ~1000 event
++	// packets in 10 ms) overran its own transmit buffer (T464). The DWHCI keeps one request and the 10 ms pause.
++#if RASPPI >= 4
++	static const unsigned RXDepth = RXBufferCount;
++#else
++	static const unsigned RXDepth = 1;
++#endif
+ 
+ 	TKernelTimerHandle m_hTimer;
+ 
+@@ -74,7 +84,7 @@ private:
+ 
+ 	// circle-usb-urb-free.patch: the URBs in flight, freed by the destructor. A function is deleted by ~CUSBDevice, after
+ 	// ~CXHCIUSBDevice has disabled and freed the slot, so the controller completes neither of them any more.
+-	CUSBRequest * volatile m_pRxURB = 0;
++	CUSBRequest * volatile m_pRxURB[RXBufferCount] = {};	// circle-midi-rxqueue.patch: per buffer
+ 	CUSBRequest * volatile m_pTxURB = 0;
+ };
+ 
+diff -ruN a/lib/usb/usbmidihost.cpp b/lib/usb/usbmidihost.cpp
+--- a/lib/usb/usbmidihost.cpp
++++ b/lib/usb/usbmidihost.cpp
+@@ -88,8 +88,11 @@ CUSBMIDIHostDevice::~CUSBMIDIHostDevice (void)
+ 	delete m_pEndpointOut;
+ 	m_pEndpointOut = 0;
+ 
+-	delete m_pRxURB;			// circle-usb-urb-free.patch: the URBs left in flight (no completion comes any more)
+-	m_pRxURB = 0;
++	for (unsigned i = 0; i < RXBufferCount; i++)	// circle-usb-urb-free.patch: the URBs left in flight (no completion comes any more)
++	{
++		delete m_pRxURB[i];
++		m_pRxURB[i] = 0;
++	}
+ 	delete m_pTxURB;
+ 	m_pTxURB = 0;
+ 
+@@ -205,7 +208,13 @@ boolean CUSBMIDIHostDevice::Configure (void)
+ 		m_pInterface->RegisterOutHaltedHandler (OutHaltedHandler);	// circle-midi-reset2
+ 	}
+ 
+-	return StartRequest ();
++	if (!StartRequest ())
++	{
++		return FALSE;
++	}
++	StartRequests ();			// circle-midi-rxqueue.patch: the others (xHCI)
++
++	return TRUE;
+ }
+ 
+ boolean CUSBMIDIHostDevice::SendEventsHandler (const u8 *pData, unsigned nLength, void *pParam)
+@@ -338,16 +347,25 @@ void CUSBMIDIHostDevice::TxCompletionStub (CUSBRequest *pURB, void *pParam, void
+ boolean CUSBMIDIHostDevice::StartRequest (void)
+ {
+ 	assert (m_pEndpointIn != 0);
+-	assert (m_nNextBuffer < RXBufferCount);
+-	assert (m_pPacketBuffer[m_nNextBuffer] != 0);
+-
+ 	assert (m_usBufferSize > 0);
+-	u8 *pPacketBuffer = m_pPacketBuffer[m_nNextBuffer];
+-	m_nNextBuffer = (m_nNextBuffer + 1) % RXBufferCount;
++
++	// circle-midi-rxqueue.patch: a buffer with no request in flight (the requests complete in order, but a failed one
++	// may leave any of them free)
++	unsigned nBuffer = 0;
++	while (nBuffer < RXDepth && m_pRxURB[nBuffer] != 0)
++	{
++		nBuffer++;
++	}
++	if (nBuffer >= RXDepth)
++	{
++		return TRUE;			// all in flight already
++	}
++	assert (m_pPacketBuffer[nBuffer] != 0);
++	u8 *pPacketBuffer = m_pPacketBuffer[nBuffer];
+ 
+ 	CUSBRequest *pURB = new CUSBRequest (m_pEndpointIn, pPacketBuffer, m_usBufferSize);
+ 	assert (pURB != 0);
+-	pURB->SetCompletionRoutine (CompletionStub, 0, this);
++	pURB->SetCompletionRoutine (CompletionStub, (void *) (uintptr) nBuffer, this);
+ 
+ #if defined (USB_MIDI_FIQ_COMPLETION) && defined (USE_USB_FIQ)
+ 	pURB->SetCompleteImmediately ();
+@@ -358,10 +376,10 @@ boolean CUSBMIDIHostDevice::StartRequest (void)
+ 		pURB->SetCompleteOnNAK (); // do not retry if request cannot be served immediately
+ 	}
+ 
+-	m_pRxURB = pURB;
++	m_pRxURB[nBuffer] = pURB;
+ 	if (!GetHost ()->SubmitAsyncRequest (pURB))
+ 	{
+-		m_pRxURB = 0;			// circle-usb-urb-free.patch: was leaked
++		m_pRxURB[nBuffer] = 0;		// circle-usb-urb-free.patch: was leaked
+ 		delete pURB;
+ 
+ 		return FALSE;
+@@ -370,12 +388,27 @@ boolean CUSBMIDIHostDevice::StartRequest (void)
+ 	return TRUE;
+ }
+ 
+-void CUSBMIDIHostDevice::CompletionRoutine (CUSBRequest *pURB)
++// circle-midi-rxqueue.patch: every buffer with a request (RXDepth: 1 on the DWHCI, so nothing more there)
++void CUSBMIDIHostDevice::StartRequests (void)
++{
++	for (unsigned i = 1; i < RXDepth; i++)
++	{
++		if (!StartRequest ())
++		{
++			return;
++		}
++	}
++}
++
++void CUSBMIDIHostDevice::CompletionRoutine (CUSBRequest *pURB, unsigned nBuffer)
+ {
+ 	assert (pURB != 0);
+ 	assert (m_pInterface != 0);
+ 
+-	m_pRxURB = 0;				// circle-usb-urb-free.patch
++	if (nBuffer < RXBufferCount && m_pRxURB[nBuffer] == pURB)
++	{
++		m_pRxURB[nBuffer] = 0;		// circle-usb-urb-free.patch
++	}
+ 
+ 	boolean bRestart = FALSE;
+ 	u8 *pPacketBuffer = static_cast<u8 *> (pURB->GetBuffer ());
+@@ -394,6 +427,9 @@ void CUSBMIDIHostDevice::CompletionRoutine (CUSBRequest *pURB)
+ 		}
+ 
+ 		bRestart = m_pInterface->CallPacketHandler (pPacketBuffer, nResultLength);
++#if RASPPI >= 4
++		bRestart = TRUE;		// circle-midi-rxqueue.patch: an empty completion is a zero-length packet, not a NAK
++#endif
+ 	}
+ 	else if (   m_pInterface->GetAllSoundOffOnUSBError ()
+ 		 && !pURB->GetStatus ()
+@@ -411,11 +447,14 @@ void CUSBMIDIHostDevice::CompletionRoutine (CUSBRequest *pURB)
+ 	if (   bRestart
+ 	    || (CKernelOptions::Get ()->GetUSBBoost () & USB_MIDI_BOOST_NO_DELAY_ON_IDLE))
+ 	{
+-		StartRequest ();
++		if (m_hTimer == 0)		// circle-midi-rxqueue.patch: a pause under way refills them all when it ends
++		{
++			StartRequest ();
++			StartRequests ();	// (one lost to an earlier failure comes back)
++		}
+ 	}
+-	else
++	else if (m_hTimer == 0)			// circle-midi-rxqueue.patch: one pause for all the requests in flight
+ 	{
+-		assert (m_hTimer == 0);
+ 		m_hTimer = CTimer::Get ()->StartKernelTimer (MSEC2HZ (10), TimerStub, 0, this);
+ 		assert (m_hTimer != 0);
+ 	}
+@@ -426,7 +465,7 @@ void CUSBMIDIHostDevice::CompletionStub (CUSBRequest *pURB, void *pParam, void *
+ 	CUSBMIDIHostDevice *pThis = (CUSBMIDIHostDevice *) pContext;
+ 	assert (pThis != 0);
+ 
+-	pThis->CompletionRoutine (pURB);
++	pThis->CompletionRoutine (pURB, (unsigned) (uintptr) pParam);	// circle-midi-rxqueue.patch: the buffer
+ }
+ 
+ void CUSBMIDIHostDevice::TimerHandler (TKernelTimerHandle hTimer)
+@@ -435,6 +474,7 @@ void CUSBMIDIHostDevice::TimerHandler (TKernelTimerHandle hTimer)
+ 	m_hTimer = 0;
+ 
+ 	StartRequest ();
++	StartRequests ();			// circle-midi-rxqueue.patch
+ }
+ 
+ void CUSBMIDIHostDevice::TimerStub (TKernelTimerHandle hTimer, void *pParam, void *pContext)

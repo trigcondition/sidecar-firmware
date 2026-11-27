@@ -254,7 +254,7 @@ int main() {
     memset((void*)&fx::control, 0, sizeof fx::control);
     fx::control.knob[0][0] = fx::kTape, fx::control.knob[0][2] = 25, fx::control.knob[0][3] = 50;   // SPACE: TIME 25, RPT 50
     ins::set_type(kV, 0, ins::kAmp), ins::set_param(kV, 0, 0, amp::knob_for_model(0));
-    for (int i = 0; i < 400; ++i) amp::step(), amp::service(kV);
+    for (int i = 0; i < 400; ++i) amp::step(), amp::service(0, kV);
     ins::set_send(kV, 0, 127);
     static float stems[kBlock][fx::kStems];
     std::vector<float> fxo;
@@ -269,12 +269,15 @@ int main() {
       amp::step();
       run(1, pluck);
       float vs[kBlock][ins::kBuses];
-      ins::voice_sends(ring, kBlock, vs);
+      int16_t box[kBlock][kBoxVoices];   // one box's columns (the output stage's), slot 0's
+      for (int s = 0; s < kBlock; ++s)
+        for (int k = 0; k < kBoxVoices; ++k) box[s][k] = ring[s][k];
+      ins::voice_sends(box, kBlock, vs);
       float o[kBlock][2], post[kBlock][2];
       sfx->Process(stems, kBlock, o, fx::control, post, nullptr, vs);
       for (int s = 0; s < kBlock; ++s) fxo.push_back(o[s][0]);
     }
-    CHECK(amp::status(kV, 0) == amp::kPlaying);
+    CHECK(amp::status(0, kV, 0) == amp::kPlaying);
     dry_on = rms(outl, 4800, 48000), dry_off = rms(outl, 60000, 96000);
     double fx_on = rms(fxo, 4800, 48000), fx_tail = rms(fxo, 50000, 72000);
     printf("AMP + SPACE: voice rms %.4f while the input plays, %.6f after; SPACE return %.4f, its tail %.4f\n", dry_on,
@@ -330,7 +333,7 @@ int main() {
     // the stereo pair through the AMP: (L + R) / 2 into the capture, on both sides (insert.h's mono AMP)
     knobs({120});
     ins::set_type(kV, 0, ins::kAmp), ins::set_param(kV, 0, 0, amp::knob_for_model(0));
-    for (int i = 0; i < 400; ++i) amp::step(), amp::service(kV);
+    for (int i = 0; i < 400; ++i) amp::step(), amp::service(0, kV);
     outl.clear(), outr.clear();
     run(800, two);
     double dlr = 0;

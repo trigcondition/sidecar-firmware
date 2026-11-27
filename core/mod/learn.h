@@ -42,6 +42,7 @@ bool command(const char* p, char* out, int cap);
 // "R <port> <ch 1..16> <cc> <what> [depth]", what fader / a / b / a target name. A line this build does not read locks
 // the file (read what can be read, never written: the 1042 rule). A QPERF FADER change makes it dirty.
 void load();                         // boot (the card: a box setting, as keys.txt)
+void take_text(const char* b, int n);   // 3(c) step 8: a read learn.txt into the slot in hand's routes (another slot's at its attach)
 bool save();                         // idle_save: true if it wrote
 bool dirty();
 bool locked();

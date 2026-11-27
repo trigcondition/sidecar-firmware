@@ -1,5 +1,5 @@
 // pi/engine/wifi_conf.h - the Wi-Fi settings' portable part (wifi.cpp on the Pi; pi/engine/tests/test_wifi_conf.cpp
-// on the Mac): /.rytm/wifi.txt's format, the join checks, the atomic save with the previous file kept as
+// on the Mac): /.sidecar/wifi.txt's format, the join checks, the atomic save with the previous file kept as
 // wifi.txt.prev, the join trial's marker (wifi.try), the same-origin check of the page's join/forget requests, the
 // SSID redaction of log lines, and the scan list. No Circle, no allocation, no printf.
 //

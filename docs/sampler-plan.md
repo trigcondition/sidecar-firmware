@@ -188,7 +188,7 @@ rebuilds it only when the card changed:
   format (from the header), first cluster/sector - so a trig opens a sample
   without walking its path - and an ID.
 - **Stored on the card** in a hidden folder (e.g. `/Samples/.rytm/index.bin`
-  and `/Samples/.rytm/env` holding the listing hash and the index version).
+  and `/Samples/.sidecar/env` holding the listing hash and the index version).
   Writing to the card is the user's choice; it is the only write.
 - **At boot**: raw walk (< 1 s) -> hash; same as `env` -> load the index; else
   rebuild it (one full scan with headers, tens of seconds, once) and write it.
@@ -200,7 +200,7 @@ rebuilds it only when the card changed:
 
 On the user's card (FAT32, 32 GB, 10.1 GB in /Samples): first boot builds the
 index in 120 s (449 folders, 15580 usable .wav, 15 skipped - formats other than
-PCM 16/24/32-bit), writing /.rytm/folders.bin, files.bin and env; every later
+PCM 16/24/32-bit), writing /.sidecar/folders.bin, files.bin and env; every later
 boot: listing hash 0.69 s, "unchanged, loaded". Browsing from the index over
 serial (the 09/0B/0C/0A messages, via the bridge's new 'X' relay to the Rytm):
 each answer within a second; subfolders and files in name order (worked out per

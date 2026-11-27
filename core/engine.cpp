@@ -2,6 +2,7 @@
 #include "engine.h"
 
 #include "device/device.h"
+#include "device/sidecar_dir.h"
 #include "fmt/fmt.h"
 #include "fx/send_fx.h"
 #include "fx/insert.h"
@@ -36,6 +37,7 @@ CORE_COLD bool engine_begin() {
   {   // an import cut by a power loss: finished or undone before anything reads the card (core/bundle/bundle.h)
     Fs fs;
     if (fs.begin()) {
+      sidecar_dir::migrate();   // the Pi's own files out of /.rytm into /.sidecar, once (core/device/sidecar_dir.h)
       device::boot();   // first: every read below is of this box's state folder (core/device/device.h)
       bundle::recover();
       fmt::sweep_boot();   // 2026-10-26: every atomic write's .prev / .tmp, for the readers that never recover()
@@ -44,6 +46,7 @@ CORE_COLD bool engine_begin() {
 #endif
   card_ok = cards.begin(log, shared, sizeof shared[0] * kVoices);   // (a pointer on CORE_HEAP_BUFFERS)
   sample_ram_init();
+  junolib.selector(prj_slot), dxlib.selector(prj_slot);   // their project lists: the slot in hand's (core/pool/pool.h)
   if (card_ok) junolib.begin(&cards.sd(), log);
   if (card_ok) dxlib.begin(&cards.sd(), log);
 #if CORE_MSAMP
@@ -56,11 +59,11 @@ CORE_COLD bool engine_begin() {
   if (card_ok) {
     // the project named now, not "" until the fill ends: an edit before it is saved into this project's files (and
     // put into its store, which the fill keeps)
-    lfo::rekey(project);
+    lfo::rekey(prj().key);
 #if CORE_POLY
-    ins::rekey(project);
-    scene::rekey(project);
-    xypad::rekey(project);
+    ins::rekey(prj().key);
+    scene::rekey(prj().key);
+    xypad::rekey(prj().key);
 #endif
     project_fill_begin();
   }
@@ -121,7 +124,11 @@ CORE_COLD bool idle_prepare() {
   TV_("streams", streams_step());
   TV_("lists", project_lists_step());
   TV_("closes", pool_closes_step());
-  TV_("fxslots", sendfx_step());
+  for (int k = 0; k < kVoiceSlots; ++k) {   // each box's FX names and BASE / WIDTH to its own Rytm, whichever slot it holds
+    if (!device::live(k)) continue;
+    device::Scope in(device::g_links[k]);
+    TV_("fxslots", sendfx_step());
+  }
 #if CORE_MSAMP
   TV_("presets", presets::step());
 #endif
@@ -130,6 +137,9 @@ CORE_COLD bool idle_prepare() {
 
 static volatile bool g_flush = false;   // idle_flush: a power-off waits for the saves
 CORE_COLD void idle_flush(bool on) { g_flush = on; }
+static bool g_nosave = false;   // loadtest=on (pi cores.cpp): no card writes of edits from here on
+CORE_COLD void idle_nosave(bool on) { g_nosave = on; }
+CORE_COLD bool idle_nosave() { return g_nosave; }
 
 CORE_COLD bool idle_save() {
 #if CORE_MSAMP
@@ -143,37 +153,69 @@ CORE_COLD bool idle_save() {
   // a project load's RAM store fill (pool.h): one step; nothing below reads the store (the saves after it are of the
   // project still loaded, and post_step lands the writes a fill waits for)
   if (T_("fill", project_fill_step())) return true;
-  if (T_("kits", kits::tick())) return true;   // the Rytm's SAVE / RELOAD KIT: the per-kit files' saved copies (core/bundle/kits.h)
+  for (int k = 0; k < kVoiceSlots; ++k) {   // each box's SAVE / RELOAD KIT: its per-kit files' saved copies (core/bundle/kits.h)
+    device::Scope in(device::g_links[k]);
+    if (T_("kits", kits::tick())) return true;
+  }
 #endif
+  if (g_nosave) {   // the load test: a box that attaches still loads its project; nothing is saved (the edits are the test's)
+    // CPU admission's shed and regrant first: device::step below is never reached here, and an attach step can stay due
+    // (LT7 2026-11-23: at 1200 MHz core 3 read 82 % with the master AMP pair still playing, nothing shed)
+    TV_("cpu", device::cpu_step());
+    for (int k = 0; k < kVoiceSlots; ++k)
+      if (T_("attach", project_attach_step(k))) return true;
+    return false;
+  }
   // 0.3.0 power-cut safety: the posted settings write first (fmt.h), so one writer owns the shared buffer at a time.
   // A write that only waits does not stop the rest: post_begin is null while the slot is busy, so no saver below can touch
   // its buffer, the sequencer's loads, the SONG journal and the queued saves need no card core of their own here, and
   // true from here would keep idle_stream out for as long as the write waits (a burst of writes: DSP and MULTISAMPLE dry)
   if (T_("post", fmt::post_step())) return true;
-  if (fx::card_dirty && fmt::post_begin()) {   // (the slot or the queue busy: card_save would not post - not a step)
+  for (int k = 0; k < kVoiceSlots; ++k)   // a box's project from its own folder, once it holds a slot (attach order: either)
+    if (T_("attach", project_attach_step(k))) return true;
+  for (int k = 0; k < kVoiceSlots; ++k) {   // each slot's send FX route, fxin, keys, learn and PREVIEW LEVEL: its own folder's
+    if (!(fx::card_dirty >> k & 1) || !fmt::post_begin()) continue;   // (the slot or the queue busy: card_save would not post)
+    device::Scope in(device::g_links[k]);
     TV_("fxsave", fx::card_save());
     return true;
   }
-  if (T_("fxin", fxin::save())) return true;
+  for (int k = 0; k < kVoiceSlots; ++k) {
+    device::Scope in(device::g_links[k]);
+    if (T_("fxin", fxin::save())) return true;
+  }
   bool leaving = device::leaving() || g_flush;   // a restart or a power-off is coming: what waits for its edits to settle goes now
   if (leaving) lfo::save_due();
-  if (T_("lfo", lfo::save())) return true;
+  for (int k = 0; k < kVoiceSlots; ++k) {   // each slot's LFOs, into its own folder (3(c))
+    device::Scope in(device::g_links[k]);
+    if (T_("lfo", lfo::save())) return true;
+  }
 #if CORE_POLY
   if (leaving) ins::settings_due();
-  if (T_("ins", ins::save())) return true;
-  if (leaving) scene::save_due();
-  if (T_("scene", scene::save())) return true;
-  if (leaving) xypad::save_due();
-  if (T_("xy", xypad::save())) return true;
+  for (int k = 0; k < kVoiceSlots; ++k) {   // each slot's inserts and OUT, into its own folder (3(c))
+    device::Scope in(device::g_links[k]);
+    if (T_("ins", ins::save())) return true;
+  }
+  for (int k = 0; k < kVoiceSlots; ++k) {   // each slot's scenes and XY pad, into its own folder (3(c))
+    device::Scope in(device::g_links[k]);
+    if (leaving) scene::save_due();
+    if (T_("scene", scene::save())) return true;
+    if (leaving) xypad::save_due();
+    if (T_("xy", xypad::save())) return true;
+  }
 #endif
+  for (int k = 0; k < kVoiceSlots; ++k) {
+    device::Scope in(device::g_links[k]);
 #if CORE_POLY
-  if (T_("keys", keys::save())) return true;
-  if (T_("learn", learn::save())) return true;
-  if (T_("loop", loop::save())) return true;
+    if (T_("keys", keys::save())) return true;
+    if (T_("learn", learn::save())) return true;
 #endif
 #if CORE_MSAMP
-  if (T_("preview", preview::save())) return true;   // PREVIEW LEVEL (core/samp/preview.h)
+    if (T_("preview", preview::save())) return true;   // PREVIEW LEVEL (core/samp/preview.h)
 #endif
+#if CORE_POLY
+    if (T_("loop", loop::save())) return true;   // each box's looper (core/loop), in its own folder
+#endif
+  }
 #if CORE_POLY
   if (leaving) seq::save_due();
   if (T_("seq", seq::idle())) return true;   // the sequencer's pattern files: load, prefetch, save
@@ -184,25 +226,28 @@ CORE_COLD bool idle_save() {
 #else
   bool ix = false;
 #endif
-  if (project_dirty && fmt::post_begin()) {   // (the slot or the queue busy: project_save would not post - not a step)
+  for (int k = 0; k < kVoiceSlots; ++k) {   // each slot's project name, into its own folder
+    if (!prj(k).dirty || !fmt::post_begin()) continue;   // (the slot or the queue busy: project_save would not post - not a step)
+    device::Scope in(device::g_links[k]);
     TV_("project", project_save());   // (with the index: the same project change's two small files, one step)
     return true;
   }
-  bool settled = !lfo::dirty() && !fx::card_dirty;
+  bool settled = !lfo::dirty_any() && !fx::card_dirty;
 #if CORE_POLY
-  settled = settled && !ins::settings_dirty(nullptr) && !seq::unsaved() && !scene::dirty() && !xypad::dirty();
+  settled = settled && !ins::settings_dirty_any() && !seq::unsaved() && !scene::dirty_any() && !xypad::dirty_any();
 #endif
   return T_("device", device::step(settled)) || ix;   // a change of state folder: the last write, behind all of the above
 }
 
 CORE_COLD bool idle_settled() {
-  bool s = !lfo::dirty() && !fx::card_dirty && !project_dirty && !fmt::post_busy() && fmt::unwritten(nullptr) == 0;
+  bool s = !lfo::dirty_any() && !fx::card_dirty && !fmt::post_busy() && fmt::unwritten(nullptr) == 0;
 #if CORE_POLY
-  s = s && !ins::settings_dirty(nullptr) && !seq::unsaved();
+  s = s && !ins::settings_dirty_any() && !seq::unsaved();
 #endif
 #if CORE_MSAMP
   s = s && cardq::pending() == 0;
 #endif
+  for (int k = 0; k < kVoiceSlots; ++k) s = s && !prj(k).dirty;
   return s;
 }
 

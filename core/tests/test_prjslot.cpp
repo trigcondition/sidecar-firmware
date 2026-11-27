@@ -155,7 +155,7 @@ static void settle() {   // every job, the store's fill, then a few passes more
   CHECK(!project_loading());
   for (int i = 0; i < 32; ++i) pass();
 }
-static bool is(const char* key) { return !strcmp(project, key); }
+static bool is(const char* key) { return !strcmp(prj().key, key); }
 // the Rytm's slot list (4B 08 x 16, 4B 09): skip leaves one message out, count overrides the END's
 static void send_list(const std::vector<std::pair<int, std::string>>& list, int skip = -1, int count = -1) {
   for (int first = 1, k = 0; first <= 128; first += 8, ++k) {
@@ -217,7 +217,7 @@ int main() {
   CHECK(prjslot::mode() == prjslot::kName);
   name_project("SHARED");
   settle();
-  CHECK(is("SHARED") && !strcmp(project_name, "SHARED"));
+  CHECK(is("SHARED") && !strcmp(prj().name, "SHARED"));
   name_project("SHARED 2");   // a rename on the Rytm, as today: asked
   CHECK(rename::state() == rename::kAsk && is("SHARED"));
   rename::answer(false);
@@ -238,7 +238,7 @@ int main() {
   name_project("PRESETS");   // (0021's 10 goes on: not a switch now)
   active(1, "PRESETS");
   settle();
-  CHECK(!prjslot::ask() && is("@001") && !strcmp(project_name, "PRESETS"));
+  CHECK(!prjslot::ask() && is("@001") && !strcmp(prj().name, "PRESETS"));
   CHECK(has_all("@001", "presets") && has_none("PRESETS"));
   CHECK(prjslot::migrated() && slurp("/.rytm/prjslot.txt").find("mode=slot") != std::string::npos);
   CHECK(projects::find("@001") && !strcmp(projects::find("@001")->rytm, "PRESETS") && !projects::find("PRESETS"));
@@ -293,7 +293,7 @@ int main() {
   ev(SAVE, 6, 7);
   active(7, "PRESETS X");
   settle();
-  CHECK(!prjslot::ask() && is("@007") && !strcmp(project_name, "PRESETS X") && has_all("@007", "presets"));
+  CHECK(!prjslot::ask() && is("@007") && !strcmp(prj().name, "PRESETS X") && has_all("@007", "presets"));
   CHECK((int)entries().size() == n0 + 1);
   int e7 = newest("@007");
   CHECK(e7 && info(e7, "why") == "saveto" && slurp(entry(e7) + "/lfo!%.txt") == "lfo seven" &&
@@ -339,7 +339,7 @@ int main() {
   ev(CLEAR, 0, 6);
   active(6, "NEW PROJECT");   // reloaded from the card
   settle();
-  CHECK(is("@006") && !strcmp(project_name, "NEW PROJECT") && (int)entries().size() == n2 + 1);
+  CHECK(is("@006") && !strcmp(prj().name, "NEW PROJECT") && (int)entries().size() == n2 + 1);
   CHECK(slurp(entry(newest("@006")) + "/lfo!%.txt") == "lfo presets" && !is_file("/.rytm/lfo/@006.txt"));
   // DELETE of the active one, then another loaded: to the trash after the switch
   active(8, "PRESETS");   // (slot 8: its files were cleared above - an empty project)
@@ -506,7 +506,7 @@ int main() {
     hello(3);
     name_project("SCRATCH");
     settle();
-    CHECK(is("@010") && !strcmp(project_name, "SCRATCH") && has_all("@010", "scratch"));
+    CHECK(is("@010") && !strcmp(prj().name, "SCRATCH") && has_all("@010", "scratch"));
     name_project("PRESETS");   // slots 1, 2, 6, 13 are PRESETS: 13 was the last used
     settle();
     CHECK(is("@013"));
@@ -751,14 +751,14 @@ int main() {
     settle();
     prjslot::reset();
     prjslot::load();
-    project_seen = false;
+    prj().seen = false;
     sent.clear();
     hello(7);
     active(1, "PRESETS");
     settle();
     bool pool14 = false;
     for (auto& m : sent) pool14 = pool14 || (m.size() > 5 && m[4] == 0x14);
-    CHECK(pool14 && project_seen);
+    CHECK(pool14 && prj().seen);
     hooks.to_rytm = [](const uint8_t*, int) {};
     printf("  a slot-mode boot: the first ACTIVE announces the tables\n");
   }
@@ -1207,7 +1207,7 @@ int main() {
     uint8_t yes_key[] = {0xF0, 0x7D, 0x52, 0x54, 0x31, 0x01, 0x00, 0x44, 0x01, 0xF7};
     ui::remote_sysex(yes_key, sizeof yes_key);
     settle();
-    CHECK(!prjslot::ask() && is("@014") && !strcmp(project_name, "ANOTHER NAME 14"));
+    CHECK(!prjslot::ask() && is("@014") && !strcmp(prj().name, "ANOTHER NAME 14"));
     fixture("LEGACY NAME", "legacy");
     active(15, "LEGACY NAME");
     for (int i = 0; i < 50 && !prjslot::ask(); ++i) pass();

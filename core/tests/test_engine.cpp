@@ -29,8 +29,8 @@ int main() {
   fclose(f);
   hooks.to_rytm = out;
   CHECK(engine_begin());
-  for (int i = 0; i < 2000 && npool == 0; ++i) idle_stream();   // the project's pool lists read (the card core's job)
-  CHECK(!strcmp(project, "SMP") && npool == 1 && pool[0].folder >= 0);
+  for (int i = 0; i < 2000 && prj().npool == 0; ++i) idle_stream();   // the project's pool lists read (the card core's job)
+  CHECK(!strcmp(prj().key, "SMP") && prj().npool == 1 && pool[0].folder >= 0);
   // DSP SAMPLE on voice 5, SMP 1, MIX 0 (the sample alone)
   std::vector<uint8_t> t = {0xf0, 0x7d, 0x52, 0x54, 0x04, 0x20 | 5, 60, 100};
   const float p[16] = {0, 64, 64, 64, 0, 64, 64, 100, 64, 64, 1, 0, 0, 120, 0, 100};

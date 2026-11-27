@@ -175,7 +175,7 @@ void core_c_render(int16_t* out, int n) {
     int want = n < kRingFrames - core::kBlock ? n : kRingFrames - core::kBlock;
     while (g_n < want) {
       core::refill_neediest((uint32_t)(want - g_n) + 4 * core::kBlock);
-      core::seq::pre_block();   // the sequencer's notes due in this block (core/seq/seq.h)
+      core::seq::pre_block_all();   // the sequencer's notes due in this block, every slot's (one pass here: core/seq/seq.h)
       um::pre_block();          // API 3: the block's transport snapshot for the user machines
       core::render_voices(g_ring, kRingFrames, (g_rd + g_n) % kRingFrames, 0, core::kVoices, g_mach);
       g_n += core::kBlock;
@@ -306,7 +306,7 @@ int core_c_rui_render(int which, int voice, const uint8_t* vals, uint8_t* fb) {
   return 1;
 }
 void core_c_rui_bench(int which, int voice, int n, float* out2) { core::ui::remote_bench(which, voice, n, out2, out2 + 1); }
-float core_c_voice_param(int vi, int k) { return core::v[vi & 7].p[k & 15]; }
+float core_c_voice_param(int vi, int k) { return core::v[voice_wrap(vi)].p[k & 15]; }
 // The remote UI's input tap (core/ui/extra.h) as the platform's IN path feeds it: n frames of `stride` int32 channels
 // (the Rytm's 12 first); tap_on: a page reads it now.
 void core_c_tap_in(const int32_t* f, int n, int stride) { core::ui::tap_in(f, n, stride); }
@@ -427,7 +427,7 @@ void core_c_livein_fifo(int frames) { core::livein::set_fifo(frames); }
 // project index save. Returns the job's phase.
 static void bundle_current(char* out, int cap) {
   char p[24];
-  memcpy(p, (const char*)core::project, sizeof p);
+  memcpy(p, (const char*)core::prj().key, sizeof p);
   p[23] = 0;
   snprintf(out, cap, "%s", p);
 }

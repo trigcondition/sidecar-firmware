@@ -1,0 +1,40 @@
+--- a/lib/net/tcpconnection.cpp
++++ b/lib/net/tcpconnection.cpp
+@@ -336,6 +336,15 @@
+ 	case TCPStateListen:
+ 		m_Event.Clear ();
+ 		m_Event.Wait ();
++		// circle-tcp-accept (Sidecar): the event also comes when the connection ends before it was accepted (a
++		// timeout, a reset, the TCB deleted): then m_ForeignIP may never have been set and Set() below asserted
++		// (seen under QEMU with a lossy slirp link: ipaddress.cpp(112) in CHTTPDaemon::Listener). Fail the accept;
++		// the caller (CSocket::Accept) opens a new listening connection either way.
++		if (   m_State != TCPStateSynReceived
++		    && m_State != TCPStateEstablished)
++		{
++			return m_nErrno < 0 ? m_nErrno : -NET_ERROR_CONNECTION_RESET;
++		}
+ 		break;
+ 
+ 	case TCPStateSynReceived:
+@@ -761,7 +770,10 @@
+ 	
+ 	if (m_State != TCPStateListen)
+ 	{
+-		if (   m_ForeignIP != rSenderIP
++		// circle-tcp-accept: a passive connection closed while it listened (Close() from LISTEN) never got a
++		// foreign address, and comparing it asserted (ipaddress.cpp(61)): such a connection owns no packet
++		if (   !m_ForeignIP.IsSet ()
++		    || m_ForeignIP != rSenderIP
+ 		    || m_nForeignPort != be2le16 (pHeader->nSourcePort))
+ 		{
+ 			return 0;
+@@ -1564,7 +1576,8 @@
+ 		return 0;
+ 	}
+ 
+-	if (   m_ForeignIP != rSenderIP
++	if (   !m_ForeignIP.IsSet ()		// circle-tcp-accept: as in PacketReceived
++	    || m_ForeignIP != rSenderIP
+ 	    || m_nForeignPort != nSendPort)
+ 	{
+ 		return 0;

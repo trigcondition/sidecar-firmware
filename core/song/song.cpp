@@ -6,6 +6,8 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include "device/a4.h"
+#include "device/device.h"
 #include "fmt/fmt.h"
 #include "fx/send_fx.h"
 #include "hooks.h"
@@ -26,20 +28,23 @@ namespace song {
 // ---- paths: the project's folder (core/project_key.h). Phase 0: a folder named by the old rule (spaces and dots as
 // '_', no trim, "_none") is renamed to the key's once, when the key's does not exist yet; with both there the key's is
 // used and the old one left alone.
-static char g_mig_old[64], g_mig_new[64];   // a folder to rename once (idle(), through the card queue)
-static uint8_t g_mig = 0;
+// Step 10c: each slot's own (its folder: the "/.rytm/..." literal goes through the slot's state folder, device.h)
+static char g_mig_old[kVoiceSlots][64], g_mig_new[kVoiceSlots][64];   // a folder to rename once (idle(), through the card queue)
+static uint8_t g_mig[kVoiceSlots] = {};
 void folder(char* b, int cap) {
-  static char s_done[kKeyMax + 1] = {1, 0};   // the project the migration was checked for (none yet)
+  static char s_done[kVoiceSlots][kKeyMax + 1] = {{1, 0}};   // the project the migration was checked for (none yet)
+  const int sl = prj_slot();
+  if (sl > 0 && !s_done[sl][0]) s_done[sl][0] = 1;            // (none yet, as slot 0's)
   char k[kKeyMax], o[kKeyMax];
-  project_key(project, k, sizeof k);
+  project_key(prj().key, k, sizeof k);
   sniprintf(b, cap, "/.rytm/songs/%s", k);
-  if (!card_ok || !strcmp(s_done, project)) return;
-  sniprintf(s_done, sizeof s_done, "%s", project);
-  project_key_song_v0(project, o, sizeof o);
+  if (!card_ok || !strcmp(s_done[sl], prj().key)) return;
+  sniprintf(s_done[sl], sizeof s_done[sl], "%s", prj().key);
+  project_key_song_v0(prj().key, o, sizeof o);
   if (!strcmp(o, k)) return;
-  sniprintf(g_mig_old, sizeof g_mig_old, "/.rytm/songs/%s", o);
-  sniprintf(g_mig_new, sizeof g_mig_new, "%s", b);
-  g_mig = 1;
+  sniprintf(g_mig_old[sl], sizeof g_mig_old[sl], "/.rytm/songs/%s", o);
+  sniprintf(g_mig_new[sl], sizeof g_mig_new[sl], "%s", b);
+  g_mig[sl] = 1;
 }
 
 namespace {
@@ -56,7 +61,8 @@ constexpr uint32_t kUndoMs = 30000;        // UNDO REPLAY: offered until 30 s st
 constexpr uint32_t kGraceMs = 1000;        // T5 kept by the page after the undo ended (a late press: "UNDO EXPIRED")
 constexpr int kBackupSlots = 8;            // backup sets kept on the card (.backup-1 .. -8, in turn)
 
-int64_t default_frames() { return (int64_t)seq::frames(); }
+// each slot its own render pass's count (seq::frames(s)): the box's 2C ticks are placed in its own frames (slot 0: as ever)
+int64_t default_frames() { return (int64_t)seq::frames(prj_slot()); }
 int64_t (*g_frames)() = default_frames;
 
 struct Engine {
@@ -192,21 +198,40 @@ struct Engine {
   uint32_t ms_now = 0;
   bool inited = false;
 };
-Engine* E = nullptr;
+Engine* E[kVoiceSlots] = {};   // step 10c: each slot's own (made at its first use)
 
-// ---- the published lanes (two buffers; the reader takes the newer, a counter tells it was not overwritten)
-Lanes g_lanes[2];
-volatile uint32_t g_lanes_n = 0;
+// ---- the published lanes (two buffers a slot; the reader takes the newer, a counter tells it was not overwritten)
+Lanes g_lanes[kVoiceSlots][2];
+volatile uint32_t g_lanes_n[kVoiceSlots] = {};
 
-Engine& eng() {
-  if (!E) {
-    E = new Engine;
-    E->take.clear(), E->scratch.clear(), E->rst.backup.clear();
-    for (int k = 0; k < kUndoMax; ++k) E->set[0][k].clear(), E->set[1][k].clear(), E->utake[k].clear();
-    config_default(&E->cfg);
-    for (int t = 0; t < kTracks; ++t) E->mach[t] = -2, E->src[t] = -2;
+// the slot in hand (pool.h prj_slot: device::cur()'s, clamped)
+inline int sl() { return prj_slot(); }
+// the slot's box is the Rytm (its slot, attach order): its stock dumps, MIDI CONFIG, replay, the pattern view's dumps and
+// FILL's writer. Another slot's box records without them (song.h "Per slot")
+inline bool rytm() { return device::rytm_at(sl()); }
+// the slot's box's stock dumps: the Rytm's (0x07), the A4's (0x06, traced: song.h), 0 none known (no start snapshot,
+// MIDI CONFIG read, replay or UNDO REPLAY for that box)
+inline uint8_t dev() { return rytm() ? kDevRytm : device::cur().box == &device::kA4 ? kDevA4 : 0; }
+inline const char* box_name() { return rytm() ? "the Rytm" : device::cur().box == &device::kA4 ? "the A4" : "the box"; }
+Engine& eng_of(int s) {
+  Engine*& e = E[s];
+  if (!e) {
+    e = new Engine;
+    e->take.clear(), e->scratch.clear(), e->rst.backup.clear();
+    for (int k = 0; k < kUndoMax; ++k) e->set[0][k].clear(), e->set[1][k].clear(), e->utake[k].clear();
+    if (device::rytm_at(s)) config_default(&e->cfg);
+    else config_none(&e->cfg);
+    for (int t = 0; t < kTracks; ++t) e->mach[t] = -2, e->src[t] = -2;
   }
-  return *E;
+  return *e;
+}
+Engine& eng() { return eng_of(sl()); }
+// slot s's engine runs: device::live (held, saving, or the base; seq.cpp's sq_on)
+bool slot_on(int s) { return s < kVoiceSlots && device::live(s); }
+template <class F> auto in_slot(int s, F f) -> decltype(f()) {
+  if (s == sl()) return f();
+  device::Scope in(device::g_links[s]);
+  return f();
 }
 
 double now_frame() { return (double)g_frames(); }
@@ -220,18 +245,24 @@ void set_msg(const char* fmt, ...) {
 }
 
 // ---- out
+// to the slot's box: the Rytm's as ever (to_rytm); another box's through its link's own sender (stock SysEx and channel
+// messages: the Sidecar's output filter passes its own commands only)
+void tx(const uint8_t* m, int n) {
+  if (rytm()) to_rytm(m, n);
+  else if (auto* o = device::cur().out) o(m, n);
+}
 void out(const uint8_t* m, int n) {
   if (n > 3 && m[0] == 0xF0 && n > kPiece) {   // a long dump: in 3-byte aligned pieces (the platform's record limit)
-    for (int i = 0; i < n; i += kPiece) to_rytm(m + i, n - i < kPiece ? n - i : kPiece);
+    for (int i = 0; i < n; i += kPiece) tx(m + i, n - i < kPiece ? n - i : kPiece);
     return;
   }
-  to_rytm(m, n);
+  tx(m, n);
 }
 
 void request(uint8_t id) {
   uint8_t m[15];
-  dump_request(m, id);
-  to_rytm(m, 15);
+  dump_request(m, id, dev());
+  tx(m, 15);
 }
 
 bool card() { return card_ok; }
@@ -242,20 +273,21 @@ void arm();
 // The folder's rename, once (folder()): by requests, before anything reads the folder.
 bool mig_step() {
   Engine& e = eng();
-  if (g_mig == 1) {
-    if (!cardq::async(&e.lrq, cardq::kExistsReq, nullptr, g_mig_new, 0, nullptr, 0)) return false;
-    g_mig = e.lrq.got == 1 ? 0 : 2;
+  const int s = sl();
+  if (g_mig[s] == 1) {
+    if (!cardq::async(&e.lrq, cardq::kExistsReq, nullptr, g_mig_new[s], 0, nullptr, 0)) return false;
+    g_mig[s] = e.lrq.got == 1 ? 0 : 2;
     return true;
   }
-  if (g_mig == 2) {
-    if (!cardq::async(&e.lrq, cardq::kExistsReq, nullptr, g_mig_old, 0, nullptr, 0)) return false;
-    g_mig = e.lrq.got == 1 ? 3 : 0;
+  if (g_mig[s] == 2) {
+    if (!cardq::async(&e.lrq, cardq::kExistsReq, nullptr, g_mig_old[s], 0, nullptr, 0)) return false;
+    g_mig[s] = e.lrq.got == 1 ? 3 : 0;
     return true;
   }
-  if (!cardq::async(&e.lrq, cardq::kRenameReq, nullptr, g_mig_old, 0, (uint8_t*)g_mig_new, 0)) return false;
-  if (e.lrq.got == 1) log(CORE_STR("song: %s -> %s (the project key, once)"), g_mig_old, g_mig_new);
-  else log(CORE_STR("song: cannot rename %s to %s"), g_mig_old, g_mig_new);
-  g_mig = 0;
+  if (!cardq::async(&e.lrq, cardq::kRenameReq, nullptr, g_mig_old[s], 0, (uint8_t*)g_mig_new[s], 0)) return false;
+  if (e.lrq.got == 1) log(CORE_STR("song: %s -> %s (the project key, once)"), g_mig_old[s], g_mig_new[s]);
+  else log(CORE_STR("song: cannot rename %s to %s"), g_mig_old[s], g_mig_new[s]);
+  g_mig[s] = 0;
   return true;
 }
 void list_end() {
@@ -406,13 +438,16 @@ void fetch_next() {
   }
 }
 
+// a track's send as the kit has it: the Rytm's through the mod layer (its kSnd entries), another slot's box its own
+// send FX's (fx::control_of(slot): no kSnd in its layer)
+uint8_t send_base(int k, int s) { return rytm() ? mod::send_base(k, s) : fx::cur().send[k][s & 1]; }
 void sidecar_snapshot(Take& t) {
   t.has_fx = true;
   // the bases (the kit's), never a modulation on top (core/mod: an LFO's FX knob, a send)
-  for (int k = 0; k < kTracks; ++k) t.fx_send[k][0] = mod::send_base(k, 0), t.fx_send[k][1] = mod::send_base(k, 1);
+  for (int k = 0; k < kTracks; ++k) t.fx_send[k][0] = send_base(k, 0), t.fx_send[k][1] = send_base(k, 1);
   for (int s = 0; s < 2; ++s)
     for (int j = 0; j < 6; ++j) t.fx_knob[s][j] = mod::knob_base(s, j);
-  t.fx_route = fx::control.route;
+  t.fx_route = fx::cur().route;
 }
 
 void undo_end(const char* why);
@@ -428,8 +463,8 @@ void poll_sidecar(bool record) {
   bool edit = false;   // (the Sidecar's send FX: the undo would put them back)
   for (int k = 0; k < kTracks; ++k)
     for (int s = 0; s < 2; ++s)
-      if (mod::send_base(k, s) != e.fx_send[k][s]) {   // the base: a modulation is no edit, never recorded
-        e.fx_send[k][s] = mod::send_base(k, s), edit = true;
+      if (send_base(k, s) != e.fx_send[k][s]) {   // the base: a modulation is no edit, never recorded
+        e.fx_send[k][s] = send_base(k, s), edit = true;
         if (record) e.rec.sidecar(kScSend, (uint16_t)(k * 2 + s), e.fx_send[k][s], f, e.ms_now);
       }
   for (int s = 0; s < 2; ++s)
@@ -438,11 +473,12 @@ void poll_sidecar(bool record) {
         e.fx_knob[s][j] = mod::knob_base(s, j), edit = true;
         if (record) e.rec.sidecar(kScKnob, (uint16_t)(s * 6 + j), e.fx_knob[s][j], f, e.ms_now);
       }
-  if (fx::control.route != e.fx_route) {
-    e.fx_route = fx::control.route, edit = true;
+  if (fx::cur().route != e.fx_route) {
+    e.fx_route = fx::cur().route, edit = true;
     if (record) e.rec.sidecar(kScRoute, 0, e.fx_route, f, e.ms_now);
   }
   if (edit && undo_watch()) undo_end("the send FX changed");
+  // (the remote UI's track tables: the slot in hand's own, step 10b)
   for (int t = 0; t < kTracks; ++t) {
     int vb = ui::remote_track_machine(t);
     if (vb != e.mach[t]) {
@@ -479,17 +515,18 @@ struct EnginePort : Port {
   bool backup(const Take& p0, const Take* const* more, int n, bool partial) override;
   bool relink(int k, const Buf& kit) override;
   bool playing() override { return eng().transport != 0; }
+  int pattern() override { return rytm() ? -2 : eng().pattern; }   // (step 10c: the A4's stopped PC not traced)
   void sidecar(const Ev& ev) override {
     // the bases, through the filters (a live modulation's base follows, its value stays on top)
     if (ev.a == kScSend && ev.b < kTracks * 2) fx::set_send_base(ev.b / 2, ev.b % 2, (uint8_t)ev.v);
     else if (ev.a == kScKnob && ev.b < 12) fx::set_knob_base(ev.b / 6, ev.b % 6, (uint8_t)ev.v);
-    else if (ev.a == kScRoute) fx::control.route = (uint8_t)ev.v;
+    else if (ev.a == kScRoute) fx::cur().route = (uint8_t)ev.v;
   }
   void sidecar_start(const Take& t) override {
     for (int k = 0; k < kTracks; ++k) fx::set_send_base(k, 0, t.fx_send[k][0]), fx::set_send_base(k, 1, t.fx_send[k][1]);
     for (int s = 0; s < 2; ++s)
       for (int j = 0; j < 6; ++j) fx::set_knob_base(s, j, t.fx_knob[s][j]);
-    fx::control.route = t.fx_route;
+    fx::cur().route = t.fx_route;
   }
 };
 EnginePort g_port;
@@ -609,7 +646,7 @@ int set_written(int s) {
 void set_entry(Take& t, int pattern) {
   Engine& e = eng();
   t.clear();
-  sniprintf(t.project, sizeof t.project, "%s", project);
+  sniprintf(t.project, sizeof t.project, "%s", prj().key);
   t.cfg = e.cfg;
   t.pattern = pattern;
 }
@@ -902,9 +939,9 @@ void arm() {
   Engine& e = eng();
   if (e.state != kOff) { set_msg("busy (%s): not armed", state_name(e.state)); return; }
   // 0.5.0 fix round M1: a FILL (core/seq/patwrite.h) mid-job: the take's dump would hold a pattern half written
-  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not armed"); return; }
-  if (e.list_due || e.ls || strcmp(e.project_seen, project)) {   // the folder's walk first: the new take's number
-    if (strcmp(e.project_seen, project)) e.list_due = true;
+  if (rytm() && patwrite::busy()) { set_msg("a FILL is writing the pattern: not armed"); return; }
+  if (e.list_due || e.ls || strcmp(e.project_seen, prj().key)) {   // the folder's walk first: the new take's number
+    if (strcmp(e.project_seen, prj().key)) e.list_due = true;
     e.arm_due = true;
     return;
   }
@@ -916,23 +953,32 @@ void arm_go() {
   Engine& e = eng();
   if (e.state != kOff) return;
   // N3 (0.5.0 re-review): the name step may end after a FILL began; the take's dump would hold a pattern half written
-  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not armed"); return; }
+  if (rytm() && patwrite::busy()) { set_msg("a FILL is writing the pattern: not armed"); return; }
   if (e.undo) undo_end("armed");
   ++e.take_gen;
   e.take.clear();
   e.take_valid = true;
-  sniprintf(e.take.project, sizeof e.take.project, "%s", project);
+  sniprintf(e.take.project, sizeof e.take.project, "%s", prj().key);
   sniprintf(e.take.name, sizeof e.take.name, "take-%03d", e.an_n);
+  if (!rytm()) {
+    const device::Profile* b = device::cur().box;
+    sniprintf(e.take.box, sizeof e.take.box, "%s", b && b->state_dir && b->state_dir[0] == '/' ? b->state_dir + 2 : "box");
+  }
   e.rec.arm(&e.take);
   e.rec.pattern = e.pattern;
   if (e.bpm > 0) e.rec.tempo(e.bpm, now_frame(), e.ms_now);
   e.state = kArming;
   clock(true);
   poll_sidecar(false);
+  ++e.show_req;
+  if (!dev()) {   // (a box whose stock dumps are not known: no start snapshot, no MIDI CONFIG read)
+    e.state = kArmed;
+    set_msg("armed: PLAY records (no start snapshot)");
+    return;
+  }
   static const uint8_t ids[4] = {kReqGlobal, kReqKit, kReqPattern, kReqSettings};
   fetch_start(ids, 4, true);
-  set_msg("arming %s: reading the Rytm", e.take.name);
-  ++e.show_req;
+  set_msg("arming %s: reading %s", e.take.name, box_name());
 }
 
 void disarm() {
@@ -983,6 +1029,7 @@ void rec_stop() {
 void replay_request() {
   Engine& e = eng();
   if (e.state != kOff || !e.take_valid || !e.take.n) { set_msg("no take to replay"); return; }
+  if (!dev()) { set_msg("no replay into this box: its dumps are not known"); return; }
   if (e.transport != 0) { set_msg("stop the Rytm first: a replay starts stopped"); return; }
   e.state = kConfirm;
   ++e.show_req;
@@ -992,7 +1039,7 @@ void replay_request() {
 void confirm() {
   Engine& e = eng();
   if (e.state != kConfirm) { set_msg("nothing to confirm"); return; }
-  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not replayed"); e.state = kOff; return; }
+  if (rytm() && patwrite::busy()) { set_msg("a FILL is writing the pattern: not replayed"); e.state = kOff; return; }
   if (e.transport != 0) { set_msg("stop the Rytm first"); e.state = kOff; return; }
   // (an earlier undo stays until this replay writes: a backup that fails leaves the Rytm, and that undo, as they were)
   e.state = kRestoring;
@@ -1079,10 +1126,10 @@ void undo() {
   Engine& e = eng();
   if (!e.undo) { set_msg("no replay to undo"); return; }
   // a project loading: refused, as the sequencer's edits are (kLockLoading) - the undo kept
-  if (project_loading()) { set_msg("project %s still loading: not undone", project); return; }
+  if (project_loading()) { set_msg("project %s still loading: not undone", prj().key); return; }
   if (e.state != kOff && e.state != kReplayReady) { set_msg("busy (%s): not undone", state_name(e.state)); return; }
   if (e.transport != 0) { set_msg("stop the Rytm first: not undone"); return; }
-  if (patwrite::busy()) { set_msg("a FILL is writing the pattern: not undone"); return; }
+  if (rytm() && patwrite::busy()) { set_msg("a FILL is writing the pattern: not undone"); return; }
   // the whole set first: in the RAM store; read back a file an idle pass (undo_step), every dump checked
   // (UndoRun::begin) - nothing goes out unless all of it can
   if (const char* why = undo_read(false)) { set_msg("%s: nothing written", why); return; }
@@ -1139,13 +1186,16 @@ void on_mod(const uint8_t* m, int n) {
   int nb = n - 7;
   double f = now_frame();
   if (m[4] == 0x2C) {
-    if (nb < 5 || nb != 5 + 4 * b[4]) return;
+    // a record is 4 bytes (the Rytm's) or 5 (the A4 companion's: a flags byte after the four, not read here; seq.cpp)
+    if (nb < 5) return;
+    const int rs = nb == 5 + 4 * b[4] ? 4 : nb == 5 + 5 * b[4] ? 5 : 0;
+    if (!rs) return;
     uint32_t blk = (uint32_t)b[0] << 21 | b[1] << 14 | b[2] << 7 | b[3];
     int64_t rf = e.fol.unwrap(blk) * 32;
     e.fol.sample((int64_t)f, rf);
     double hf = (double)e.fol.to_host(rf);
     for (int i = 0; i < b[4]; ++i) {
-      const uint8_t* q = b + 5 + 4 * i;
+      const uint8_t* q = b + 5 + rs * i;
       if (q[0] != kClockTrack) continue;
       if (e.rec.on) e.rec.tick(q[1], q[2], q[3], hf);
       if (e.state == kReplaying) {
@@ -1239,7 +1289,7 @@ void on_dump(const uint8_t* m, int n) {
     uint8_t u[kGlobalBytes + 8];
     int k = unpack7(m + 10, n - 15, u, sizeof u);
     MidiConfig c = e.cfg;
-    if (parse_global(u, k, &c)) e.cfg = c, e.cfg_valid = true;
+    if (rytm() ? parse_global(u, k, &c) : parse_global_a4(u, k, &c)) e.cfg = c, e.cfg_valid = true;
     if (e.fetch_for_arm) e.take.global.clear(), e.take.global.add(m, n);
   } else if (e.fetch_for_arm && e.state == kArming) {
     Buf& b = id == kReqKit - 0x10 ? e.take.kit : id == kReqPattern - 0x10 ? e.take.pat : e.take.settings;
@@ -1251,7 +1301,7 @@ void on_dump(const uint8_t* m, int n) {
 
 void on_sysex(const uint8_t* m, int n) {
   if (n >= 6 && m[1] == 0x7D && m[2] == 0x52 && m[3] == 0x54 && (m[4] == 0x2C || m[4] == 0x2D)) on_mod(m, n);
-  else if (n >= 15 && m[1] == 0 && m[2] == 0x20 && m[3] == 0x3C) on_dump(m, n);
+  else if (n >= 15 && m[1] == 0 && m[2] == 0x20 && m[3] == 0x3C && dev() && m[4] == dev()) on_dump(m, n);
 }
 
 void on_channel(uint8_t st, uint8_t d1, uint8_t d2) {
@@ -1284,22 +1334,24 @@ void on_realtime(uint8_t b) {
 
 void publish_lanes() {
   Engine& e = eng();
-  uint32_t n = g_lanes_n;
-  Lanes& o = g_lanes[(n / 2 + 1) & 1];
+  const int s = sl();
+  uint32_t n = g_lanes_n[s];
+  Lanes& o = g_lanes[s][(n / 2 + 1) & 1];
   if (e.take_valid) build_lanes(e.take, &o);
   else memset(&o, 0, sizeof o);
   if (e.state == kRec) {
     uint32_t t = e.rec.clk.at(now_frame());
     if (t > o.length) o.length = t;
   }
-  __atomic_store_n(&g_lanes_n, n + 2, __ATOMIC_RELEASE);
+  __atomic_store_n(&g_lanes_n[s], n + 2, __ATOMIC_RELEASE);
   e.lanes_gen_built = e.take_gen;
 }
 
 }  // namespace
 
-const MidiConfig& midi_config() { return eng().cfg; }
-void set_midi_config(const MidiConfig& c) { eng().cfg = c; }
+// the Rytm's (rytm_home: the slot in hand when it is a Rytm, else the first Rytm's), whichever slot it holds
+const MidiConfig& midi_config() { return eng_of(device::rytm_home()).cfg; }
+void set_midi_config(const MidiConfig& c) { eng_of(device::rytm_home()).cfg = c; }
 
 CORE_COLD const char* state_name(int s) {
   static const char* const k[] = {"off", "arming", "armed", "recording", "saving", "confirm", "restoring", "replay ready",
@@ -1342,15 +1394,20 @@ CORE_COLD void byte(uint8_t b) {
   }
 }
 
+static void tick_here(uint32_t ms);
 CORE_COLD void tick(uint32_t ms) {
+  for (int s = 0; s < kVoiceSlots; ++s)
+    if (slot_on(s)) in_slot(s, [&] { tick_here(ms); });
+}
+static CORE_COLD void tick_here(uint32_t ms) {
   Engine& e = eng();
   e.ms_now = ms;
   if (!e.inited) {
     e.inited = true;
     poll_sidecar(false);
   }
-  if (strcmp(e.project_seen, project)) {   // a project named: its takes, its journals recovered
-    sniprintf(e.project_seen, sizeof e.project_seen, "%s", project);
+  if (strcmp(e.project_seen, prj().key)) {   // a project named: its takes, its journals recovered
+    sniprintf(e.project_seen, sizeof e.project_seen, "%s", prj().key);
     e.list_due = e.recover_scan_due = true;
     e.take_hi = 0;
     undo_end("another project");
@@ -1441,7 +1498,7 @@ CORE_COLD void tick(uint32_t ms) {
       set_msg("replay at its end: stop the Rytm (TRANSP RCV off)");
   }
   // the pattern view's dumps (core/seq/rytm_dump.h) wait while a take records, and while the song's own dumps run
-  rytm_dump::set_hold(e.state == kArmed || e.state == kRec ? 1
+  if (rytm()) rytm_dump::set_hold(e.state == kArmed || e.state == kRec ? 1
                       : e.state == kArming || e.state == kRestoring || e.state == kReplaying || e.state == kUndoing ? 2 : 0);
   if (e.lanes_on && (e.lanes_gen_built != e.take_gen || (e.state == kRec && ms - e.lanes_ms >= 250) ||
                      ms - e.lanes_ms >= 2000)) {
@@ -1451,9 +1508,23 @@ CORE_COLD void tick(uint32_t ms) {
   }
 }
 
+static bool idle_here();
 CORE_COLD bool idle() {
+  // each slot's card jobs in turn, the slot after the one that last did one first (one box's long write never starves
+  // the other's journal)
+  static int s_next = 0;
+  for (int i = 0; i < kVoiceSlots; ++i) {
+    const int s = (s_next + i) % kVoiceSlots;
+    if (slot_on(s) && in_slot(s, idle_here)) {
+      s_next = (s + 1) % kVoiceSlots;
+      return true;
+    }
+  }
+  return false;
+}
+static CORE_COLD bool idle_here() {
   Engine& e = eng();
-  if (g_mig) return mig_step();
+  if (g_mig[sl()]) return mig_step();
   journal_step();
   if (name_step()) return true;
   if (e.state == kRec && journal_flush(false)) return true;
@@ -1477,24 +1548,26 @@ CORE_COLD Status status() {
   bool replay = e.state >= kConfirm && e.state <= kReplaying;
   s.problems = config_problems(replay && e.take_valid ? e.take.cfg : e.cfg, replay);
   if (replay && e.cfg_valid) s.problems = config_problems(e.cfg, true);
+  if (!dev()) s.problems = 0;   // (a box whose dumps are not known: no MIDI CONFIG read, nothing asked of it)
   s.cfg_valid = e.cfg_valid, s.settings = e.settings, s.recovered = e.take_valid && e.take.recovered;
   s.cfg_wrong = (int8_t)(e.cfg_valid ? config_wrong(e.cfg) : -1);
   s.undo = undo_ok();
   s.undo_t5 = s.undo || (e.undo_was && e.ms_now - e.undo_gone < kGraceMs);
   sniprintf(s.name, sizeof s.name, "%s", e.take_valid ? e.take.name : "");
-  sniprintf(s.project, sizeof s.project, "%s", project);
+  sniprintf(s.project, sizeof s.project, "%s", prj().key);
   sniprintf(s.msg, sizeof s.msg, "%s", e.msg);
   return s;
 }
 
 CORE_COLD void lanes_want(bool on) { eng().lanes_on = on; }
 CORE_COLD bool lanes_read(Lanes* out, uint32_t* seen) {
+  const int s = sl();
   for (int tries = 0; tries < 4; ++tries) {
-    uint32_t a = __atomic_load_n(&g_lanes_n, __ATOMIC_ACQUIRE);
+    uint32_t a = __atomic_load_n(&g_lanes_n[s], __ATOMIC_ACQUIRE);
     if (a == 0 || a == *seen) return false;
-    memcpy(out, &g_lanes[(a / 2) & 1], sizeof *out);
+    memcpy(out, &g_lanes[s][(a / 2) & 1], sizeof *out);
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    if (__atomic_load_n(&g_lanes_n, __ATOMIC_ACQUIRE) - a < 2) {
+    if (__atomic_load_n(&g_lanes_n[s], __ATOMIC_ACQUIRE) - a < 2) {
       *seen = a;
       return true;
     }
@@ -1561,6 +1634,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
   else if (!strcmp(v, "mark")) e.rec.mark(now_frame(), e.ms_now);
   else if (!strcmp(v, "undo")) undo();
   else if (!strcmp(v, "show")) ++e.show_req;
+  else if ((!strcmp(v, "check") || !strcmp(v, "state")) && !dev()) sniprintf(e.msg, sizeof e.msg, "no MIDI CONFIG or dumps read from this box");
   else if (!strcmp(v, "check")) {
     static const uint8_t ids[1] = {kReqGlobal};
     if (e.fetch_want < 0) fetch_start(ids, 1, false);
@@ -1594,17 +1668,21 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
 }
 
 CORE_COLD void reset() {
-  if (E) {
-    if (E->read_stage == 1) E->rf.close();
-    E->take.free(), E->scratch.free(), E->rst.backup.free(), E->rst.relinked.free(), E->jtext.free();
-    for (int k = 0; k < kUndoMax - 1; ++k) E->rst.extra[k].free();
-    for (int k = 0; k < kUndoMax; ++k) E->set[0][k].free(), E->set[1][k].free(), E->utake[k].free();
-    E->jbuf.free(), E->jout.free(), E->wbuf.free(), E->rtext.free();
-    delete E;
-    E = nullptr;
+  for (int s = 0; s < kVoiceSlots; ++s) {
+    Engine*& x = E[s];
+    if (x) {
+      if (x->read_stage == 1) x->rf.close();
+      x->take.free(), x->scratch.free(), x->rst.backup.free(), x->rst.relinked.free(), x->jtext.free();
+      for (int k = 0; k < kUndoMax - 1; ++k) x->rst.extra[k].free();
+      for (int k = 0; k < kUndoMax; ++k) x->set[0][k].free(), x->set[1][k].free(), x->utake[k].free();
+      x->jbuf.free(), x->jout.free(), x->wbuf.free(), x->rtext.free();
+      delete x;
+      x = nullptr;
+    }
+    g_lanes_n[s] = 0;
+    g_mig[s] = 0;
   }
-  g_lanes_n = 0;
-  eng();
+  eng_of(0);
 }
 CORE_COLD void test_frames(int64_t (*fn)()) { g_frames = fn ? fn : default_frames; }
 CORE_COLD const Take& current() { return eng().take; }

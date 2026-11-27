@@ -6,6 +6,7 @@
 
 #include "fmt/fmt.h"
 #include "mod/mod.h"
+#include "device/device.h"
 #include "mod/rytm_out.h"
 #include "platform.h"
 #include "sidecar_features.h"
@@ -23,33 +24,53 @@ namespace scene {
 
 namespace {
 
-State g_st;
-// the played fader: from g_from at g_set_ms to g_st.fader g_smooth_ms later, linearly
-int g_played = 0, g_from = 0, g_last_played = 0;   // g_last_played: g_played at the last tick
-uint32_t g_set_ms = 0, g_now_ms = 0;
-uint32_t g_smooth_ms = kSmoothMs;   // this move's smoothing (the QPERF knob's: its reports' interval)
-int g_src = 0;                      // the fader's last source (Source), 0 none
-// the QPERF knob (Task 47): the position last acted on (a baseline or a take), -1 none since the link came up (Phase 7
-// review M2); whether a take since then sets the smoothing's interval, and when
-int g_qp_pos = -1;
-bool g_qp_seen = false;
-uint32_t g_qp_ms = 0;
-uint8_t g_qp_mode = kQpMutedOnly;   // QPERF FADER (v2 Task 6): a box setting, kept in learn.txt
-bool g_qp_muted = false;            // the macros' mute as last reported (only from a mod with kCaps2QpMute)
-QpView g_qv = {-1, false, false, 0};   // the screens' readout (v2 Task 7)
-uint32_t g_kit_ms = 0;              // when the Rytm's kit last changed (the MORPH header's note), 0 never
-int g_rscn = -1;                    // the Rytm's own scene as reported (2D 01 0F), -1 none
-int g_side = -1;                    // EDIT (v2): the side held, 0 A (PAGE + T15), 1 B (PAGE + T16), -1 none
-bool g_upper = false;            // the stepped targets' side: B's (true) or A's; switched with 1/64 hysteresis
-int g_last_a = -1, g_last_b = -1;   // the A / B the layer's entries are of (an A / B change releases the old ones)
 // A's and B's locks merged: each target once, with its A value and its B value (-1: that side does not lock it)
 struct M {
   mod::Tid t;
   int32_t av, bv;
 };
-M g_m[2 * kLocks];
-int g_mn = 0;
-bool g_stale = true;   // the merged list needs rebuilding
+// 3(c) (option A): each voice slot's scenes, fader, morph and file state (the A4's scenes are its project's), the slot
+// in hand's (Sl(): device::cur(), prj_slot); its morph ticks in its own pass of mod::tick. The Rytm's QPERF knob and
+// its own scene are the Rytm's (slot 0's fader).
+struct Sl {
+  State st;
+  // the played fader: from `from` at set_ms to st.fader smooth_ms later, linearly
+  int played = 0, from = 0;
+  uint32_t set_ms = 0, now_ms = 0;
+  uint32_t smooth_ms = kSmoothMs;   // this move's smoothing (the QPERF knob's: its reports' interval)
+  int src = 0;                      // the fader's last source (Source), 0 none
+  bool upper = false;               // the stepped targets' side: B's (true) or A's; switched with 1/64 hysteresis
+  int last_a = -1, last_b = -1;     // the A / B the layer's entries are of (an A / B change releases the old ones)
+  M m[2 * kLocks];
+  int mn = 0;
+  bool stale = true;                // the merged list needs rebuilding
+  // ---- the files' state (Task 9)
+  char proj[24] = "";
+  int kit = -1;        // the kit the scenes are of (0..127), -1 none named
+  int rytm_kit = -1;   // the box's active kit as it last said (kit_changed)
+  bool dirty = false, locked = false;
+  uint32_t dirty_ms = 0;
+  int file_fader = -1;   // the F the kit's file has (loaded or saved), -1 none (review M2)
+  bool said = false;     // a locked file's "not saved" logged (once a load, review L8)
+  // the box's QPERF knob (Task 47): the position last acted on (a baseline or a take), -1 none since the link came up
+  // (Phase 7 review M2); whether a take since then sets the smoothing's interval, and when. Each box's own: its fader
+  int qp_pos = -1;
+  bool qp_seen = false;
+  uint32_t qp_ms = 0;
+  uint8_t qp_mode = kQpMutedOnly;   // QPERF FADER (v2 Task 6): a box setting, kept in its learn.txt
+  bool qp_muted = false;            // the macros' mute as last reported (only from a mod with kCaps2QpMute)
+  QpView qv = {-1, false, false, 0};   // the screens' readout (v2 Task 7)
+  int rscn = -1;                    // the box's own scene as reported (2D 01 0F), -1 none
+  int side = -1;                    // EDIT (v2): the side held, 0 A (PAGE + T15), 1 B (PAGE + T16), -1 none
+  int last_played = 0;              // played at the last tick
+  uint32_t kit_ms = 0;              // when its kit last changed (kit_note)
+};
+Sl g_sl[kVoiceSlots];
+CORE_COLD Sl& S() { return g_sl[prj_slot()]; }
+CORE_COLD Sl& S(int slot) { return g_sl[slot > 0 && slot < kVoiceSlots ? slot : 0]; }
+// the QPERF knob (Task 47, the Rytm's: its slot's fader): the position last acted on (a baseline or a take), -1 none since
+// the link came up (Phase 7 review M2); whether a take since then sets the smoothing's interval, and when
+
 
 CORE_COLD bool ok_scene(int n) { return n >= 0 && n < kScenes; }
 // 0.5.0 v2 (S7): the Rytm's own scene and PERF macros are no scene targets (the XY pad and MIDI learn keep them)
@@ -60,46 +81,40 @@ CORE_COLD int find_lock(const Scene& s, mod::Tid t) {
   return -1;
 }
 CORE_COLD void merge() {
-  g_mn = 0;
-  if (ok_scene(g_st.a)) {
-    const Scene& a = g_st.s[g_st.a];
-    for (int i = 0; i < a.n; ++i) g_m[g_mn++] = {a.l[i].t, a.l[i].v, -1};
+  S().mn = 0;
+  if (ok_scene(S().st.a)) {
+    const Scene& a = S().st.s[S().st.a];
+    for (int i = 0; i < a.n; ++i) S().m[S().mn++] = {a.l[i].t, a.l[i].v, -1};
   }
-  if (ok_scene(g_st.b)) {
-    const Scene& b = g_st.s[g_st.b];
+  if (ok_scene(S().st.b)) {
+    const Scene& b = S().st.s[S().st.b];
     for (int i = 0; i < b.n; ++i) {
       int j = 0;
-      while (j < g_mn && g_m[j].t != b.l[i].t) ++j;
-      if (j < g_mn) g_m[j].bv = b.l[i].v;
-      else g_m[g_mn++] = {b.l[i].t, -1, b.l[i].v};
+      while (j < S().mn && S().m[j].t != b.l[i].t) ++j;
+      if (j < S().mn) S().m[j].bv = b.l[i].v;
+      else S().m[S().mn++] = {b.l[i].t, -1, b.l[i].v};
     }
   }
-  g_stale = false;
+  S().stale = false;
 }
 // a lock of scene n (0..11, -1 none) on t
-CORE_COLD bool locks(int n, mod::Tid t) { return ok_scene(n) && find_lock(g_st.s[n], t) >= 0; }
+CORE_COLD bool locks(int n, mod::Tid t) { return ok_scene(n) && find_lock(S().st.s[n], t) >= 0; }
 
 struct Init {   // before the first reset(): no A, no B
-  Init() { g_st.a = g_st.b = -1; }
+  Init() {
+    for (Sl& l : g_sl) l.st.a = l.st.b = -1;
+  }
 } g_init;
 
-// ---- the files' state (Task 9)
-char g_proj[24] = "";
-int g_kit = -1;        // the kit the scenes are of (0..127), -1 none named
-int g_rytm_kit = -1;   // the Rytm's active kit as it last said (kit_changed)
-bool g_dirty = false, g_locked = false;
-uint32_t g_dirty_ms = 0;
-int g_file_fader = -1;
-bool g_said = false;     // a locked file's "not saved" logged (once a load, review L8)   // the F the kit's file has (loaded or saved), -1 none (review M2)
 constexpr uint32_t kTextMax = 20480;   // 768 locks of the longest names: ~18 KB
 char g_text[kTextMax];
 
-CORE_COLD void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
+CORE_COLD void changed() { S().dirty = true, S().dirty_ms = now_ms(); }
 CORE_COLD void clear_state() {   // no locks, no A / B; the fader where it is
-  for (Scene& s : g_st.s) s.n = 0;
-  g_st.a = g_st.b = -1, g_st.sel = 0;
-  g_last_a = g_last_b = -1;
-  g_mn = 0, g_stale = true;
+  for (Scene& s : S().st.s) s.n = 0;
+  S().st.a = S().st.b = -1, S().st.sel = 0;
+  S().last_a = S().last_b = -1;
+  S().mn = 0, S().stale = true;
 }
 CORE_COLD void name_of(const char* proj, char* fn, int cap, int kit) {
   char n[kKeyMax];
@@ -134,20 +149,20 @@ CORE_COLD bool take_line(const char* b) {
   long a, c;
   if (!strcmp(k, "AB")) {
     if (!num(&p, &a) || !num(&p, &c) || a > kScenes || c > kScenes) return false;
-    g_st.a = (int8_t)(a - 1), g_st.b = (int8_t)(c - 1);
+    S().st.a = (int8_t)(a - 1), S().st.b = (int8_t)(c - 1);
   } else if (!strcmp(k, "F")) {
     if (!num(&p, &a) || a > kFaderMax) return false;
-    g_st.fader = (uint16_t)a, g_file_fader = (int)a;   // (load smooths the played fader to it)
+    S().st.fader = (uint16_t)a, S().file_fader = (int)a;   // (load smooths the played fader to it)
   } else if (!strcmp(k, "S")) {
     if (!num(&p, &a) || a < 1 || a > kScenes) return false;
-    g_st.sel = (int8_t)(a - 1);
+    S().st.sel = (int8_t)(a - 1);
   } else if (!strcmp(k, "L")) {
     char nm[24];
     mod::Tid t;
     if (!num(&p, &a) || a < 1 || a > kScenes) return false;
     word(&p, nm, sizeof nm);
     if (!mod::parse(nm, &t) || !target_ok(t) || !num(&p, &c) || c > kFaderMax) return false;
-    Scene& s = g_st.s[a - 1];
+    Scene& s = S().st.s[a - 1];
     int i = find_lock(s, t);
     if (i < 0) {
       if (s.n >= kLocks) return false;
@@ -162,13 +177,13 @@ CORE_COLD bool take_line(const char* b) {
 }
 // the file's text into g_text: its length; 0 when it does not fit (cannot happen at 768 locks)
 CORE_COLD uint32_t to_text() {
-  int n = sniprintf(g_text, sizeof g_text, CORE_STR("#sidecar scene 2\nAB %d %d\nF %u\nS %d\n"), g_st.a + 1, g_st.b + 1,
-                    (unsigned)g_st.fader, g_st.sel + 1);
+  int n = sniprintf(g_text, sizeof g_text, CORE_STR("#sidecar scene 2\nAB %d %d\nF %u\nS %d\n"), S().st.a + 1, S().st.b + 1,
+                    (unsigned)S().st.fader, S().st.sel + 1);
   for (int sc = 0; sc < kScenes; ++sc)
-    for (int i = 0; i < g_st.s[sc].n; ++i) {
+    for (int i = 0; i < S().st.s[sc].n; ++i) {
       char nm[16];
-      mod::name(g_st.s[sc].l[i].t, nm, sizeof nm);
-      int k = sniprintf(g_text + n, sizeof g_text - n, CORE_STR("L %d %s %u\n"), sc + 1, nm, (unsigned)g_st.s[sc].l[i].v);
+      mod::name(S().st.s[sc].l[i].t, nm, sizeof nm);
+      int k = sniprintf(g_text + n, sizeof g_text - n, CORE_STR("L %d %s %u\n"), sc + 1, nm, (unsigned)S().st.s[sc].l[i].v);
       if (k <= 0 || n + k >= (int)sizeof g_text) return 0;
       n += k;
     }
@@ -177,19 +192,19 @@ CORE_COLD uint32_t to_text() {
 
 }  // namespace
 
-CORE_COLD const State& state() { return g_st; }
+CORE_COLD const State& state() { return S().st; }
 
 CORE_COLD bool lock(int n, mod::Tid t, uint16_t v) {
   if (!SIDECAR_MORPH) return false;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
   if (!ok_scene(n) || !target_ok(t) || v > kFaderMax) return false;
-  Scene& s = g_st.s[n];
+  Scene& s = S().st.s[n];
   int i = find_lock(s, t);
   if (i < 0) {
     if (s.n >= kLocks) return false;   // SCENE FULL
     i = s.n++;
   }
   s.l[i] = {t, v};
-  g_stale = true;
+  S().stale = true;
   changed();
   return true;
 }
@@ -197,12 +212,12 @@ CORE_COLD bool lock(int n, mod::Tid t, uint16_t v) {
 CORE_COLD bool unlock(int n, mod::Tid t) {
   if (!SIDECAR_MORPH) return false;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
   if (!ok_scene(n)) return false;
-  Scene& s = g_st.s[n];
+  Scene& s = S().st.s[n];
   int i = find_lock(s, t);
   if (i < 0) return false;
   memmove(&s.l[i], &s.l[i + 1], (size_t)(s.n - i - 1) * sizeof(Lock));
   --s.n;
-  g_stale = true;
+  S().stale = true;
   changed();
   return true;
 }
@@ -210,32 +225,32 @@ CORE_COLD bool unlock(int n, mod::Tid t) {
 CORE_COLD void clear(int n) {
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
   if (!ok_scene(n)) return;
-  g_st.s[n].n = 0;
-  g_stale = true;
+  S().st.s[n].n = 0;
+  S().stale = true;
   changed();
 }
 
 CORE_COLD void copy(int from, int to) {
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
   if (!ok_scene(from) || !ok_scene(to) || from == to) return;
-  g_st.s[to] = g_st.s[from];
-  g_stale = true;
+  S().st.s[to] = S().st.s[from];
+  S().stale = true;
   changed();
 }
 
 CORE_COLD void set_ab(int a, int b) {
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
   int8_t na = (int8_t)(ok_scene(a) ? a : -1), nb = (int8_t)(ok_scene(b) ? b : -1);
-  if (na == g_st.a && nb == g_st.b) return;
-  g_st.a = na, g_st.b = nb;
-  g_stale = true;
+  if (na == S().st.a && nb == S().st.b) return;
+  S().st.a = na, S().st.b = nb;
+  S().stale = true;
   changed();
 }
 
 CORE_COLD void set_sel(int n) {
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
-  if (!ok_scene(n) || n == g_st.sel) return;
-  g_st.sel = (int8_t)n;
+  if (!ok_scene(n) || n == S().st.sel) return;
+  S().st.sel = (int8_t)n;
   changed();
 }
 
@@ -243,11 +258,11 @@ namespace {
 CORE_COLD void move_fader(uint16_t v, int source, uint32_t smooth_ms) {   // whichever moved last wins
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
   if (v > kFaderMax) v = kFaderMax;
-  if (v == g_st.fader) return;
-  if (g_src && source != g_src) smooth_ms = kHandoverMs;   // a handover glides, it does not jump (UX 2b)
-  g_from = g_played, g_set_ms = now_ms(), g_smooth_ms = smooth_ms;
-  g_st.fader = v;
-  g_src = source;
+  if (v == S().st.fader) return;
+  if (S().src && source != S().src) smooth_ms = kHandoverMs;   // a handover glides, it does not jump (UX 2b)
+  S().from = S().played, S().set_ms = now_ms(), S().smooth_ms = smooth_ms;
+  S().st.fader = v;
+  S().src = source;
   if (source == kQperf) ui::remote_morph_qperf_move();
   mod::fader_moved();   // a held manual edit lets go (spec-050 2.5)
 }
@@ -255,83 +270,83 @@ CORE_COLD void move_fader(uint16_t v, int source, uint32_t smooth_ms) {   // whi
 
 CORE_COLD void set_fader(uint16_t v, int source) { move_fader(v, source, kSmoothMs); }
 
-CORE_COLD uint16_t fader_played() { return (uint16_t)g_played; }
-CORE_COLD int fader_source() { return g_src; }
+CORE_COLD uint16_t fader_played() { return (uint16_t)S().played; }
+CORE_COLD int fader_source() { return S().src; }
 
-CORE_COLD void set_qp_mode(int m) { g_qp_mode = (uint8_t)(m == kQpOff || m == kQpAlways ? m : kQpMutedOnly); }
-CORE_COLD int qp_mode() { return g_qp_mode; }
+CORE_COLD void set_qp_mode(int m) { S().qp_mode = (uint8_t)(m == kQpOff || m == kQpAlways ? m : kQpMutedOnly); }
+CORE_COLD int qp_mode() { return S().qp_mode; }
 CORE_COLD const char* qp_mode_name(int m) { return m == kQpOff ? "off" : m == kQpAlways ? "always" : "muted"; }
 
-CORE_COLD void qperf(int pos, uint16_t mask, uint8_t flags) {
+CORE_COLD void qperf(int pos, uint16_t mask, uint8_t flags) {   // (the Rytm's knob: its slot's fader)
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
-  (void)mask;
+  (void)mask;   // (the box in hand's knob: its own slot's fader)
   if (!(flags & kQpMoved) || pos < 0 || pos > 255) return;   // the hello's report before the knob ever sent: no position
   // QPERF FADER (v2 Task 6): bit 2 only from a mod that reports the mute; its edge makes this position a baseline
   const bool muted = (ui::remote_caps2() & ui::kCaps2QpMute) && (flags & kQpMuted);
-  if (muted != g_qp_muted) g_qp_muted = muted, qperf_rebase();
-  const int was = g_qv.pos;
-  g_qv.pos = pos, g_qv.moved = true, g_qv.muted = muted;
-  if (g_qp_mode == kQpOff || (g_qp_mode == kQpMutedOnly && !muted)) {   // not the fader now: the next allowed one a baseline
-    if (g_qp_mode == kQpMutedOnly && pos != was) g_qv.ignored_ms = now_ms() | 1;   // (the page's FUNC+QPER hint)
+  if (muted != S().qp_muted) S().qp_muted = muted, qperf_rebase();
+  const int was = S().qv.pos;
+  S().qv.pos = pos, S().qv.moved = true, S().qv.muted = muted;
+  if (S().qp_mode == kQpOff || (S().qp_mode == kQpMutedOnly && !muted)) {   // not the fader now: the next allowed one a baseline
+    if (S().qp_mode == kQpMutedOnly && pos != was) S().qv.ignored_ms = now_ms() | 1;   // (the page's FUNC+QPER hint)
     qperf_rebase();
     return;
   }
-  if (g_qp_pos < 0) {   // the first report since the link came up: a baseline only, the knob takes on a change (M2)
-    g_qp_pos = pos;
+  if (S().qp_pos < 0) {   // the first report since the link came up: a baseline only, the knob takes on a change (M2)
+    S().qp_pos = pos;
     return;
   }
-  int d = pos > g_qp_pos ? pos - g_qp_pos : g_qp_pos - pos;
+  int d = pos > S().qp_pos ? pos - S().qp_pos : S().qp_pos - pos;
   if (d == 0) return;   // FUNC or the mask changed: the fader stays where it is
   // another source has the fader (or a held manual edit plays): a 1-step flicker of the pot does not take it (M1)
-  if ((g_src != kQperf || mod::held_any()) && d < kQpTakeSteps) return;
+  if ((S().src != kQperf || mod::held_any()) && d < kQpTakeSteps) return;
   uint16_t v = (uint16_t)(pos * kFaderMax / 255);
-  uint32_t ms = now_ms(), gap = ms - g_qp_ms;
+  uint32_t ms = now_ms(), gap = ms - S().qp_ms;
   // the first take after a baseline catches up over kHandoverMs (the 2-step guard's start jump, UX 2b); then the
   // reports' interval
-  uint32_t sm = !g_qp_seen ? kHandoverMs : gap <= kQpSmoothMaxMs ? (gap > kSmoothMs ? gap : kSmoothMs) : kSmoothMs;
-  g_qp_seen = true, g_qp_pos = pos, g_qp_ms = ms;
+  uint32_t sm = !S().qp_seen ? kHandoverMs : gap <= kQpSmoothMaxMs ? (gap > kSmoothMs ? gap : kSmoothMs) : kSmoothMs;
+  S().qp_seen = true, S().qp_pos = pos, S().qp_ms = ms;
   move_fader(v, kQperf, sm);
 }
-CORE_COLD void qperf_rebase() { g_qp_pos = -1, g_qp_seen = false; }
-CORE_COLD QpView qperf_view() { return g_qv; }
+CORE_COLD void qperf_rebase() { S().qp_pos = -1, S().qp_seen = false; }
+CORE_COLD QpView qperf_view() { return S().qv; }
 CORE_COLD bool qp_wants_knob() {
-  return g_qp_mode == kQpAlways || (g_qp_mode == kQpMutedOnly && (ui::remote_caps2() & ui::kCaps2QpMute));
+  return S().qp_mode == kQpAlways || (S().qp_mode == kQpMutedOnly && (ui::remote_caps2() & ui::kCaps2QpMute));
 }
-CORE_COLD int rytm_kit() { return g_rytm_kit; }
-CORE_COLD int kit_note(uint32_t now) { return g_kit_ms && now - g_kit_ms < 2000 && g_rytm_kit >= 0 ? g_rytm_kit : -1; }
-CORE_COLD void rytm_scene_seen(int n) { g_rscn = n >= 0 && n <= kScenes ? n : 0; }
-CORE_COLD int rytm_scene() { return g_rscn; }
+CORE_COLD int rytm_kit() { return S().rytm_kit; }
+CORE_COLD int kit_note(uint32_t now) { return S().kit_ms && now - S().kit_ms < 2000 && S().rytm_kit >= 0 ? S().rytm_kit : -1; }
+CORE_COLD void rytm_scene_seen(int n) { S().rscn = n >= 0 && n <= kScenes ? n : 0; }
+CORE_COLD int rytm_scene() { return S().rscn; }
 
 CORE_COLD void tick(uint32_t ms) {
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
-  g_now_ms = ms;
-  uint32_t el = ms - g_set_ms;
-  int to = g_st.fader;
-  g_played = el >= g_smooth_ms ? to : g_from + (to - g_from) * (int)el / (int)g_smooth_ms;
-  if (g_played != g_last_played && g_src == kQperf) ui::remote_morph_qperf_move();   // the glide, its last step too, is not held
-  g_last_played = g_played;
-  float f = (float)g_played / (float)kFaderMax;
+  S().now_ms = ms;
+  uint32_t el = ms - S().set_ms;
+  int to = S().st.fader;
+  S().played = el >= S().smooth_ms ? to : S().from + (to - S().from) * (int)el / (int)S().smooth_ms;
+  if (S().played != S().last_played && S().src == kQperf) ui::remote_morph_qperf_move();   // the glide, its last step too, is not held
+  S().last_played = S().played;
+  float f = (float)S().played / (float)kFaderMax;
   constexpr float kH = 1.0f / 64.0f;
-  if (g_st.a != g_last_a || g_st.b != g_last_b) {
+  if (S().st.a != S().last_a || S().st.b != S().last_b) {
     // the old scenes' targets that the new A / B do not lock: back to their bases before the new ones' entries are
     // allocated (spec-050 1.4: so an A / B change of full scenes stays within kEntries)
-    const int olds[2] = {g_last_a, g_last_b};   // (no <initializer_list> on the Pi's hosted side)
+    const int olds[2] = {S().last_a, S().last_b};   // (no <initializer_list> on the Pi's hosted side)
     for (int old : olds) {
-      if (!ok_scene(old) || old == g_st.a || old == g_st.b) continue;
-      const Scene& s = g_st.s[old];
+      if (!ok_scene(old) || old == S().st.a || old == S().st.b) continue;
+      const Scene& s = S().st.s[old];
       for (int i = 0; i < s.n; ++i)
-        if (!locks(g_st.a, s.l[i].t) && !locks(g_st.b, s.l[i].t)) mod::release(s.l[i].t);
+        if (!locks(S().st.a, s.l[i].t) && !locks(S().st.b, s.l[i].t)) mod::release(s.l[i].t);
     }
-    g_last_a = g_st.a, g_last_b = g_st.b;
-    g_upper = f >= 0.5f;
-  } else if (g_upper ? f < 0.5f - kH : f >= 0.5f + kH) {
-    g_upper = !g_upper;
+    S().last_a = S().st.a, S().last_b = S().st.b;
+    S().upper = f >= 0.5f;
+  } else if (S().upper ? f < 0.5f - kH : f >= 0.5f + kH) {
+    S().upper = !S().upper;
   }
-  if (g_stale) merge();
+  if (S().stale) merge();
   uint16_t lists[8];   // the voices' list knobs this tick (a model, a pattern: they step), looked up once a voice
   uint8_t looked = 0;
-  for (int i = 0; i < g_mn; ++i) {
-    const M& m = g_m[i];
+  for (int i = 0; i < S().mn; ++i) {
+    const M& m = S().m[i];
     mod::Kind k = mod::kind_of(m.t);
     bool step = mod::range(m.t).mode == mod::kStep;
     if (k == mod::kV) {
@@ -339,7 +354,7 @@ CORE_COLD void tick(uint32_t ms) {
       if (!(looked >> vi & 1)) {
         lists[vi] = 0;
         for (int p = 0; p < 16; ++p)
-          if (ui::remote_is_list(vi, p)) lists[vi] |= (uint16_t)(1u << p);
+          if (ui::remote_is_list(device::voice_in((uint8_t)vi), p)) lists[vi] |= (uint16_t)(1u << p);   // (the slot's own)
         looked |= (uint8_t)(1u << vi);
       }
       step = lists[vi] >> mod::param_of(m.t) & 1;
@@ -348,37 +363,45 @@ CORE_COLD void tick(uint32_t ms) {
     // the Rytm's own sound parameters (RT / RFX, 0.5.0): no base here either; the parts go to the Rytm as an override's
     // value and mix (rytm-param-mod 5.3), its own value under a one-sided lock's other half
     if (mod::is_remote(k)) {
-      mod::morph_parts(m.t, m.av >= 0, a, m.bv >= 0, b, f, step, g_upper);
+      mod::morph_parts(m.t, m.av >= 0, a, m.bv >= 0, b, f, step, S().upper);
       continue;
     }
     if (m.av < 0) a = mod::base(m.t);
     else if (m.bv < 0) b = mod::base(m.t);
-    float val = step ? (g_upper ? b : a) : a + (b - a) * f;
+    float val = step ? (S().upper ? b : a) : a + (b - a) * f;
     if (step && k == mod::kV) val = (float)(int)(val + 0.5f);   // a list cell plays whole entries (review L13)
     mod::morph(m.t, val);
   }
 }
 
 CORE_COLD void reset() {
-  memset(&g_st, 0, sizeof g_st);
-  g_st.a = g_st.b = -1;
-  g_played = g_from = g_last_played = 0;
-  g_set_ms = now_ms(), g_now_ms = g_set_ms;
-  g_smooth_ms = kSmoothMs, g_src = 0;
-  g_qp_pos = -1, g_qp_seen = false, g_qp_ms = 0;
-  g_qp_mode = kQpMutedOnly, g_qp_muted = false, g_qv = QpView{-1, false, false, 0}, g_kit_ms = 0;
-  g_rscn = -1;
-  g_upper = false;
-  g_last_a = g_last_b = -1;
-  g_mn = 0, g_stale = true;
-  g_dirty = g_locked = false, g_kit = g_rytm_kit = -1;
-  g_side = -1;
+  for (Sl& l : g_sl) {   // (every slot's)
+    memset(&l.st, 0, sizeof l.st);
+    l.st.a = l.st.b = -1;
+    l.played = l.from = l.last_played = 0;
+    l.set_ms = now_ms(), l.now_ms = l.set_ms;
+    l.smooth_ms = kSmoothMs, l.src = 0;
+    l.upper = false;
+    l.last_a = l.last_b = -1;
+    l.mn = 0, l.stale = true;
+    l.dirty = l.locked = false, l.kit = l.rytm_kit = -1;
+    l.side = -1, l.kit_ms = 0;
+    l.qp_pos = -1, l.qp_seen = false, l.qp_ms = 0;
+    l.qp_mode = kQpMutedOnly, l.qp_muted = false, l.qv = QpView{-1, false, false, 0};
+    l.rscn = -1;
+  }
+
 }
 
 // ---------------------------------------------------------------------------------------------------- the card
 
-CORE_COLD bool dirty() { return g_dirty; }
-CORE_COLD bool locked() { return g_locked; }
+CORE_COLD bool dirty() { return S().dirty; }
+CORE_COLD bool dirty_any() {
+  for (const Sl& l : g_sl)
+    if (l.dirty) return true;
+  return false;
+}
+CORE_COLD bool locked() { return S().locked; }
 
 // ---------------------------------------------------------------------------------------------------- console, JSON
 
@@ -416,15 +439,15 @@ CORE_COLD int value128(const char* s) {   // "50", "50.5", "127.99": x 128, roun
   return v > kFaderMax ? -1 : (int)v;
 }
 CORE_COLD int state_line(char* o, int cap) {
-  int n = sniprintf(o, cap, CORE_STR("scene: A %d B %d fader %u (%d played) sel %d edit %s"), g_st.a + 1, g_st.b + 1,
-                    (unsigned)g_st.fader, g_played, g_st.sel + 1, g_side == 0 ? "A" : g_side == 1 ? "B" : "off");
+  int n = sniprintf(o, cap, CORE_STR("scene: A %d B %d fader %u (%d played) sel %d edit %s"), S().st.a + 1, S().st.b + 1,
+                    (unsigned)S().st.fader, S().played, S().st.sel + 1, S().side == 0 ? "A" : S().side == 1 ? "B" : "off");
   bool first = true;
   for (int i = 0; i < kScenes && n > 0 && n < cap; ++i) {
-    if (!g_st.s[i].n) continue;
-    n += sniprintf(o + n, cap - n, CORE_STR("%sS%d %d lock%s"), first ? ": " : ", ", i + 1, g_st.s[i].n, g_st.s[i].n == 1 ? "" : "s");
+    if (!S().st.s[i].n) continue;
+    n += sniprintf(o + n, cap - n, CORE_STR("%sS%d %d lock%s"), first ? ": " : ", ", i + 1, S().st.s[i].n, S().st.s[i].n == 1 ? "" : "s");
     first = false;
   }
-  if (g_locked && n > 0 && n < cap) n += sniprintf(o + n, cap - n, CORE_STR(" - SCENES LOCKED (NEWER FILE)"));
+  if (S().locked && n > 0 && n < cap) n += sniprintf(o + n, cap - n, CORE_STR(" - SCENES LOCKED (NEWER FILE)"));
   return n;
 }
 CORE_COLD mod::Tid stock_target(int track, int word) {   // a stock page's (track, word) -> its scene target, 0 none
@@ -439,9 +462,9 @@ CORE_COLD mod::Tid stock_target(int track, int word) {   // a stock page's (trac
 }
 }  // namespace
 
-CORE_COLD void set_edit_side(int side) { g_side = side == 0 || side == 1 ? side : -1; }
-CORE_COLD int edit_side() { return g_side; }
-CORE_COLD int side_scene(int side) { return side == 0 ? g_st.a : side == 1 ? g_st.b : -1; }
+CORE_COLD void set_edit_side(int side) { S().side = side == 0 || side == 1 ? side : -1; }
+CORE_COLD int edit_side() { return S().side; }
+CORE_COLD int side_scene(int side) { return side == 0 ? S().st.a : side == 1 ? S().st.b : -1; }
 CORE_COLD bool lock_side(int side, mod::Tid t, uint16_t v) {
   int n = side_scene(side);
   return n >= 0 && lock(n, t, v);
@@ -452,12 +475,12 @@ CORE_COLD void stock_edit(int ev, int side, int n) {
   char t[mod::kReadoutMax + 1];
   const char sd = side ? 'B' : 'A';
   if (ev == kEditLetGo) {
-    if (g_side == side) g_side = -1;
+    if (S().side == side) S().side = -1;
     return;
   }
-  if (ev == kEditPicked && n >= 0 && n < kScenes) set_ab(side == 0 ? n : g_st.a, side == 1 ? n : g_st.b);
+  if (ev == kEditPicked && n >= 0 && n < kScenes) set_ab(side == 0 ? n : S().st.a, side == 1 ? n : S().st.b);
   else if (ev != kEditHeld) return;
-  g_side = side;
+  S().side = side;
   const int sn = side_scene(side);
   if (sn < 0) sniprintf(t, sizeof t, CORE_STR("SET %c: T1-12"), sd);
   else sniprintf(t, sizeof t, CORE_STR("EDIT %c: SCENE %d"), sd, sn + 1);
@@ -466,7 +489,7 @@ CORE_COLD void stock_edit(int ev, int side, int n) {
 CORE_COLD bool capture(int side, int track, int word, int delta, bool func, uint16_t base) {
   char t[mod::kReadoutMax + 1];
   const char sd = side ? 'B' : 'A';
-  if ((side != 0 && side != 1) || g_side != side) {   // the gesture ended here (a kit change) before its turns came
+  if ((side != 0 && side != 1) || S().side != side) {   // the gesture ended here (a kit change) before its turns came
     mod::rytm_readout("EDIT ENDED");
     return false;
   }
@@ -481,7 +504,7 @@ CORE_COLD bool capture(int side, int track, int word, int delta, bool func, uint
     mod::rytm_readout("NOT LOCKABLE");
     return false;
   }
-  const Scene& sc = g_st.s[n];
+  const Scene& sc = S().st.s[n];
   int cur = -1;
   for (int i = 0; i < sc.n; ++i)
     if (sc.l[i].t == tg) cur = sc.l[i].v;
@@ -513,7 +536,7 @@ CORE_COLD bool capture(int side, int track, int word, int delta, bool func, uint
 CORE_COLD bool capture_clear(int side, int track, int word) {
   char t[mod::kReadoutMax + 1];
   const char sd = side ? 'B' : 'A';
-  if ((side != 0 && side != 1) || g_side != side) {   // the gesture ended here (a kit change) before its press came
+  if ((side != 0 && side != 1) || S().side != side) {   // the gesture ended here (a kit change) before its press came
     mod::rytm_readout("EDIT ENDED");
     return false;
   }
@@ -599,13 +622,16 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   return true;
 }
 
-CORE_COLD int json(char* o, int cap) {
+CORE_COLD int json(char* o, int cap) { return json(o, cap, prj_slot()); }
+CORE_COLD int json(char* o, int cap, int vslot) {   // (any core: never the slot in hand)
+  const Sl& l = S(vslot);
+  const device::Link& lk = device::g_links[vslot > 0 && vslot < kVoiceSlots ? vslot : 0];
   int n = sniprintf(o, cap, CORE_STR("\"scene\":{\"a\":%d,\"b\":%d,\"fader\":%u,\"played\":%d,\"sel\":%d,\"locked\":%d,"
-                                     "\"edit\":%d,\"s\":["), g_st.a + 1, g_st.b + 1, (unsigned)g_st.fader, g_played,
-                    g_st.sel + 1, g_locked ? 1 : 0, g_side + 1);
+                                     "\"edit\":%d,\"s\":["), l.st.a + 1, l.st.b + 1, (unsigned)l.st.fader, l.played,
+                    l.st.sel + 1, l.locked ? 1 : 0, l.side + 1);
   bool first = true;
   for (int i = 0; i < kScenes; ++i) {
-    const Scene& s = g_st.s[i];
+    const Scene& s = l.st.s[i];
     if (!s.n) continue;
     if (n < 0 || n >= cap) return cap;
     n += sniprintf(o + n, cap - n, CORE_STR("%s{\"n\":%d,\"l\":["), first ? "" : ",", i + 1);
@@ -630,7 +656,7 @@ CORE_COLD int json(char* o, int cap) {
   auto slot = [](mod::Kind k) { return k == mod::kV ? 0 : k == mod::kFx ? 1 : k == mod::kIns ? 2 : -1; };
   static const mod::Kind kOfSlot[3] = {mod::kV, mod::kFx, mod::kIns};
   memset(used, 0, sizeof used);
-  for (const Scene& sc : g_st.s)
+  for (const Scene& sc : l.st.s)
     for (int j = 0; j < sc.n; ++j) {
       int q = slot(mod::kind_of(sc.l[j].t));
       if (q >= 0) used[q * 2048 + (sc.l[j].t & 0x7FF)] = true;
@@ -655,7 +681,7 @@ CORE_COLD int json(char* o, int cap) {
   for (int vi = 0; ok && vi < 8; ++vi)
     for (int k = 0; ok && k < 16; ++k) {
       char lb[8];
-      core::ui::voice_label(vi, k, lb, sizeof lb);
+      core::ui::voice_label(device::voice_in((uint8_t)vi, lk), k, lb, sizeof lb);   // the slot's own voice vi
       ok = put(CORE_STR("%s%s\"%s\"%s"), vi && !k ? "," : "", k ? "," : "[", lb, k == 15 ? "]" : "");
     }
   ok = ok && put("%s%s%s%s", "]", "", "", "");
@@ -663,12 +689,12 @@ CORE_COLD int json(char* o, int cap) {
   ok = ok && put("%s%s%s%s", ",\"gone\":[", "", "", "");
   bool first_g = true;
   for (int i = 0; ok && i < kScenes; ++i)
-    for (int j = 0; ok && j < g_st.s[i].n; ++j) {
-      mod::Tid t = g_st.s[i].l[j].t;
+    for (int j = 0; ok && j < S().st.s[i].n; ++j) {
+      mod::Tid t = S().st.s[i].l[j].t;
       if (!core::ui::morph_stale(t)) continue;
       bool seen = false;   // (a gone target is rare: the earlier locks searched only for those)
       for (int i2 = 0; i2 <= i && !seen; ++i2)
-        for (int j2 = 0; j2 < (i2 < i ? g_st.s[i2].n : j) && !seen; ++j2) seen = g_st.s[i2].l[j2].t == t;
+        for (int j2 = 0; j2 < (i2 < i ? S().st.s[i2].n : j) && !seen; ++j2) seen = S().st.s[i2].l[j2].t == t;
       if (seen) continue;
       char nm[16];
       ok = put(CORE_STR("%s\"%s\"%s%s"), first_g ? "" : ",", mod::name(t, nm, sizeof nm), "", ""), first_g = false;
@@ -677,51 +703,51 @@ CORE_COLD int json(char* o, int cap) {
   if (!ok) n = at;   // (no room: the old fields only)
 #endif
   if (n >= cap) return cap;
-  n += sniprintf(o + n, cap - n, CORE_STR(",\"src\":%d,\"rscn\":%d}"), g_src, g_rscn);
+  n += sniprintf(o + n, cap - n, CORE_STR(",\"src\":%d,\"rscn\":%d}"), l.src, l.rscn);
   return n >= cap ? cap : n;
 }
-CORE_COLD int kit() { return g_kit; }
+CORE_COLD int kit() { return S().kit; }
 // spec 2.8: the fader's position goes out with a kit change or a project leave, though a fader move alone is no edit (a
 // kit with a file or locks: a kit with neither gets no file for its position alone)
 static CORE_COLD bool fader_owed() {
-  if (g_locked) return false;
-  bool any = g_file_fader >= 0;
-  for (const Scene& sc : g_st.s) any = any || sc.n;
-  return any && g_st.fader != g_file_fader;
+  if (S().locked) return false;
+  bool any = S().file_fader >= 0;
+  for (const Scene& sc : S().st.s) any = any || sc.n;
+  return any && S().st.fader != S().file_fader;
 }
-CORE_COLD void save_due() {
-  if (!g_dirty && fader_owed()) g_dirty = true;
-  if (g_dirty) g_dirty_ms = now_ms() - 1000;
+CORE_COLD void save_due() {   // the slot in hand's (the idle pass: each slot's in its Scope)
+  if (!S().dirty && fader_owed()) S().dirty = true;
+  if (S().dirty) S().dirty_ms = now_ms() - 1000;
 }
 
 #if CORE_MSAMP
-CORE_COLD void rekey(const char* name) { sniprintf(g_proj, sizeof g_proj, "%s", name ? name : ""); }
+CORE_COLD void rekey(const char* name) { sniprintf(S().proj, sizeof S().proj, "%s", name ? name : ""); }
 CORE_COLD void want_files() {
   char fn[96];
-  for (int k = -1; k < 128; ++k) name_of(project, fn, sizeof fn, k), store::want(fn);
+  for (int k = -1; k < 128; ++k) name_of(prj().key, fn, sizeof fn, k), store::want(fn);
 }
 
 CORE_COLD void load() {
   mod::restore_morphs();   // the old scenes' targets back to their bases now (an A / B of full scenes stays in kEntries)
   clear_state();
-  const uint16_t was = g_st.fader;
-  g_file_fader = -1, g_said = false;
-  g_locked = g_dirty = false;
-  strcpy(g_proj, project);   // the scenes are this project's and the Rytm's kit's from now on
-  g_kit = g_rytm_kit;
+  const uint16_t was = S().st.fader;
+  S().file_fader = -1, S().said = false;
+  S().locked = S().dirty = false;
+  strcpy(S().proj, prj().key);   // the scenes are this project's and the Rytm's kit's from now on
+  S().kit = S().rytm_kit;
   char fn[96], b[96];
-  name_of(g_proj, fn, sizeof fn, g_kit);
+  name_of(S().proj, fn, sizeof fn, S().kit);
   const uint8_t* d;
   uint32_t len, at = 0;
   bool own = true;   // the file read is the one save() writes
   store::State st = store::get(fn, &d, &len);
-  if (st == store::kAbsent && g_kit >= 0) {   // a kit without its own file: the project's
-    name_of(g_proj, fn, sizeof fn, -1), own = false;
+  if (st == store::kAbsent && S().kit >= 0) {   // a kit without its own file: the project's
+    name_of(S().proj, fn, sizeof fn, -1), own = false;
     st = store::get(fn, &d, &len);
   }
   if (st == store::kAbsent) return;   // none: no scenes
   if (st != store::kPresent) {   // there but unreadable, or never filled: never taken for absent
-    if (own) g_locked = true;
+    if (own) S().locked = true;
     log(CORE_STR("scene: %s %s: no scenes%s"), fn, st == store::kLocked ? "cannot be read" : "not in the store",
         own ? ", nothing written" : "");
     return;
@@ -735,10 +761,10 @@ CORE_COLD void load() {
     if (take_line(b)) ++n;
     else ++bad;
   }
-  if (bad && own) g_locked = true;
-  if (g_st.fader != was) g_from = g_played, g_set_ms = now_ms(), g_smooth_ms = kSmoothMs;   // a file's F: over 20 ms (M2)
-  g_last_a = g_st.a, g_last_b = g_st.b;   // (restored above: nothing of the old A / B to release)
-  g_upper = g_played >= kFaderMax / 2 + 1;
+  if (bad && own) S().locked = true;
+  if (S().st.fader != was) S().from = S().played, S().set_ms = now_ms(), S().smooth_ms = kSmoothMs;   // a file's F: over 20 ms (M2)
+  S().last_a = S().st.a, S().last_b = S().st.b;   // (restored above: nothing of the old A / B to release)
+  S().upper = S().played >= kFaderMax / 2 + 1;
   log(CORE_STR("scene: %d lines from %s%s"), n, fn,
       bad ? (own ? " (lines it does not read: the file is kept, not written)" : " (lines it does not read)") : "");
 }
@@ -746,23 +772,23 @@ CORE_COLD void load() {
 // posted to the card core as one atomic write (fmt.h), its text put into the store first (a kit change back reads it
 // from RAM before the card has it); queue (a kit change's save) or a text over kPostMax: fmt::post_queue, no wait
 static CORE_COLD bool save_text(bool queue) {
-  if (!g_dirty || now_ms() - g_dirty_ms < 1000) return false;
+  if (!S().dirty || now_ms() - S().dirty_ms < 1000) return false;
   char fn[96];
-  name_of(g_proj, fn, sizeof fn, g_kit);
-  if (g_locked) {   // 1042
-    g_dirty = false;
-    if (!g_said) log(CORE_STR("scene: %s not saved: it has lines this build does not read (kept as it is)"), fn);
-    g_said = true;
+  name_of(S().proj, fn, sizeof fn, S().kit);
+  if (S().locked) {   // 1042
+    S().dirty = false;
+    if (!S().said) log(CORE_STR("scene: %s not saved: it has lines this build does not read (kept as it is)"), fn);
+    S().said = true;
     return true;
   }
   uint32_t n = to_text();
   if (!n) {
-    g_dirty = false;
+    S().dirty = false;
     log(CORE_STR("scene: %s not written: its text does not fit (kept as it is)"), fn);
     return true;
   }
   // the store is the project's now named; an old project's file saved while the next one's store fills is not put in it
-  if (!strcmp(g_proj, project)) store::put(fn, (const uint8_t*)g_text, n);
+  if (!strcmp(S().proj, prj().key)) store::put(fn, (const uint8_t*)g_text, n);
   if (queue || n > fmt::kPostMax || fmt::post_stalled()) {
     if (!fmt::post_queue(fn, g_text, n)) log(CORE_STR("scene: %s not written to the card (refused or out of memory: in RAM only)"), fn);
   } else {
@@ -771,32 +797,32 @@ static CORE_COLD bool save_text(bool queue) {
     memcpy(p, g_text, n);
     if (!fmt::post_end(fn, n)) return false;
   }
-  g_dirty = false, g_file_fader = g_st.fader;
+  S().dirty = false, S().file_fader = S().st.fader;
   return true;
 }
 CORE_COLD bool save() { return save_text(false); }
 
 CORE_COLD void project_changed() {
-  if (!g_dirty && fader_owed()) g_dirty = true;   // the fader's position too (spec 2.8)
-  if (g_dirty) g_dirty_ms = now_ms() - 1000, save_text(true);   // the old one's edits first, into its own file
+  if (!S().dirty && fader_owed()) S().dirty = true;   // the fader's position too (spec 2.8)
+  if (S().dirty) S().dirty_ms = now_ms() - 1000, save_text(true);   // the old one's edits first, into its own file
   load();
 }
 
 CORE_COLD void kit_changed(int kit) {
   if (kit < 0 || kit > 127) return;
-  if (kit != g_rytm_kit) g_side = -1, g_kit_ms = now_ms() | 1;   // v2: a held EDIT ends with the kit (its scenes go)
-  g_rytm_kit = kit;
+  if (kit != S().rytm_kit) S().side = -1, S().kit_ms = now_ms() | 1;   // v2: a held EDIT ends with the kit (its scenes go)
+  S().rytm_kit = kit;
   // a project's store still filling: its load takes this kit; a rename moving the files: the switch after it does
   if (!store::ready() || rename::moving()) return;
-  if (kit != g_kit) project_changed();
+  if (kit != S().kit) project_changed();
 }
 #else
 CORE_COLD void load() {}
 CORE_COLD bool save() { return false; }
 CORE_COLD void project_changed() {}
 CORE_COLD void kit_changed(int kit) {
-  if (kit != g_rytm_kit) g_side = -1, g_kit_ms = now_ms() | 1;
-  g_rytm_kit = kit;
+  if (kit != S().rytm_kit) S().side = -1, S().kit_ms = now_ms() | 1;
+  S().rytm_kit = kit;
 }
 #endif
 

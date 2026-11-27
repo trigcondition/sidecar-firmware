@@ -449,7 +449,7 @@ Import import_card (const Fs &fs, const char *confPath, const char *tryPath, Key
 		}
 		n.on = true;
 		n.band = band;
-		if (!save (fs, confPath, &n, true)) r = "cannot write /.rytm/wifi.txt";
+		if (!save (fs, confPath, &n, true)) r = "cannot write /.sidecar/wifi.txt";
 		else
 		{
 			char t[128];

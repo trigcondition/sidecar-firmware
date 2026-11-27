@@ -529,6 +529,7 @@ private:
 		unsigned nFbSent, nFb, nMacPeak;		// nMacPeak: the computer's largest |sample| mixed (24-bit)
 		unsigned nReq, nBadReq;
 		unsigned nMidiFromHost, nMidiToHost, nMidiToRytm, nMidiFull, nMidiNoRytm;
+		unsigned nMidiToKeys;			// the computer's notes taken by the keys tap (core::keys), not the Rytm's queue
 #if RASPPI >= 5
 		unsigned nOutCross[ChOut], nOutPeak[ChOut];	// test source: each OUT channel, for the log (no Rytm, no serial needed)
 #endif

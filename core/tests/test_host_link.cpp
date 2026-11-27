@@ -51,16 +51,16 @@ int main() {
   dxlib.begin(&cards.sd(), log);
   voices_init();
   send(msg({0x10, 'A', 'B'}));
-  CHECK(!strcmp(project, "AB") && count(0x14) == 1 && count(0x16) == 1 && count(0x17) >= 1 && count(0x1d) == 1);
+  CHECK(!strcmp(prj().key, "AB") && count(0x14) == 1 && count(0x16) == 1 && count(0x17) >= 1 && count(0x1d) == 1);
   g_out.clear();
   send(msg({0x10, 'A', 'B'}));   // the Rytm's repeat (every few seconds while it plays): no tables again
-  CHECK(!strcmp(project, "AB") && count(0x14) == 0 && count(0x16) == 0);
+  CHECK(!strcmp(prj().key, "AB") && count(0x14) == 0 && count(0x16) == 0);
   send(msg({0x10, 'C', 'D'}));   // another project: its pool, the tables again
-  CHECK(!strcmp(project, "CD") && count(0x14) == 1 && count(0x16) == 1);
+  CHECK(!strcmp(prj().key, "CD") && count(0x14) == 1 && count(0x16) == 1);
   g_out.clear();
-  project_seen = false;          // a fresh start whose stored project is the Rytm's: the first 10 still answers
+  prj().seen = false;          // a fresh start whose stored project is the Rytm's: the first 10 still answers
   send(msg({0x10, 'C', 'D'}));
-  CHECK(!strcmp(project, "CD") && count(0x14) == 1 && count(0x16) == 1);
+  CHECK(!strcmp(prj().key, "CD") && count(0x14) == 1 && count(0x16) == 1);
   g_out.clear();
   send(msg({0x19, 1, 2, 0, 0, 0}));   // ask slot 2's metadata at generation 0: EMPTY
   CHECK(g_out.size() == 1 && g_out[0].size() == 43 && g_out[0][4] == 0x1a && g_out[0][6] == 2);

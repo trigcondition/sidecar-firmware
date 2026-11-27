@@ -52,7 +52,7 @@ float Output::Own(float x, float t) {
 }
 
 void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoices], const Taps* taps) {
-  const core::out::Control& c = *ctl_;
+  const core::out::Control& c = follow_ ? *follow_() : *ctl_;
   bool block_set = false;
   const uint32_t base = d_.since_reset;
   if (d_.first_pull_level == kNone) d_.first_pull_level = fifo_.size();
@@ -61,7 +61,9 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
   if (!armed_ && streams_ && target_ && fifo_.size() + kArmSlack >= target_)
     armed_ = true, d_.arm_at = base, d_.arm_level = fifo_.size();
   const Mode mode = GetMode();
-  const bool test = core::out::meas::active();   // stereo=measure: its test signals (core/fx/out_measure.h)
+  const bool test = measured_ && core::out::meas::active() &&   // stereo=measure: its test signals (core/fx/out_measure.h),
+                    (!measured_slot_ || measured_slot_() == core::out::meas::slot());   // its box's
+
   const float trk_gain = c.trk10 ? powf(10.0f, (float)c.trk10 / 200.0f) : 1.0f;   // stereo=trim:trk (once a block: a change is a step, a test setting)
   int32_t tp[kVoices] = {};   // each voice's largest |sample| on its own track this call (the web's meters, TakeTrkPeaks)
   float tg = 0.0f;
@@ -105,7 +107,7 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
           const float y = f.v[v] / 32768.0f * g, x = Limit(y);
           float a = x < 0 ? -x : x;
           if (a > peak_) peak_ = a;
-          const uint8_t ch = core::out::device().voice[v];   // the Rytm's: kVoiceToChannel, the old path bit for bit
+          const uint8_t ch = Dev().voice[v];   // the Rytm's: kVoiceToChannel, the old path bit for bit
           if (ch < kChannels) out[i][ch] = To32(Own(y, trk_gain));
         }
       }
@@ -132,13 +134,13 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
       if (voices) voices[i][v] = (int16_t)(((int32_t)f.v[v] + (int32_t)f.r[v]) / 2);
     }
     if (mode == kMain) {
-      out[i][core::out::device().post[0]] = out[i][core::out::device().post[1]] = To32(main_.Sum(m, g));
+      out[i][Dev().post[0]] = out[i][Dev().post[1]] = To32(main_.Sum(m, g));
     } else {
       for (int v = 0; v < kVoices; ++v) {
         const float y = trk[v] / 32768.0f * g, x = Limit(y);
         float a = x < 0 ? -x : x;
         if (a > peak_) peak_ = a;
-        const uint8_t ch = core::out::device().voice[v];
+        const uint8_t ch = Dev().voice[v];
         if (ch < kChannels) out[i][ch] = To32(Own(y, trk_gain));   // (a box with fewer voices: the rest have no channel)
       }
     }
@@ -149,7 +151,7 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
       if (a > peak_) peak_ = a;
       if (b > peak_) peak_ = b;
     }
-    const core::out::Device& dv = core::out::device();   // the returns' channels (the device's table)
+    const core::out::Device& dv = Dev();   // the returns' channels (the device's table)
     out[i][dv.pre[0]] = Add(out[i][dv.pre[0]], pre[0]), out[i][dv.pre[1]] = Add(out[i][dv.pre[1]], pre[1]);
     out[i][dv.post[0]] = Add(out[i][dv.post[0]], post[0]), out[i][dv.post[1]] = Add(out[i][dv.post[1]], post[1]);
     if (taps && taps->feed)

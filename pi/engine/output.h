@@ -33,10 +33,20 @@ class Output {
 
   void SetMode(Mode m) { mode_ = m; }
   // a device with no voice channels (core/fx/out.h: a stereo mix) plays MAIN whatever was asked; the setting is kept
-  Mode GetMode() const { return core::out::device().voice[0] >= kChannels ? kMain : mode_; }
+  Mode GetMode() const { return Dev().voice[0] >= kChannels ? kMain : mode_; }
+  // The device this stage's voices go into: unset (null), the one the primary stream set (core::out::device()); the side
+  // stage (g_OutputSide) is given its own box's, its stream's. Set by the transport (the consumer), before a Reset.
+  void SetDevice(const core::out::Device* d) { dev_ = d; }
+  const core::out::Device& Dev() const { return dev_ ? *dev_ : core::out::device(); }
+  // stereo=measure's test signals (core/fx/out_measure.h) go into this stage; with a slot function, only while the box it
+  // carries (f()) is the one measured (meas::slot: either box, decided 2026-11-26); without one, any measurement (tests)
+  void SetMeasured(bool on, int (*slot)() = nullptr) { measured_ = on, measured_slot_ = slot; }
   // The OUT settings the output stage follows (core::out::control; the kernel sets it). Unset: its own defaults (every
   // voice TRK: the Mac tests of the output stage alone).
   void SetOutControl(const core::out::Control* c) { ctl_ = c ? c : &own_; }
+  // Or the settings of whichever box this stage carries now, asked each Pull (the base box's stage: slot 0's while a Rytm
+  // is on USB, slot 1's for a box alone; null: SetOutControl's)
+  void FollowControl(const core::out::Control* (*f)()) { follow_ = f; }
   core::out::Control& OwnControl() { return own_; }   // tests: the default control's settings
   void Reset();                                         // transport (consumer) side only: a new stream drops the
                                                         // frames left from the last one and fades in again
@@ -122,9 +132,13 @@ class Output {
   core::MainOut main_;                                  // the fade (both modes), MAIN's sum and limit
   core::out::Control own_ = [] { core::out::Control c; core::out::defaults(c); return c; }();
   const core::out::Control* ctl_ = &own_;
+  const core::out::Control* (*follow_)() = nullptr;
   // the OUT mixer (core/fx/out_mix.h: libm, hosted only), placed here by output.cpp's constructor
   alignas(16) unsigned char mix_mem_[1024];
   core::out::Mixer* mix_;
+  const core::out::Device* dev_ = nullptr;
+  bool measured_ = true;
+  int (*measured_slot_)() = nullptr;
   uint32_t under_ = 0, restart_under_ = 0, streams_ = 0, target_ = 0;
   uint64_t pulled_ = 0;
   uint32_t dropped_ = 0;

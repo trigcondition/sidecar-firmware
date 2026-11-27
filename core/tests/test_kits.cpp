@@ -76,8 +76,8 @@ static void project(const char* name) {
   for (const char* c = name; *c; ++c) m[k++] = (uint8_t)*c;
   m[k++] = 0xF7;
   sx(m, k);
-  for (int i = 0; i < 400 && strcmp(core::project, name); ++i) pass();
-  CHECK(!strcmp(core::project, name));
+  for (int i = 0; i < 400 && strcmp(core::prj().key, name); ++i) pass();
+  CHECK(!strcmp(core::prj().key, name));
 }
 static void kit(int k) {   // 3B: the Rytm's active kit (0-based)
   const uint8_t m[8] = {0xF0, 0x7D, 0x52, 0x54, 0x3B, 1, (uint8_t)k, 0xF7};
@@ -269,7 +269,7 @@ int main() {
   // ---- 0.5.0 save_reload_kit_restores_scenes: kit 20's scenes go into its record (=scene) and come back on RELOAD
   {
     core::mod::Tid t;
-    const std::string K = core::project, sks = "/.rytm/kits/" + K + "/k020.sks", prv = "/.rytm/kits/" + K + "/k020.prv",
+    const std::string K = core::prj().key, sks = "/.rytm/kits/" + K + "/k020.sks", prv = "/.rytm/kits/" + K + "/k020.prv",
                       wf = "/.rytm/scene/" + K + "/k020.txt";
     CHECK(core::mod::parse("V1:P3", &t));
     kit(19);
@@ -291,7 +291,7 @@ int main() {
   // ---- 0.5.0 save_reload_kit_restores_xy: kit 21's XY pad setup goes into its record (=xy) and comes back on RELOAD
   {
     core::mod::Tid t;
-    const std::string K = core::project, sks = "/.rytm/kits/" + K + "/k021.sks", prv = "/.rytm/kits/" + K + "/k021.prv",
+    const std::string K = core::prj().key, sks = "/.rytm/kits/" + K + "/k021.sks", prv = "/.rytm/kits/" + K + "/k021.prv",
                       wf = "/.rytm/xy/" + K + "/k021.txt";
     CHECK(core::mod::parse("RYTM:PERF2", &t));
     kit(20);

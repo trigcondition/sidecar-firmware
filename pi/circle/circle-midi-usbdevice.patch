@@ -1,0 +1,43 @@
+diff -ruN a/include/circle/usb/usbmidi.h b/include/circle/usb/usbmidi.h
+--- a/include/circle/usb/usbmidi.h
++++ b/include/circle/usb/usbmidi.h
+@@ -39,6 +39,8 @@
+ typedef void TMIDIPacketHandlerEx (unsigned nCable, u8 *pPacket, unsigned nLength,
+ 				   unsigned nDevice, void *pParam);
+ 
++class CUSBDevice;		// circle-midi-usbdevice.patch
++
+ class CUSBMIDIDevice : public CDevice	/// Interface device for USB Audio Class MIDI 1.0 devices
+ {
+ public:
+@@ -98,6 +100,10 @@
+ 	/// \note This will generate an event for each MIDI channel (1-16) for MIDI cable 0.
+ 	void SetAllSoundOffOnUSBError (boolean bEnable);
+ 
++	/// circle-midi-usbdevice.patch: the USB device this MIDI device is a function of (the USB MIDI host's); 0 none (a gadget's)
++	/// \note Two Elektron boxes of one type have the same vendor, product and serial strings: the device tells them apart
++	CUSBDevice *GetUSBDevice (void) const	{ return m_pUSBDevice; }
++
+ private:
+ 	// returns TRUE, if valid MIDI data has been received
+ 	boolean CallPacketHandler (u8 *pData, unsigned nLength);
+@@ -134,6 +140,8 @@
+ 
+ 	unsigned m_nDeviceNumber;
+ 	static CNumberPool s_DeviceNumberPool;
++
++	CUSBDevice *m_pUSBDevice = 0;		// circle-midi-usbdevice.patch (set by CUSBMIDIHostDevice)
+ };
+ 
+ #endif
+diff -ruN a/lib/usb/usbmidihost.cpp b/lib/usb/usbmidihost.cpp
+--- a/lib/usb/usbmidihost.cpp
++++ b/lib/usb/usbmidihost.cpp
+@@ -198,6 +198,7 @@
+ 	assert (m_pInterface == 0);
+ 	m_pInterface = new CUSBMIDIDevice (this);
+ 	assert (m_pInterface != 0);
++	m_pInterface->m_pUSBDevice = GetDevice ();	// circle-midi-usbdevice.patch
+ 	m_pInterface->RegisterSendEventsHandler (SendEventsHandler, this);
+ 	if (m_pEndpointOut != 0)
+ 	{

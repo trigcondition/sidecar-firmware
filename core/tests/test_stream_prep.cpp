@@ -45,7 +45,7 @@ static void trig(int code) {
 }
 static void ready() {
   char k[kKeyMax];
-  project_key(project, k, sizeof k);
+  project_key(prj().key, k, sizeof k);
   for (int i = 0; i < 20000 && (!pools::ready() || strcmp(pools::project(), k) || pools::saving()); ++i) {
     pools::step();
     card_core();
@@ -87,7 +87,7 @@ int main() {
     pool_sync();
     card_core();
   }
-  CHECK(npool == 2);
+  CHECK(prj().npool == 2);
   const int A = 1, B = 2;   // P11's codes of A001, A002
   report(A);
   settle();

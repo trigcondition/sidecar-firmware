@@ -234,8 +234,20 @@ static void amp_slots(const std::string& card) {
   set(0, ins::kAmp);
   float y[12][2] = {};
   for (int i = 0; i < 3000; ++i) amp::step(), card_core_turn(), master::render(y, 12);
-  CHECK(amp::running() == 6 && amp::status(3, 0) == amp::kCap);
-  CHECK(amp::running_master() == 1 && amp::status(master::chain(0), 0) == amp::kPlaying);
+  CHECK(amp::running() == 6 && amp::status(0, 3, 0) == amp::kCap);
+  CHECK(amp::running_master() == 1 && amp::status(0, master::chain(0), 0) == amp::kPlaying);
+  if (kVoiceSlots > 1) {   // each box its own cap (decided 2026-11-26: 6 per box): box 1's voice and master AMP play beside box 0's full 6
+    ins::control1.type[3][0] = ins::kAmp, ins::control1.play[3][0][0] = 64;
+    ins::control1.type[master::chain(0)][0] = ins::kAmp, ins::control1.play[master::chain(0)][0][0] = 64;
+    for (int i = 0; i < 3000; ++i) amp::step(), card_core_turn(), master::render(y, 12);
+    CHECK(amp::status(1, 3, 0) == amp::kPlaying && amp::status(1, master::chain(0), 0) == amp::kPlaying);
+    CHECK(amp::running(0) == 6 && amp::running(1) == 1 && amp::running() == 7 && amp::status(0, 3, 0) == amp::kCap);
+    CHECK(amp::running_master(1) == 1 && amp::running_master() == 2);
+    ins::control1.type[3][0] = ins::kOff, ins::control1.type[master::chain(0)][0] = ins::kOff;
+    for (int i = 0; i < 2000; ++i) amp::step(), card_core_turn(), amp::service(1, 3), amp::service_master(1);   // (box 1's render side takes the offers)
+    CHECK(amp::running(1) == 0 && amp::running_master(1) == 0);
+    printf("test_master: box 1's AMP plays beside box 0's full 6 (each box its own cap)\n");
+  }
   all_off();
   settle();
   // one instance: (L + R) / 2 on both sides. L/R pair: each side its own, what is not on a side stays off it
@@ -252,7 +264,7 @@ static void amp_slots(const std::string& card) {
   // a third instance on the master: MAX 2
   set(1, ins::kAmp);
   for (int i = 0; i < 2000; ++i) amp::step(), card_core_turn(), master::render(y, 12);
-  CHECK(amp::status(master::chain(1), 1) == amp::kCapM && !strcmp(amp::status_short(amp::kCapM), "MAX 2"));
+  CHECK(amp::status(0, master::chain(1), 1) == amp::kCapM && !strcmp(amp::status_short(amp::kCapM), "MAX 2"));
   set(1, ins::kOff);
   master::set_pair(0, 0);
   for (int i = 0; i < 2000; ++i) amp::step(), card_core_turn(), master::render(y, 12);

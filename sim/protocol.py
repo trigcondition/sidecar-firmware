@@ -216,7 +216,7 @@ bank's 4096 voice bytes' (without a .syx's header and checksum), so a moved or
 renamed bank is found again; Plaits' ROM banks count as banks too. The card's
 /DX7 holds packed 32-voice DX7 banks (4104-byte .syx, F0 43 0n 09 20 00 +
 4096 bytes + checksum + F7, or a bare 4096-byte file), indexed at boot (an
-MD5 and the 32 names per bank, cached in /.rytm/dx7.bin behind a hash of
+MD5 and the 32 names per bank, cached in /.sidecar/dx7.bin behind a hash of
 /DX7's listing). In TEENSY a folder DX7 follows JUNO: its subfolders mirror
 /DX7's, and each bank is a folder of its 32 voices (kind 0, size 128, named
 by the voice's 10-character name); 0F on a voice adds it to the project's FM

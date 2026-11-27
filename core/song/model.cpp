@@ -29,6 +29,30 @@ CORE_COLD void config_default(MidiConfig* c) {
   for (int t = 0; t < kTracks; ++t) c->track_ch[t] = (uint8_t)(t + 1);
   c->fx_ch = 13, c->auto_ch = 14, c->perf_ch = 15;
   c->nrpn = 0, c->transport_send = 1, c->transport_receive = 1;
+  c->ntracks = kTracks;
+}
+
+CORE_COLD void config_none(MidiConfig* c) {
+  memset(c, 0, sizeof *c);
+  c->transport_send = 1, c->transport_receive = 1;
+  c->ntracks = kA4Tracks;
+}
+
+CORE_COLD bool parse_global_a4(const uint8_t* u, int n, MidiConfig* c) {
+  config_none(c);
+  if (n <= kA4GlobalPcSend) return false;
+  auto ch = [](uint8_t v) { return (uint8_t)(v < 16 ? v + 1 : 0); };   // (0xFF: OFF)
+  for (int t = 0; t < kA4Tracks; ++t) c->track_ch[t] = ch(u[kA4GlobalTrack + t]);
+  const uint8_t autoc = ch(u[kA4GlobalAuto]), out = ch(u[kA4GlobalPcOut]), in = ch(u[kA4GlobalPcIn]);
+  c->auto_ch = out ? out : autoc;      // (its PCs out: what the recorder takes for a pattern change)
+  c->pc_in_ch = in ? in : autoc;       // (its PCs in: the replay's)
+  c->perf_ch = ch(u[kA4GlobalPerf]);
+  c->nrpn = u[kA4GlobalParam] == 0;
+  c->clock_send = u[kA4GlobalClockSend] != 0, c->transport_receive = u[kA4GlobalTrRecv] != 0;
+  c->transport_send = u[kA4GlobalTrSend] != 0, c->pc_receive = u[kA4GlobalPcRecv] != 0, c->pc_send = u[kA4GlobalPcSend] != 0;
+  c->encoder_ext = 1, c->trk_ch = 1;   // (enums not decoded: not reported)
+  c->valid = true;
+  return true;
 }
 
 CORE_COLD bool parse_global(const uint8_t* u, int n, MidiConfig* c) {
@@ -101,15 +125,20 @@ CORE_COLD const char* config_explain(int line) {
 }
 
 // ---- dumps
-CORE_COLD int dump_request(uint8_t out[15], uint8_t id) {
+CORE_COLD int dump_request(uint8_t out[15], uint8_t id, uint8_t dev) {
   static const uint8_t k[15] = {0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, 0, 0x01, 0x01, 0, 0, 0, 0, 0x05, 0xF7};
   memcpy(out, k, 15);
+  out[4] = dev;
   out[6] = id;
   return 15;
 }
 
-CORE_COLD bool dump_ok(const uint8_t* m, int n, uint8_t* id) {
-  if (n < 15 || m[0] != 0xF0 || m[1] != 0 || m[2] != 0x20 || m[3] != 0x3C || m[4] != 0x07 || m[n - 1] != 0xF7) return false;
+CORE_COLD bool dump_ok(const uint8_t* m, int n, uint8_t* id) { return dump_ok(m, n, id, nullptr); }
+CORE_COLD bool dump_ok(const uint8_t* m, int n, uint8_t* id, uint8_t* dev) {
+  if (n < 15 || m[0] != 0xF0 || m[1] != 0 || m[2] != 0x20 || m[3] != 0x3C || (m[4] != kDevRytm && m[4] != kDevA4) ||
+      m[n - 1] != 0xF7)
+    return false;
+  if (dev) *dev = m[4];
   uint32_t sum = 0;
   for (int i = 10; i < n - 5; ++i) sum += m[i];
   int ck = m[n - 5] << 7 | m[n - 4], len = m[n - 3] << 7 | m[n - 2];
@@ -212,6 +241,7 @@ CORE_COLD void Buf::free() {
 CORE_COLD void Take::clear() {
   project[0] = name[0] = 0;
   config_default(&cfg);
+  box[0] = 0;
   pattern = -1, tempo = 0, mutes = 0, scene = 0;
   kit.clear(), pat.clear(), settings.clear(), global.clear(), kit2.clear();
   has_fx = false;
@@ -400,6 +430,7 @@ CORE_COLD void Recorder::channel(uint8_t st, uint8_t d1, uint8_t d2, double f, u
   for (int t = 0; t < kTracks; ++t)
     if (c.track_ch[t] == ch + 1) { trk = t; break; }
   if (trk < 0 && c.fx_ch == ch + 1) trk = kFxTrack;
+  const bool scenes = !c.ntracks || c.ntracks == kTracks;   // (the Rytm's scenes: CC 92 / NRPN 1:104; step 10c: not the A4's)
   if (kind == 0xC0) {
     if (ch + 1 == c.auto_ch || !c.valid) {
       if (!on) return;
@@ -423,7 +454,7 @@ CORE_COLD void Recorder::channel(uint8_t st, uint8_t d1, uint8_t d2, double f, u
       mute_mask(m, f, ms);
       return;
     }
-    if (n.msb == 1 && n.lsb == 104) {   // scene (NRPN mode)
+    if (n.msb == 1 && n.lsb == 104 && scenes) {   // scene (NRPN mode)
       add(kScene, (uint8_t)(v14 >> 7), 0, 0, f, ms, false);
       return;
     }
@@ -460,7 +491,7 @@ CORE_COLD void Recorder::channel(uint8_t st, uint8_t d1, uint8_t d2, double f, u
     mute_mask(d2 ? mutes | 1u << trk : mutes & ~(1u << trk), f, ms);
     return;
   }
-  if (d1 == 92) {
+  if (d1 == 92 && scenes) {
     add(kScene, d2, 0, 0, f, ms, false);
     return;
   }

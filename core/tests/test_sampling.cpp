@@ -17,6 +17,7 @@
 
 #include "check.h"
 #include "lib/pools.h"
+#include "device/device.h"
 #include "engine.h"
 #include "host_link.h"
 #include "msamp/cardq.h"
@@ -350,6 +351,58 @@ static void test_sampler_bars() {
 }
 
 // A Sidecar voice as rendered (voice 1: a JUNO note), free, started by hand
+// Each box's own clock (decided 2026-11-26): a take follows the box it was armed for (the slot in hand), never the other
+// box's. Slot 1 arms a next-bar take: slot 0's PLAY and ticks (125 bpm) start nothing; slot 1's PLAY starts it, and its
+// tempo (100 bpm) is the take's. Slot 0's ticks meanwhile change neither.
+static void test_sampler_box_clock() {
+  using namespace samp;
+  if (kVoiceSlots < 2) {
+    printf("test_sampling: sampler per box clock SKIP (one slot)\n");
+    return;
+  }
+  char o[400];
+  command("samp=src:main", o, sizeof o);
+  command("samp=start:bar", o, sizeof o);
+  command("samp=len:2", o, sizeof o);
+  command("samp=pre:0", o, sizeof o);
+  {
+    device::Scope in(device::g_links[1]);
+    CHECK(command("samp=arm", o, sizeof o));
+  }
+  CHECK(clock_slot() == 1);
+  Status s;
+  uint32_t t0 = 0, t1 = 0;
+  bool play1 = false;
+  int started_at = -1;
+  for (int ms = 0; ms < 3000; ++ms) {
+    int32_t f[48 * 12] = {0};
+    for (int k = 0; k < 48; ++k) f[k * 12] = f[k * 12 + 1] = 400000000;
+    samp::in_block(f, 48, 12);
+    if (ms == 0) transport(0, 0xFA);
+    if (ms == 1000) transport(1, 0xFA), play1 = true;
+    if (ms - t0 >= 20) t0 = ms, transport(0, 0xF8);
+    if (play1 && ms - t1 >= 25) t1 = ms, transport(1, 0xF8);
+    advance(1000);
+    status(&s);
+    if (started_at < 0 && s.state == kRecording) started_at = ms;
+    if (ms == 999) CHECK(s.state == kArmed && s.bpm == 0);   // slot 0 plays: not this take's box
+  }
+  status(&s);
+  printf("test_sampling: box clock: started at %d ms, bpm %.2f, state %d\n", started_at, s.bpm, s.state);
+  CHECK(started_at >= 1000 && started_at <= 1002);
+  CHECK(std::fabs(s.bpm - 100) < 0.5f);
+  {   // /status's samp: the followed slot and every slot's own clock (slot 0 at 125 bpm, slot 1 at 100)
+    char j[1024];
+    json(j, sizeof j);
+    printf("test_sampling: box clock json: %s\n", strstr(j, "\"clockSlot\""));
+    CHECK(strstr(j, "\"clockSlot\":1,") && strstr(j, "{\"bpm10\":1250,") && strstr(j, "{\"bpm10\":1000,"));
+  }
+  cancel();
+  transport(0, 0xFC), transport(1, 0xFC);
+  command("samp=name:auto", o, sizeof o);
+  printf("test_sampling: sampler per box clock PASS\n");
+}
+
 static void test_sampler_voice() {
   using namespace samp;
   char o[400];
@@ -548,6 +601,7 @@ int main() {
   for (int i = 0; i < 4000 && msamp::step(); ++i) {}
   test_sampler_threshold();
   test_sampler_bars();
+  test_sampler_box_clock();
   test_sampler_voice();
   test_asamp_fm();
   test_asamp_juno();

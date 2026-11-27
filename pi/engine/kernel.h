@@ -81,8 +81,10 @@ private:
 	void MeasureClock (void);				// every 10 s: the clock the firmware measures, against the one it reports
 	unsigned AskedMHz (void) const;				// the clock the setting asks for on this board (cpuclock::asked_mhz)
 	void ApplyBudget (unsigned nMHz, boolean bLog);		// the voice guard's budget for that clock (voicebudget= scaled by it)
+	void LogAdmit (void);					// CPU admission (core/device/admit.h): the second box's voices for each pair
 	void LogClockRescale (void);				// the boot bench's voices a core, rescaled to the clock now (not re-measured)
 	void ThermalStep (unsigned nTempC);			// the temperature warning (thermal.h): once a second, from LogStats
+	void ThermalCapStep (unsigned nTempC);			// the step-down for heat (thermal.h step): once a second, from LogStats
 	void UpdateNoticeStep (void);				// the web update's notice on the Rytm's screen (a popup each second)
 #if RASPPI >= 5
 	void LoadFan (boolean bCard);				// fan= (display.txt, cmdline): at boot, the pin started and set at once
@@ -149,6 +151,7 @@ private:
 	thermal::State		m_Thermal;
 	volatile unsigned	m_nTempC = 0;		// the last reading, 0: none yet (plain reads from the web task)
 	thermal::Popup		m_ThermalPopup;
+	thermal::Step		m_ThermalCap;		// the clock the heat caps the setting to (thermal.h step)
 	// the CPU clock option (cpuclock.h): the setting (1500 = the board's full clock), the clock the cores run at (read back
 	// when it was set, then after each CCPUThrottle::Update and once a second: FollowClock), and the voice budget for it; capped: below the full clock, so Circle's Update does not run (it
 	// would raise the clock again when the SoC is cool)
@@ -185,7 +188,7 @@ private:
 	boolean			m_bUiPending;		// a display command was sent: re-read at m_nUiAt (us, m_Timer.GetClockTicks)
 	unsigned		m_nUiAt;
 	boolean			m_bWeb;			// web=1 and the network is up
-	// the display's screensaver and brightness (docs/pi-display.md): /.rytm/display.txt, cmdline screensaver= /
+	// the display's screensaver and brightness (docs/pi-display.md): /.sidecar/display.txt, cmdline screensaver= /
 	// brightness= override it at boot; screensaver=MIN and brightness=PCT on the console (web page, display) change it
 	unsigned		m_nSaverMin;
 	unsigned		m_nBright;

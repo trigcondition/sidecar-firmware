@@ -722,7 +722,7 @@ int main() {
   {
     ins::reset();
     voices_init();
-    static int16_t ring[12][8], ref[12][8];
+    static int16_t ring[12][kVoices], ref[12][kVoices];
     uint64_t mach[kMachines] = {0};
     for (int k = 0; k < 8; ++k) v[k].live = true;
     int16_t a[12];

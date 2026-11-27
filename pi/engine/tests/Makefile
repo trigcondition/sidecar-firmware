@@ -19,6 +19,38 @@ all: $(TESTS)
 build/%: %.cpp $(SRC) $(wildcard ../*.h) $(wildcard shim/circle/*.h) $(CORE)/fx/out.h $(CORE)/fx/out_mix.h check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $< $(SRC)
+# usb=mirror with two boxes: which one USB-C shows, which one the Teensy relay shows (mirror_assign.h, docs/usb-mirror.md)
+build/test_mirror_assign: test_mirror_assign.cpp ../mirror_assign.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $<
+# usb=mirror's audio for a second port (mirror_stream.h, docs/teensy-mirror.md)
+# a box's OUT starved by the host controller, named in the log (periodic_starve.h, diagnosis-periodic-starvation.md)
+build/test_periodic_starve: test_periodic_starve.cpp ../periodic_starve.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $<
+# usb=mirror: a box shown only once its audio runs both ways; a starved stream restarted (attach_gate.h)
+build/test_attach_gate: test_attach_gate.cpp ../attach_gate.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $<
+build/test_slip_detect: test_slip_detect.cpp ../slip_detect.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $<
+build/test_mirror_stream: test_mirror_stream.cpp ../mirror_stream.h ../mirror_desc.h ../../../teensy/libraries/RytmHost/ob_block.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -I../../../teensy/libraries/RytmHost -o $@ $<
+# usb=mirror through a Teensy: the link's channel map and control slot (relay_proto.h, docs/teensy-mirror.md)
+build/test_relay_proto: test_relay_proto.cpp ../relay_proto.h ../mirror_desc.h ../../../teensy/libraries/RytmHost/ob_block.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -I../../../teensy/libraries/RytmHost -o $@ $<
+# the Teensy relay's program for its bootloader (teensy_hex.h, docs/teensy-flash.md)
+build/test_teensy_hex: test_teensy_hex.cpp ../teensy_hex.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $<
+# the write itself (teensy_flash.cpp) on a fake Circle (shim_tf/), copied so its quoted includes find the shim first
+build/test_teensy_flash: test_teensy_flash.cpp ../teensy_flash.cpp ../teensy_flash.h ../teensy_hex.h ../fsweb.h $(wildcard shim_tf/*.h) $(wildcard shim_tf/circle/*.h) $(wildcard shim_tf/circle/*/*.h) $(CORE)/lib/sha256.cpp check.h
+	@mkdir -p build/tf_src
+	cp ../teensy_flash.cpp build/tf_src/
+	$(CXX) -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all -Ishim_tf -I.. -I$(CORE) -DTEENSY_FLASH_TEST -o $@ test_teensy_flash.cpp build/tf_src/teensy_flash.cpp $(CORE)/lib/sha256.cpp
 # the remote UI service's portable part (remote_srv.cpp) against the protocol library's C files (ui/remote), with the real client
 RMT := ../../ui/remote
 RMT_C := $(RMT)/rmt_proto.c $(RMT)/rmt_views.c $(RMT)/rmt_cli.c $(RMT)/rmt_sha256.c
@@ -88,19 +120,35 @@ build/test_display_hint: test_display_hint.cpp ../../ui/display_hint.h ../../ui/
 build/test_touch_cal: test_touch_cal.cpp ../../ui/touch_cal.c ../../ui/touch_cal.h check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $<
-# the send FX's Pi part with the core's (card-free) send FX
-build/test_sendfx_pi: test_sendfx_pi.cpp ../sendfx_pi.cpp ../sendfx_pi.h ../spectrum_pi.cpp ../spectrum_pi.h ../spectrum.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/stutter_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
+# fifo_late.h with the measured FX guard: LT13 P5's two-box overload, the late mute within 20 ms (2026-11-25)
+build/test_fifo_late_guard: test_fifo_late_guard.cpp ../fifo_late.h $(CORE)/fx/fx_guard.cpp $(CORE)/fx/fx_guard.h $(CORE)/fx/insert.cpp $(CORE)/fx/send_fx.cpp check.h
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -o $@ $< ../sendfx_pi.cpp ../spectrum_pi.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/master.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< $(CORE)/fx/fx_guard.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/master.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
+# the send FX's Pi part with the core's (card-free) send FX
+build/test_sendfx_pi: test_sendfx_pi.cpp ../sendfx_pi.cpp ../sendfx_pi.h ../spectrum_pi.cpp ../spectrum_pi.h ../spectrum.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/stutter_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $< ../sendfx_pi.cpp ../spectrum_pi.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/master.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
 # the master FX: the OUT fill's crossfade, the ring to core 2 and back, bit for bit while bypassed, latency, cost
 # the spectrum (spectrum.h: the tap, the FFT bands, the reader; spectrum_pi.cpp: the engine's taps) and its /ws topic, with
 # the analysis's cost on the Mac (printed; the sanitizers make it slower than a plain -O2 build)
 build/test_spectrum: test_spectrum.cpp ../spectrum.h ../spectrum_pi.cpp ../spectrum_pi.h ../ws_topics.h ../ws_session.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h check.h
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -o $@ $< ../spectrum_pi.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
-build/test_masterfx_pi: test_masterfx_pi.cpp ../masterfx_pi.cpp ../masterfx_pi.h $(CORE)/fx/limiter.h $(CORE)/fx/master.cpp $(CORE)/fx/master.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
+build/test_masterfx_pi: test_masterfx_pi.cpp ../masterfx_pi.cpp ../masterfx_pi.h $(CORE)/fx/limiter.h $(CORE)/fx/master.cpp $(CORE)/fx/master.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -o $@ $< ../masterfx_pi.cpp $(CORE)/fx/master.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< ../masterfx_pi.cpp $(CORE)/fx/master.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
+# two links, phase 3(d): slot 0's send FX and master chain bit for bit against the hash before the per-slot change
+build/test_slotfx_ref: test_slotfx_ref.cpp ../sendfx_pi.cpp ../sendfx_pi.h ../masterfx_pi.cpp ../masterfx_pi.h ../spectrum_pi.cpp ../spectrum_pi.h $(CORE)/fx/master.cpp $(CORE)/fx/master.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -o $@ $< ../sendfx_pi.cpp ../masterfx_pi.cpp ../spectrum_pi.cpp $(CORE)/fx/master.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
+# ... on 16 voices (the Pi's): slot 1's instances beside slot 0's (SLOTFX_BOX1=1)
+build/test_slotfx_ref16: test_slotfx_ref.cpp ../sendfx_pi.cpp ../sendfx_pi.h ../masterfx_pi.cpp ../masterfx_pi.h ../spectrum_pi.cpp ../spectrum_pi.h $(CORE)/fx/master.cpp $(CORE)/fx/master.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -DCORE_VOICES=16 -o $@ $< ../sendfx_pi.cpp ../masterfx_pi.cpp ../spectrum_pi.cpp $(CORE)/fx/master.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
+# the Rytm in either slot (attach order): its stems pace its slot's send FX and SRC MIX alike; a box's voices pace its own
+build/test_rytm_slot1: test_rytm_slot1.cpp ../sendfx_pi.cpp ../sendfx_pi.h ../masterfx_pi.cpp ../masterfx_pi.h ../spectrum_pi.cpp ../spectrum_pi.h $(CORE)/fx/master.cpp $(CORE)/fx/master.h $(CORE)/fx/send_fx.cpp $(CORE)/fx/send_fx.h $(CORE)/fx/insert.cpp $(CORE)/fx/insert.h $(CORE)/fx/amp.cpp $(CORE)/fx/amp.h $(CORE)/fx/out.cpp $(CORE)/fx/out.h ../spsc.h check.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -DCORE_VOICES=16 -o $@ $< ../sendfx_pi.cpp ../masterfx_pi.cpp ../spectrum_pi.cpp $(CORE)/fx/master.cpp $(CORE)/fx/send_fx.cpp $(CORE)/fx/insert.cpp $(CORE)/fx/fx_guard.cpp $(CORE)/fx/amp.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp
 # the recorder (WAV writer, ring, channel lists) on a temp folder
 # (core/rec/rec_names.cpp: the parts shared with the Sidecar Mini's recorder, with the Mac's port of the core)
 build/test_recorder: test_recorder.cpp ../recorder.cpp ../recorder.h ../rec_wav.h $(CORE)/rec/rec_wav.h $(CORE)/rec/rec_names.h $(CORE)/rec/rec_names.cpp ../spsc.h check.h
@@ -257,6 +305,26 @@ build/test_gadget_ep0: test_gadget_ep0.cpp ../mirror_ep.h ../ep_stop.h ../sideca
 	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all \
 	  -Ishim_dwc -Ibuild/dwc/include -I. -I.. -o $@ $< build/dwc/lib/usb/gadget/dwusbgadgetendpoint.cpp \
 	  build/dwc/lib/usb/gadget/dwusbgadgetendpoint0.cpp
+# the USB MIDI host's IN requests (test_midi_rxqueue.cpp, pi/circle/circle-midi-rxqueue.patch): Circle's usbmidihost.cpp with
+# the engine's patch stack (pi/engine/build.sh's order), copied into build/umh and patched there; built for the xHCI
+# (RASPPI 4: both buffers in flight, no pause after a zero-length packet) and the DWHCI (RASPPI 3: Circle's behaviour)
+UMH_PATCHES := ../../circle/spike2/circle-xhci-urbqueue.patch $(addprefix ../../circle/,circle-midi-async.patch circle-xhci-dropurbs.patch \
+	       circle-midi-reset.patch circle-midi-reset2.patch circle-usb-urb-free.patch circle-midi-async512.patch circle-midi-rxqueue.patch \
+	       circle-midi-usbdevice.patch)
+build/umh/.patched: $(UMH_PATCHES)
+	@test -f $(DWC_ROOT)/lib/usb/usbmidihost.cpp || { echo "test_midi_rxqueue: no Circle at $(DWC_ROOT) (CIRCLE_BUILD=.../pi/circle/build)"; exit 1; }
+	@rm -rf build/umh && mkdir -p build/umh/lib/usb
+	@cp -R $(DWC_ROOT)/include build/umh/ && cp $(DWC_ROOT)/lib/usb/usbmidihost.cpp $(DWC_ROOT)/lib/usb/xhciendpoint.cpp $(DWC_ROOT)/lib/usb/usbmidi.cpp \
+	  $(DWC_ROOT)/lib/usb/usbrequest.cpp build/umh/lib/usb/
+	@# a patch already in the checkout (pi/circle/build.sh puts spike2's into pi/circle/build/circle) is not applied again
+	@cd build/umh && for p in $(UMH_PATCHES); do patch -s -f -R -p1 --dry-run < ../../$$p >/dev/null 2>&1 || patch -s -p1 < ../../$$p || exit 1; done
+	@touch $@
+UMH_CXX = $(CXX) -std=c++17 -O1 -g -Wall -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all -fno-exceptions -fno-rtti \
+	  -DAARCH=64 -Ibuild/umh/include -I.
+build/test_midi_rxqueue: test_midi_rxqueue.cpp build/umh/.patched check.h
+	$(UMH_CXX) -DRASPPI=4 -o $@ $< build/umh/lib/usb/usbmidihost.cpp
+	$(UMH_CXX) -DRASPPI=3 -o $@_dwhci $< build/umh/lib/usb/usbmidihost.cpp
+	./$@_dwhci
 build/test_stor_fatfs: build/fatfs-fat/ff.h $(FATFS_DEPS)
 	cc -O1 -g -w -c -o build/fatfs-fat/ff.o build/fatfs-fat/ff.c && cc -O1 -g -w -c -o build/fatfs-fat/ffunicode.o build/fatfs-fat/ffunicode.c
 	$(CXX) $(CXXFLAGS) -Ibuild/fatfs-fat -o $@ test_stor_fatfs.cpp ../stor_vol.cpp build/fatfs-fat/ff.o build/fatfs-fat/ffunicode.o

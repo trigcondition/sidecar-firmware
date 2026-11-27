@@ -89,6 +89,43 @@ inline void popup_text (char (&l1)[33], char (&l2)[33], int temp_c, int low_mhz)
 	b.s ("TO "), b.i (low_mhz), b.s (" MHZ (UP+T10)");
 }
 
+// The step-down for a Pi without cooling (decided 2026-11-22 after LT4: a bare Pi 4 under the full two-box load reached
+// 77 C in ~15 min and Circle's throttle dropped the ARM clock from 1500 to 600 MHz at once: core 1 99 %, the FIFO empty,
+// ~150,000 underruns in 4 s). The engine lowers the clock itself, in steps that the load can still carry, before that
+// cliff: at kStep1C a cap of 1200 MHz, at kStep2C 1000, and only at kThrottleC the board's minimum (600 on the Pi 4, as
+// Circle did). A cap is raised one step when the SoC has stayed at or below kStepUpC for kStepUpSecs readings in a row.
+// What no longer fits at the lower clock (CPU admission: AMPs, INSERT types) plays dry and shows NO CPU until it rises.
+// The cap is never above the setting (a setting of 1000 is already the lowest step). A reading of 0 changes nothing.
+enum : int { kStep1C = 74, kStep2C = 76, kStepUpC = 70, kStepUpSecs = 30 };
+
+struct Step
+{
+	int cap_mhz = 0;		// the clock the heat caps the setting to, 0: no cap
+	int cool_secs = 0;		// readings in a row at or below kStepUpC
+	unsigned steps = 0;		// caps lowered since boot
+};
+
+// One reading a second. setting_mhz: the clock the setting asks for (cpuclock::asked_mhz); min_mhz: the board's minimum.
+// Returns true when the cap moved: the clock to run at is then cap_mhz, or the setting's when it is 0.
+inline bool step (Step &s, int temp_c, int setting_mhz, int min_mhz)
+{
+	if (temp_c <= 0 || setting_mhz <= 0) return false;
+	const int want = temp_c >= kThrottleC ? min_mhz : temp_c >= kStep2C ? 1000 : temp_c >= kStep1C ? 1200 : 0;
+	const int now = s.cap_mhz ? s.cap_mhz : setting_mhz;
+	if (want && want < now)
+	{
+		s.cap_mhz = want, s.cool_secs = 0, s.steps++;
+		return true;
+	}
+	if (!s.cap_mhz) return false;
+	if (temp_c > kStepUpC) { s.cool_secs = 0; return false; }
+	if (++s.cool_secs < kStepUpSecs) return false;
+	s.cool_secs = 0;
+	const int up = s.cap_mhz < 1000 ? 1000 : s.cap_mhz < 1200 ? 1200 : 0;
+	s.cap_mhz = up && up < setting_mhz ? up : 0;
+	return true;
+}
+
 }	// namespace thermal
 
 #endif

@@ -18,6 +18,7 @@ struct TToHostStub {   // the engine's records for the Rytm, as the test queues 
   unsigned Drain() { unsigned n = 0; for (auto& r : q) n += (unsigned)r.size(); q.clear(); return n; }
 };
 inline Output g_Output;
+extern Output g_OutputSide;   // (the test defines it)
 inline TToHostStub g_ToHost;
 inline Spsc<uint32_t, 512> g_KeysToRytm;
 inline unsigned g_nToHostFull;

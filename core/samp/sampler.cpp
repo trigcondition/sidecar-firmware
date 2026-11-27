@@ -36,12 +36,15 @@ uint32_t seen_play = 0, seen_bar = 0, seen_stop = 0;
 uint32_t pre_n = 0;
 float thr_lin = 0.03f;
 volatile float lvl = 0, pk = 0;
-// the Rytm's clock (the control core's)
-uint32_t ticks = 0, last_tick_us = 0;
+// Each box's MIDI clock (the control core's), one per voice slot (decided 2026-11-26: the sampler follows the box the
+// take belongs to). Every slot's is kept so a take armed mid-play starts on its box's next bar; only the followed slot's
+// (follow: the slot in hand at arm()) moves play_gen / bar_gen / stop_gen and running / clock_bpm.
+struct SlotClock { uint32_t ticks = 0, last_tick_us = 0, seen = 0; bool run = false; float tick_us = 0, bpm = 0; };   // seen: every F8
+SlotClock sclk[kVoiceSlots];
+volatile int follow = 0;     // the take's box (its slot)
 volatile bool running = false;
 uint32_t bar0 = 0;           // the bar count at the take's start
-bool clocked = false;        // a bars take ends on the Rytm's bar (its clock runs), else on the frames at the tempo
-float tick_us = 0;           // smoothed
+bool clocked = false;        // a bars take ends on its box's bar (its clock runs), else on the frames at the tempo
 volatile float clock_bpm = 0;
 // processing (the card core's)
 enum Phase : uint8_t { kPNone, kPLinear, kPAnalyse, kPWav, kPSfz };
@@ -198,7 +201,7 @@ CORE_COLD void process_step() {
       else
         nslices = 0;
       char prj[24];
-      safe_name(project_name[0] ? project_name : "Sidecar", prj, sizeof prj);   // (2026-10-27: the Rytm's name, not a slot key)
+      safe_name(core::prj().name[0] ? core::prj().name : "Sidecar", prj, sizeof prj);   // (2026-10-27: the Rytm's name, not a slot key)
       sniprintf(dir, sizeof dir, "/Samples/%s", prj);
       if (!mkdirs(dir)) {
         fail("cannot make the folder");
@@ -226,7 +229,7 @@ CORE_COLD void process_step() {
     case kPSfz: {
       static char txt[8192];
       char path[160], prj[24];
-      safe_name(project_name[0] ? project_name : "Sidecar", prj, sizeof prj);   // (2026-10-27: the Rytm's name, not a slot key)
+      safe_name(core::prj().name[0] ? core::prj().name : "Sidecar", prj, sizeof prj);   // (2026-10-27: the Rytm's name, not a slot key)
       if (nslices > 0) {   // the slicing data next to the WAV, then the instruments
         sniprintf(path, sizeof path, "%s/%s.sfz", dir, take);
         char rel[48];
@@ -292,6 +295,11 @@ CORE_COLD bool arm(char* err, int cap_) {
     return false;
   }
   run = cfg;
+  {   // the take's box: the slot in hand (the console's box=S:, the page's box), its clock from now on
+    int f = prj_slot();
+    follow = f >= 0 && f < kVoiceSlots ? f : 0;
+    running = sclk[follow].run, clock_bpm = sclk[follow].bpm;
+  }
   if (run.max_s < 1) run.max_s = 1;
   if (run.max_s > 120) run.max_s = 120;
   // a Sidecar voice routed OUT PRE / POST (core/fx/out.h) is a stereo pair: its take stereo too
@@ -338,29 +346,37 @@ CORE_COLD void cancel() {
   if (s == kArmed || s == kRecording || s == kCaptured) set_state(kIdle);   // (writing: it finishes)
 }
 
-CORE_COLD void transport(uint8_t s) {
+CORE_COLD void transport(int slot, uint8_t s) {
+  if (slot < 0 || slot >= kVoiceSlots) return;
+  SlotClock& c = sclk[slot];
+  const bool mine = slot == follow;
   uint32_t now = now_us();
   if (s == 0xFA) {
-    running = true, ticks = 0;
-    sto(&play_gen, play_gen + 1);
-    sto(&bar_gen, bar_gen + 1);   // PLAY starts bar 1
+    c.run = true, c.ticks = 0;
+    if (mine) sto(&play_gen, play_gen + 1), sto(&bar_gen, bar_gen + 1);   // PLAY starts bar 1
   } else if (s == 0xFB) {
-    running = true;
+    c.run = true;
   } else if (s == 0xFC) {
-    running = false;
-    sto(&stop_gen, stop_gen + 1);
+    c.run = false;
+    if (mine) sto(&stop_gen, stop_gen + 1);
   } else if (s == 0xF8) {
-    if (last_tick_us) {
-      float dt = (float)(now - last_tick_us);
+    if (c.last_tick_us) {
+      float dt = (float)(now - c.last_tick_us);
       if (dt > 500 && dt < 100000) {   // 25..5000 bpm: a real tick interval
-        tick_us = tick_us > 0 ? tick_us + (dt - tick_us) * 0.05f : dt;
-        clock_bpm = 60e6f / (tick_us * 24);
+        c.tick_us = c.tick_us > 0 ? c.tick_us + (dt - c.tick_us) * 0.05f : dt;
+        c.bpm = 60e6f / (c.tick_us * 24);
       }
     }
-    last_tick_us = now;
-    if (running && ++ticks % 96 == 0) sto(&bar_gen, bar_gen + 1);   // 4/4: 96 ticks a bar
+    c.last_tick_us = now;
+    ++c.seen;
+    if (c.run && ++c.ticks % 96 == 0 && mine) sto(&bar_gen, bar_gen + 1);   // 4/4: 96 ticks a bar
+  } else {
+    return;
   }
+  if (mine) running = c.run, clock_bpm = c.bpm;
 }
+CORE_COLD void transport(uint8_t s) { transport(0, s); }
+CORE_COLD int clock_slot() { return follow; }
 
 CORE_COLD void tick() {
   if (rescan_req) {   // the take into the SAMPLES pool, its slice map into the INSTRUMENTS pool (the bank last shown)
@@ -452,13 +468,18 @@ CORE_COLD void status(Status* o) {
 CORE_COLD int json(char* out, int cap_) {
   Status s;
   status(&s);
+  // every box's clock as the sampler keeps it (CK1: what each slot hears whichever slot a take follows): bpm x10, ticks, run
+  char slot_clocks[96] = "";
+  for (int k = 0, n = 0; k < kVoiceSlots; ++k)
+    n += sniprintf(slot_clocks + n, sizeof slot_clocks - n, "%s{\"bpm10\":%d,\"ticks\":%lu,\"run\":%d}", k ? "," : "",
+                   (int)(sclk[k].bpm * 10 + 0.5f), (unsigned long)sclk[k].seen, sclk[k].run ? 1 : 0);
   const Config& c = s.cfg;
   return sniprintf(out, cap_, "{\"state\":%d,\"src\":%d,\"sub\":%d,\"start\":%d,\"thr\":%d,\"preMs\":%lu,\"bars\":%d,"
                    "\"maxS\":%lu,\"slices\":%d,\"grid\":%d,\"ms\":%lu,\"level\":%d,\"peak\":%d,\"bpm\":%d,\"nSlices\":%d,"
-                   "\"gainDb\":%d,\"wav\":\"%s\",\"row\":\"%s\",\"error\":\"%s\"}", s.state, c.src, c.sub, c.start, (int)c.thr_db,
+                   "\"gainDb\":%d,\"wav\":\"%s\",\"row\":\"%s\",\"error\":\"%s\",\"clockSlot\":%d,\"slotClock\":[%s]}", s.state, c.src, c.sub, c.start, (int)c.thr_db,
                    (unsigned long)c.pre_ms, c.bars, (unsigned long)c.max_s, c.slices, c.grid_n,
                    (unsigned long)((uint64_t)s.frames * 1000 / kRate), (int)(s.level * 1000), (int)(s.peak * 1000),
-                   (int)(s.bpm + 0.5f), s.slices, (int)s.gain_db, s.wav, s.row, s.error);
+                   (int)(s.bpm + 0.5f), s.slices, (int)s.gain_db, s.wav, s.row, s.error, (int)follow, slot_clocks);
 }
 
 CORE_COLD const float* take_audio(uint32_t* frames, int* c) {
@@ -474,7 +495,8 @@ CORE_COLD void reset() {
   set_state(kIdle);
   cfg = Config();
   phase = kPNone;
-  running = false, ticks = 0, last_tick_us = 0, tick_us = 0, clock_bpm = 0;
+  for (SlotClock& c : sclk) c = SlotClock();
+  follow = 0, running = false, clock_bpm = 0;
   rescan_req = 0;
 }
 

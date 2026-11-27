@@ -209,7 +209,7 @@ mono 16-bit 96 KB/s; double one octave up. The voice counts the test derives (60
 | a slow card (3 / 8 MB/s, 8 ms reads, 400 ms stalls) | [inferred] | 8 | 0: "OK without the recorder" |
 
 Pi read figures under Circle are **not measured yet**: that is what `sdtest` is for (run it once on the Pi; the log
-line and `/.rytm/sdtest.txt` give the numbers to put here). Pi 5: the same driver path (Circle's EMMC on the Pi 5's
+line and `/.sidecar/sdtest.txt` give the numbers to put here). Pi 5: the same driver path (Circle's EMMC on the Pi 5's
 SDHCI), no numbers [inferred].
 
 ### Open time [measured: Mac; inferred: Pi]
@@ -246,7 +246,7 @@ sample, with release regions. A simulation instrument (four 10 s stereo 24-bit s
   the same on 0.6 - (1.97 MB/s / write MB/s) and the mixed reads' mean. Read-ahead = 1.5 x the worst read (with the
   writes) + 30 ms, 100..600 ms; a worst read the 600 ms cannot cover makes it "too slow". Levels: "OK for N stereo
   streaming voices + recorder (M without)", "OK for N ... without the recorder (M with it)", "too slow for streaming
-  (N voices): use RAM mode or a faster card (A1/A2, U3/V30)". Stored in `/.rytm/sdtest.txt` (key=value), read at
+  (N voices): use RAM mode or a faster card (A1/A2, U3/V30)". Stored in `/.sidecar/sdtest.txt` (key=value), read at
   boot, given to the streaming engine (`ahead_ms`, `streams`).
 - **UI**: console `sdtest` (the last result), `sdtest=start` (refused while MULTISAMPLE notes play or a take records;
   `sdtest=start!` runs anyway: audio may drop), `sdtest=cancel`; the web page's Status tab "SD card speed" (Run test

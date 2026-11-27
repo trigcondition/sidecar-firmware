@@ -16,7 +16,7 @@ L2-L5 follow). Tags as there: **[measured]** = run here (host tests, the card mo
 - **Status:** the web page's **Status** tab, *Storage*: `Library 48,213 files (18 GB), 61 % hashed, 18,803 pending,
   212 duplicates (386 MB) · waiting: playing`. The touchscreen's **SIDECAR STATUS** page: the *Library* row under
   the versions (`48213 FILES 61%  212 DUP` / `48213 files, all hashed, 7 missing`).
-- **What it does now:** after a boot the Sidecar reads its index (`/.rytm/library/`), looks at every folder of the card
+- **What it does now:** after a boot the Sidecar reads its index (`/.sidecar/library/`), looks at every folder of the card
   (directory entries only) and hashes what is new or changed, one 64 KB piece at a time on the card core. While the
   Rytm plays it only reads, in 16 KB pieces; while the Overbridge recorder records it stops; a project bundle job goes
   first. The first pass over a big card takes a while (about 2-3 min a GB on the Pi's card [inferred: 12-14 MB/s]);
@@ -84,7 +84,7 @@ today; F1 changes nothing on the card. Modules still load through their own read
 
 ## The sample library (L1)
 
-### On the card: `/.rytm/library/`
+### On the card: `/.sidecar/library/`
 
 | File | Format | Contents |
 |---|---|---|

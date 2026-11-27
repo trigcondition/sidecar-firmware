@@ -7,7 +7,7 @@
 #include "sdgrow.h"		// the first boot's grow of the SD image
 #include "ob_follow.h"	// CObFollow::HaltResets (/status "usbhalt")
 #include "mbtrace.h"
-#include "blackbox_pi.h"	// the black box (2026-10-30): the whole log appended to /.rytm/blackbox.log
+#include "blackbox_pi.h"	// the black box (2026-10-30): the whole log appended to /.sidecar/blackbox.log
 #include "lagdiag.h"	// "Lag now" and the lag diagnostics lines (lagdiag.h)
 #include "crumb.h"		// the crash breadcrumb (2026-10-29): kept over a watchdog reset, reported here at the next boot
 
@@ -63,10 +63,19 @@ static volatile unsigned s_nTempC;	// the SoC temperature as the stats line last
 #include "midiout_q.h"	// the MIDI machine's USB-A queues
 #include "usb_box.h"	// which USB MIDI device is the host link
 #include "hello_gate.h"
+#include "link1.h"
+#include "mirror_assign.h"
+#include "teensy_target.h"	// CTeensyTarget::TakeReboot (usbreboot=1 through the relay)
 #include "box_list.h"
 #include "device/a4.h"
+#include "device/admit.h"
+#include "device/digitakt.h"
+#include "fx/amp.h"		// CPU admission's refusals in /status (amp::refused_cpu)
+#include "fx/insert.h"		// ... and ins::refused_count
+#include "fx/fx_guard.h"	// ... and the measured guard's mutes (fxMuted)
 #include "card_pass.h"	// MIDI between the card requests
 #include "sendfx_pi.h"
+#include "masterfx_pi.h"
 #include "paircode_pi.h"	// the pairing code that gates the network (paircode.h)
 #include "usbc_pi.h"		// the USB-C mode for the SIDECAR MENU > USB-C (usb_mode.h)
 #include "ui_contrast.h"	// the SIDECAR theme's high contrast (uicontrast=)
@@ -122,8 +131,9 @@ extern bool g_bCardGuard;			// card_guard.cpp: testcard=1
 
 static const char From[] = "engine";
 // BenchChains' results (core 0, before cores 1-3), LogBench's rows: [0] the master chain, [1..] the send TYPE insert sets
-static const int ChainBenches = 3;
+static const int ChainBenches = 8;	// the master chain, then each send TYPE insert set (core/fx/master.cpp kSfxSets)
 static struct { u64 nTicks; u32 nWorst; } s_ChainBench[ChainBenches];
+static struct { u64 nTicks; u32 nWorst; } s_BoxBench;	// one box's chains as one row (master::box_bench): CPU admission
 // sdgrow.h's disk: the whole card through CEMMCDevice (whole 512-byte sectors only; GetSize is in bytes, -1 if unknown)
 class CEmmcDisk : public sdgrow::Disk
 {
@@ -262,10 +272,14 @@ static void *BootAlloc (size_t nBytes, const char *pWhat)
 	return p;
 }
 
-static void CrumbPanic (void) { crumb::Why ("a panic (the log's last line says which)"); }
+static void CrumbPanic (void)
+{
+	crumb::Why ("a panic (the log's last line says which)");
+	blackbox_pi::PanicFlush ();		// the panic's line onto the card (the RAM is not kept on the Pi 4's rpiboot path)
+}
 static u32 s_nPmRsts;			// PM_RSTS as this boot found it (crumb.h's report)
 
-// The previous boot's breadcrumb on the card, /.rytm/prevboot.txt: the report's lines, then its whole log tail. Once,
+// The previous boot's breadcrumb on the card, /.sidecar/prevboot.txt: the report's lines, then its whole log tail. Once,
 // 60 s into the boot (a card that hangs a write would not hang every boot at once: no reboot loop), in its own section
 // (41): skipped when the previous boot's core 0 died there. A planned reboot's (an update, the page's reboot) keeps the
 // file there: the last crash's.
@@ -275,12 +289,12 @@ static void CrumbToCard (CLogger *pLogger)
 	if (!crumb::had_prev ()) return;
 	if (crumb::PrevPlanned ())
 	{
-		pLogger->Write (From, LogNotice, "crumb: the previous boot ended with a planned reboot: /.rytm/prevboot.txt kept (the last crash's)");
+		pLogger->Write (From, LogNotice, "crumb: the previous boot ended with a planned reboot: /.sidecar/prevboot.txt kept (the last crash's)");
 		return;
 	}
 	if (crumb::PrevDiedIn (41))
 	{
-		pLogger->Write (From, LogWarning, "crumb: the previous boot hung writing /.rytm/prevboot.txt: not written again");
+		pLogger->Write (From, LogWarning, "crumb: the previous boot hung writing /.sidecar/prevboot.txt: not written again");
 		return;
 	}
 	crumb::Section Cs (41);
@@ -292,8 +306,8 @@ static void CrumbToCard (CLogger *pLogger)
 	}, s_nPmRsts, 0);
 	n += (unsigned) core_snprintf (s_Text + n, 128, "---- the previous boot's log, its last %u KB ----\n", crumb::kLog / 1024);
 	n += crumb::PrevLog (s_Text + n, sizeof s_Text - n);
-	boolean bOK = SdWriteWhole ("/.rytm/prevboot.txt", s_Text, n);
-	pLogger->Write (From, bOK ? LogNotice : LogWarning, "crumb: the previous boot's report and log (%u bytes) %s /.rytm/prevboot.txt",
+	boolean bOK = SdWriteWhole ("/.sidecar/prevboot.txt", s_Text, n);
+	pLogger->Write (From, bOK ? LogNotice : LogWarning, "crumb: the previous boot's report and log (%u bytes) %s /.sidecar/prevboot.txt",
 			n, bOK ? "in" : "NOT written to");
 }
 
@@ -389,6 +403,7 @@ boolean CKernel::Initialize (void)
 	t0 = m_Timer.GetClockTicks ();
 	bridge::selftest_content ();
 	boolean bCard = bridge::begin (ToHost);
+	core::device::g_frozen = [] (int nSlot) { return nSlot >= 0 && CObUsb::Frozen ((unsigned) nSlot) != FALSE; };	// (the UID's MIDI ask)
 	m_Logger.Write (From, LogNotice, "engine: begin %s in %u ms (%d folders, project \"%s\", pool %d)",
 			bCard ? "ok" : "WITHOUT a card", (m_Timer.GetClockTicks () - t0) / 1000,
 			bridge::card_folders (), bridge::project (), bridge::pool_slots ());
@@ -412,6 +427,9 @@ boolean CKernel::Initialize (void)
 	// core 3, as before
 	bridge::card_worker (m_Options.GetAppOptionDecimal ("cardq", 1) != 0);
 	BootStep (3);
+	// a slot whose box left stays that box's this long after its edits are saved (core/device/device.h g_hold_ms): a box
+	// knocked off the hub a moment (a plug on the other port, AO2) comes back to its slot and route
+	core::device::g_hold_ms = (u32) m_Options.GetAppOptionDecimal ("slothold", 5000);
 	m_Usb.SetSend (m_Options.GetAppOptionDecimal ("tohost", 1) != 0);	// tohost=0: the replies dropped, as before
 	boolean bBench = m_Options.GetAppOptionDecimal ("bench", 1) != 0;
 	LoadClock (bCard);				// the CPU clock option, before the bench: the bench measures the clock the engine plays at
@@ -424,9 +442,15 @@ boolean CKernel::Initialize (void)
 	// boot defaults (the user's decision, 2026-10-16): out=tracks, the voices on their tracks' inputs, through the
 	// Rytm's filters and FX (the mod build); MIDI notes off (notes=on is for a stock Rytm, with out=main); no drone
 	// (only :drone=). cmdline.txt or the console override them.
-	g_Output.SetMode (strcmp (m_Options.GetAppOptionString ("out", "tracks"), "main") == 0 ? Output::kMain
-											      : Output::kTracks);
-	g_Output.SetOutControl (&core::out::control);	// the voices' OUT routes (core/fx/out.h, docs/STEREO.md)
+	const Output::Mode OutMode = strcmp (m_Options.GetAppOptionString ("out", "tracks"), "main") == 0 ? Output::kMain
+												      : Output::kTracks;
+	g_Output.SetMode (OutMode);
+	// the voices' OUT routes (core/fx/out.h, docs/STEREO.md): each slot's own; the base box's stage follows the base box
+	g_Output.FollowControl ([] () -> const core::out::Control * { return &core::out::control_of (core::slot_of_voice (core::device::base_voice_base ())); });
+	g_OutputSide.SetMode (OutMode);			// slot 1's voices beside a Rytm (side_out.h): slot 1's OUT routes,
+	g_OutputSide.SetOutControl (&core::out::control1);	// their box's channels (set by its stream)
+	g_OutputSide.SetMeasured (TRUE, [] () { return core::device::side_slot (); });	// stereo=measure: either box's own stage
+	g_Output.SetMeasured (TRUE, [] () { return (int) core::out::g_base_slot; });
 	// poolmono=1: stereo files summed at load (half the pool RAM for them; PRE / POST voices then play them centred)
 	bridge::pool_mono (m_Options.GetAppOptionDecimal ("poolmono", 0) != 0);
 	// trimpre= / trimpost= (tenths of a dB, may be negative): the PRE / POST pairs' calibration from stereo=measure
@@ -440,7 +464,23 @@ boolean CKernel::Initialize (void)
 				 strcmp (m_Options.GetAppOptionString ("notes", "off"), "on") == 0
 				 || strcmp (m_Options.GetAppOptionString ("notes", "off"), "1") == 0);
 	CEngineCores::SetSplit (m_Options.GetAppOptionDecimal ("split", 4));	// voices 0-3 core 1, 4-7 core 2
+	if (const char *pG = m_Options.GetAppOptionString ("fxguard", 0))	// fxguard=off|report|on (core/fx/fx_guard.h; on by default)
+	{
+		char Out[64], Cmd[24] = "fxguard=";
+		strncpy (Cmd + 8, pG, sizeof Cmd - 9);
+		Cmd[sizeof Cmd - 1] = 0;
+		core::fx::guard::command (Cmd, Out, sizeof Out);
+		m_Logger.Write (From, LogNotice, "%s", Out);
+	}
+	if (const char *pVoices = m_Options.GetAppOptionString ("voices", 0))	// voices=a4:2,dt:6: per box type (core/device/admit.h)
+	{
+		if (core::admit::parse_override (pVoices)) core::device::readmit ();
+		else m_Logger.Write (From, LogWarning, "voices=%s not understood: voices=rytm:N,a4:N,dt:N (0..8)", pVoices);
+	}
 	CEngineCores::SetIdleWfe (m_Options.GetAppOptionDecimal ("idlewfe", 1) != 0);	// docs/pi-engine.md "Idle sleep"
+	if (m_Options.GetAppOptionString ("blocklimit", 0) != 0)	// the QEMU gates only: a unit's cmdline never has it
+		m_Logger.Write (From, LogWarning, "blocklimit: a render core's block limit is %u ms (not 20): emulator gates only",
+				CEngineCores::SetBlockLimitMs (m_Options.GetAppOptionDecimal ("blocklimit", 20)));
 	ApplyBudget (m_nClockMHz, TRUE);			// the voice guard's budget, for the clock the engine runs at
 	m_Console.Initialize ();
 	BootStep (4);
@@ -535,7 +575,7 @@ boolean CKernel::Initialize (void)
 	// Or the USB-C network (usbnet_pi.h, docs/usb-network.md): net=auto (the default) takes it when a computer on
 	// USB-C starts its network driver in time, net=usb always, net=wifi|lan never; a Sidecar with no computer on USB-C
 	// comes up as before. On USB-C the Wi-Fi chip stays up for scans (Wi-Fi can be set up from the page) and joins nothing.
-	m_pWifi = new CWifi;				// reads /.rytm/wifi.txt (the card is mounted by bridge::begin)
+	m_pWifi = new CWifi;				// reads /.sidecar/wifi.txt (the card is mounted by bridge::begin)
 	CWifi::TMode WifiMode = m_pWifi->BootMode (&m_Options);
 	const usbnet::Options UsbOpt = usbnet::options (m_Options.GetAppOptionString ("net", 0),
 		m_Options.GetAppOptionString ("usbnet", 0), m_Options.GetAppOptionString ("usbip", 0),
@@ -704,6 +744,68 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  ST.gap_us, ST.at_frames, ST.gaps_over_2ms, ST.sec_us[0], ST.sec_us[1], ST.sec_us[2], ST.sec_us[3], ST.sec_us[4],
 		  ST.sec_us[5], CEngineCores::StallStep (), ST.step_us, ST.step_sum, ST.here_us);	// -1: did not happen
 	pOut->Append (s);
+	// the slots (attach order, core/device/device.h): who holds each, a Rytm presumed at boot, a box gone still saving, which
+	// transport goes there (0 USB-C, 1 the relay; -1 none) and the base (plain reads of the control core's: stale at worst)
+	pOut->Append (",\"slots\":[");
+	for (int k = 0; k < core::device::kLinks; k++)
+	{
+		const core::device::Link &L = core::device::g_links[k];
+		const core::device::Profile *pHeld = __atomic_load_n (&L.held, __ATOMIC_RELAXED);
+		int nT = -1;
+		for (int t = 0; t < core::device::kLinks; t++)
+			if (core::device::route_of (t) == k) nT = t;
+		// kept: held for its box that left (slothold=); voices: admitted (core/device/admit.h), asked: its type's count; short:
+		// what the CPU admission held back
+		const int nV = core::device::admitted (k);
+		s.Format ("%s{\"slot\":%d,\"box\":\"%s\",\"presumed\":%s,\"saving\":%s,\"kept\":%s,\"transport\":%d,\"base\":%s,\"voices\":%d,\"asked\":%d,\"short\":%d}",
+			  k ? "," : "", k, pHeld ? core::device::short_name (*pHeld) : "", L.presumed ? "true" : "false",
+			  L.parting ? "true" : "false", L.holding ? "true" : "false", nT, core::device::g_base == &L ? "true" : "false",
+			  pHeld ? nV : 0, pHeld ? (int) L.want : 0, pHeld && L.want > nV ? (int) L.want - nV : 0);
+		pOut->Append (s);
+	}
+	pOut->Append ("]");
+	{	// CPU admission (core/device/admit.h): the render cores' worst case for the voices admitted now, 1/100 % of a core
+		core::admit::Load AL;
+		core::device::load_now (&AL);	// with the AMPs playing on each core (admitted when loaded: admit.h amp_fits)
+		s.Format (",\"admit\":{\"bench\":%s,\"enforce\":%s,\"mhz\":%u,\"limitBp\":%u,\"core1Bp\":%u,\"core2Bp\":%u,\"core3Bp\":%u,\"amps1\":%u,\"amps2\":%u,\"amps3\":%u,\"ins1Bp\":%u,\"ins2Bp\":%u,\"insRefused\":[%d,%d],\"ampRefused\":%d}",
+			  core::admit::on () ? "true" : "false", core::admit::enforce () ? "true" : "false", core::admit::clock (), core::admit::kLimitBp,
+			  core::admit::core_bp (1, AL), core::admit::core_bp (2, AL), core::admit::core3_bp (AL), AL.amps[1], AL.amps[2], AL.amps[3], (unsigned) AL.ins[1], (unsigned) AL.ins[2],
+			  core::ins::refused_count (0), core::ins::refused_count (1), core::amp::refused_cpu ());
+		pOut->Append (s);
+		// the measured guard of every effect (core/fx/fx_guard.h): what it muted, built-in and user, with the reasons
+		static char Fm[2048];
+		pOut->Append (",");
+		core::fx::guard::json (Fm, sizeof Fm);
+		pOut->Append (Fm);
+	}
+	// the side stage (side_out.h): slot 1's voices beside a Rytm, paced by slot 1's own stream (slot -1: none now)
+	s.Format (",\"sideOut\":{\"slot\":%d,\"level\":%u,\"underruns\":%u,\"restartUnderruns\":%u,\"streams\":%u}",
+		  core::device::side_slot (), g_OutputSide.Level (), g_OutputSide.Underflows (), g_OutputSide.RestartUnderflows (),
+		  g_OutputSide.Streams ());
+	pOut->Append (s);
+	// each slot's send FX and master chain (phase 3(d)): rendered frames, underruns, ring drops (slot 0's under / drops
+	// are cleared by the console's `sendfx` line, which reports them)
+	// each transport's MIDI realtime as it reached the engine (cores.cpp RealtimeIn): whether a box's clock arrives at all
+	pOut->Append (",\"realtime\":[");
+	for (unsigned t = 0; t < 2; t++)
+	{
+		const CEngineCores::TRealtime R = CEngineCores::Realtime (t);
+		s.Format ("%s{\"transport\":%u,\"slot\":%d,\"clock\":%u,\"start\":%u,\"stop\":%u,\"songPos\":%u,\"noSlot\":%u}",
+			  t ? "," : "", t, R.nSlot, R.nClock, R.nStart, R.nStop, R.nSongPos, R.nNoSlot);
+		pOut->Append (s);
+	}
+	pOut->Append ("]");
+	pOut->Append (",\"slotFx\":[");
+	for (int b = 0; b < 2; b++)
+	{
+		const sendfx_pi::Stats F = sendfx_pi::ReadStats (b);
+		const masterfx_pi::Stats M = masterfx_pi::Read (b);
+		s.Format ("%s{\"slot\":%d,\"sendOn\":%s,\"send\":[%u,%u,%u,%u],\"master\":[%u,%u,%u,%u],\"wet\":%u}", b ? "," : "",
+			  b, F.on ? "true" : "false", F.frames, F.under, F.drop_in, F.drop_out, M.frames, M.under, M.drop_in,
+			  M.drop_out, (unsigned) (masterfx_pi::Wet (b) * 100.0f));
+		pOut->Append (s);
+	}
+	pOut->Append ("]");
 	usbnet_pi::Status (pOut, k->m_pSidecar != 0 && k->m_pSidecar->NetInDevice (), k->m_pSidecar != 0 && k->m_pSidecar->NetUp (),
 			   k->m_pSidecar != 0 && k->m_pSidecar->NetLate ());	// late: reboot to use the cable
 	{	// the USB-C mode (usb_mode.h): set (chosen), from (card, cmdline, default), runs (set, or class where the unit cannot
@@ -717,6 +819,25 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 			  (k->m_nUsbModes & 1u << usb_mode::kSidecar) && (k->m_nUsbModes & 1u << usb_mode::kMirror) ? "," : "",
 			  k->m_nUsbModes & 1u << usb_mode::kMirror ? "\"overbridge\"" : "", Shown[k->UsbShown () + 1],
 			  k->m_pSidecar != 0 && k->m_pSidecar->MirrorBoxThere () ? "true" : "false", RASPPI >= 5 ? 5 : 4);
+		pOut->Append (s);
+	}
+	// usb=mirror with two boxes (mirror_assign.h): prefer (cmdline mirror=), first (mirrorfirst=: the route filled first),
+	// the box USB-C shows and the one the Teensy relay shows ("none": none chosen yet / not there), and whether a relay is up
+	// and midiSlots: the slot of the host link's box and of link1's (-1 none), which the MIDI routes follow (attach order)
+	s.Format (",\"mirror\":{\"prefer\":\"%s\",\"first\":\"%s\",\"usbc\":\"%s\",\"relay\":\"%s\",\"relayUp\":%s,\"midiSlots\":[%d,%d]}",
+		  mirror_assign::prefer_name (CObUsb::MirrorPrefer ()), CObUsb::MirrorRelayFirst () ? "relay" : "usbc",
+		  CObUsb::UsbcSlot () >= 0 && CObUsb::Box ((unsigned) CObUsb::UsbcSlot ()) != 0 ? CObUsb::SlotName (CObUsb::UsbcSlot ()) : "none",
+		  CObUsb::RelaySlot () >= 0 && CObUsb::Box ((unsigned) CObUsb::RelaySlot ()) != 0 ? CObUsb::SlotName (CObUsb::RelaySlot ()) : "none",
+		  CTeensyTarget::Relaying () ? "true" : "false", CObUsb::MidiSlot (0), CObUsb::MidiSlot (1));
+	pOut->Append (s);
+	// the attach gate (attach_gate.h, obgate=): per slot whether its box is held from the computer now, its holds, late
+	// shows, re-enumerations and the last hold's length since boot; the stream restarts since boot (all boxes)
+	{
+		const obgate::Gate &g0 = CObUsb::AttachGate (0), &g1 = CObUsb::AttachGate (1);
+		s.Format (",\"gate\":{\"held\":[%s,%s],\"holds\":[%u,%u],\"late\":[%u,%u],\"reenums\":[%u,%u],\"waitMs\":[%u,%u],"
+			  "\"restarts\":%u}", CObUsb::GateHolds (0) ? "true" : "false", CObUsb::GateHolds (1) ? "true" : "false",
+			  g0.holds, g1.holds, g0.shown_late, g1.shown_late, g0.total_reenums, g1.total_reenums,
+			  (unsigned) g0.last_wait_ms, (unsigned) g1.last_wait_ms, CObUsb::StreamRestarts ());
 		pOut->Append (s);
 	}
 	s.Format (",\"usbmidi\":{\"os\":\"%s\",\"osUpgrade\":%s,\"aborted\":%u}",	// usbmidi=os: (sidecar_gadget.h); osUpgrade: they
@@ -767,10 +888,10 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 	}
 	// setting: cpumhz=, where 1500 means the board's full clock; mhz: what the firmware says it set; fullMhz, minMhz: its range;
 	// measuredMhz: what it measured (MeasureClock, up to 10 s old, 0: none yet); socMaxC: Circle's throttle (socmaxtemp)
-	s.Format (",\"cpu\":{\"setting\":%u,\"mhz\":%u,\"budgetUs\":%u,\"askedMhz\":%u,\"fullMhz\":%u,\"minMhz\":%u,\"measuredMhz\":%u,\"socMaxC\":%u,\"capped\":%s}",
+	s.Format (",\"cpu\":{\"setting\":%u,\"mhz\":%u,\"budgetUs\":%u,\"askedMhz\":%u,\"fullMhz\":%u,\"minMhz\":%u,\"measuredMhz\":%u,\"socMaxC\":%u,\"capped\":%s,\"heatCapMhz\":%d}",
 		  k->m_nClockSetting, k->m_nClockMHz, k->m_nBudgetUs, k->AskedMHz (), k->m_CPUThrottle.GetMaxClockRate () / 1000000,
 		  k->m_CPUThrottle.GetMinClockRate () / 1000000, k->m_nMeasuredMHz, k->m_Options.GetSoCMaxTemp (),
-		  k->m_bClockCapped ? "true" : "false");
+		  k->m_bClockCapped ? "true" : "false", k->m_ThermalCap.cap_mhz);
 	pOut->Append (s);
 #if RASPPI >= 5
 	{	// the fan header (fan.h): mode (auto, on, off), from (default, card, cmdline, console), level 0..4, duty (of 255),
@@ -787,10 +908,10 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		  k->m_nAsleepPct[0], k->m_nAsleepPct[1], k->m_nAsleepPct[2], k->m_nAsleepPct[3],
 		  k->m_nWakes[0], k->m_nWakes[1], k->m_nWakes[2], k->m_nWakes[3]);
 	pOut->Append (s);
-	pOut->Append (",\"machines\":[");			// each voice's machine (the Sound tab shows the current one)
+	pOut->Append (",\"machines\":[");			// each voice's machine (the Sound tab shows the current one): the base box's
 	for (unsigned v = 0; v < 8; v++)
 	{
-		s.Format ("%s\"%s\"", v ? "," : "", bridge::machine_name (v));
+		s.Format ("%s\"%s\"", v ? "," : "", bridge::machine_name (bridge::out_base () + (int) v));
 		pOut->Append (s);
 	}
 	pOut->Append ("]");
@@ -817,6 +938,12 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		unsigned long nHeapFree = (unsigned long) CMemorySystem::Get ()->GetHeapFreeSpace (HEAP_LOW);	// new's heap
 		if (bridge::store_json (Store, sizeof Store, nHeapFree) > 0) { pOut->Append (","); pOut->Append (Store); }
 	}
+	// Circle's CUSBRequest instances (every driver's; the limit is the allocator's, a LogPanic past it) and the boxes'
+	// detaches with the URBs in flight freed then (ob_usb.h): live stays flat over Rytm restarts
+	s.Format (",\"usbreq\":{\"live\":%u,\"peak\":%u,\"limit\":%u,\"detaches\":%u,\"freedInFlight\":%u,\"keptInFlight\":%u}",
+		  CObUsb::UsbRequests (), CObUsb::UsbRequestsPeak (), CObUsb::UsbRequestsLimit (), CObUsb::Detaches (),
+		  CObUsb::FreedInFlight (), CObUsb::KeptInFlight ());
+	pOut->Append (s);
 	sendfx_pi::View fx;				// the send FX tab: each FX's TYPE, PRE/POST and the 12 sends
 	sendfx_pi::Read (&fx);
 	pOut->Append (",\"fx\":[");
@@ -954,7 +1081,7 @@ void CKernel::WebStatus (CString *pOut, void *pParam)
 		pOut->Append (Sd);
 	}
 	{
-		static char Sa[640];		// SAMPLING and the AUTO-SAMPLER (core/samp; plain reads)
+		static char Sa[1024];		// SAMPLING and the AUTO-SAMPLER (core/samp; plain reads)
 		bridge::samp_json (Sa, sizeof Sa);
 		pOut->Append (Sa);
 	}
@@ -1098,6 +1225,12 @@ void CKernel::LogBench (void)
 		m_Timer.MsDelay (2);
 	}
 	m_nBenchMHz = nMHz;
+	// CPU admission's costs (core/device/admit.h): gathered from the rows below, set at the end
+	core::admit::Costs Adm = {};
+	Adm.mhz = nMHz;
+	for (unsigned m = 0; m < CEngineCores::BenchMachines; m++)
+		if (m_nBenchBp[m] > Adm.voice_bp) Adm.voice_bp = m_nBenchBp[m];
+	unsigned nInsPairBp = 0, nInsPostBp = 0, nSfxWorstBp = 0, nSfxCloudBp = 0, nBusBp = 0, nMfxBp = 0;
 	// fx-ins (core/fx/insert.h): 8 voices' INSERT chains, two slots each, on core 0 (docs/INSERT-FX.md "CPU")
 	// FILTER+DELAY COMP+EQ DRIVE+TREMOLO CRUSH+RINGMOD SAT+SAT, then OFF+OFF = ins1112's POST EQ on its own (bridge.cpp turns
 	// the post EQ on only for that row; the four pairs are measured with it flat, i.e. skipped, so their numbers
@@ -1109,15 +1242,34 @@ void CKernel::LogBench (void)
 		u32 nHash = 0;
 		u64 nTicks = bridge::ins_bench (Pairs[p][0], Pairs[p][1], &nWorst, &nHash);
 		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		if (Pairs[p][0] == 0 && Pairs[p][1] == 0) nInsPostBp = nBp;	// (the POST EQ alone)
+		else if (nBp > nInsPairBp) nInsPairBp = nBp;
 		m_Logger.Write (From, LogNotice, "bench ins %s+%s: 8 voices x 2 slots %u.%02u %% of a core, worst block %u.%u %%, hash %08X",
 				bridge::ins_bench_name (Pairs[p][0]), bridge::ins_bench_name (Pairs[p][1]), nBp / 100, nBp % 100,
 				nBlk / 10, nBlk % 10, nHash);
+		m_Timer.MsDelay (2);
+	}
+	{	// CPU admission's INSERT types (core/device/admit.h type_bp; decided 2026-11-22: a voice slot's type is admitted when
+		// it is set): each voice type on its own, T+T on 8 voices x 2 slots (the post EQ flat), its sixteenth a slot
+		static const int Types[] = {1, 2, 3, 4, 5, 6, 7, 8, 10};	// FILTER CRUSH DRIVE EQ COMP DELAY TREMOLO RINGMOD SAT (AMP: its own row)
+		CString Line;
+		for (int t : Types)
+		{
+			u32 nWorst = 0;
+			const unsigned nBp = (unsigned) (bridge::ins_bench (t, t, &nWorst) * 10000 / nCntFrq), nSlot = (nBp + 15) / 16;
+			Adm.type_bp[t] = (u16) (nSlot < 65535 ? nSlot : 65535);
+			CString One;
+			One.Format (" %s %u.%02u", bridge::ins_bench_name (t), nSlot / 100, nSlot % 100);
+			Line.Append (One);
+		}
+		m_Logger.Write (From, LogNotice, "bench ins a slot of each type, %% of a core:%s", (const char *) Line);
 		m_Timer.MsDelay (2);
 	}
 	{	// SAT on every slot of the buses and the master: what it can add to core 2
 		u32 nWorst = 0;
 		u64 nTicks = bridge::ins_bus_bench (&nWorst);
 		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		nBusBp = nBp;
 		m_Logger.Write (From, LogNotice, "bench ins SAT buses+master: 10 stereo slots %u.%02u %% of a core, worst block %u.%u %%",
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
 		m_Timer.MsDelay (2);
@@ -1137,6 +1289,7 @@ void CKernel::LogBench (void)
 		u32 nWorst = 0;
 		u64 nTicks = bridge::amp_bench (&nWorst);
 		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		Adm.amp_bp = nBp;
 		m_Logger.Write (From, LogNotice, "bench amp A2-LITE: 1 instance %u.%02u %% of a core, worst block %u.%u %% -> cap 6 = %u.%02u %%",
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10, nBp * 6 / 100, nBp * 6 % 100);	// the cap: core/fx/amp.h kMaxRunning
 		m_Timer.MsDelay (2);
@@ -1147,6 +1300,7 @@ void CKernel::LogBench (void)
 		u32 nWorst = s_ChainBench[0].nWorst;
 		u64 nTicks = s_ChainBench[0].nTicks;
 		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		nMfxBp = nBp;
 		m_Logger.Write (From, LogNotice, "bench mfx COMP EQ SPACE CLOUD POSTEQ: %u.%02u %% of a core, worst block %u.%u %%",
 				nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
 		m_Timer.MsDelay (2);
@@ -1158,10 +1312,66 @@ void CKernel::LogBench (void)
 		u32 nWorst = s_ChainBench[nSet + 1].nWorst;
 		u64 nTicks = s_ChainBench[nSet + 1].nTicks;
 		unsigned nBp = (unsigned) (nTicks * 10000 / nCntFrq), nBlk = (unsigned) (nWorst * 1000 / nBlock);
+		if (nBp > nSfxWorstBp) nSfxWorstBp = nBp;
+		if (strcmp (pName, "CLOUD x4") == 0) nSfxCloudBp = nBp;
+		const int nType = bridge::sfxins_bench_type (nSet);	// CPU admission: one master send TYPE slot, a quarter of its x4 row
+		if (nType >= core::admit::kSendType0 && nType < core::admit::kSendType0 + core::admit::kSendTypes)
+			Adm.send_bp[nType - core::admit::kSendType0] = (u16) ((nBp + 3) / 4 < 65535 ? (nBp + 3) / 4 : 65535);
 		m_Logger.Write (From, LogNotice, "bench sfxins %s: %u.%02u %% of a core, worst block %u.%u %%",
 				pName, nBp / 100, nBp % 100, nBlk / 10, nBlk % 10);
 		m_Timer.MsDelay (2);
 	}
+	// One box's chains as one row (master::box_bench: its send FX, the bus chains and the master chain at the worst set the
+	// rooms allow together, as its render core runs them: slot 0's core 2, slot 1's core 1), replacing the sum of the overlapping rows above (LT1, 2026-11-22)
+	unsigned nBoxBp = 0;
+	if (s_BoxBench.nTicks != 0)
+	{
+		nBoxBp = (unsigned) (s_BoxBench.nTicks * 10000 / nCntFrq);
+		unsigned nBlk = (unsigned) (s_BoxBench.nWorst * 1000 / nBlock);
+		m_Logger.Write (From, LogNotice, "bench box chains SENDFX CLOUDSEED x2, B1-B3 CLOUD+SAT, M1 CLOUD M4 SAT POSTEQ: %u.%02u %% of a core, worst block %u.%u %%",
+				nBoxBp / 100, nBoxBp % 100, nBlk / 10, nBlk % 10);
+		m_Timer.MsDelay (2);
+	}
+	// CPU admission (core/device/admit.h): a voice's INSERT chain is the worst pair's eighth and the POST EQ's; a box's chains
+	// on its render core the box chains row, dry (the boot has no capture loaded for the row's M2 and M3: an AMP counts when a
+	// slot loads one, amp_fits). No box row (a slot already set): the earlier sum of the overlapping rows, an upper bound.
+	// core_bp scales each row by its LT3 load factor (admit.h kAmpLoadPct, kVoiceLoadPct, kChainLoadPct), logged here.
+	Adm.ins_bp = (nInsPostBp + 7) / 8;	// a voice's POST EQ (its INSERT types count when set: type_bp)
+	Adm.slot_bp = (nInsPairBp + 15) / 16;	// a type without a row of its own: the worst pair's slot
+	Adm.fx_bp = nBoxBp ? nBoxBp : nMfxBp + nSfxWorstBp + nBusBp + nSfxCloudBp / 2;	// dry: AMPs count when loaded (amp_fits)
+	core::admit::set_costs (Adm);
+	core::admit::set_clock (m_nClockMHz);
+	const core::admit::LoadPct &Lp = core::admit::load_pct ();
+	core::device::readmit ();
+	m_Logger.Write (From, LogNotice, "admit: at %u MHz a voice %u.%02u %% (machine %u.%02u + POST EQ %u.%02u; INSERT types admitted when set), AMP %u.%02u %%, a box's chains %u.%02u %% (%s, dry; slot 0's on core 2, its master chain on core 3; slot 1's on core 1); under load x%u.%02u voice, x%u.%02u AMP (admitted when a slot loads one), x%u.%02u chains (LT3); limit 80 %% a render core",
+			nMHz, (Adm.voice_bp + Adm.ins_bp) / 100, (Adm.voice_bp + Adm.ins_bp) % 100, Adm.voice_bp / 100, Adm.voice_bp % 100,
+			Adm.ins_bp / 100, Adm.ins_bp % 100, Adm.amp_bp / 100, Adm.amp_bp % 100, Adm.fx_bp / 100, Adm.fx_bp % 100,
+			nBoxBp ? "box row" : "no box row: the rows' sum", Lp.voice / 100, Lp.voice % 100,
+			Lp.amp / 100, Lp.amp % 100, Lp.chain / 100, Lp.chain % 100);
+	LogAdmit ();
+}
+
+// What two boxes would get now, each pair of the known boxes in either order (admit.h): one line, at boot and when the clock
+// setting changes
+void CKernel::LogAdmit (void)
+{
+	if (!core::admit::on ()) return;
+	static const char *const Types[3] = {"Rytm", "A4", "Digitakt"};
+	CString Line;
+	for (int a = 0; a < 3; a++)
+		for (int b = 0; b < 3; b++)
+		{
+			if (a == b) continue;
+			const core::device::Profile *pA = a == 0 ? &core::device::rytm () : core::device::by_id (a == 1 ? core::device::kIdA4 : core::device::kIdDigitakt);
+			const core::device::Profile *pB = b == 0 ? &core::device::rytm () : core::device::by_id (b == 1 ? core::device::kIdA4 : core::device::kIdDigitakt);
+			if (!pA || !pB) continue;
+			core::admit::Load L = {{(u8) core::device::voices_asked (pA), 0}, {true, false}, {(u8) core::device::voices_asked (pA), 0}};
+			const int nB = core::admit::fit (1, core::device::voices_asked (pB), L);
+			CString One;
+			One.Format (" %s+%s %d/%d", Types[a], Types[b], nB, core::device::voices_asked (pB));
+			Line.Append (One);
+		}
+	m_Logger.Write (From, LogNotice, "admit at %u MHz, the second box's voices:%s", core::admit::clock (), (const char *) Line);
 }
 
 // The master chain's and the send TYPE inserts' benches (core/fx/master.h bench, sfx_bench), run on core 0 before cores
@@ -1173,6 +1383,7 @@ void CKernel::BenchChains (void)
 	s_ChainBench[0].nTicks = bridge::mfx_bench (&s_ChainBench[0].nWorst);
 	for (int nSet = 0; nSet + 1 < ChainBenches && bridge::sfxins_bench_name (nSet); nSet++)
 		s_ChainBench[nSet + 1].nTicks = bridge::sfxins_bench (nSet, &s_ChainBench[nSet + 1].nWorst);
+	s_BoxBench.nTicks = bridge::box_bench (&s_BoxBench.nWorst);
 }
 
 // Task 3's boot self-check, before the cores start: one second of a PLAITS voice rendered offline (no USB), then
@@ -1182,7 +1393,7 @@ void CKernel::SelfCheck (void)
 	static const u8 Trig[41] = {0xF0, 0x7D, 0x52, 0x54, 0x04, 0x00, 48, 100,
 				    40, 0, 64, 0, 64, 0, 64, 0, 64, 0, 64, 0, 64, 0, 100, 0,
 				    64, 0, 64, 0, 0, 0, 0, 0, 0, 0, 120, 0, 0, 0, 100, 0, 0xF7};
-	bridge::sysex (Trig, sizeof Trig);
+	bridge::sysex_self (Trig, sizeof Trig);	// (the Pi's own: not the Rytm speaking, slot 0 stays presumed)
 	static s16 Ring[bridge::kBlock][bridge::kVoices];
 	u64 Mach[bridge::kMachines] = {0};
 	unsigned nPeak = 0, nCycles = 0;
@@ -1240,7 +1451,7 @@ void CKernel::SetSelfTest (boolean bOn, const char *pWhy)
 	m_Console.SetSelfTest (bOn);
 }
 
-static int s_nUiLook;			// UX review L1: the OLED look (0 studio, 1 stage), /.rytm/display.txt's uilook=
+static int s_nUiLook;			// UX review L1: the OLED look (0 studio, 1 stage), /.sidecar/display.txt's uilook=
 static int s_nUiContrast;		// 0.5.1: the SIDECAR theme's high contrast (0 off, 1 blue, 2 green, 3 viper), display.txt's uicontrast=
 
 boolean CKernel::Core0Command (const char *pCmd, void *pParam)
@@ -1457,7 +1668,7 @@ boolean CKernel::Core0Command (const char *pCmd, void *pParam)
 	return pThis->m_pSidecar != 0 && pThis->m_pSidecar->Command (pCmd);
 }
 
-// res= in /.rytm/display.txt or cmdline.txt (cmdline wins): "800x480", "1024x600" or "1280x720" fixes the UI's size, "auto" (or
+// res= in /.sidecar/display.txt or cmdline.txt (cmdline wins): "800x480", "1024x600" or "1280x720" fixes the UI's size, "auto" (or
 // none) lets the display choose (the frame buffer's size if it is one of them, else 800x480 centred; docs/pi-display.md
 // "Screen sizes"). Read once, before the display's Initialize; a change takes a reboot. Kept when display.txt is written.
 void CKernel::LoadDisplayRes (boolean bCard)
@@ -1469,8 +1680,8 @@ void CKernel::LoadDisplayRes (boolean bCard)
 		UINT n = 0;
 		// 0.3.0: the first read of display.txt after a boot - a cut between the atomic write's renames left the
 		// settings in display.txt.prev, and a cut during it left a display.txt.tmp (core/fmt/fmt.h recover)
-		core::fmt::recover ("/.rytm/display.txt");
-		if (f_open (&f, "SD:/.rytm/display.txt", FA_READ) == FR_OK)
+		core::fmt::recover ("/.sidecar/display.txt");
+		if (f_open (&f, "SD:/.sidecar/display.txt", FA_READ) == FR_OK)
 		{
 			f_read (&f, Text, sizeof Text - 1, &n);
 			f_close (&f);
@@ -1489,13 +1700,13 @@ void CKernel::LoadDisplayRes (boolean bCard)
 	};
 	const char *ps = strstr (Text, "\nres=");
 	ps = strncmp (Text, "res=", 4) == 0 ? Text + 4 : ps ? ps + 5 : 0;
-	Parse (ps, "/.rytm/display.txt", m_nResFileW, m_nResFileH);
+	Parse (ps, "/.sidecar/display.txt", m_nResFileW, m_nResFileH);
 	m_nResW = m_nResFileW, m_nResH = m_nResFileH;
 	Parse (m_Options.GetAppOptionString ("res", 0), "cmdline.txt", m_nResW, m_nResH);
 	if (m_nResW) m_Logger.Write (From, LogNotice, "display: res=%ux%u", m_nResW, m_nResH);
 }
 
-// /.rytm/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|sidecar|grid" lines
+// /.sidecar/display.txt: "screensaver=MIN", "brightness=PCT", "touchtest=0|1" and "uistyle=oled|sidecar|grid" lines
 // (SIDECAR replaced the CLASSIC theme under its id 1, so an older card's "classic" is read as "sidecar" and
 // written back as "sidecar" at the next save); cmdline.txt's same keys win
 static core::fmt::KvKeep s_DisplayKeep;		// display.txt's lines a newer build wrote: written back unchanged
@@ -1508,8 +1719,8 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 	{
 		FIL f;
 		UINT n = 0;
-		core::fmt::recover ("/.rytm/display.txt");	// 0.3.0: as LoadDisplayRes (which display=0 skips), idempotent
-		if (f_open (&f, "SD:/.rytm/display.txt", FA_READ) == FR_OK)
+		core::fmt::recover ("/.sidecar/display.txt");	// 0.3.0: as LoadDisplayRes (which display=0 skips), idempotent
+		if (f_open (&f, "SD:/.sidecar/display.txt", FA_READ) == FR_OK)
 		{
 			f_read (&f, Text, sizeof Text - 1, &n);
 			f_close (&f);
@@ -1570,11 +1781,11 @@ void CKernel::LoadDisplaySettings (boolean bCard)
 		// dropped at the next write, with a warning now
 		bool bFound;
 		m_bUsbStored = usb_mode::from_text (Text, &m_UsbStored, &bFound);
-		if (bFound && !m_bUsbStored) m_Logger.Write (From, LogWarning, "usb: usbmode= in /.rytm/display.txt: class or overbridge");
+		if (bFound && !m_bUsbStored) m_Logger.Write (From, LogWarning, "usb: usbmode= in /.sidecar/display.txt: class or overbridge");
 	}
 	if (m_pDisplay != 0) m_pDisplay->SetScreensaver (m_nSaverMin);
 	m_Logger.Write (From, LogNotice, "display: screensaver %u min, brightness %u %%, UI style %s (%s)", m_nSaverMin, m_nBright,
-			ui_style::name ((int) m_nUiStyle), Text[0] ? "/.rytm/display.txt" : "defaults");
+			ui_style::name ((int) m_nUiStyle), Text[0] ? "/.sidecar/display.txt" : "defaults");
 }
 
 void CKernel::SaveDisplaySettings (void)
@@ -1618,8 +1829,8 @@ void CKernel::SaveDisplaySettings (void)
 		s.Append (r);
 	}
 	if (s_DisplayKeep.n) s.Append (s_DisplayKeep.text);	// (class S: a newer build's keys carried, fmt.h)
-	boolean bOK = SdWriteWhole ("/.rytm/display.txt", (const char *) s, s.GetLength ());
-	m_Logger.Write (From, bOK ? LogNotice : LogWarning, "/.rytm/display.txt %s", bOK ? "written" : "NOT written");
+	boolean bOK = SdWriteWhole ("/.sidecar/display.txt", (const char *) s, s.GetLength ());
+	m_Logger.Write (From, bOK ? LogNotice : LogWarning, "/.sidecar/display.txt %s", bOK ? "written" : "NOT written");
 }
 
 void CKernel::MIDIPacketHandler (unsigned nCable, u8 *pPacket, unsigned nLength)
@@ -1628,7 +1839,12 @@ void CKernel::MIDIPacketHandler (unsigned nCable, u8 *pPacket, unsigned nLength)
 	// event packet's MIDI bytes, its header byte is the one before them in the endpoint's buffer
 	// (usbmidi=os: on or emu: only while USB is the host; under link=tcp the emulator's MIDI goes to the computer, tcp_link.cpp)
 	CSidecarGadget *pSidecar = CSidecarGadget::Get ();
-	if (pSidecar != 0 && (!pSidecar->OsUpdate () || CObUsb::Active ())) pSidecar->FromRytmMIDI (pPacket - 1);
+	// (USB-C showing the other box, whichever slot: the computer talks to that box, through link 1's tap below; the host
+	// link's MIDI goes to the relay, if it shows its box)
+	if (pSidecar != 0 && !(pSidecar->Mirror () && !CObUsb::UsbcShowsHostLink ()) && (!pSidecar->OsUpdate () || CObUsb::Active ()))
+		pSidecar->FromRytmMIDI (pPacket - 1);
+	// the host link's box on the Teensy relay (CObUsb::RelayShowsHostLink, any slot): its MIDI to the relay's computer
+	if (CTeensyTarget::ShowsRytm ()) CTeensyTarget::RytmTap (pPacket - 1);	// (its own usbmidi=os: gate inside)
 	midibridge_pi::FromRytm (pPacket, nLength);	// and to the Rytm MIDI bridge's client, if one is connected
 	if (!CObUsb::Active ()) return;	// the TCP link is the host: a real Rytm's MIDI is not the engine's
 	if (nLength >= 3 && (pPacket[0] & 0xF0) == 0x90 && pPacket[2] != 0) CObUsb::CaptureMarkMIDI ();
@@ -1637,27 +1853,32 @@ void CKernel::MIDIPacketHandler (unsigned nCable, u8 *pPacket, unsigned nLength)
 	asm volatile ("dsb sy; sev");
 }
 
-// An A4's USB MIDI before it is the box in use: its hello reaches the engine while no Rytm has the link, nothing else does, and nothing goes back (usb_box.h).
+// The second Elektron box's USB MIDI (an A4, or a second box with a profile beside the host link's): link1.h, transport 1. Its hello
+// takes the engine's slot 1 (core/device/device.h); everything it sends reaches the engine as that slot's, the replies go back to it.
 static CDevice *volatile s_pHelloBox;
-static volatile boolean s_bHelloHeard;				// it has the mod: its hello came, taken or not (box_list.h)
-static volatile boolean s_bLinkUp;				// a host link is up
+static volatile boolean s_bHelloHeard;				// it has the mod: its hello came (box_list.h)
 static HelloGate s_HelloGate;
+// usb=mirror with link1's box on USB-C (CObUsb::UsbcShowsLink1, whichever slot it holds): its MIDI to the computer as the host
+// link's is otherwise (xHCI IRQ, through link1's tap); the computer's MIDI goes to it from core 0's loop (link1::FromComputer)
+static void GadgetTap (const uint8_t *pEventPacket)
+{
+	CSidecarGadget *pSidecar = CSidecarGadget::Get ();
+	if (pSidecar != 0 && pSidecar->Mirror () && (!pSidecar->OsUpdate () || CObUsb::Active ()))
+		pSidecar->FromRytmMIDI (pEventPacket);
+}
 static void HelloPacketHandler (unsigned nCable, u8 *pPacket, unsigned nLength)
 {
+	link1::Tap (pPacket - 1);			// usb=mirror through a Teensy relay: the event packet to its computer too
 	for (unsigned i = 0; i < nLength; i++)
-	{
-		unsigned n = s_HelloGate.feed (pPacket[i]);
-		if (n != 0) s_bHelloHeard = TRUE;
-		if (n == 0 || s_bLinkUp || !CObUsb::Active ()) continue;
-		for (unsigned k = 0; k < n; k++)
-			if (!g_MidiIn.push (s_HelloGate.data ()[k])) s_nMidiInLost++;
-		asm volatile ("dsb sy; sev");
-	}
+		if (s_HelloGate.feed (pPacket[i]) != 0) s_bHelloHeard = TRUE;
+	if (!CObUsb::Active ()) return;			// the TCP link is the host: a real box's MIDI is not the engine's
+	link1::Packet (nCable, pPacket, nLength);
 }
 static void HelloRemoved (CDevice *pDevice, void *pContext)
 {
 	s_pHelloBox = 0;
 	s_bHelloHeard = FALSE;
+	link1::SetDevice (0);
 }
 
 void CKernel::MIDIRemoved (CDevice *pDevice, void *pContext)
@@ -1708,7 +1929,9 @@ static void AsampMidiSend (CSidecarGadget *pSidecar)
 		w &= ~0xF0u;				// cable 0
 		if (nPort == 1)
 		{
-			if (pSidecar != 0) pSidecar->MIDIToComputer (w);
+			// the Rytm's computer: the relay's when it shows the Rytm and USB-C does not, else USB-C's
+			if (CTeensyTarget::ShowsRytm ()) CTeensyTarget::MidiToComputer (w);
+			else if (pSidecar != 0) pSidecar->MIDIToComputer (w);
 		}
 		else if (nPort == 2 || nPort == 3)
 			for (unsigned i = 0; i < MaxKeyboards; i++)
@@ -1769,7 +1992,6 @@ void CKernel::UpdateMIDI (void)
 	if (m_pMIDI != 0 && nNow - s_nScanAt < 250000) return;
 	s_nScanAt = nNow;
 	g_pSidecarKeysTap = KeysTap;
-	s_bLinkUp = m_pMIDI != 0;
 	// umidiN in Circle's numbering: the gadget's own MIDI device (USB-C, gadget.h) takes a number too
 	for (unsigned n = 1; n <= 8; n++)
 	{
@@ -1781,18 +2003,16 @@ void CKernel::UpdateMIDI (void)
 		for (unsigned i = 0; i < MaxKeyboards; i++) bKnown |= s_pKeyboard[i] == p;
 		if (bKnown) continue;
 		TUsbBox Box = BoxOf (p);
-		if (Box == UsbBoxHello)
+		if (Box == UsbBoxHello || (Box == UsbBoxHost && m_pMIDI != 0))	// an A4, or a second box beside the host link's
 		{
-			if (core::device::active ().id == core::device::kIdA4) Box = UsbBoxHost;	// it chose this boot's folder: it is the box in use
-			else if (s_pHelloBox != 0) continue;		// one is heard at a time: a second A4 waits for that one to go
-			else
-			{
-				s_pHelloBox = p;
-				((CUSBMIDIDevice *) p)->RegisterRemovedHandler (HelloRemoved, this);
-				((CUSBMIDIDevice *) p)->RegisterPacketHandler (HelloPacketHandler);
-				m_Logger.Write (From, LogNotice, "midi: an Analog Four MKII (%s): nothing goes to it, listening for its mod's hello", (const char *) Name);
-				continue;
-			}
+			if (s_pHelloBox != 0) continue;			// one second box at a time: another waits for that one to go
+			s_pHelloBox = p;
+			((CUSBMIDIDevice *) p)->RegisterRemovedHandler (HelloRemoved, this);
+			((CUSBMIDIDevice *) p)->RegisterPacketHandler (HelloPacketHandler);
+			link1::SetDevice ((CUSBMIDIDevice *) p);
+			const char *pBox = p->GetProperty (CDevice::PropertyProduct);
+			m_Logger.Write (From, LogNotice, "midi: %s (%s): the second box's link, its hello takes a slot", pBox != 0 && *pBox ? pBox : "an Elektron box", (const char *) Name);
+			continue;
 		}
 		if (Box == UsbBoxOther)
 		{
@@ -1849,9 +2069,15 @@ void CKernel::UpdateMIDI (void)
 		if (p == 0 || (m_pGadget != 0 && m_pGadget->IsMIDIDevice (p))) continue;
 		if (p != m_pMIDI && BoxOf (p) == UsbBoxKeyboard) continue;
 		const char *pProduct = p->GetProperty (CDevice::PropertyProduct);
-		u16 nId = p == m_pMIDI ? core::device::active ().id : usb_box_id (pProduct);
+		// its own type by its USB name (the host link's box need not be the base box: an A4 first, then the Rytm on the
+		// host link in slot 1); the profile in use only for a name usb_box_id does not know
+		u16 nId = usb_box_id (pProduct);
+		if (nId == 0 && p == m_pMIDI) nId = core::device::active ().id;
 		TBoxRole Role = p == m_pMIDI ? BoxHost : p == s_pHelloBox ? (s_bHelloHeard ? BoxWaiting : BoxListening) : nId != 0 ? BoxSpare : BoxOther;
-		s_Boxes.add (nId, n, Role, pProduct);
+		// its UID and name: the slot its transport carries (two of one type, design 2026-11-26; plain reads of the control core's)
+		const int t = p == m_pMIDI ? 0 : p == s_pHelloBox ? 1 : -1, s = t < 0 ? -1 : core::device::route_of (t);
+		const core::device::Link *pLink = s >= 0 && s < core::device::kLinks ? &core::device::g_links[s] : 0;
+		s_Boxes.add (nId, n, Role, pProduct, pLink != 0 && pLink->held ? pLink->uid : 0, pLink != 0 && pLink->held ? pLink->label : 0);
 	}
 }
 
@@ -1870,7 +2096,7 @@ void CKernel::FillUi (void)
 	sidecar_ui_status_t &u = m_Ui;
 	u.rytm = CObUsb::Streaming () || m_pMIDI != 0;
 	u.underruns = g_Output.Underflows ();
-	for (int v = 0; v < SIDECAR_UI_TRACKS; v++) u.track[v] = bridge::machine_name (v);
+	for (int v = 0; v < SIDECAR_UI_TRACKS; v++) u.track[v] = bridge::machine_name (bridge::out_base () + v);	// the base box's voices
 	const core::device::Profile &Box = core::device::active ();	// the box in use: its word and its voices' names
 	u.box = core::device::short_name (Box);
 	for (int v = 0; v < SIDECAR_UI_TRACKS; v++) u.voice[v] = Box.screen ? Box.screen->names[v] : 0;
@@ -2166,6 +2392,7 @@ void CKernel::LogStats (void)
 	{ mbtrace::Scope Mb (3); nTemp = m_CPUThrottle.GetTemperature (); }
 	s_nTempC = m_nTempC = nTemp;
 	ThermalStep (nTemp);
+	ThermalCapStep (nTemp);
 	UpdateNoticeStep ();
 #if RASPPI >= 5
 	FanStep (nTemp, 0);
@@ -2197,6 +2424,10 @@ void CKernel::LogStats (void)
 		Chans.Append (One);
 	}
 	unsigned c1 = pct (s.nBusy[1]), c2 = pct (s.nBusy[2]), c3 = pct (s.nBusy[3]);
+	// CPU admission's check (core/device/admit.h): cores 1 and 2 with their chains (slot 1's on core 1, slot 0's send FX on
+	// core 2), core 3 without its render wait (slot 0's master chain in it: c3 mfx, cores.cpp MasterCore)
+	unsigned c1all = pct (s.nBusy[1] + s.nChain1), c2all = pct (s.nBusy[2] + s.nChain2), c3own = pct (s.nBusy[3] > s.nWait3 ? s.nBusy[3] - s.nWait3 : 0);
+	unsigned c3mfx = pct (s.nChain3);
 	bridge::RuiMore More = {};			// the remote UI's SIDECAR page (core 3 reads it)
 	unsigned nRec = 0;
 	int nRecState = rec_pi::UiState (&nRec);	// 0 off (idle), 1 armed, 2 recording
@@ -2224,8 +2455,9 @@ void CKernel::LogStats (void)
 		sv.valid = 1;
 		for (int v = 0; v < SST_VOICES; v++)
 		{
-			sv.vload[v] = (int) (s.nVoice[v] * 1000 / s.nTicks);	// tenths of a percent of one render core
-			sv.muted[v] = g_Guard.Muted ((unsigned) v) ? 1 : 0;
+			const int ev = bridge::out_base () + v;			// the base box's voice v
+			sv.vload[v] = (int) (s.nVoice[ev] * 1000 / s.nTicks);	// tenths of a percent of one render core
+			sv.muted[v] = g_Guard.Muted ((unsigned) ev) ? 1 : 0;
 			if (v < SIDECAR_UI_TRACKS) m_Ui.vload[v] = sv.vload[v], m_Ui.vmuted[v] = sv.muted[v];	// HOME > Overview's voice tiles
 		}
 		for (int c = 0; c < SST_CORES; c++) sv.load[c] = m_Ui.load[c];
@@ -2246,13 +2478,22 @@ void CKernel::LogStats (void)
 					m_pDisplay->TakeRotateDiag (), m_pDisplay->TakeTouchDiag ());
 	}
 	m_Logger.Write (From, LogNotice,
-		"engine: fifo min %u max %u target %u under %u (restart %u, streams %u) | blocks %u max %u us | cpu c1 %u.%u c2 %u.%u c3 %u.%u %% | "
+		"engine: fifo min %u max %u target %u under %u (restart %u, streams %u) | blocks %u max %u us | cpu c1 %u.%u c2 %u.%u c3 %u.%u %% (with chains c1 %u.%u c2 %u.%u, c3 own %u.%u, c3 mfx %u.%u) | "
 		"pass max %u us | %s| midi %u B (lost %u) sysex %u notes %u%s | to-host sent %u B %u msgs fail %u dropped %u | peak %u/1000 | %u C",
 		s.nFifoMin, s.nFifoMax, CEngineCores::FifoTarget (), g_Output.Underflows (), g_Output.RestartUnderflows (), g_Output.Streams (), s.nBlocks, s.nMaxBlockUs,
-		c1 / 10, c1 % 10, c2 / 10, c2 % 10, c3 / 10, c3 % 10, s.nMaxPassUs, (const char *) Mach, s.nMidiBytes, s_nMidiInLost, s.nSysEx, s.nNotes, (const char *) Chans,
+		c1 / 10, c1 % 10, c2 / 10, c2 % 10, c3 / 10, c3 % 10, c1all / 10, c1all % 10, c2all / 10, c2all % 10, c3own / 10, c3own % 10, c3mfx / 10, c3mfx % 10, s.nMaxPassUs, (const char *) Mach, s.nMidiBytes, s_nMidiInLost, s.nSysEx, s.nNotes, (const char *) Chans,
 		m_Usb.MIDIOutBytes (), m_Usb.MIDIOutMessages (), m_Usb.MIDIOutFailed (),
 		m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped (), (unsigned) (StatsPeak () * 1000),
 		nTemp);
+	if (s.nRunCapped || s.nFifoLate)	// (cores.cpp: a pass rendered its cap of blocks with the FIFO still short; a base pass began with it under a block)
+		m_Logger.Write (From, LogWarning, "overloaded: %u control passes stopped rendering at the cap, %u blocks begun with the FIFO under a block", s.nRunCapped, s.nFifoLate);
+	{	// the measured FX guard's late rule, once a second while any core was late: why a late block muted nothing (LT13)
+		char Late[400];
+		// (fits: passes the FIFO's hold left on time, the late core within admission's limit and no underrun: cores.cpp)
+		if (core::fx::guard::late_report (Late, sizeof Late) > 0 || s.nFifoHeld1 || s.nFifoHeld2 || s.nFifoFits1 || s.nFifoFits2)
+			m_Logger.Write (From, LogNotice, "fxguard late: fifo dips %u, low run max %u, passes late c1 %u c2 %u, fits c1 %u c2 %u | %s",
+					s.nFifoLate, s.nFifoRunMax, s.nFifoHeld1, s.nFifoHeld2, s.nFifoFits1, s.nFifoFits2, Late);
+	}
 	{	// the Rytm's report stream, last second (lagdiag.h RxDiag; only while it flows)
 		char Rx[lagdiag::kLine];
 		if (CEngineCores::TakeRxLine (Rx, sizeof Rx) != 0)
@@ -2280,6 +2521,7 @@ void CKernel::LogStats (void)
 	s_LagSnap.dropped = m_Usb.MIDIOutDropped () + m_SelfTest.MIDIOutDropped () + m_Tcp.MIDIOutDropped () + g_nToHostFull + bridge::to_host_dropped ();
 	static unsigned s_nPowerTick;
 	if (++s_nPowerTick % 10 == 0) { mbtrace::Scope Mb (1); ReadPower (FALSE); }	// every 10 s (a mailbox call)
+	else if (g_bObPowerAsk) { g_bObPowerAsk = FALSE; mbtrace::Scope Mb (1); ReadPower (TRUE); }	// a box dropped: was it the supply? (AO2)
 	if (s_nPowerTick % 10 == 5)				// every 10 s: the heat's figures, in the black box as well
 	{
 		MeasureClock ();
@@ -2338,7 +2580,7 @@ void CKernel::ReadPower (boolean bLog)
 	}
 }
 
-// The CPU clock option (cpuclock.h; Settings > System: 1500 / 1200 / 1000 MHz). cpumhz= in /.rytm/display.txt, cmdline.txt's
+// The CPU clock option (cpuclock.h; Settings > System: 1500 / 1200 / 1000 MHz). cpumhz= in /.sidecar/display.txt, cmdline.txt's
 // wins; read before the boot bench. 1500 is the board's full clock (the Pi 4's 1500; a Pi 5 keeps its own maximum).
 void CKernel::LoadClock (boolean bCard)
 {
@@ -2349,7 +2591,7 @@ void CKernel::LoadClock (boolean bCard)
 		FIL f;
 		UINT n = 0;
 		Text[0] = 0;
-		if (f_open (&f, "SD:/.rytm/display.txt", FA_READ) == FR_OK)
+		if (f_open (&f, "SD:/.sidecar/display.txt", FA_READ) == FR_OK)
 		{
 			f_read (&f, Text, sizeof Text - 1, &n);
 			f_close (&f);
@@ -2393,7 +2635,10 @@ void CKernel::SetClock (unsigned nSettingMHz)
 		m_Logger.Write (From, LogWarning, "cpu: the firmware gave no clock range, the CPU clock is left as it is");
 		return;
 	}
-	const unsigned nHz = cpuclock::target_hz (nSettingMHz, m_CPUThrottle.GetMinClockRate (), m_CPUThrottle.GetMaxClockRate ());
+	unsigned nHz = cpuclock::target_hz (nSettingMHz, m_CPUThrottle.GetMinClockRate (), m_CPUThrottle.GetMaxClockRate ());
+	if (m_ThermalCap.cap_mhz > 0 && (unsigned) m_ThermalCap.cap_mhz * 1000000u < nHz)	// the step-down for heat (ThermalCapStep)
+		nHz = (unsigned) m_ThermalCap.cap_mhz * 1000000u < m_CPUThrottle.GetMinClockRate () ? m_CPUThrottle.GetMinClockRate ()
+										 : (unsigned) m_ThermalCap.cap_mhz * 1000000u;
 	const boolean bFull = nHz >= m_CPUThrottle.GetMaxClockRate ();
 	if (m_nClockMHz != 0 && nHz / 1000000 < m_nClockMHz) ApplyBudget (nHz / 1000000, FALSE);	// lowering: the budget first
 	if (bFull)
@@ -2417,6 +2662,8 @@ void CKernel::SetClock (unsigned nSettingMHz)
 	if (m_nClockMHz == 0) m_nClockMHz = nHz / 1000000;
 	ApplyBudget (m_nClockMHz, TRUE);
 	LogClockRescale ();
+	core::admit::set_clock (m_nClockMHz);		// CPU admission: the next box attached is admitted at this clock (admit.h)
+	LogAdmit ();
 }
 
 // The guard's budget (guard.h): voicebudget= (50 % of a 12-frame block by default, the share measured at 1500 MHz) scaled
@@ -2496,8 +2743,32 @@ void CKernel::ThermalStep (unsigned nTempC)
 	}
 }
 
+// The step-down for a Pi without cooling (thermal.h step; decided 2026-11-22 after LT4, where a bare Pi 4 reached 77 C under
+// the full two-box load and Circle's throttle dropped it from 1500 to 600 MHz at once: ~150,000 underruns in 4 s). From
+// 74 C the clock is capped at 1200, from 76 C at 1000, and only at 78 C (socmaxtemp) at the board's minimum; each cap is
+// raised a step after 30 s at or below 70 C. The cap goes through SetClock (the mailbox: Circle's Update stops while it
+// holds, m_bClockCapped), so the voice budget and CPU admission follow; what no longer fits on a render core at the lower
+// clock (AMPs, then INSERT types) plays dry and shows NO CPU until it fits again (device.cpp shed_over). thermalstep=off
+// on the cmdline leaves the clock to Circle's throttle as before.
+void CKernel::ThermalCapStep (unsigned nTempC)
+{
+	static int s_nOn = -1;
+	if (s_nOn < 0)
+	{
+		const char *p = m_Options.GetAppOptionString ("thermalstep", 0);
+		s_nOn = p != 0 && strcmp (p, "off") == 0 ? 0 : 1;
+	}
+	if (!s_nOn || !m_CPUThrottle.IsDynamic ()) return;
+	const int nWas = m_ThermalCap.cap_mhz;
+	if (!thermal::step (m_ThermalCap, (int) nTempC, (int) AskedMHz (), (int) (m_CPUThrottle.GetMinClockRate () / 1000000))) return;
+	m_Logger.Write (From, m_ThermalCap.cap_mhz && (nWas == 0 || m_ThermalCap.cap_mhz < nWas) ? LogWarning : LogNotice,
+			"thermal: SoC %u C, clock cap %u -> %u MHz (0: none; setting %u, step %u this boot)", nTempC, nWas,
+			m_ThermalCap.cap_mhz, m_nClockSetting, m_ThermalCap.steps);
+	SetClock (m_nClockSetting);
+}
+
 #if RASPPI >= 5
-// The fan header (fan.h, fan_pi.h, docs/pi5.md "The fan"). fan= in /.rytm/display.txt (auto, on, off), cmdline.txt's
+// The fan header (fan.h, fan_pi.h, docs/pi5.md "The fan"). fan= in /.sidecar/display.txt (auto, on, off), cmdline.txt's
 // wins; the default AUTO. The pin starts here, before the bench, and is set from a first reading at once (the
 // firmware's boot check leaves it as it was: often off). A pin that fails to start is logged and the rest goes on.
 void CKernel::LoadFan (boolean bCard)
@@ -2508,7 +2779,7 @@ void CKernel::LoadFan (boolean bCard)
 		FIL f;
 		UINT n = 0;
 		Text[0] = 0;
-		if (f_open (&f, "SD:/.rytm/display.txt", FA_READ) == FR_OK)
+		if (f_open (&f, "SD:/.sidecar/display.txt", FA_READ) == FR_OK)
 		{
 			f_read (&f, Text, sizeof Text - 1, &n);
 			f_close (&f);
@@ -2519,7 +2790,7 @@ void CKernel::LoadFan (boolean bCard)
 		if (p != 0)
 		{
 			if (fan::parse (p + 4, &m_FanStored)) m_FanMode = m_FanStored, m_nFanFrom = 1;
-			else m_Logger.Write (From, LogWarning, "fan: fan= in /.rytm/display.txt: auto, on or off");
+			else m_Logger.Write (From, LogWarning, "fan: fan= in /.sidecar/display.txt: auto, on or off");
 		}
 	}
 	const char *pCmd = m_Options.GetAppOptionString ("fan", 0);
@@ -2534,7 +2805,7 @@ void CKernel::LoadFan (boolean bCard)
 	FanStep (nTemp, "boot");
 	fan_pi::SetDuty (fan::duty (m_Fan.level));	// level 0 too: the pin's boot state replaced either way
 	m_Logger.Write (From, m_bFanPin ? LogNotice : LogError, "fan: %s (%s), %s, level %d (duty %u/255) at SoC %u C",
-			fan::name (m_FanMode), m_nFanFrom == 2 ? "cmdline" : m_nFanFrom == 1 ? "/.rytm/display.txt" : "default",
+			fan::name (m_FanMode), m_nFanFrom == 2 ? "cmdline" : m_nFanFrom == 1 ? "/.sidecar/display.txt" : "default",
 			m_bFanPin ? "pin GPIO45 PWM1 running" : "the PWM did NOT start", m_Fan.level, fan::kPwm[m_Fan.level], nTemp);
 }
 
@@ -2567,6 +2838,7 @@ void CKernel::FollowClock (void)
 			nMHz, m_nClockMHz, m_nClockSetting, m_nTempC);
 	m_nClockMHz = nMHz;
 	ApplyBudget (nMHz, TRUE);
+	core::admit::set_clock (nMHz);		// CPU admission follows too: what no longer fits is shed (device.cpp shed_over)
 }
 
 // What the firmware measures, not what it says it set: GET_CLOCK_RATE repeats the rate asked for, so the firmware's own
@@ -2757,6 +3029,19 @@ void CKernel::Run (void)
 		{ mbtrace::Scope Mb (13, 200); UpdateMIDI (); }
 		g_bComputerMidi = m_pSidecar != 0;
 		AsampMidiSend (m_pSidecar);
+		CObUsb::PollAssign ();			// usb=mirror with two boxes: who goes where, USB-C first (mirror_assign.h)
+		CObUsb::SetMidiDevices (m_pMIDI, link1::Device ());	// which slot's box each MIDI transport is (attach order)
+		// link1's box's USB MIDI to the computer of whichever port shows it, in whichever slot: USB-C (GadgetTap above) or the relay
+		link1::SetTap (CObUsb::UsbcShowsLink1 () ? GadgetTap
+			       : CObUsb::RelayShowsLink1 () && CTeensyTarget::Relaying () ? CTeensyTarget::MidiTap : 0);
+		if (CObUsb::UsbcShowsLink1 ())		// link1's box on USB-C: the computer's MIDI to it, not to the host link's
+		{
+			u32 w;
+			if (m_pSidecar != 0 && m_pSidecar->Mirror ())
+				while (link1::FromComputerRoom () != 0 && m_pSidecar->ForRytm (&w)) link1::FromComputer ((const u8 *) &w);
+		}
+		link1::Send ();				// the engine's replies to the second box (link1.h)
+		CObUsb::PollTargets ();			// each box's own mirror target besides the gadget (mirror_target.h)
 		if (m_pTransport == &m_SelfTest && CObUsb::Streaming ()) SetSelfTest (FALSE, "the Rytm streams");
 		if (m_pTransport == &m_SelfTest && m_pMIDI != 0) SetSelfTest (FALSE, "the Rytm's USB MIDI is up");
 		int nSelfTest = m_Console.TakeSelfTest ();
@@ -2806,7 +3091,7 @@ void CKernel::Run (void)
 #ifdef SIDECAR_PI5_TESTMODE
 		if (m_nTestSecs == 0 || m_bTestCard)
 #endif
-		blackbox_pi::Poll ();						// the log to /.rytm/blackbox.log (its own crumb section, 42)
+		blackbox_pi::Poll ();						// the log to /.sidecar/blackbox.log (its own crumb section, 42)
 		{ mbtrace::Scope Mb (20, 200); bridge::samp_poll (); }			// SAMPLING / the AUTO-SAMPLER: a take's step (core/samp)
 		if (m_pDisplay != 0 || remote_pi::Running ())		// the remote UI's views: from the engine's state, a screen or none
 		{
@@ -3016,6 +3301,7 @@ void CKernel::Run (void)
 		if (m_pSidecar != 0) m_pSidecar->SetLinkTcp (m_pTransport == &m_Tcp);	// usbmidi=os:emu follows the host
 		if (s_bRebootRequested) StopAndReboot ("the flasher's magic");
 		if (m_pSidecar != 0 && m_pSidecar->TakeReboot ()) StopAndReboot ("asked on the USB-C MIDI port (usbreboot=1)");
+		if (CTeensyTarget::TakeReboot ()) StopAndReboot ("asked on the Teensy relay's MIDI port (usbreboot=1)");
 		if (g_Guard.FatalWhy () != 0) StopAndReboot (g_Guard.FatalWhy ());
 		if (m_pWifi->TakeReboot ()) StopAndReboot ("the Wi-Fi settings (a join, or a failed one's revert)");
 		if (usbnet_pi::TakeReboot ()) StopAndReboot ("the page's reboot onto USB-C (a computer started its USB-C network late)");

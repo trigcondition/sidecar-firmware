@@ -21,7 +21,7 @@ static int g_pool_changed = 0, g_last_line = 99, g_project_changed = 0;
 // the project's pool lists read, DSP SAMPLE's slots synced (the control core's steps)
 static void ready() {
   char k[core::kKeyMax];
-  core::project_key(core::project, k, sizeof k);
+  core::project_key(core::prj().key, k, sizeof k);
   for (int i = 0; i < 5000 && (!core::pools::ready() || strcmp(core::pools::project(), k) || core::pools::saving()); ++i)
     core::pools::step();
   CHECK(core::pools::ready());
@@ -71,43 +71,43 @@ int main() {
   CHECK(drums > 0 && bass > 0);
 
   set_project((const uint8_t*)"PROJ\xf7", 5);
-  CHECK(!strcmp(project, "PROJ") && project_dirty && g_project_changed == 1 && g_pool_changed == 1 && g_last_line == -1);
+  CHECK(!strcmp(prj().key, "PROJ") && prj().dirty && g_project_changed == 1 && g_pool_changed == 1 && g_last_line == -1);
   // 14 (empty pool), 16 (no JUNO list), 17: Plaits' 96 ROM voices (no FM list), 8 a message
   CHECK(g_out.size() == 2 + 12 && g_out[0][4] == 0x14 && g_out[0][6] == 0 && g_out[1][4] == 0x16 && g_out[2][4] == 0x17);
   CHECK(g_out[2][5] == 1 && g_out[2][6] == 96 && g_out[13][4] == 0x17 && g_out[13][5] == 0);
   project_save();
-  CHECK(file_text("/.rytm/project") == "PROJ" && !project_dirty);
+  CHECK(file_text("/.rytm/project") == "PROJ" && !prj().dirty);
   g_out.clear();
   set_project((const uint8_t*)"PROJ\xf7", 5);   // a repeat: nothing
   CHECK(g_out.empty() && g_project_changed == 1);
 
   ready();
   pool_add(drums, 0);   // kick.wav (name order): LOAD TO PROJ into the SAMPLES pool's bank A, its first free row
-  CHECK(npool == 1 && !strcmp(pool[0].path, "Drums/kick.wav") && pool[0].folder == drums);
+  CHECK(prj().npool == 1 && !strcmp(pool[0].path, "Drums/kick.wav") && pool[0].folder == drums);
   CHECK(pools::at(pools::kSamples, 1).type == pools::kSample && !strcmp(pools::at(pools::kSamples, 1).path, "/Samples/Drums/kick.wav"));
   CHECK(g_out.back()[4] == 0x14 && g_out.back()[6] == 1 && g_out.back()[7] == 1 && !memcmp(&g_out.back()[12], "kick", 4));
   pool_add(drums, 0);   // already there: no second slot (one entry per hash / path)
-  CHECK(npool == 1);
+  CHECK(prj().npool == 1);
   pool_assign(5, bass, 0);   // ASSIGN: SMP 5 = A005
-  CHECK(npool == 5 && pool[4].folder == bass && g_last_line == -1);
+  CHECK(prj().npool == 5 && pool[4].folder == bass && g_last_line == -1);
   // an input / built-in in bank A (not DSP SAMPLE's): an empty slot in the 14 table
   CHECK(pools::set_special(pools::kSamples, 3, pools::kBuiltin, 0, pools::kForced) == pools::kOk);
   pool_sync();
-  CHECK(npool == 5 && pool[2].path[0] == 0 && pool[2].folder == -1);
+  CHECK(prj().npool == 5 && pool[2].path[0] == 0 && pool[2].folder == -1);
   // a sample outside /Samples: the name only (folder -1: 0x3fff in the 14 table)
   CHECK(pools::set_file(pools::kSamples, 7, "/GRANULAR/x.wav", nullptr, pools::kForced) == pools::kOk);
   g_out.clear();
   pool_sync();
-  CHECK(npool == 7 && pool[6].folder == -1 && !strcmp(pool[6].path, "/GRANULAR/x.wav") && !g_out.empty() && g_out.back()[4] == 0x14);
+  CHECK(prj().npool == 7 && pool[6].folder == -1 && !strcmp(pool[6].path, "/GRANULAR/x.wav") && !g_out.empty() && g_out.back()[4] == 0x14);
   CHECK(pools::unload(pools::kSamples, 7, pools::kForced) == pools::kOk);
   pool_sync();
-  npool = 0;
+  prj().npool = 0;
   set_project((const uint8_t*)"OTHER\xf7", 6);   // another project and back: the SAMPLES pool read back from the card
   ready();
-  CHECK(npool == 0);
+  CHECK(prj().npool == 0);
   set_project((const uint8_t*)"PROJ\xf7", 5);
   ready();
-  CHECK(npool == 5 && pool[4].folder == bass && pool[4].file == 0 && pool[1].path[0] == 0);
+  CHECK(prj().npool == 5 && pool[4].folder == bass && pool[4].file == 0 && pool[1].path[0] == 0);
   CHECK(file_text("/.rytm/projects/PROJ/samples.pool.txt").find("A005 sample ") != std::string::npos);
   {   // a SAMPLES pool file this build cannot read (damaged): locked - an ASSIGN changes nothing, the file not written over
     std::string txt = "#sidecar samplepool 1\nA001 sample - 10 /Samples/Drums/kick.wav\nA001 frob\n";
@@ -118,10 +118,10 @@ int main() {
     set_project((const uint8_t*)"LONG\xf7", 5);
     ready();
     pool_assign(3, bass, 0);
-    CHECK(pools::locked(pools::kSamples) && npool == 0 && file_text("/.rytm/projects/LONG/samples.pool.txt") == txt);
+    CHECK(pools::locked(pools::kSamples) && prj().npool == 0 && file_text("/.rytm/projects/LONG/samples.pool.txt") == txt);
     set_project((const uint8_t*)"PROJ\xf7", 5);
     ready();
-    CHECK(npool == 5 && pool[4].folder == bass);
+    CHECK(prj().npool == 5 && pool[4].folder == bass);
     printf("pool: a SAMPLES pool it cannot read is locked (not written over)\n");
   }
 
@@ -148,10 +148,10 @@ int main() {
   pool_add(cards.folders() + 0, 0);   // TEENSY folder JUNO's first patch: the list seeded (saved PATs keep theirs), on its highest row
   CHECK(junolib.listed() == 127 && !strcmp(junolib.slot(126).name, "Pad") && g_out[0][4] == 0x16);
 
-  project[0] = 0;
+  prj().key[0] = 0;
   project_load();   // at boot: /.rytm/project names the project, its SAMPLES pool loads
   ready();
-  CHECK(!strcmp(project, "PROJ") && npool == 5);
+  CHECK(!strcmp(prj().key, "PROJ") && prj().npool == 5);
   printf("test_pool: PASS\n");
   return 0;
 }

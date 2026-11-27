@@ -6,6 +6,8 @@
 #include "fmt/fmt.h"
 #include "mod/mod.h"
 #include "mod/scene.h"
+#include "device/device.h"
+#include "pool/pool.h"
 #include "platform.h"
 
 namespace core {
@@ -14,19 +16,26 @@ namespace learn {
 namespace {
 
 const char kFile[] = "/.rytm/learn.txt";
-Route g_r[kRoutes];
-int g_n = 0;
-float g_val[kRoutes];       // the route's value 0..127.99 (-1: none came yet)
-uint8_t g_msb[kRoutes];     // a 14-bit route's last MSB
-uint8_t g_lsb[kRoutes];     // ... and its last LSB (an MSB alone plays with it: no dip at an MSB step, v2 Task 6)
-bool g_14[kRoutes];         // its LSB (CC n + 32) heard: 14 bits
-int g_armed = -1;           // the What the next CC is learned for, -1 none
-int g_last = -1;            // the route the last learn made or replaced (the MIDI page's LEARN rows)
-mod::Tid g_arm_t = 0;
-int8_t g_arm_depth = 32;
-bool g_arm_only = false;    // the armed learn replaces the other routes of its What
-bool g_dirty = false, g_locked = false;
-int g_qp_saved = scene::kQpMutedOnly;   // QPERF FADER as the file has it (a change of scene::qp_mode() makes it dirty)
+// 3(c) step 8: each box's own routes (its learn.txt in its own folder: slot 0's loaded at boot, another's at its attach),
+// arming and values, the slot in hand's (prj_slot). A controller's CC (ports 1..4) goes to every slot's routes, each in
+// its Scope; the Rytm's own CCs (port 0) to slot 0's only.
+struct Sl {
+  Route r[kRoutes];
+  int n = 0;
+  float val[kRoutes];       // the route's value 0..127.99 (-1: none came yet)
+  uint8_t msb[kRoutes];     // a 14-bit route's last MSB
+  uint8_t lsb[kRoutes];     // ... and its last LSB (an MSB alone plays with it: no dip at an MSB step, v2 Task 6)
+  bool b14[kRoutes];        // its LSB (CC n + 32) heard: 14 bits
+  int armed = -1;           // the What the next CC is learned for, -1 none
+  int last = -1;            // the route the last learn made or replaced (the MIDI page's LEARN rows)
+  mod::Tid arm_t = 0;
+  int8_t arm_depth = 32;
+  bool arm_only = false;    // the armed learn replaces the other routes of its What
+  bool dirty = false, locked = false;
+  int qp_saved = scene::kQpMutedOnly;   // QPERF FADER as the file has it (a change of scene::qp_mode() makes it dirty)
+};
+Sl g_sl[kVoiceSlots];
+inline Sl& L() { return g_sl[prj_slot()]; }
 
 CORE_COLD const char* what_name(const Route& r, char* b, int cap) {
   static const char* const kNames[] = {"fader", "a", "b"};
@@ -34,32 +43,32 @@ CORE_COLD const char* what_name(const Route& r, char* b, int cap) {
   return mod::name(r.t, b, cap);
 }
 CORE_COLD int find(int port, int ch, int cc) {
-  for (int i = 0; i < g_n; ++i)
-    if (g_r[i].port == port && g_r[i].ch == ch && g_r[i].cc == cc) return i;
+  for (int i = 0; i < L().n; ++i)
+    if (L().r[i].port == port && L().r[i].ch == ch && L().r[i].cc == cc) return i;
   return -1;
 }
 CORE_COLD bool add(const Route& r) {   // (replacing a route on the same port / channel / CC)
   int i = find(r.port, r.ch, r.cc);
   if (i < 0) {
-    if (g_n >= kRoutes) return false;
-    i = g_n++;
+    if (L().n >= kRoutes) return false;
+    i = L().n++;
   }
-  g_r[i] = r, g_val[i] = -1, g_14[i] = false, g_msb[i] = 0, g_lsb[i] = 0;
-  g_dirty = true;
-  g_last = i;
+  L().r[i] = r, L().val[i] = -1, L().b14[i] = false, L().msb[i] = 0, L().lsb[i] = 0;
+  L().dirty = true;
+  L().last = i;
   return true;
 }
 CORE_COLD void apply(int i, float v) {   // v 0..127.99
-  const Route& r = g_r[i];
-  if (r.what == kFader && g_val[i] >= 0 && (scene::fader_source() != scene::kLearn || mod::held_any())) {
+  const Route& r = L().r[i];
+  if (r.what == kFader && L().val[i] >= 0 && (scene::fader_source() != scene::kLearn || mod::held_any())) {
     // another source has the fader (or a held edit plays): a take needs 2 CC steps (7 bit) / 256 (14 bit) from the
     // value acted on last, so a pot's flicker neither steals it nor lets the edit go (v2 Task 6, UX 2a; QPERF's M1)
-    float d = v > g_val[i] ? v - g_val[i] : g_val[i] - v;
+    float d = v > L().val[i] ? v - L().val[i] : L().val[i] - v;
     if (d < 2.0f) return;
   }
-  g_val[i] = v;
+  L().val[i] = v;
   switch (r.what) {
-    case kFader: scene::set_fader((uint16_t)(g_14[i] ? v * 128.0f : v * 129.0f), scene::kLearn); break;
+    case kFader: scene::set_fader((uint16_t)(L().b14[i] ? v * 128.0f : v * 129.0f), scene::kLearn); break;
     case kA: if (v < scene::kScenes) scene::set_ab((int)v, scene::state().b); break;
     case kB: if (v < scene::kScenes) scene::set_ab(scene::state().a, (int)v); break;
     default: break;   // a target: its offset each tick
@@ -102,7 +111,7 @@ CORE_COLD bool take_line(const char* b) {   // R <port> <ch> <cc> <what> [depth]
   const char* p = b;
   if (!strncmp(p, "QP ", 3)) {
     for (int m = scene::kQpMutedOnly; m <= scene::kQpAlways; ++m)
-      if (!strcmp(p + 3, scene::qp_mode_name(m))) return scene::set_qp_mode(m), g_qp_saved = m, true;
+      if (!strcmp(p + 3, scene::qp_mode_name(m))) return scene::set_qp_mode(m), L().qp_saved = m, true;
     return false;
   }
   if (p[0] != 'R' || p[1] != ' ') return false;
@@ -122,27 +131,26 @@ CORE_COLD bool take_line(const char* b) {   // R <port> <ch> <cc> <what> [depth]
   }
   Route r = {(uint8_t)port, (uint8_t)(ch - 1), (uint8_t)cc, 0, 0, 0};
   if (!parse_what(w, &r) || (r.what != kTarget && strchr(w, ':'))) return false;
-  if (g_n >= kRoutes) return false;
-  g_r[g_n] = r, g_val[g_n] = -1, g_14[g_n] = false, g_msb[g_n] = 0, g_lsb[g_n] = 0, ++g_n;
+  if (L().n >= kRoutes) return false;
+  L().r[L().n] = r, L().val[L().n] = -1, L().b14[L().n] = false, L().msb[L().n] = 0, L().lsb[L().n] = 0, ++L().n;
   return true;
 }
 
 }  // namespace
 
-CORE_COLD bool midi(int port, uint8_t st, uint8_t d1, uint8_t d2) {
-  if ((st & 0xF0) != 0xB0 || port < 0 || port > 4) return false;
+static CORE_COLD bool midi_one(int port, uint8_t st, uint8_t d1, uint8_t d2) {
   int ch = st & 15;
   d1 &= 0x7F, d2 &= 0x7F;
-  if (g_armed >= 0) {
-    Route r = {(uint8_t)port, (uint8_t)ch, d1, (uint8_t)g_armed, g_arm_t, g_arm_depth};
-    g_armed = -1;
+  if (L().armed >= 0) {
+    Route r = {(uint8_t)port, (uint8_t)ch, d1, (uint8_t)L().armed, L().arm_t, L().arm_depth};
+    L().armed = -1;
     if (!add(r)) {
       log(CORE_STR("learn: %d routes already: CC %d not learned"), kRoutes, d1);
       return true;
     }
-    if (g_arm_only)
-      for (int j = g_n - 1; j >= 0; --j)
-        if (j != g_last && g_r[j].what == r.what && (r.what != kTarget || g_r[j].t == r.t)) clear(j);
+    if (L().arm_only)
+      for (int j = L().n - 1; j >= 0; --j)
+        if (j != L().last && L().r[j].what == r.what && (r.what != kTarget || L().r[j].t == r.t)) clear(j);
     char nm[16];
     log(CORE_STR("learn: CC %d on port %d channel %d -> %s"), d1, port, ch + 1, what_name(r, nm, sizeof nm));
   }
@@ -150,48 +158,59 @@ CORE_COLD bool midi(int port, uint8_t st, uint8_t d1, uint8_t d2) {
   if (i >= 0) {
     // a 14-bit route's MSB with the last LSB when it stays, else the LSB end nearest the old value (up 0, down 127: no
     // overshoot past the LSB that follows, review L1); the LSB refines it
-    const int lsb = d2 == g_msb[i] ? g_lsb[i] : d2 > g_msb[i] ? 0 : 127;
-    g_msb[i] = d2, g_lsb[i] = (uint8_t)lsb;   // (a repeated MSB before its LSB: the same value again)
-    apply(i, g_14[i] ? (float)(d2 << 7 | lsb) / 128.0f : (float)d2);
+    const int lsb = d2 == L().msb[i] ? L().lsb[i] : d2 > L().msb[i] ? 0 : 127;
+    L().msb[i] = d2, L().lsb[i] = (uint8_t)lsb;   // (a repeated MSB before its LSB: the same value again)
+    apply(i, L().b14[i] ? (float)(d2 << 7 | lsb) / 128.0f : (float)d2);
     return true;
   }
   if (d1 >= 32 && d1 < 64 && (i = find(port, ch, d1 - 32)) >= 0) {   // the LSB of a route on CC n < 32: 14 bits
-    g_14[i] = true, g_lsb[i] = d2;
-    apply(i, (float)(g_msb[i] << 7 | d2) / 128.0f);
+    L().b14[i] = true, L().lsb[i] = d2;
+    apply(i, (float)(L().msb[i] << 7 | d2) / 128.0f);
     return true;
   }
   return false;
 }
 
+CORE_COLD bool midi(int port, uint8_t st, uint8_t d1, uint8_t d2) {
+  if ((st & 0xF0) != 0xB0 || port < 0 || port > 4) return false;
+  bool took = false;
+  for (int s = 0; s < kVoiceSlots; ++s) {   // each slot's routes in its Scope (port 0, the USB-C box's: its slot's only)
+    if (!device::live(s) || (kVoiceSlots > 1 && port == 0 && s != device::route_of(0))) continue;
+    device::Scope in(device::g_links[s]);
+    took = midi_one(port, st, d1, d2) || took;
+  }
+  return took;
+}
+
 CORE_COLD bool arm(const char* what, bool only) {
   Route r = {};
   if (!what || !parse_what(what, &r)) return false;
-  g_armed = r.what, g_arm_t = r.t, g_arm_depth = r.depth, g_arm_only = only;
+  L().armed = r.what, L().arm_t = r.t, L().arm_depth = r.depth, L().arm_only = only;
   return true;
 }
-CORE_COLD void disarm() { g_armed = -1; }
-CORE_COLD int armed() { return g_armed; }
-CORE_COLD int last() { return g_last; }
+CORE_COLD void disarm() { L().armed = -1; }
+CORE_COLD int armed() { return L().armed; }
+CORE_COLD int last() { return L().last; }
 
 CORE_COLD void tick() {
-  for (int i = 0; i < g_n; ++i) {
-    if (g_r[i].what != kTarget || g_val[i] < 0) continue;
-    float w = (g_val[i] - 63.5f) / 63.5f;
-    mod::offset(kFirstSource + i, g_r[i].t, (float)g_r[i].depth, w > 1 ? 1 : w < -1 ? -1 : w);
+  for (int i = 0; i < L().n; ++i) {
+    if (L().r[i].what != kTarget || L().val[i] < 0) continue;
+    float w = (L().val[i] - 63.5f) / 63.5f;
+    mod::offset(kFirstSource + i, L().r[i].t, (float)L().r[i].depth, w > 1 ? 1 : w < -1 ? -1 : w);
   }
 }
 
 CORE_COLD int routes(const Route** out) {
-  if (out) *out = g_r;
-  return g_n;
+  if (out) *out = L().r;
+  return L().n;
 }
 CORE_COLD bool clear(int i) {
-  if (i < 0 || i >= g_n) return false;
-  for (int k = i; k + 1 < g_n; ++k) g_r[k] = g_r[k + 1], g_val[k] = g_val[k + 1], g_14[k] = g_14[k + 1], g_msb[k] = g_msb[k + 1],
-                                  g_lsb[k] = g_lsb[k + 1];
-  --g_n;
-  g_last = g_last == i ? -1 : g_last > i ? g_last - 1 : g_last;
-  g_dirty = true;
+  if (i < 0 || i >= L().n) return false;
+  for (int k = i; k + 1 < L().n; ++k) L().r[k] = L().r[k + 1], L().val[k] = L().val[k + 1], L().b14[k] = L().b14[k + 1], L().msb[k] = L().msb[k + 1],
+                                  L().lsb[k] = L().lsb[k + 1];
+  --L().n;
+  L().last = L().last == i ? -1 : L().last > i ? L().last - 1 : L().last;
+  L().dirty = true;
   return true;
 }
 
@@ -215,11 +234,11 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
     sniprintf(o, cap, CORE_STR("learn: cannot \"%s\" (learn=fader|a|b|NAME[:DEPTH] | clear:N | off)"), p);
     return true;
   }
-  int n = sniprintf(o, cap, CORE_STR("learn: %d route%s%s%s"), g_n, g_n == 1 ? "" : "s",
-                    g_armed >= 0 ? ", waiting for a CC" : "", g_locked ? " (FILE LOCKED: NEWER)" : "");
-  for (int i = 0; i < g_n && n > 0 && n < cap; ++i) {
+  int n = sniprintf(o, cap, CORE_STR("learn: %d route%s%s%s"), L().n, L().n == 1 ? "" : "s",
+                    L().armed >= 0 ? ", waiting for a CC" : "", L().locked ? " (FILE LOCKED: NEWER)" : "");
+  for (int i = 0; i < L().n && n > 0 && n < cap; ++i) {
     char nm[16];
-    const Route& r = g_r[i];
+    const Route& r = L().r[i];
     n += sniprintf(o + n, cap - n, CORE_STR("%s%d: port %d ch %d CC %d -> %s"), i ? ", " : ": ", i + 1, r.port, r.ch + 1,
                    r.cc, what_name(r, nm, sizeof nm));
     if (r.what == kTarget && n > 0 && n < cap) n += sniprintf(o + n, cap - n, CORE_STR(" %s%d"), r.depth < 0 ? "-" : "+", r.depth < 0 ? -r.depth : r.depth);
@@ -227,9 +246,25 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   return true;
 }
 
+// one line of learn.txt into the slot in hand's routes; false: a line this build does not read
+static CORE_COLD bool line_in(const char* b, int k, int* n) {
+  if (k == 0 || b[0] == '#') {
+    fmt::Sniffed sn;   // a newer build's version: read what can be read, never written
+    return !(k && fmt::text_header(fmt::Bytes{(const uint8_t*)b, (uint32_t)k}, "learn", &sn) && sn.version > 1);
+  }
+  if (!take_line(b)) return false;
+  *n += b[0] == 'R';   // (routes counted; a QP line is a setting)
+  return true;
+}
+static CORE_COLD void said(int n, int bad) {
+  if (bad) L().locked = true;
+  log(CORE_STR("learn: slot %d: %d routes from %s%s"), prj_slot(), n, kFile,
+      bad ? " (lines it does not read: the file is kept, not written)" : "");
+}
+
 CORE_COLD void load() {
-  g_n = 0, g_locked = false, g_dirty = false;
-  scene::set_qp_mode(scene::kQpMutedOnly), g_qp_saved = scene::kQpMutedOnly;   // (no QP line: the default)
+  L().n = 0, L().locked = false, L().dirty = false;
+  scene::set_qp_mode(scene::kQpMutedOnly), L().qp_saved = scene::kQpMutedOnly;   // (no QP line: the default)
   File f;
   fmt::post_wait(kFile);   // a posted save of it lands before it is read back (fmt.h)
   fmt::recover(kFile);     // a power cut between write_atomic's renames: the previous file back
@@ -237,50 +272,61 @@ CORE_COLD void load() {
   fmt::LineReader rd(f);
   char b[96];
   int n = 0, bad = 0;
-  for (int k; (k = rd.line(b, sizeof b)) >= 0;) {
-    if (k == 0 || b[0] == '#') {
-      fmt::Sniffed sn;   // a newer build's version: read what can be read, never written
-      if (k && fmt::text_header(fmt::Bytes{(const uint8_t*)b, (uint32_t)k}, "learn", &sn) && sn.version > 1) ++bad;
-      continue;
-    }
-    if (take_line(b)) n += b[0] == 'R';
-    else ++bad;
-  }
+  for (int k; (k = rd.line(b, sizeof b)) >= 0;) bad += !line_in(b, k, &n);
   f.close();
-  if (bad) g_locked = true;
-  log(CORE_STR("learn: %d routes from %s%s"), n, kFile, bad ? " (lines it does not read: the file is kept, not written)" : "");
+  said(n, bad);
+}
+
+// 3(c) step 8: another slot's file, read by the card core at its attach, taken in its Scope
+CORE_COLD void take_text(const char* t, int len) {
+  L().n = 0, L().locked = false, L().dirty = false;
+  char b[96];
+  int n = 0, bad = 0;
+  for (int i = 0; i < len;) {
+    int k = 0;
+    while (i < len && t[i] != '\n') {
+      if (t[i] != '\r' && k < (int)sizeof b - 1) b[k++] = t[i];
+      ++i;
+    }
+    ++i;
+    b[k] = 0;
+    bad += !line_in(b, k, &n);
+  }
+  said(n, bad);
 }
 
 CORE_COLD bool save() {
   if (!dirty()) return false;
-  if (g_locked) {   // 1042
-    g_dirty = false, g_qp_saved = scene::qp_mode();
+  if (L().locked) {   // 1042
+    L().dirty = false, L().qp_saved = scene::qp_mode();
     log(CORE_STR("learn: not saved: %s has lines this build does not read (kept as it is)"), kFile);
     return true;
   }
   char* t = fmt::post_begin();
   if (!t) return false;   // another settings write is in flight: at a later pass (still dirty)
-  const int qp = scene::qp_mode();
+  const int qp = scene::qp_mode();   // (QPERF FADER: the slot in hand's box's, scene.h)
   int n = sniprintf(t, (int)fmt::kPostMax, CORE_STR("#sidecar learn 1\n"));
   if (qp != scene::kQpMutedOnly) n += sniprintf(t + n, (int)fmt::kPostMax - n, CORE_STR("QP %s\n"), scene::qp_mode_name(qp));
-  for (int i = 0; i < g_n; ++i) {
+  for (int i = 0; i < L().n; ++i) {
     char nm[16];
-    const Route& r = g_r[i];
+    const Route& r = L().r[i];
     n += sniprintf(t + n, (int)fmt::kPostMax - n, CORE_STR("R %d %d %d %s"), r.port, r.ch + 1, r.cc, what_name(r, nm, sizeof nm));
     if (r.what == kTarget) n += sniprintf(t + n, (int)fmt::kPostMax - n, CORE_STR(" %d"), r.depth);
     n += sniprintf(t + n, (int)fmt::kPostMax - n, "\n");
   }
   if (!fmt::post_end(kFile, (uint32_t)n)) return false;
-  g_dirty = false, g_qp_saved = qp;
+  L().dirty = false, L().qp_saved = qp;
   return true;
 }
-CORE_COLD bool dirty() { return g_dirty || scene::qp_mode() != g_qp_saved; }
-CORE_COLD bool locked() { return g_locked; }
+CORE_COLD bool dirty() { return L().dirty || scene::qp_mode() != L().qp_saved; }
+CORE_COLD bool locked() { return L().locked; }
 
 CORE_COLD void reset() {
-  g_n = 0, g_armed = -1, g_last = -1, g_arm_only = false, g_arm_t = 0, g_arm_depth = 32;
-  g_dirty = g_locked = false, g_qp_saved = scene::kQpMutedOnly;
-  for (int i = 0; i < kRoutes; ++i) g_val[i] = -1, g_14[i] = false, g_msb[i] = 0, g_lsb[i] = 0;
+  for (Sl& x : g_sl) {
+    x.n = 0, x.armed = -1, x.last = -1, x.arm_only = false, x.arm_t = 0, x.arm_depth = 32;
+    x.dirty = x.locked = false, x.qp_saved = scene::kQpMutedOnly;
+    for (int i = 0; i < kRoutes; ++i) x.val[i] = -1, x.b14[i] = false, x.msb[i] = 0, x.lsb[i] = 0;
+  }
 }
 
 }  // namespace learn
