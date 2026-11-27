@@ -14,9 +14,18 @@ The Rytm's screen and the touchscreen show the same edit and stay in step. You c
 - **On the Rytm, from the pool:** on the POOL page (the SAMPLES list), pick a row, turn knob **D** to **EDIT** and press
   **YES**. The region is the whole sample, and no track is attached. Another list gives `EDIT: SAMPLES ONLY`, and a row
   without a sample gives `NO SAMPLE IN THE ROW`.
+- **On the Rytm, from a WAVETABLE track:** on a WAVETABLE track's SRC view, push knob **B** (POS has no push of its own).
+  If table A is a card file (the WAVETABLES row holds a WAV on the card, for instance one MAKE WT wrote), the editor opens
+  that file (the whole file; no track play: a card file is not a SAMPLES row, so **PLAY** says `NO PLAY FOR A FILE`, and a
+  32-bit float WAV, the kind a table is, is read). If table A is a built-in or OFF, the POOL page opens on the SAMPLES
+  list with EDIT chosen and `PICK A SAMPLE, YES: EDIT`: YES on a sample opens it, for this voice (within two minutes).
+  Either way the **MAKE WT** result lands on this track's TBL (below).
 - **From the MENU:** the **SAMPLE EDIT** row opens the selected track's sample. If an edit is open already, it goes back
   to that edit.
-- **On the touchscreen:** the SAMPLE EDIT page appears by itself when an edit opens. While an edit is open, the VOICE nav
+- **On the touchscreen:** from a WAVETABLE voice's machine view the **EDIT** key (where UP stands in the lists) does the same
+  as B's push: table A's file in SAMPLE EDIT, or, for a built-in or OFF table A, the POOL page's SAMPLES tab with
+  `PICK A SAMPLE: TAP ITS ROW, EDIT`; a sample row's menu (a tap on the POOL page, a long press in a list) has **EDIT** for
+  SAMPLES rows (`sedit=open:code:C`). The SAMPLE EDIT page appears by itself when an edit opens. While an edit is open, the VOICE nav
   key (and UP + T4 on the Rytm) leads back to it. Selecting another track on the Rytm while VOICE shows keeps VOICE
   following the track; it does not pull the display back to the edit.
 
@@ -141,6 +150,9 @@ If there is not enough RAM for the two play buffers, the editor still opens, but
 - **SAVE:** saves START to END and adds the file to the pool; the track stays on the original.
 - **CANCEL:** back to the edit.
 
+- **MAKE WT:** the region (START to END, the functions applied) becomes a wavetable. A is the pick, **B** the frames, 16, 32,
+  64 (the default), 128 or 256. From a WAVETABLE track the choice has MAKE WT first. See "MAKE WT" below.
+
 SAVE writes only the region, START to END, with the functions applied, as on the Digitakt or the Octatrack. No CROP is
 needed first: move the markers and save, and the new file is that part. With the markers around the whole sample it
 writes the whole.
@@ -169,10 +181,46 @@ index holds (39 characters with `.wav`) is saved and pooled but cannot play: the
 and SAVE + USE leaves the track on its sample. Rename the file on the card and add it again. The new file also shows in the card
 browser's file list of its folder; a folder that had no WAV at boot shows only after the next boot.
 
+## MAKE WT: a wavetable from the region
+
+**FUNC + YES, A to MAKE WT, B the frames, YES** on the Rytm (a footer `MAKE WT 42%`, then `SAVING`); **MAKE WT** and **FRAMES**
+(each tap the next of 16 32 64 128 256) on the touchscreen. It turns START..END (the whole sample with the markers at its
+ends) into a table WAVETABLE plays correctly, and never changes the edit (no undo, no unsaved change). The conversion
+runs in the same small steps as the other jobs and the write in the idle step, so audio is never held up. The region needs at
+least 64 frames (`TOO SHORT FOR A TABLE`); a silent one says `SILENT` and writes nothing.
+
+**The method** (core/wavetable/wt_make.cpp): the screen says which one ran, `WT A012 PITCHED 220HZ` or `WT A012 SPECTRAL`.
+
+- *Pitched* (a clear pitch in at least half the frames): at each of the N places (evenly from START to END) the period is
+  found by YIN on a copy decimated to about 12 kHz (the first dip of the normalised difference under 0.15, parabolic) and
+  refined at the full rate. The track of periods is kept in step (a frame whose period is a half or a double of its
+  neighbour's is mended; frames with no clear pitch hold the last), so vibrato and glides are followed. Each frame's
+  harmonics are measured over three periods under a Hann window, harmonic h at h / T cycles a sample, up to the source's own
+  Nyquist or 512 (so the cycle is band-limited and resampled to 2048 at once, DC out). Frame 0 is turned so its fundamental
+  is a sine (the cycle starts at a rising zero crossing); every other frame is turned, all the phases by one fractional
+  rotation, to where it best matches the frame before it (the cross-correlation of its first 32 harmonics), so a POS morph
+  neither phase-cancels nor sweeps a comb. A quiet frame (a decayed tail) is never the reference.
+- *Spectral* (no pitch: noise, a hit, anything with a pitch in less than half the frames, or a region shorter than 1.5
+  periods): each frame is a 2048-sample window of the region (four fifths of a short region), made periodic by an
+  equal-power crossfade of its end into its start, DC out, and, when shorter than 2048, resampled as a harmonic series.
+- One gain for the whole table: its loudest sample 0.95. The frames keep their own levels (a pluck's tail stays quiet).
+- A short region repeats its cycle over the frames; stereo is summed; any sample rate (a table's frames are cycles). The
+  stepper's heaviest step is about 400 000 multiply-adds (a 55 Hz tone at 96 kHz, 256 frames: some 2 000 steps).
+
+**The file:** `/WAVETABLES/<stem>-wt<N>.wav` (the folder is made when the card has none), N one past the highest
+`<stem>-wt<k>.wav` there, never over a file that is there: a mono 32-bit float WAV of N x 2048 samples with a `fact` and a
+`clm ` chunk (`<!>2048 10000000 wavetable (Sidecar)`, the open format Serum and Vital read), written as `.tmp` and renamed
+when whole, its hash told to the library as SAVE does. It is added to the project's **WAVETABLES** list: into the bank of
+table A when the edit came from a WAVETABLE track, else the bank last shown; a table whose audio is a row's already is
+that row (`kExisting`), the file written all the same. From a WAVETABLE track the new row is written to the track's TBL
+(the same Rytm write as `wt=pick`, 48), the footer shows `WT A012 PITCHED 220HZ` for 1.8 s and the editor closes itself,
+so the Rytm's page goes back to the SRC view and the touchscreen to its previous page. Opened another way, it says the row
+and stays open. The Rytm firmware is unchanged: the page uses the existing remote UI (B's push, the save choice).
+
 ## Formats and limits
 
 - **In:** WAV, 16, 24 or 32-bit integer PCM, mono or stereo, any rate. Float, 8-bit and AIFF files are refused
-  (`NOT 16/24/32-BIT PCM WAV`).
+  (`NOT 16/24/32-BIT PCM WAV`), except that a card file opened from a WAVETABLE (a table's) may be 32-bit float.
 - **Out:** the same bit depth, channels and rate as the source. A 32-bit source keeps 24-bit precision in the parts you
   did not edit. WAV chunks such as smpl loops and cues are not carried into the copy.
 - **Length:** at most **87 s** per sample (`TOO LONG (MAX 87 S)`). The sample is held whole in RAM, with a second copy
@@ -191,7 +239,7 @@ changed files under a new name.
 ## Console
 
 `sedit` shows the status line. `sedit=open:track:T`, `open:code:C`, `close`, `start:F`, `end:F`, `region:A:B`,
-`nudge:S|E:N[:c]`, `jump:S|E:N` (transients), `zoom:L`, `pan:N[:c]` (knob D), `window:A:B`, `fn:N` (a number, or a name: short or as shown, any case), `apply[:NAME]` (NAME is crop, norm, trim, fadein, fadeout, rev, gain+,
+`nudge:S|E:N[:c]`, `jump:S|E:N` (transients), `makewt`, `wtn:N` (16 32 64 128 256), `open:wt:T` / `open:wtv:V` (a WAVETABLE track's or voice's table A; a built-in or OFF opens nothing), `open:file:PATH` (any card WAV), `wtvoice:V` (the next sample opened from the pool belongs to WAVETABLE voice V), `zoom:L`, `pan:N[:c]` (knob D), `window:A:B`, `fn:N` (a number, or a name: short or as shown, any case), `apply[:NAME]` (NAME is crop, norm, trim, fadein, fadeout, rev, gain+,
 gain-), `undo`, `save`, `save:use`, `preview`. The touchscreen sends these same lines.
 
 ## Notes

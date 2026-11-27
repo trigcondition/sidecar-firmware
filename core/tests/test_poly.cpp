@@ -14,6 +14,7 @@
 #include "seq/seq.h"
 #include "ui/remote.h"
 #include "voices.h"
+#include "wavetable/wavetable.h"
 
 using namespace core;
 
@@ -531,6 +532,35 @@ static void test_first_note() {
 // BACKLOG 7g PAD OCT: a seq track's pads (CHRO, bound by the Rytm's own trigs) enter its voice 12 x OCT higher; the binding
 // reports the shifted offset (the sequencer records it), the chord written back to the Rytm is the pads' own (root - 12 x
 // OCT), a host keyboard (poly=bind) stays unshifted
+// WAVETABLE (no chord words since TBL B took P13..P16): the pads' chord on its voice plays as live notes and nothing is
+// written back to the Rytm's track (a 28 01 would put CHD / INV / SPR / VOI over TBL B, POS B, MIX and FTYPE)
+static void test_wavetable_live() {
+  voices_init();
+  link_reset("test");
+  wt::begin(false);
+  g_out.clear();
+  const std::vector<float> wp = {1, 30, 0, 0, 0, 0, 64, 0, 0, 40, 100, 64, 0, 0, 0, 0};
+  send(report(0x04, kWaveMachine | 4, 60, 127, wp));   // the first pad's trig (before its MIDI)
+  advance_ms(1);
+  poly::midi(0x9D, 36, 127);
+  advance_ms(40);
+  poly::midi(0x9D, 38, 127);
+  advance_ms(1);
+  send(report(0x04, kWaveMachine | 4, 62, 127, wp));   // two votes: channel 14 -> voice 4
+  CHECK(poly::stats().bound[13] == 4);
+  advance_ms(20);
+  poly::midi(0x9D, 40, 127);
+  advance_ms(1);
+  send(report(0x04, kWaveMachine | 4, 64, 127, wp));
+  CHECK(wt::voice_notes(4) >= 3);
+  advance_ms(poly::kGestureMs + 5);   // the window closes: for FM a 28 01 would go out here
+  CHECK(count_cmd(0x28, 0x01) == 0);
+  CHECK(wt::voice_notes(4) >= 3);
+  poly::midi(0x8D, 36, 0), poly::midi(0x8D, 38, 0), poly::midi(0x8D, 40, 0);
+  wt::silence(4);
+  printf("test_poly: WAVETABLE live chord: the pads play, no write-back\n");
+}
+
 static void test_pad_oct() {
   voices_init();
   link_reset("test");
@@ -589,6 +619,7 @@ int main() {
   test_texts();
   test_pool();
   test_live();
+  test_wavetable_live();
   test_pad_oct();
   test_headroom();
   test_steal();

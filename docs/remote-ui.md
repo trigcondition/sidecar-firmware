@@ -46,6 +46,8 @@ changed, at the subscription's rate. Meters and traces are already 7/8-bit in th
 columns -127..127). A section instance is at most 1 KB. Sections are the struct's fields in the table's order, never the
 struct's memory.
 
+STATUS schema 1.1 (0.5.2) appends `bpm10` (the Rytm's tempo x 10, 0 unknown) to the live section; a decoder stops at the end of its own list, so an older app ignores it and an older Pi leaves it 0.
+
 Skew: the decoder applies the fields the data has and leaves the rest (an older Pi), ignores bytes past its last field
 (a newer Pi). WELCOME lists the views this Pi has (a build without core/seq does not list SEQ, the play head and PAT; a SUB for a view it does not offer is
 answered ERR 6) and their schema; the app uses a view when it knows the id and the schema's high byte matches, and greys the page otherwise (below). A `proto` mismatch is a refusal ("update the app / the Sidecar").

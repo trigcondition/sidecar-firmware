@@ -6,6 +6,7 @@
 //   ./shot anim OUTDIR [N]   the SEQ piano roll playing in the OLED theme: N frames (default 300) at 20 fps, frame-NNNN.png
 #include <zlib.h>
 #include "lvgl.h"
+#include "src/core/lv_obj_draw_private.h"
 #include "src/widgets/label/lv_label_private.h"	// dot_begin: a DOTS label cut (the text-fit check)
 #include "../sidecar_ui.h"
 #include "../sidecar_dot.h"
@@ -14,6 +15,7 @@
 #include "../sidecar_insfx.h"
 #include "../sidecar_mfx.h"
 #include "../sidecar_morph.h"
+#include "../sidecar_loop.h"
 #include "../sidecar_xy.h"
 #include "../sidecar_song.h"
 #include "../sidecar_rec.h"
@@ -509,6 +511,34 @@ static double bench (const lv_area_t *a, int n)
 
 static sidecar_ui_status_t s_St;
 static int s_nContrastSt = -1;		// 0.5.1: the status's ui_contrast (-1: not known)
+// Viper's alert bars (REC, "1 thing to look at", "No Rytm link"): none in any other look; in Viper the bar covers the label's line with a pad,
+// holds the text where it is really drawn (left, centre or right in its box; from LVGL's own letter positions) and is no wider than text + pads,
+// inside its parent; the cached ext draw size takes in the pad ring (a partial redraw must invalidate it)
+static void alert_bars (int w)
+{
+	lv_obj_t *o = (lv_obj_t *) sidecar_ui_home_obj (w);
+	if (TH->f_pxs && w == 17)		// the header strip is sized for "H16  888.8  PAUS" and clips: no text it can show is wider
+	{
+		static const char *const t[] = {"H16  999.9  PAUS", "A04  121.5  PLAY", "A01  100.0  STOP", "G09  999.0  REC", "---  ---  ----", "D12  10.0  PLAY", "B16  222.2  PAUS", "C11  777.7  STOP"};
+		for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) EXPECT (th_text_width (TH->f_pxs, t[i]) <= th_text_width (TH->f_pxs, "H16  888.8  PAUS"));
+	}
+	lv_area_t bar, c, pc;
+	if (!o && w == 17) return;			// (a header without the Rytm text: the other looks' layouts)
+	const int on = o && th_alert_bar (o, &bar);
+	EXPECT (o && on == (s_nContrastSt == 3 && TH->id == THEME_SIDECAR && lv_label_get_text (o)[0]));
+	if (!on) return;
+	lv_obj_get_coords (o, &c);
+	lv_point_t p0, p1;
+	lv_label_get_letter_pos (o, 0, &p0);
+	lv_label_get_letter_pos (o, (uint32_t) strlen (lv_label_get_text (o)), &p1);
+	EXPECT (bar.y1 < c.y1 && bar.y2 > c.y2);
+	EXPECT (bar.x1 < c.x1 + p0.x && bar.x2 >= c.x1 + p1.x - 1);
+	EXPECT (bar.x2 - bar.x1 <= p1.x - p0.x + 3 * LU (5));
+	lv_obj_get_coords (lv_obj_get_parent (o), &pc);
+	EXPECT (bar.x2 <= pc.x2 && bar.x1 >= pc.x1);
+	EXPECT (lv_obj_get_ext_draw_size (o) >= LU (5));
+}
+
 static void status_init (int style)
 {
 	static const char *const tracks[8] = {"PLAITS", "FM", "JUNO", "DSPS", "DAISY", "MD", "GRAN", "WAVE"};
@@ -532,7 +562,7 @@ static void status_init (int style)
 	s.ui_look = -1;
 	s.ui_contrast = s_nContrastSt;
 	s.poly = 1u << 7;		// RS/CP (voice 7, WAVE): a poly track
-	s.pattern = 3, s.transport = 1;	// A04 playing (HOME's NOW)
+	s.pattern = 3, s.transport = 1, s.bpm10 = 1215;	// A04 playing (HOME's NOW)
 	{ static const int vl[8] = {38, 64, 140, 120, 22, 57, 93, 210}; for (int v = 0; v < 8; v++) s.vload[v] = vl[v]; }	// HOME's voice tiles: tenths of a percent
 	s_St = s;
 }
@@ -540,6 +570,7 @@ static void status_init (int style)
 // ---- the machine view's made-up state (the Pi fills it from core/granular, core/wavetable: wgview_pi.cpp): GRANULAR on
 // a bells-like source with a cloud around a head that ANIM moves, or WAVETABLE morphing sine -> saw -> square
 static sidecar_wg_view_t s_Wg;
+static int s_WgSelB = -1, s_WgMix0;		// TBLB: the code table B is set to, and B silent for lack of MIX (wgview_pi.cpp's sel_b / mix0)
 // rui1036b: the VOICE page's view, faked: an analog BD (BD PLASTIC: its SRC labels, a kick on the scope, locks on a
 // few steps of a 16-step pattern) or a Sidecar track (MULTISAMPLE / 6-OP FM)
 static sidecar_voice_view_t s_Vv;
@@ -549,9 +580,9 @@ static sidecar_mfx_view_t s_Mv;
 static sidecar_morph_view_t s_Mo;
 static void morph_fake (int n, int top)
 {
-	static const char *const kN[] = {"V1:P3", "RYTM:PERF12", "MFX:LEV", "I8:A4", "RYTM:SCN", "X8:B3", "O8:WID", "V8:P16"};
-	static const char *const kL[] = {"V1:TIM", "RYTM:PERF12", "MFX:LEV", "I8:ASHPE", "RYTM:SCN", "X8:B3", "O8:WID", "V8:SEED"};	// as morph_pi labels them
-	static const char *const kV[] = {"64", "127", "100.5", "127.9", "12", "0", "64", "OFF"};
+	static const char *const kN[] = {"V1:P3", "RT12:FTYP", "MFX:LEV", "I8:A4", "RFX:RDEC", "X8:B3", "O8:WID", "V8:P16"};
+	static const char *const kL[] = {"V1:TIM", "RT12:FTYP", "MFX:LEV", "I8:ASHPE", "RFX:RDEC", "X8:B3", "O8:WID", "V8:SEED"};	// as morph_pi labels them
+	static const char *const kV[] = {"64", "7", "100.5", "127.9", "12", "0", "64", "127"};
 	memset (&s_Mo, 0, sizeof s_Mo);
 	s_Mo.valid = 1, s_Mo.fader = 9000, s_Mo.a = 0, s_Mo.b = 2, s_Mo.sel = 2, s_Mo.top = (unsigned char) top;
 	for (int k = 0; k < SMO_SCENES; k++) s_Mo.nlocks[k] = (unsigned char) (k == 2 ? n : k == 0 ? 5 : k == 11 ? 64 : 0);
@@ -561,9 +592,25 @@ static void morph_fake (int n, int top)
 		snprintf (r->name, sizeof r->name, "%s", kN[i % 8]);
 		snprintf (r->label, sizeof r->label, "%s", kL[i % 8]);
 		snprintf (r->value, sizeof r->value, "%s", kV[i % 8]);
-		r->lo = 0, r->hi = i % 8 == 4 ? 12 : 127, r->v = (unsigned char) (i * 13 % 128);
+		r->lo = 0, r->hi = i % 8 == 1 ? 7 : 127, r->v = (unsigned char) (i * 13 % 128);
 	}
 	s_Mo.gen = (unsigned) (n * 1000 + top + 1);
+}
+// 0.5.0: the LOOP page's made-up state (n grabs, a loop playing, the longest texts), as loopview_pi.cpp fills it
+static sidecar_loop_view_t s_Lo;
+static void loop_fake (int n, int state)
+{
+	static const unsigned char kHb[8] = {2, 1, 32, 8, 4, 16, 2, 1};
+	memset (&s_Lo, 0, sizeof s_Lo);
+	s_Lo.valid = 1, s_Lo.on = 1, s_Lo.state = (unsigned char) state, s_Lo.ring_s = 87, s_Lo.bal = 64, s_Lo.lev = 100, s_Lo.fade = 2;
+	s_Lo.mute = 1, s_Lo.live = 12, s_Lo.playing = n ? 0 : -1, s_Lo.sel = 0, s_Lo.ngrabs = (unsigned char) n;
+	if (state) s_Lo.pos10 = 27, s_Lo.bars10 = 40;
+	for (int i = 0; i < n; i++)
+	{
+		s_Lo.g[i].hb = kHb[i], s_Lo.g[i].kept = i == 1, s_Lo.g[i].gap = i == 3, s_Lo.g[i].copied = 1, s_Lo.g[i].bpm10 = (unsigned short) (1200 + i * 87), s_Lo.g[i].id = (unsigned) (100 + i);
+	}
+	if (n) snprintf (s_Lo.msg, sizeof s_Lo.msg, "KEPT SIDECAR_2026-11-13_1200");
+	s_Lo.gen = (unsigned) (n * 10 + state + 1);
 }
 // 0.5.0: the XY page's made-up setup (the longest names, both signs, MORPH), HOLD and a held position as asked
 static sidecar_xy_view_t s_Xy;
@@ -893,6 +940,8 @@ static void wg_fake (int kind, double t)
 	// the POOL: the bank of the list the view shows (sidecar_wgview_list_id, _bank), the RAM, the used set
 	int l = sidecar_wgview_list_id (), b = sidecar_wgview_bank ();
 	v->list = l, v->bank = b, v->sel = -1, v->playing = s_WgPlaying;
+	v->sel_b = s_WgSelB, v->mix0 = s_WgMix0;
+	if (s_WgSelB >= 0) snprintf (v->name_b, sizeof v->name_b, "%s", s_WgSelB ? "BASIC" : "OFF");
 	v->count[0] = 22, v->count[1] = 8, v->count[2] = 6;
 	v->ram_known = s_WgRamKnown, v->ram_mb = 412, v->ram_budget_mb = 1024, v->ram_pct = 40;
 	snprintf (v->warn, sizeof v->warn, "NOT SEEN PLAYING - A RYTM LOCK MAY STILL USE IT");
@@ -1347,13 +1396,15 @@ static void sedit_fake (int mode)
 	unsigned gen = v->gen;
 	memset (v, 0, sizeof *v);
 	v->gen = gen + 1;
-	v->valid = 1, v->st = mode == 2 ? SSE_ST_BUSY : SSE_ST_READY, v->rate = 48000, v->bits = 24, v->fn = mode == 2 ? 1 : 0;
-	v->frames = mode == 1 ? 192000 : 57600, v->ch = mode == 1 ? 2 : 1;
-	snprintf (v->name, sizeof v->name, "%s", mode == 1 ? "PAD WARM C3.wav" : "KICK 808 LONG.wav");
-	v->a = mode == 1 ? 0 : 2400, v->b = mode == 1 ? v->frames : 48000;
+	v->valid = 1, v->st = mode == 2 || mode == 3 ? SSE_ST_BUSY : SSE_ST_READY, v->rate = 48000, v->bits = 24, v->fn = mode == 2 ? 1 : 0;
+	v->frames = mode == 1 ? 192000 : mode == 4 ? 131072 : 57600, v->ch = mode == 1 ? 2 : 1;
+	if (mode == 4) v->bits = 32;
+	snprintf (v->name, sizeof v->name, "%s", mode == 1 ? "PAD WARM C3.wav" : mode == 4 ? "saw-wt1.wav" : "KICK 808 LONG.wav");
+	v->a = mode == 1 ? 0 : 2400, v->b = mode == 1 || mode == 4 ? v->frames : 48000;
+	v->wt_frames = 64, v->wt_voice = mode == 4 ? 2 : -1, v->file = mode == 4, v->making = mode == 3;
 	v->wa = 0, v->wb = v->frames;
-	v->undo = mode != 1, v->dirty = mode != 1, v->has_track = mode != 1, v->track = mode != 1 ? 0 : -1;
-	v->progress = mode == 2 ? 42 : 100, v->playhead = -1, v->ncols = SSE_COLS, v->unity = 32767;
+	v->undo = mode == 0 || mode == 2, v->dirty = mode == 0 || mode == 2, v->has_track = mode == 0 || mode == 2, v->track = mode == 0 || mode == 2 ? 0 : -1;
+	v->progress = mode == 2 || mode == 3 ? 42 : 100, v->playhead = -1, v->ncols = SSE_COLS, v->unity = 32767;
 	for (int i = 0; i < SSE_COLS; i++)
 	{
 		double t = (double) i / SSE_COLS, a;
@@ -1502,7 +1553,7 @@ static void theme_run (int style, const char *pre)
 	hold (wlx, WG_ROW (1 + 1)); WG_PUSH ();
 	EXPECT (sidecar_wgview_asking () == 2);
 	shot ("pool-menu");
-	tap (wlx, WG_BOX (4, 2));		// UNLOAD
+	tap (wlx, WG_BOX (5, 3));		// UNLOAD
 	EXPECT (sidecar_wgview_asking () == 1 && !strcmp (sidecar_wgview_message (), "ROW C001 USED BY 3 SOUNDS."));
 	WG_PUSH (); shot ("pool-confirm");
 	tap (yes_x, WG_BOX (3, 2)); EXPECT_CMD ("pool=smp:unload:C001:yes");
@@ -1510,7 +1561,7 @@ static void theme_run (int style, const char *pre)
 	WG_PUSH (); shot ("pool-undo");
 	tap (wlx, WG_MSG); EXPECT_CMD ("pool=smp:undo");
 	// REPLACE (C003: seen playing): FILES aimed at it, the file asked first, then sent with ":yes"
-	hold (wlx, WG_ROW (1 + 3)); tap (wlx, WG_BOX (4, 1));
+	hold (wlx, WG_ROW (1 + 3)); tap (wlx, WG_BOX (5, 2));
 	EXPECT (sidecar_wgview_lib_shown () && sidecar_wgview_target () == 2 * 128 + 3);
 	WG_PUSH (); shot ("pool-replace-files");
 	tap (wlx, WG_ROW (5));
@@ -1520,10 +1571,10 @@ static void theme_run (int style, const char *pre)
 	// while the Rytm plays: a row in use is refused (no command); a row not in use is unloaded at once
 	s_WgPlaying = 1; WG_PUSH ();
 	s_nCmds = 0;
-	hold (wlx, WG_ROW (1 + 1)); tap (wlx, WG_BOX (4, 2));
+	hold (wlx, WG_ROW (1 + 1)); tap (wlx, WG_BOX (5, 3));
 	EXPECT (s_nCmds == 0 && !sidecar_wgview_asking () && strstr (sidecar_wgview_message (), "THE RYTM PLAYS") != 0);
 	WG_PUSH (); shot ("pool-playing");
-	hold (wlx, WG_ROW (1 + 2)); tap (wlx, WG_BOX (4, 2)); EXPECT_CMD ("pool=smp:unload:C002");
+	hold (wlx, WG_ROW (1 + 2)); tap (wlx, WG_BOX (5, 3)); EXPECT_CMD ("pool=smp:unload:C002");
 	s_WgPlaying = 0;
 	// a bank tab: shown (takes go there); bank H: the inputs and built-ins
 	tap (tx0 + 7 * tw + tw / 2, WG_ROW (0)); EXPECT_CMD ("pool=smp:shown:H");
@@ -1547,10 +1598,57 @@ static void theme_run (int style, const char *pre)
 	// WAVETABLE's POOL: WAVETABLES (the built-ins in A001..A006); a pick; an empty row filled from FILES; a long press on
 	// a built-in: UNLOAD only, asked (A001: a voice on it), NO sends nothing
 	wg_fake (WGV_WAVETABLE, 0.3); sidecar_wgview_set (&s_Wg); run (2); shot ("mach-wavetable");
+	{	// EDIT (where UP stands in the lists): table A's card file in SAMPLE EDIT, else the SAMPLES list to pick a sample from
+		const int ed_x = o ? (LU (84) + DX / 4) / 2 : LU (16) + (LU (140) + DX / 4) / 2;
+		s_Wg.tbl_file = 1, s_Wg.gen++; sidecar_wgview_set (&s_Wg); run (2);
+		tap (ed_x, WG_KY); EXPECT_CMD ("sedit=open:wt:2");
+		s_Wg.track = -1, s_Wg.gen++; sidecar_wgview_set (&s_Wg); run (2);
+		tap (ed_x, WG_KY); EXPECT_CMD ("sedit=open:wtv:2");
+		s_Wg.tbl_file = 0, s_Wg.track = 2, s_Wg.gen++; sidecar_wgview_set (&s_Wg); run (2);
+		shot ("mach-wavetable-edit");
+		s_nCmds = 0;
+		tap (ed_x, WG_KY);
+		EXPECT (s_nCmds >= 1 && sidecar_ui_page () == 15 && sidecar_wgview_pool_page_shown () && sidecar_wgview_page_list () == WGV_SAMPLES);
+		EXPECT (!strcmp (sidecar_wgview_message (), o ? "PICK A SAMPLE: TAP ITS ROW, EDIT" : "Pick a sample: tap its row, Edit"));
+		WG_PUSH (); shot ("pool-page-pick-sample");
+		sidecar_ui_show (7); run (2);
+		wg_fake (WGV_WAVETABLE, 0.3); sidecar_wgview_set (&s_Wg); run (2);
+	}
 	s_WgRamKnown = 0;			// (until the shared cache counts: "RAM -")
 	tap (WG_SRC_X, WG_KY); WG_PUSH (); shot ("pool-tables");
 	EXPECT (sidecar_wgview_list_shown () && sidecar_wgview_list_id () == WGV_TABLES);
 	tap (wlx, WG_ROW (1 + 2)); EXPECT_CMD ("wt=pick:2:A002");
+	// TBLB: the middle key picks the table the rows set: B (P13: wt=pickb), the title says so; silent at MIX 0 (FM / RM aside) is
+	// said, briefly; the next pick of B at an open MIX, a pick of A and the key again take it back; every open starts on A
+	EXPECT (!sidecar_wgview_target_b ());
+	tap (WG_MID_X, WG_KY); WG_PUSH ();
+	EXPECT (sidecar_wgview_target_b ());
+	s_WgSelB = 3, s_WgMix0 = 0; WG_PUSH (); shot ("pool-tables-b");
+	tap (wlx, WG_ROW (1 + 4)); EXPECT_CMD ("wt=pickb:2:A004");
+	EXPECT (!sidecar_wgview_message ()[0]);
+	s_WgMix0 = 1; WG_PUSH ();
+	tap (wlx, WG_ROW (1 + 5)); EXPECT_CMD ("wt=pickb:2:A005");
+	EXPECT (!strcmp (sidecar_wgview_message (), o ? "B IS SILENT: MIX IS 0" : "B is silent: MIX is 0"));
+	shot ("pool-tables-b-silent");
+	tap (wlx, WG_ROW (1 + 0)); EXPECT_CMD ("wt=pickb:2:A000");			// B off: nothing to say
+	EXPECT (!sidecar_wgview_message ()[0]);
+	tap (wlx, WG_ROW (1 + 5)); EXPECT (!strcmp (sidecar_wgview_message (), o ? "B IS SILENT: MIX IS 0" : "B is silent: MIX is 0"));
+	tap (WG_MID_X, WG_KY); WG_PUSH ();						// back to A
+	EXPECT (!sidecar_wgview_target_b () && !sidecar_wgview_message ()[0]);
+	tap (wlx, WG_ROW (1 + 2)); EXPECT_CMD ("wt=pick:2:A002");
+	tap (WG_MID_X, WG_KY); WG_PUSH ();
+	EXPECT (sidecar_wgview_target_b ());
+	sidecar_wgview_pool_page (1);		// the POOL page by another route than DONE: no table B there (the TABLES tab marks A)
+	EXPECT (!sidecar_wgview_target_b ());
+	sidecar_wgview_pool_page (0); WG_PUSH ();
+	tap (WG_SRC_X, WG_KY); WG_PUSH ();	// the list again, on A, and B once more
+	EXPECT (sidecar_wgview_list_shown () && !sidecar_wgview_target_b ());
+	tap (WG_MID_X, WG_KY); WG_PUSH ();
+	EXPECT (sidecar_wgview_target_b ());
+	tap (WG_SRC_X, WG_KY);			// DONE
+	tap (WG_SRC_X, WG_KY); WG_PUSH ();	// POOL again: A
+	EXPECT (sidecar_wgview_list_shown () && !sidecar_wgview_target_b ());
+	s_WgSelB = -1, s_WgMix0 = 0; WG_PUSH ();
 	tap (wlx, WG_ROW (1 + 8)); WG_PUSH ();
 	EXPECT (sidecar_wgview_target () == 8);
 	tap (wlx, WG_ROW (5)); EXPECT_CMD ("pool=wt:assign:A008:3");
@@ -1603,7 +1701,7 @@ static void theme_run (int style, const char *pre)
 	tap (wlx, WG_ROW (2 + 5)); WG_PUSH ();							// A005: changed
 	EXPECT (sidecar_wgview_asking () == 2);
 	shot ("pool-page-menu");
-	tap (wlx, WG_BOX (5, 3)); EXPECT_CMD ("pool=smp:accept:A005");
+	tap (wlx, WG_BOX (6, 4)); EXPECT_CMD ("pool=smp:accept:A005");		// (a sample's menu: EDIT REPLACE UNLOAD ACCEPT CANCEL)
 	tap (WG_SRC_X, WG_KY);			// DONE: back
 	EXPECT (sidecar_ui_page () == 7 && !sidecar_wgview_pool_page_shown () && !sidecar_wgview_list_shown ());
 	// the machine view's ALL POOLS, its JUNO tab (the PRESET page), DONE: back to the machine view (page 7), not POOL
@@ -1912,8 +2010,59 @@ static void theme_run (int style, const char *pre)
 			for (int i = c0; i < s_nCmds; i++) reset += !strcmp (s_Hist[i & 255], "scene=fader:0");
 			EXPECT (!reset);
 		}
+		// v2 Task 5: ADD - RT1 FLTR FRQ at 87 into the selected scene (3); RFX REVERB RDEC; BACK closes
+		morph_fake (5, 0); sidecar_morph_set (&s_Mo); run (2);
+		sidecar_morph_add (1);
+		EXPECT (!strcmp (sidecar_morph_add_name (), "RT1:P1"));
+		sidecar_morph_add_step (1, 2); sidecar_morph_add_step (2, 5); sidecar_morph_add_value (87); run (2);
+		shot ("morph-add");
+		sidecar_morph_add_go ();
+		EXPECT_CMD ("scene=lock:3:RT1:FRQ:87");
+		sidecar_morph_add_step (0, -9); sidecar_morph_add_step (1, 1); sidecar_morph_add_step (2, 1); sidecar_morph_add_value (100);
+		sidecar_morph_add_go ();
+		EXPECT_CMD ("scene=lock:3:RFX:RDEC:100");
+		sidecar_morph_add_step (0, 1); sidecar_morph_add_step (1, 1);
+		EXPECT (!strcmp (sidecar_morph_add_name (), "V1:P9"));
+		sidecar_morph_add (0);
+		EXPECT (!sidecar_morph_add_name ()[0]);
+		// v2 Task 7: a lock whose target is gone (faint, "?"); DEL offers UNDO, which locks it back at its value
+		morph_fake (5, 0); s_Mo.row[2].stale = 1; s_Mo.gen++; sidecar_morph_set (&s_Mo); run (2);
+		shot ("morph-stale");
+		sidecar_morph_del (0); run (2);
+		EXPECT_CMD ("scene=unlock:3:V1:P3");
+		EXPECT (sidecar_morph_undo_shown ());
+		shot ("morph-undo");
+		sidecar_morph_undo ();
+		EXPECT_CMD ("scene=lock:3:V1:P3:64");
+		EXPECT (!sidecar_morph_undo_shown ());
 		sidecar_ui_show (pg);
 		EXPECT (!sidecar_morph_shown ());
+	}
+	// 0.5.0: the LOOP page - no grabs, a loop playing with eight grabs (the longest texts), the looper off, the engine not there yet
+	{
+		int pg = sidecar_ui_page ();
+		sidecar_ui_show (25);
+		EXPECT (sidecar_loop_shown () && !sidecar_morph_shown ());
+		loop_fake (0, 0); sidecar_loop_set (&s_Lo); run (2); shot ("loop-empty");
+		loop_fake (8, 2); sidecar_loop_set (&s_Lo); run (2); shot ("loop-playing");
+		loop_fake (3, 1); s_Lo.pending = 1; s_Lo.gen++; sidecar_loop_set (&s_Lo); run (2); shot ("loop-resample");
+		loop_fake (0, 0); s_Lo.on = 0; s_Lo.gen++; sidecar_loop_set (&s_Lo); run (2); shot ("loop-off");
+		loop_fake (8, 2); sidecar_loop_set (&s_Lo); run (2);
+		{	// the controls send the console's lines (a pad plays and shows; STOP fades, CUT cuts at once; sliders absolute)
+			int x, y, c0 = s_nCmds;
+			EXPECT (sidecar_loop_key (0, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=grab:0.5");
+			EXPECT (sidecar_loop_key (5, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=grab:16");
+			EXPECT (sidecar_loop_key (6, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=stop");
+			EXPECT (sidecar_loop_key (7, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=stop:cut:now");
+			EXPECT (sidecar_loop_key (10, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=play:#102"); EXPECT (sidecar_loop_sel () == 2);
+			EXPECT (sidecar_loop_key (16, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=keep:#102");
+			EXPECT (sidecar_loop_key (17, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=fade:2");	// FADE 1 -> 2 (the fake: index 2 = 1 bar, next 2)
+			EXPECT (sidecar_loop_key (18, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=mute:off");	// (the fake has it on)
+			EXPECT (sidecar_loop_key (19, &x, &y)); tap_raw (x, y); EXPECT_CMD ("loop=live:off");	// (the fake has PERF 12: past it is off)
+			EXPECT (s_nCmds - c0 == 9);
+		}
+		sidecar_ui_show (pg);
+		EXPECT (!sidecar_loop_shown ());
 	}
 	// 0.5.0: the XY page - empty, a drag (xy=pos while it moves, the last position and xy=up at the release), HOLD's
 	// held position, SETUP with every slot, the picker (its SET, NONE), the engine not there yet
@@ -1997,6 +2146,7 @@ static void theme_run (int style, const char *pre)
 		sidecar_ui_show (0); run (2);
 		EXPECT (sidecar_xy_wanted () && !sidecar_xy_shown ());		// (the view is built for the XY tile)
 		xy_fake (4, 1, 1); sidecar_xy_set (&s_Xy); s_Last[0] = 0; sidecar_ui_status (&s_St); run (2); shot ("home-overview");
+		alert_bars (12), alert_bars (13);
 		s_St.vmuted[6] = 1, s_St.underruns = 3; sidecar_ui_status (&s_St); run (2); shot ("home-overview-trouble");
 		s_St.vmuted[6] = 0, s_St.underruns = 0; sidecar_ui_status (&s_St); run (2);
 		EXPECT (sidecar_ui_home_hit (9, &hx, &hy)); tap (hx, hy);	// the XY tile: Perform
@@ -2457,6 +2607,26 @@ static void theme_run (int style, const char *pre)
 		EXPECT (sidecar_sedit_hit (3, SSE_D_CANCEL, &x, &y)); tap_raw (x, y);
 		EXPECT (sidecar_sedit_hit (2, SSE_K_CLOSE, &x, &y)); tap_raw (x, y);	// nothing to drop: closed at once
 		EXPECT_CMD ("sedit=close");
+		// MAKE WT: the key makes the table (a console command), FRAMES takes the next choice (16 32 64 128 256 and round);
+		// while it is made the page says so; from a WAVETABLE voice the edit is a table's file: no PLAY, MAKE WT first
+		sedit_fake (1); sidecar_sedit_set (&s_Se); run (2);
+		EXPECT (sidecar_sedit_hit (2, SSE_K_WT, &x, &y)); tap_raw (x, y);
+		EXPECT_CMD ("sedit=makewt");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_FR, &x, &y)); tap_raw (x, y);
+		EXPECT_CMD ("sedit=wtn:128");
+		s_Se.wt_frames = 256; s_Se.gen++; sidecar_sedit_set (&s_Se); run (1);
+		tap_raw (x, y);
+		EXPECT_CMD ("sedit=wtn:16");
+		sedit_fake (3); sidecar_sedit_set (&s_Se); run (2); shot ("sedit-make-wt");
+		snprintf (s_Last, sizeof s_Last, "-");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_WT, &x, &y)); tap_raw (x, y);	// busy: the key waits
+		EXPECT_CMD ("-");
+		sedit_fake (4); sidecar_sedit_set (&s_Se); run (2); shot ("sedit-table-file");
+		EXPECT (sidecar_sedit_hit (2, SSE_K_PLAY, &x, &y));
+		tap_raw (x, y);
+		EXPECT_CMD ("-");					// (a file has no PLAY)
+		EXPECT (sidecar_sedit_hit (2, SSE_K_WT, &x, &y)); tap_raw (x, y);
+		EXPECT_CMD ("sedit=makewt");
 		sedit_fake (2); sidecar_sedit_set (&s_Se); run (2); shot ("sedit-busy");
 		snprintf (s_Last, sizeof s_Last, "-");
 		EXPECT (sidecar_sedit_hit (1, SSE_FN_CROP, &x, &y)); tap_raw (x, y);	// busy: the functions wait
@@ -2746,7 +2916,7 @@ static void theme_run (int style, const char *pre)
 	{
 #define NAVTAP(k)	do { if (o) tap_raw (NAV_X, NAV_Y (k)); else tap_raw (CNAV_X (k), CNAV_Y (k)); } while (0)
 #define PILL(n, i)	tap_raw (SUBX (n, i), SUBY)
-		const int nfx = SIDECAR_MORPH ? 4 : 3;
+		const int nfx = 3 + SIDECAR_MORPH + SIDECAR_LOOPER;	// Sends Master [Morph] XY [Loop]
 		sidecar_ui_show (8); sidecar_ui_show (2); sidecar_ui_show (0); run (2);	// (VOICE remembers Sound, FX Sends)
 		PILL (3, 1); EXPECT (sidecar_ui_page () == 13 && sidecar_ui_nav_lit () == 0);		// HOME: Status
 		PILL (3, 2); EXPECT (sidecar_ui_page () == 14 && sidecar_project_shown ());		// Project
@@ -2761,7 +2931,7 @@ static void theme_run (int style, const char *pre)
 		PILL (4, 0); EXPECT (sidecar_ui_page () == 8); EXPECT_CMD ("voicepick=-1");		// Sound: the Rytm's track again
 		NAVTAP (4); EXPECT (sidecar_ui_page () == 2 && sidecar_ui_nav_lit () == 4);			// FX: Sends
 		PILL (nfx, 1); EXPECT (sidecar_ui_page () == 19 && sidecar_mfx_shown ());			// Master
-		PILL (nfx, nfx - 1); EXPECT (sidecar_ui_page () == 22 && sidecar_xy_shown ());		// XY
+		PILL (nfx, nfx - 1 - SIDECAR_LOOPER); EXPECT (sidecar_ui_page () == 22 && sidecar_xy_shown ());		// XY
 		NAVTAP (7); NAVTAP (4); EXPECT (sidecar_ui_page () == 22);					// FX remembers XY
 		PILL (nfx, 0); EXPECT (sidecar_ui_page () == 2);
 		NAVTAP (5); PILL (2, 1); EXPECT (sidecar_ui_page () == 10 && sidecar_song_explain_shown ());	// SONG: Setup (the how-to)
@@ -2803,7 +2973,7 @@ static void theme_run (int style, const char *pre)
 	}
 	// F2: a mirror page (VOICE) while the Rytm is not connected says it shows the last it had
 	s_St.rytm = 0; sidecar_ui_status (&s_St);
-	sidecar_ui_show (8); run (40); shot ("voice-no-rytm");	// (after the link banner)
+	sidecar_ui_show (8); run (40); shot ("voice-no-rytm"); alert_bars (17);	// (after the link banner; the header's "No Rytm link")
 	s_St.rytm = 1; sidecar_ui_status (&s_St);
 	sidecar_ui_show (0); run (2);
 	// N3: the Rytm's UP held alone - the UP + T map over the screen, gone at the release

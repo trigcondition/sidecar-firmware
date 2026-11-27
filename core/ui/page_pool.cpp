@@ -21,6 +21,7 @@
 #include "lib/pools.h"
 #include "lib/srclib.h"
 #include "ui/extra.h"
+#include "ui/remote.h"
 #include "ui/widgets.h"
 
 namespace core {
@@ -310,6 +311,19 @@ CORE_COLD bool pool_key(int code) {
 }
 
 }  // namespace
+
+// The SAMPLES list with EDIT chosen, on the bank last shown and its first sample (the WAVETABLE SRC view's B: pick a sample to
+// make a table of)
+CORE_COLD void pool_page_pick_sample() {
+  P.list = pools::kSamples, P.bank = pools::shown_bank(pools::kSamples), P.row = 1, P.act = kEdit, P.ask = P.browse = false;
+  for (int r = 1; r < pools::kRows; ++r)
+    if (pools::at(pools::kSamples, pools::code(P.bank, r)).type == pools::kSample) {
+      P.row = r;
+      break;
+    }
+  note("PICK A SAMPLE, YES: EDIT");
+  remote_show_page("POOL");
+}
 
 // tests: the page's state
 CORE_COLD void pool_page_set(int list, int bank, int row, int act) {

@@ -1542,7 +1542,7 @@ static void header_update (void)
 			set_text (s_Where, s_V.project[0] ? s_V.project : "-");
 			if (s_V.bpm10 > 0) lv_snprintf (b, sizeof b, "%d.%d", s_V.bpm10 / 10, s_V.bpm10 % 10); else lv_snprintf (b, sizeof b, "-");
 			set_text (s_Cell[1], b);
-			lv_obj_set_x (s_Cell[2], lv_obj_get_x (s_Cell[1]) + th_text_width (TH->f_title, b) + LU (4));
+			lv_obj_set_x (s_Cell[2], lv_obj_get_x (s_Cell[1]) + th_text_width (TH->f_pxv ? TH->f_pxv : TH->f_title, b) + LU (4));
 			set_text (s_Cell[2], s_V.bpm10 > 0 ? "BPM" : "");
 		}
 		else
@@ -1835,7 +1835,7 @@ void sidecar_seqed_create (void *parent, int y0, sidecar_seqed_command_t cmd, vo
 			lv_obj_set_style_text_font (s_Where, TH->f_title, 0);
 			const int cx = LU (170);
 			label (pg, cx, LU (9), TH->f_micro, TH->sub, "TEMPO");
-			s_Cell[1] = label (pg, cx, LU (24), TH->f_title, TH->ink, "-");
+			s_Cell[1] = TH->f_pxv ? label (pg, cx, LU (22), TH->f_pxv, TH->ink, "-") : label (pg, cx, LU (24), TH->f_title, TH->ink, "-");	// the tempo in the pixel face
 			s_Cell[2] = label (pg, cx + LU (50), LU (30), TH->f_micro, TH->sub, "");
 		}
 		s_Tracks = th_seg (pg, G->tracks_x, G->tracks_y, G->tracks_w, G->tracks_h, (const char *const[]) {"-", "-", "-", "-", ""},

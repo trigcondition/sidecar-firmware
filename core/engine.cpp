@@ -7,6 +7,7 @@
 #include "fx/insert.h"
 #include "keys.h"
 #include "lfo.h"
+#include "loop/loop.h"
 #include "mod/learn.h"
 #include "mod/scene.h"
 #include "mod/xypad.h"
@@ -80,6 +81,7 @@ CORE_COLD bool engine_begin() {
   seq::init();   // the Sidecar sequencer (core/seq/seq.h): its pattern buffers; its tracks and A01 once the store is full
   if (card_ok) keys::load();   // the Pi's own keyboards' routing (core/keys.h)
   if (card_ok) learn::load();   // the MIDI-learn routes (core/mod/learn.h): a box setting
+  if (card_ok) loop::load();    // the looper's BAL / LEV / FADE / auto-mute / LIVE VIA / POST latency (core/loop/loop.h)
 #endif
 #if CORE_MSAMP
   if (card_ok) sdtest::load();   // the SD card test's last result (msamp/sdtest.h)
@@ -167,6 +169,7 @@ CORE_COLD bool idle_save() {
 #if CORE_POLY
   if (T_("keys", keys::save())) return true;
   if (T_("learn", learn::save())) return true;
+  if (T_("loop", loop::save())) return true;
 #endif
 #if CORE_MSAMP
   if (T_("preview", preview::save())) return true;   // PREVIEW LEVEL (core/samp/preview.h)

@@ -89,6 +89,14 @@ endpoint with the pairing header (`src/lib/api.ts`). Status: ✅ done · 🔶 pa
 |---|---|---|
 | Scenes and MORPH: 12 pads, A / B, the fader, a scene's locks (value, add, remove), copy, clear, EDIT | `ws:status` `scene` (0.5.0, core/mod/scene.h); `cmd scene=ab|fader|sel|lock|unlock|clear|copy|edit` | ✅ against the mock and the 0.5.0 spec; a 0.4.x Sidecar shows "comes with 0.5.0" |
 
+## Loop
+
+| Feature | Data | Status |
+|---|---|---|
+| The master looper: grab keys 1/2..16 bars, STOP / CUT, 8 grabs (play, KEEP), BAL, LEV, FADE, auto-mute, LIVE VIA, POST calibration | `ws:status` `loop` (0.5.0, core/loop/loop.h); `cmd loop=grab|play|stop|keep|bal|lev|fade|mute|live|cal` | ✅ against the mock and the 0.5.0 spec; a 0.4.x Sidecar shows "comes with 0.5.0", a looper that is off says how to turn it on |
+
+> 0.5.2: the Loop page is out of the router (`SIDECAR_LOOPER 0`); the row above is what comes back with the redesign.
+
 ## Rec
 
 | Feature | Data | Status |

@@ -26,6 +26,7 @@
 #include "fx/master.h"
 #include "fx/out.h"
 #include "fx/send_fx.h"
+#include "fx/sidechain.h"
 #include "machines.h"
 #include "mod/mod.h"
 #include "ui/extra.h"
@@ -47,6 +48,7 @@ struct InsPage {
   bool bus = false;      // the BUS view
   bool out = false;      // the OUT view
   bool eq = false;       // ins1112: the EQ view (RIGHT)
+  bool sc = false;       // 0.5.0: the SIDECHAIN view (DOWN on the EQ view)
   int slot = 0;          // the slot A..D edit
   int busel = 0;         // G: the bus (the TRACK view: the send H edits; the BUS view: the chain shown)
   int track = -1;        // the track shown (-1: none known yet)
@@ -57,6 +59,7 @@ struct InsPage {
   bool full = false;     // 0.5.0: F skipped the send TYPEs for want of room (the footer says so until the next turn)
 };
 CORE_RAM2 InsPage ip;
+int sc_touched = -1;   // the SIDECHAIN view's last knob turned (this page's and the MASTER FX page's)
 
 CORE_COLD int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -217,9 +220,95 @@ CORE_COLD void eq_draw(Canvas& c, int page, int npages) {
   }
 }
 
+// 0.5.0 SIDECHAIN view (DOWN on the EQ view; shared with the MASTER FX page): chain ch's stage. A MODE (OFF PUMP DUCK), B SRC, C..H the six knobs
+// (their names follow the mode). The footer says why the stage does nothing (NO STEMS: the Rytm's stems come over Overbridge only).
+}  // namespace
+CORE_COLD void sc_view_draw(Canvas& c, int page, int npages, int ch, const char* title, const char* right, const char* nav) {
+  header(c, title, page, npages, right);
+  for (int s = 0; s < ins::kSlots; ++s) {   // [A][B] > [SIDECH] > [POST EQ]
+    Rect r{(int16_t)(s * 17), (int16_t)kStripY, 14, (int16_t)kStripH};
+    bool set = ins::control.type[ch][s] != 0;
+    if (set) c.fill(r, kOn);
+    else c.rect(r, kOn);
+    char b[4];
+    sniprintf(b, sizeof b, CORE_STR("%c"), 'A' + s);
+    c.put_text(kSlotFree + s, kRSmall, r.x + 7, kStripY + 4, b, kAlignCentre | (set ? kTextInvert : 0));
+  }
+  c.hline(34, 36, kStripY + kStripH / 2, kOn);
+  const bool on = ins::sc_on(ch);
+  Rect e{37, (int16_t)kStripY, 42, (int16_t)kStripH};
+  if (on) c.fill(e, kOn);
+  else c.rect(e, kOn);
+  c.put_text(kSlotFree + 2, kRSmall, e.x + 21, kStripY + 4, "SIDECH", kAlignCentre | (on ? kTextInvert : 0));
+  c.hline(79, 81, kStripY + kStripH / 2, kOn);
+  Rect q{82, (int16_t)kStripY, 46, (int16_t)kStripH};
+  c.rect(q, kOn);
+  c.put_text(kSlotFree + 3, kRSmall, q.x + 23, kStripY + 4, "POST EQ", kAlignCentre);
+  const int m = ins::sc_mode(ch);
+  char lab[8][6], val[8][8];
+  sniprintf(lab[0], 6, "MODE"), sniprintf(val[0], 8, "%s", sc::mode_name(m));
+  sniprintf(lab[1], 6, "SRC"), sniprintf(val[1], 8, "%s", m ? sc::src_name(ins::sc_src(ch)) : "-");
+  for (int k = 0; k < sc::kParams; ++k) {
+    sniprintf(lab[2 + k], 6, "%s", sc::label(m, k));
+    if (m && sc::label(m, k)[0] != '-') ins::sc_value_text(m, k, ins::sc_param(ch, k), val[2 + k], 8);
+    else sniprintf(val[2 + k], 8, "-");
+  }
+  for (int e2 = 0; e2 < 8; ++e2) {
+    int x = (e2 & 3) * kCellW + kCellW / 2, y = e2 < 4 ? kRow0 : kRow1;
+    c.put_text(kSlotLabels + e2, kRSmall, x, y, lab[e2], kAlignCentre);
+    c.put_text(kSlotCells + e2, kRSmall, x, y + 6, val[e2], kAlignCentre);
+  }
+  c.hline(0, kW - 1, kRow1 - 2, kDither);
+  char why[16], b[kTextLen + 1];
+  const bool ok = ins::sc_status(ch, why, sizeof why);
+  const int t = sc_touched >= 2 ? sc_touched - 2 : -1;
+  if (t >= 0 && t < sc::kParams && m && lab[sc_touched][0] != '-') {
+    sniprintf(b, sizeof b, CORE_STR("%s SC %s:%s"), ins::chain_name(ch), lab[sc_touched], val[sc_touched]);
+    footer(c, b, ins::sc_param(ch, t));
+  } else if (!ok) {
+    footer(c, why);
+  } else if (ins::sc_mon(ch)) {
+    footer(c, "MON ON (KEY)  T1: OFF");
+  } else {
+    footer(c, nav);
+  }
+}
+CORE_COLD void sc_view_enc(int ch, int e, int d, bool func, int l) {
+  sc_touched = e;
+  if (e == 0) ins::set_sc_mode(ch, clampi(ins::sc_mode(ch) + l, 0, sc::kModes - 1));
+  else if (e == 1) {
+    if (ins::sc_on(ch)) ins::set_sc_src(ch, clampi(ins::sc_src(ch) + l, 0, sc::kSrcs - 1));
+  } else if (ins::sc_on(ch) && sc::label(ins::sc_mode(ch), e - 2)[0] != '-') {   // (DUCK's sixth knob is unused)
+    ins::set_sc_param(ch, e - 2, ins::sc_param(ch, e - 2) + d * (func ? 8 : 1));
+    mod::manual_knob(mod::tid(mod::kIns, ch, 12 + e - 2));
+  }
+}
+CORE_COLD uint16_t sc_view_tid(int ch, int e) { return e >= 2 && ins::sc_on(ch) ? mod::tid(mod::kIns, ch, 12 + e - 2) : 0; }
+// 0.5.2 MON: T1 (code 0) in the view, while the chain's stage is DUCK
+CORE_COLD bool sc_view_key(int ch, int code) {
+  if (code != 0 || ins::sc_mode(ch) != sc::kDuck) return false;
+  ins::set_sc_mon(ch, !ins::sc_mon(ch));
+  return true;
+}
+CORE_COLD uint16_t sc_view_trigs(int ch) { return ins::sc_mode(ch) == sc::kDuck ? 1u : 0u; }
+CORE_COLD bool sc_view_leds(int ch, uint8_t c[16]) {
+  if (ins::sc_mode(ch) != sc::kDuck) return false;
+  memset(c, kLedOff, 16);
+  c[0] = ins::sc_mon(ch) ? kLedBlue : kLedBlueDim;
+  return true;
+}
+CORE_COLD void sc_mon_page_left() { ins::sc_mon_off_all(); }
+namespace {
+
 CORE_COLD void ins_draw(Canvas& c, int page, int npages, uint32_t ms) {
   (void)ms;
   c.clear();
+  if (ip.sc) {
+    char right[16];
+    if (ip.bus) sniprintf(right, sizeof right, CORE_STR("BUS %d"), ip.busel + 1);
+    else sniprintf(right, sizeof right, CORE_STR("%s"), voice_name(voice_now()));
+    return sc_view_draw(c, page, npages, chain_now(), "INSERT SC", right, "YES: CHAIN  T1: MON");
+  }
   if (ip.eq) return eq_draw(c, page, npages);   // ins1112 (RIGHT)
   if (ip.out) return out_draw(c, page, npages);
   int ch = chain_now(), t = ins::control.type[ch][ip.slot];
@@ -293,6 +382,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
   if (!d) return;
   ip.touched = e;
   const int l = list_turn(e, d);   // the slot, type, route, track and bus: lists; the rest values
+  if (ip.sc) return sc_view_enc(chain_now(), e, d, func, l);   // 0.5.0 SIDECHAIN
   if (ip.eq) {   // ins1112: A HPF, B LPF, C LOW, D HIGH; G the bus (FUNC + G another track, as elsewhere)
     int ch = chain_now();
     if (e < ins::kEqParams) {
@@ -368,6 +458,7 @@ CORE_COLD void ins_enc(int e, int d, bool func) {
 
 // 0.5.0 (EDIT): the target ins_enc's turn of e edits now, as its mod::manual_knob names it (0 none)
 CORE_COLD uint16_t ins_enc_tid(int e) {
+  if (ip.sc) return sc_view_tid(chain_now(), e);
   if (ip.eq) return e < ins::kEqParams ? mod::tid(mod::kIns, chain_now(), 8 + e) : 0;
   if (ip.out) return e >= 1 && e <= 3 ? mod::tid(mod::kOut, voice_now(), e - 1) : 0;
   int ch = chain_now();
@@ -380,6 +471,23 @@ CORE_COLD bool ins_key(int code) {
   if (code == 0x45 && ip.out_top) {   // nav044: NO on UP + AMP's OUT view leaves (not the TRACK view first); the
     ip.out = ip.out_top = false, ip.touched = -1;   // page opens on its TRACK view next, as after the old NO
     return false;
+  }
+  if (code == 0x43 && ip.eq && !ip.sc) {   // 0.5.0 DOWN on the EQ view: the SIDECHAIN view (RIGHT stays the page list's)
+    ip.sc = true, ip.touched = -1, sc_touched = -1;
+    return true;
+  }
+  if (ip.sc && sc_view_key(chain_now(), code)) return true;   // 0.5.2 T1: MON
+  if ((code == 0x40 || code == 0x43) && ip.sc) {   // LEFT, DOWN: back to the EQ view
+    ip.sc = false, ip.touched = -1;
+    ins::sc_mon_off_all();
+    return true;
+  }
+  if (code == 0x44 && ip.sc) {   // YES: the voice, then bus 1, 2, 3, then the voice again
+    ins::sc_mon_off_all();
+    if (!ip.bus) ip.bus = true, ip.busel = 0;
+    else if (ip.busel < ins::kBuses - 1) ++ip.busel;
+    else ip.bus = false;
+    return true;
   }
   if (code == 0x41 && !ip.eq) {   // ins1112 RIGHT: the EQ view (RIGHT again is the page list's, as always)
     ip.eq = true, ip.out = false, ip.out_top = false, ip.touched = -1;
@@ -402,7 +510,8 @@ CORE_COLD bool ins_key(int code) {
     return true;
   }
   if (code == 0x45 && (ip.bus || ip.out || ip.eq)) {   // NO: back to the TRACK view (then SIDECAR, as every page)
-    ip.bus = ip.out = ip.eq = false, ip.touched = -1;
+    ip.bus = ip.out = ip.eq = ip.sc = false, ip.touched = -1;
+    ins::sc_mon_off_all();
     return true;
   }
   return false;
@@ -422,14 +531,22 @@ CORE_COLD bool ins_shown() {
 
 // rui1047, UP + AMP (30 page 3): the OUT view of the Rytm's selected track, not a track picked by FUNC + G before
 CORE_COLD void ins_open_out() {
-  ip.bus = false, ip.out = true, ip.eq = false, ip.track = -1, ip.manual = false, ip.touched = -1, ip.out_top = true;
+  ip.bus = false, ip.out = true, ip.eq = false, ip.sc = false, ip.track = -1, ip.manual = false, ip.touched = -1, ip.out_top = true;
 }
 
-UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_key, 0xFF, false, nullptr, nullptr, nullptr,
+CORE_COLD uint16_t ins_trigs() { return ip.sc ? sc_view_trigs(chain_now()) : 0; }   // 0.5.2: T1 is MON's in the SIDECHAIN view
+CORE_COLD bool ins_leds(uint8_t c[16]) { return ip.sc && sc_view_leds(chain_now(), c); }
+
+// t050-d: the page stands alone, so UP / DOWN are the Rytm's (updown044, CHRO's octave) except on the EQ and SIDECHAIN
+// views, where DOWN goes in and out of SIDECHAIN (remote.cpp claims_updown)
+CORE_COLD bool ins_wants_updown() { return ip.eq || ip.sc; }
+
+UI_ROM const ExtraPage kInsPage = {"INSERT", ins_shown, ins_draw, ins_enc, ins_key, 0xFF, false, nullptr, ins_trigs, ins_leds,
                                    false, nullptr, ins_enc_tid};
 
 #if CORE_UI_TOOLS
-void ins_page_set(bool bus, int slot, int busel, int track, bool out, bool eq) {   // tests and the renderer
+void ins_page_set(bool bus, int slot, int busel, int track, bool out, bool eq, bool sc) {   // tests and the renderer
+  ip.sc = sc;
   ip.bus = bus, ip.out = out, ip.eq = eq, ip.slot = slot, ip.busel = busel, ip.track = track, ip.manual = track >= 0,
   ip.touched = -1, ip.out_top = false;
 }

@@ -683,6 +683,10 @@ void CEngineCores::Command (const char *p)
 	{
 		if (!xypad_pi::Quiet (p)) L->Write (From, LogNotice, "%s", Sc);	// (scene=fader: a drag's lines)
 	}
+	else if (char Lp[400]; bridge::loop_command (p, Lp, sizeof Lp))	// loop, loop=...: the master looper (core/loop/loop.h)
+	{
+		L->Write (From, LogNotice, "%s", Lp);
+	}
 	else if (char Xy[400]; bridge::xy_command (p, Xy, sizeof Xy))	// xy, xy=...: the XY pad (core/mod/xypad.h)
 	{
 		if (Xy[0]) L->Write (From, LogNotice, "%s", Xy);	// (xy=pos / xy=up answer nothing: a drag's 30 lines a second)

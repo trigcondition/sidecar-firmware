@@ -169,7 +169,7 @@ CORE_COLD bool parse_cfg(const char* kv, seq::PolyCfg* c, char* err, int cap) {
     const char* e = strchr(k, '=');
     const char* next = strchr(k, ',');
     if (!e || (next && next < e)) {
-      if (err) sniprintf(err, cap, "KEY=VALUE pairs (voices alloc unison detune spread group oct)");
+      if (err) sniprintf(err, cap, "KEY=VALUE pairs (voices alloc unison detune spread group oct chord)");
       return false;
     }
     const char* v = e + 1;
@@ -184,6 +184,13 @@ CORE_COLD bool parse_cfg(const char* kv, seq::PolyCfg* c, char* err, int cap) {
       case 'd': c->detune = (uint8_t)clampi(x, 0, 127); break;
       case 's': c->spread = (uint8_t)clampi(x, 0, 127); break;
       case 'o': c->oct = (int8_t)clampi(neg ? -x : x, -seq::kMaxPadOct, seq::kMaxPadOct); break;
+      case 'c':
+        if (!num || x > 1) {
+          if (err) sniprintf(err, cap, "chord=0|1");
+          return false;
+        }
+        c->chord = (uint8_t)x;
+        break;
       case 'g': c->group = (uint8_t)clampi(x, 0, seq::kPolyGroups); break;
       case 'a': {
         int a = -1;
@@ -217,6 +224,7 @@ CORE_COLD int describe(const seq::PolyCfg& c, const Resolved* r, int machine, ch
     n += sniprintf(out + n, cap - n, " %s UNISON %d DETUNE %d SPREAD %d GROUP %d", alloc_name(c.alloc),
                    c.unison > 1 ? c.unison : 1, c.detune, c.spread, c.group);
   if (c.oct && n < cap) n += sniprintf(out + n, cap - n, " OCT %s%d", c.oct < 0 ? "-" : "+", c.oct < 0 ? -c.oct : c.oct);
+  if (c.chord && n < cap) n += sniprintf(out + n, cap - n, " CHORD REC ON");
   if (r && n < cap)
     n += sniprintf(out + n, cap - n, " -> %s: %d instance%s, %d note%s at once%s (%d.%02d %% a core)", machine_short(machine),
                    r->instances, r->instances == 1 ? "" : "s", r->lanes, r->lanes == 1 ? "" : "s",

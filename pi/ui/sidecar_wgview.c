@@ -10,7 +10,7 @@
 #include "lvgl.h"
 #include <string.h>
 
-static lv_obj_t *s_Page, *s_Area, *s_Title, *s_TitleBar, *s_Info, *s_Info2;
+static lv_obj_t *s_Page, *s_Area, *s_Title, *s_TitleBar, *s_Info, *s_Info2, *s_Edit;
 static lv_obj_t *s_List, *s_Src, *s_Up, *s_Dn, *s_Done, *s_Mid;
 static sidecar_wg_view_t s_V;
 static unsigned s_nGen = ~0u;
@@ -207,16 +207,19 @@ static int s_bPage;				// the POOL page (three tabs) instead of the machine view
 static int s_nPageList;				// its tab (WGV_SAMPLES ..)
 static int s_nBank;				// the bank shown (0 A .. 7 H)
 static int s_nTarget = -1;			// FILES fills this code (-1 none)
+static int s_nB;				// TBLB: WAVETABLE's pool list picks for table B (P13), not A (the middle key; A on every open)
+static uint32_t s_nSilentAt;			// when the "B IS SILENT" note was said (0: none), it goes after a few seconds
 static int s_bReplace;				// ... which holds an entry: REPLACE (back to the rows after one file)
 static int s_bSelect;				// SELECT UNUSED
 static unsigned char s_Desel[WGV_CODES / 8];	// unused rows a tap deselected (and those already sent)
+static int s_nInfoX, s_nInfoW, s_nEditX, s_nEditW;	// the info lines' place, and where they stand with WAVETABLE's EDIT key beside them
 static int s_nMenu = -1;			// the row whose menu is open (-1 none)
 enum { ASK_NONE, ASK_CMD, ASK_UNUSED };
 static int s_nAsk;				// the confirm open: YES sends s_AskCmd (ASK_CMD) or the selection (ASK_UNUSED)
 static char s_Ask1[64], s_Ask2[64], s_AskCmd[192], s_AskDone[48];
 static char s_Msg[80];				// the message row ("" none)
 static int s_nUndo = -1;			// the list whose last replace / unload the message row's tap takes back
-enum { M_REPLACE, M_UNLOAD, M_ACCEPT, M_CANCEL };
+enum { M_EDIT, M_REPLACE, M_UNLOAD, M_ACCEPT, M_CANCEL };
 #define UNLOAD_PER	19			// rows a command ("pool=inst:unload:" + "A010:yes," each: the console's 191)
 #define UNLOAD_CMDS	8			// commands a tap (the control core's queue holds 16)
 
@@ -241,6 +244,8 @@ static const char *mname (void)
 	return s_V.kind == WGV_GRANULAR ? "GRANULAR" : s_V.kind == WGV_WAVETABLE ? "WAVETABLE" : s_V.kind == WGV_MULTISAMPLE ? "MULTISAMPLE" : "";
 }
 static int rows_ok (void) { return s_V.list == cur_list () && s_V.bank == s_nBank; }	// the view holds the bank shown
+static int pick_b (void) { return s_nB && !s_bPage && s_V.kind == WGV_WAVETABLE && s_V.list == WGV_TABLES; }	// the list picks for table B
+static int sel_now (void) { return pick_b () ? s_V.sel_b : s_V.sel; }				// the code the pick's table plays
 static int r_type (int r) { return r == 0 ? WGV_RT_OFF : rows_ok () ? s_V.rtype[r] : WGV_RT_EMPTY; }
 static int r_flags (int r) { return rows_ok () ? s_V.rflags[r] : 0; }
 static int r_filled (int r) { return r > 0 && r_type (r) >= WGV_RT_SAMPLE; }
@@ -298,7 +303,7 @@ static void top_to_row (int r) { s_nTop = r - 2; top_clamp (); }
 static void top_to_sel (void)			// the playing row two rows from the top (when it is in this bank)
 {
 	s_nTop = 0;
-	if (!s_bLib && s_V.sel >= 0 && s_V.sel >> 7 == s_nBank) s_nTop = (s_V.sel & 127) - 2;
+	if (!s_bLib && sel_now () >= 0 && sel_now () >> 7 == s_nBank) s_nTop = (sel_now () & 127) - 2;
 	top_clamp ();
 }
 
@@ -312,13 +317,14 @@ static int next_empty (int after)		// the shown bank's first empty row after `af
 static int menu_items (int *ids)
 {
 	int n = 0, r = s_nMenu, f = r_flags (r);
+	if (cur_list () == WGV_SAMPLES && r_type (r) == WGV_RT_SAMPLE) ids[n++] = M_EDIT;	// the sample editor (a wavetable can be made of it)
 	if (r_type (r) == WGV_RT_SAMPLE || r_type (r) == WGV_RT_INSTR) ids[n++] = M_REPLACE;
 	ids[n++] = M_UNLOAD;
 	if (f & WGV_RF_CHANGED) ids[n++] = M_ACCEPT;
 	ids[n++] = M_CANCEL;
 	return n;
 }
-static int box_rows (void) { int ids[4]; return s_nAsk ? 3 : s_nMenu >= 0 ? menu_items (ids) + 1 : 0; }
+static int box_rows (void) { int ids[5]; return s_nAsk ? 3 : s_nMenu >= 0 ? menu_items (ids) + 1 : 0; }
 static void box_geom (int w, int h, int *x0, int *y0, int *bw)
 {
 	int rh = row_h (), n = box_rows (), m = LU (oled () ? 8 : 40);
@@ -329,7 +335,7 @@ static void box_geom (int w, int h, int *x0, int *y0, int *bw)
 static const char *menu_text (int id)
 {
 	int o = oled ();
-	return id == M_REPLACE ? (o ? "REPLACE" : "Replace") : id == M_UNLOAD ? (o ? "UNLOAD" : "Unload")
+	return id == M_EDIT ? (o ? "EDIT IN SAMPLE EDIT" : "Edit in the sample editor") : id == M_REPLACE ? (o ? "REPLACE" : "Replace") : id == M_UNLOAD ? (o ? "UNLOAD" : "Unload")
 	     : id == M_ACCEPT ? (o ? "ACCEPT THE CHANGED FILE" : "Accept the changed file") : (o ? "CANCEL" : "Cancel");
 }
 
@@ -353,7 +359,7 @@ static void draw_box (lv_layer_t *l, const lv_area_t *c, int w, int h)
 		th_text (l, c, x0 + hw, y + (rh - fb->line_height) / 2, hw, fb, c_ink (), LV_TEXT_ALIGN_CENTER, od ? "NO" : "No");
 		return;
 	}
-	int ids[4], m = menu_items (ids);
+	int ids[5], m = menu_items (ids);
 	char t[48], row[5];
 	row_text (code_of (s_nMenu), row);
 	lv_snprintf (t, sizeof t, "%s  %s", row, rows_ok () ? s_V.rname[s_nMenu] : "");
@@ -452,7 +458,7 @@ static void list_draw (lv_event_t *e)
 		}
 		// a bank's row: the in-use marker (voices on it now: filled; seen playing: an outline; SELECT UNUSED: the
 		// selection in the accent), "NNN  name" ("!name" missing, "~name" changed), the state right
-		int code = code_of (k), on = code == v->sel && v->list == cur_list (), ty = r_type (k), f = r_flags (k);
+		int code = code_of (k), on = code == sel_now () && v->list == cur_list (), ty = r_type (k), f = r_flags (k);
 		int empty = ty == WGV_RT_EMPTY, mw = od ? 4 : 8, my = y + (rh - mw) / 2;
 		uint32_t ink = on ? TH->sel_ink : f & WGV_RF_MISSING ? TH->bad : f & WGV_RF_CHANGED ? TH->warn : empty ? c_dim () : c_ink ();
 		if (on) th_fill (l, &c, 0, y + 1, rw, y + rh - 2, TH->sel_bg, LV_OPA_COVER, 0);
@@ -463,7 +469,7 @@ static void list_draw (lv_event_t *e)
 		lv_snprintf (t, sizeof t, "%03d  %s%s", k, f & WGV_RF_MISSING ? "!" : f & WGV_RF_CHANGED ? "~" : "", nm);
 		th_text (l, &c, pad + mw + (od ? 3 : LU (6)), y + (rh - fb->line_height) / 2, rw - 2 * pad - mw - (od ? LU (60) : LU (120)), fb, ink,
 			 LV_TEXT_ALIGN_LEFT, t);
-		if (on && v->note[0]) lv_snprintf (rt, sizeof rt, "%s", v->note);
+		if (on && v->note[0] && !pick_b ()) lv_snprintf (rt, sizeof rt, "%s", v->note);
 		else state_text (k, rt, sizeof rt);
 		if (rt[0])
 			th_text (l, &c, pad, y + (rh - fs->line_height) / 2, rw - 2 * pad, fs,
@@ -572,6 +578,12 @@ static void menu_do (int id)
 		say (done);
 		return;
 	}
+	if (id == M_EDIT)				// SAMPLE EDIT opens by itself (page 21); a WAVETABLE voice asked for the pick gets the table
+	{
+		lv_snprintf (cmd, sizeof cmd, "sedit=open:code:%d", code_of (r));
+		send (cmd);
+		return;
+	}
 	if (id == M_REPLACE)				// P3 is asked when the file is chosen; refused now if the Rytm plays
 	{
 		if (s_V.playing && (r_users (r) || (r_flags (r) & WGV_RF_USED)))
@@ -657,7 +669,7 @@ static void list_tap (lv_event_t *e)
 		if (s_nAsk) { if (bi == 2 && x < x0 + bw / 2) ask_yes (); else s_nAsk = ASK_NONE; }
 		else
 		{
-			int ids[4];
+			int ids[5];
 			menu_items (ids);
 			if (bi >= 1 && bi < n) menu_do (ids[bi - 1]); else s_nMenu = -1;
 		}
@@ -717,6 +729,16 @@ static void list_tap (lv_event_t *e)
 	if (s_bPage) { if (k > 0) s_nMenu = k; refresh (); return; }	// the POOL page: the row's menu
 	char row[5];
 	row_text (code_of (k), row);					// the voice plays it (row 0: OFF)
+	if (pick_b ())					// TBLB: table B (P13); silent at MIX 0 (FM / RM aside), said once, briefly
+	{
+		lv_snprintf (cmd, sizeof cmd, "%s=pickb:%d:%s", mtag (), s_V.voice, row);
+		send (cmd);
+		if (k > 0 && s_V.mix0) say (oled () ? "B IS SILENT: MIX IS 0" : "B is silent: MIX is 0"), s_nSilentAt = lv_tick_get () | 1;
+		else if (s_nSilentAt) s_Msg[0] = 0, s_nSilentAt = 0;
+		refresh ();
+		return;
+	}
+	if (s_nSilentAt) s_Msg[0] = 0, s_nSilentAt = 0;
 	lv_snprintf (cmd, sizeof cmd, "%s=pick:%d:%s", mtag (), s_V.voice, row);
 	send (cmd);
 	refresh ();
@@ -744,6 +766,11 @@ static int fill_ok (void)			// FILL B: a card folder into the shown bank's empty
 	return s_bLib && !s_bReplace && cur_list () != WGV_INSTR && s_V.lib_cwd[0] == '/';
 }
 
+static int target_key (void)			// WAVETABLE's own list: the middle key picks the table the rows set (A or B)
+{
+	return s_bList && !s_bPage && !s_bLib && !s_bSelect && s_V.kind == WGV_WAVETABLE && cur_list () == WGV_TABLES;
+}
+
 static void list_keys (void)
 {
 	int on = s_bList && (list_kind () || s_bPage), o = oled ();
@@ -757,6 +784,7 @@ static void list_keys (void)
 	if (!on) lv_snprintf (t, sizeof t, "%s", o ? "ALL POOLS" : "ALL POOLS");
 	else if (s_bLib) { mid = fill_ok (); lv_snprintf (t, sizeof t, "FILL %c", 'A' + s_nBank); }
 	else if (s_bSelect) lv_snprintf (t, sizeof t, "UNLOAD %d", n_selected ());
+	else if (target_key ()) lv_snprintf (t, sizeof t, "%s%c", o ? "TBL " : "PICK FOR TBL ", s_nB ? 'B' : 'A');
 	else lv_snprintf (t, sizeof t, "%s", o ? "UNUSED" : "SELECT UNUSED");
 	th_key_text (s_Mid, t);
 	if (mid) lv_obj_remove_flag (s_Mid, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag (s_Mid, LV_OBJ_FLAG_HIDDEN);
@@ -765,6 +793,10 @@ static void list_keys (void)
 	else lv_obj_remove_flag (s_Src, LV_OBJ_FLAG_HIDDEN);
 	if (on) { lv_obj_add_flag (s_Info, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag (s_Info2, LV_OBJ_FLAG_HIDDEN); }
 	else { lv_obj_remove_flag (s_Info, LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag (s_Info2, LV_OBJ_FLAG_HIDDEN); }
+	int ed = !on && s_V.kind == WGV_WAVETABLE;	// WAVETABLE's picture: EDIT (the table in SAMPLE EDIT) where UP stands, the info beside it
+	if (ed) lv_obj_remove_flag (s_Edit, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag (s_Edit, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_x (s_Info, ed ? s_nEditX : s_nInfoX), lv_obj_set_x (s_Info2, ed ? s_nEditX : s_nInfoX);
+	lv_obj_set_width (s_Info, ed ? s_nEditW : s_nInfoW), lv_obj_set_width (s_Info2, ed ? s_nEditW : s_nInfoW);
 }
 
 static void key_cb (lv_obj_t *o, int idx, void *ud)
@@ -773,6 +805,24 @@ static void key_cb (lv_obj_t *o, int idx, void *ud)
 	int k = (int) (intptr_t) ud;
 	char cmd[160];
 	if (k == 0) { sidecar_wgview_list (1); return; }
+	if (k == 5)					// EDIT: table A's file in SAMPLE EDIT (the new table goes onto this voice's TBL), else the SAMPLES list to pick from
+	{
+		if (s_V.kind != WGV_WAVETABLE) return;
+		if (s_V.tbl_file)
+		{
+			if (s_V.track >= 0) lv_snprintf (cmd, sizeof cmd, "sedit=open:wt:%d", s_V.track);
+			else lv_snprintf (cmd, sizeof cmd, "sedit=open:wtv:%d", s_V.voice);
+			send (cmd);
+			return;
+		}
+		lv_snprintf (cmd, sizeof cmd, "sedit=wtvoice:%d", s_V.voice);
+		send (cmd);
+		if (s_PageFn) s_PageFn (1);
+		sidecar_wgview_set_page_list (WGV_SAMPLES);
+		say (oled () ? "PICK A SAMPLE: TAP ITS ROW, EDIT" : "Pick a sample: tap its row, Edit");
+		refresh ();
+		return;
+	}
 	s_nMenu = -1, s_nAsk = ASK_NONE;
 	if (k == 3)					// DONE / BACK / CANCEL
 	{
@@ -808,6 +858,16 @@ static void key_cb (lv_obj_t *o, int idx, void *ud)
 			refresh ();
 			return;
 		}
+		if (target_key ())			// A / B: the rows set table A (TBL) or table B (TBLB, P13)
+		{
+			s_nB ^= 1;
+			if (s_nSilentAt) s_Msg[0] = 0, s_nSilentAt = 0;
+			if (sel_now () >= 0 && sel_now () < WGV_CODES) s_nBank = sel_now () >> 7;
+			rows_build ();
+			top_to_sel ();
+			refresh ();
+			return;
+		}
 		if (locked ()) { refresh (); return; }
 		s_bSelect = 1, s_Msg[0] = 0, s_nUndo = -1;	// SELECT UNUSED
 		memset (s_Desel, 0, sizeof s_Desel);
@@ -831,6 +891,7 @@ int sidecar_wgview_list_id (void) { return cur_list (); }
 int sidecar_wgview_rows (int *top, int *head) { *top = s_nTop < 0 ? 0 : s_nTop, *head = hdr (); return rows_shown (); }
 int sidecar_wgview_selecting (void) { return s_bList && s_bSelect; }
 int sidecar_wgview_target (void) { return s_bLib ? s_nTarget : -1; }
+int sidecar_wgview_target_b (void) { return pick_b (); }
 const char *sidecar_wgview_message (void) { return s_nAsk ? s_Ask1 : s_Msg; }
 int sidecar_wgview_asking (void) { return s_nAsk ? 1 : s_nMenu >= 0 ? 2 : 0; }
 void sidecar_wgview_set_bank (int bank)
@@ -856,6 +917,7 @@ void sidecar_wgview_list (int on)
 	if (!s_Page) return;
 	s_bList = on;
 	modes_off ();
+	s_nB = 0, s_nSilentAt = 0;						// the list opens on table A
 	if (on && s_V.sel >= 0 && s_V.sel < WGV_CODES && s_V.list == cur_list ()) s_nBank = s_V.sel >> 7;	// the bank the voice plays from
 	rows_build ();
 	top_to_sel ();
@@ -877,6 +939,7 @@ void sidecar_wgview_pool_page (int on)
 	if (!s_Page) return;
 	s_bPage = on;
 	s_bList = on;
+	s_nB = 0, s_nSilentAt = 0;
 	modes_off ();
 	s_nTop = 0;
 	rows_build ();
@@ -923,6 +986,8 @@ void sidecar_wgview_create (void *parent, int y0)
 		s_Dn = th_key (pg, LU (90) + q, ky, LU (84) + q, LU (34), "DOWN", TH_KEY | TH_KEY_SMALL, key_cb, (void *) 2);
 		s_Done = th_key (pg, LU (264) + 3 * q, ky, LU (88) + q, LU (34), "DONE", TH_KEY_ACCENT | TH_KEY_SMALL, key_cb, (void *) 3);
 		s_Mid = th_key (pg, LU (180) + 2 * q, ky, LU (78) + q, LU (34), "ALL POOLS", TH_KEY_FUNC | TH_KEY_SMALL, key_cb, (void *) 4);
+		s_Edit = th_key (pg, 0, ky, LU (84) + q, LU (34), "EDIT", TH_KEY_FUNC | TH_KEY_SMALL, key_cb, (void *) 5);
+		s_nInfoX = 3, s_nInfoW = LU (174) + 2 * q, s_nEditX = LU (88) + q, s_nEditW = LU (86) + q;
 	}
 	else
 	{
@@ -939,6 +1004,8 @@ void sidecar_wgview_create (void *parent, int y0)
 		s_Dn = th_key (pg, LU (164) + q, ky, LU (140) + q, LU (52), "DOWN", TH_KEY, key_cb, (void *) 2);
 		s_Done = th_key (pg, LU (616) + 3 * q, ky, LU (176) + q, LU (52), "DONE", TH_KEY_ACCENT, key_cb, (void *) 3);
 		s_Mid = th_key (pg, LU (312) + 2 * q, ky, LU (296) + q, LU (52), "ALL POOLS", TH_KEY_FUNC, key_cb, (void *) 4);
+		s_Edit = th_key (pg, LU (16), ky, LU (140) + q, LU (52), "EDIT", TH_KEY_FUNC, key_cb, (void *) 5);
+		s_nInfoX = LU (16), s_nInfoW = LU (290) + 2 * q, s_nEditX = LU (164) + q, s_nEditW = LU (142) + q;
 	}
 	lv_obj_set_width (s_Info, (o ? LU (174) : LU (290)) + 2 * q);
 	lv_obj_set_width (s_Info2, (o ? LU (174) : LU (290)) + 2 * q);
@@ -972,7 +1039,8 @@ static void title_update (void)
 	{
 		int l = cur_list ();
 		if (s_bPage) lv_snprintf (t, sizeof t, "POOL  %s", lname (l));
-		else lv_snprintf (t, sizeof t, "%s  %s %s", lname (l), mname (), sidecar_ui_voice (v->voice));
+		else lv_snprintf (t, sizeof t, "%s  %s %s%s", lname (l), mname (), sidecar_ui_voice (v->voice), pick_b () ? " B" : "");
+		if (pick_b () && v->name_b[0]) { size_t n = strlen (t); lv_snprintf (t + n, sizeof t - n, " %.10s", v->name_b); }	// table B's name
 		if (s_bSelect) lv_snprintf (r, sizeof r, "%d SELECTED", n_selected ());
 		else if (v->locked && v->list == l) lv_snprintf (r, sizeof r, "LOCKED");
 		else if (v->ram_known) lv_snprintf (r, sizeof r, "RAM %u MB %d%%", v->ram_mb, v->ram_pct);
@@ -996,7 +1064,14 @@ static void title_update (void)
 
 void sidecar_wgview_set (const sidecar_wg_view_t *v)
 {
-	if (!s_Page || v->gen == s_nGen) return;
+	if (!s_Page) return;
+	if (s_nSilentAt && lv_tick_elaps (s_nSilentAt) > 3000)	// B's silent note: brief
+	{
+		s_Msg[0] = 0, s_nSilentAt = 0;
+		if (s_bList) lv_obj_invalidate (s_List);
+	}
+	if (v->gen == s_nGen) return;
+	if (v->kind != WGV_WAVETABLE || v->voice != s_V.voice) s_nB = 0, s_nSilentAt = 0;
 	int texts = v->kind != s_V.kind || v->voice != s_V.voice || strcmp (v->name, s_V.name) || v->live != s_V.live ||
 		    v->frozen != s_V.frozen || strcmp (v->anim_text, s_V.anim_text) || strcmp (v->hold_text, s_V.hold_text) ||
 		    v->frames != s_V.frames || v->n != s_V.n || strcmp (v->note, s_V.note) ||
@@ -1026,9 +1101,9 @@ void sidecar_wgview_set (const sidecar_wg_view_t *v)
 	}
 	else if (v->kind == WGV_WAVETABLE)
 	{
-		lv_snprintf (i2, sizeof i2, "%s  %d FRAMES", v->name, v->frames);
-		th_label_set (s_Info, i2);
-		th_label_set (s_Info2, "");
+		th_label_set (s_Info, v->name);
+		lv_snprintf (i2, sizeof i2, "%d FRAMES", v->frames);
+		th_label_set (s_Info2, i2);
 	}
 	else if (v->kind == WGV_MULTISAMPLE)
 	{

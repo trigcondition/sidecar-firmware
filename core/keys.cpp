@@ -174,7 +174,7 @@ CORE_COLD void close_gesture(Src& s) {
     poly::Detected d = poly::keys_view(s.g_vi, s.g_notes, s.g_n);
     bool words = true;
 #if CORE_MSAMP
-    words = !v[s.g_vi].mi;   // MIDI: P13..P16 are its CC numbers, no chord words
+    words = !v[s.g_vi].mi && nm::of(s.g_vi) != kWaveMachine;   // MIDI: P13..P16 are its CC numbers; WAVETABLE's TBL B ... FTYPE: no chord words
 #endif
     {
       int vb = s.g_track >= 0 ? ui::remote_track_machine(s.g_track) : -1;

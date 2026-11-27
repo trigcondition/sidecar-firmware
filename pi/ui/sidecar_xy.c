@@ -65,17 +65,23 @@ static const xy_kind_t kKinds[K_N] = {
 	{"ARP", "R", 12, 0, kArpP, 5, 0},
 	{"RFX", "RFX", 0, 0, kRfxP, 25, 0},
 };
+// the kinds the map offers: MORPH (0.5.0) and LOOP (0.5.2) are off with SIDECAR_MORPH / SIDECAR_LOOPER 0 (a saved slot of a
+// hidden kind still shows and NONE clears it, SET is refused); the map's items are kKinds' order without them ("\n" is no item)
 #if SIDECAR_MORPH
-static const char *const kKindMap[] = {"PERF", "MORPH", "SCN", "TRACK", "FX", "SEND", "LOOP", "\n",
-				       "INS", "BUS", "MFX", "OUT", "SEQ", "ARP", "RFX", ""};
-static int kind_of_item (int i) { return i; }	// (the map's items in kKinds' order; "\n" is not an item)
-static int item_of_kind (int k) { return k; }
-#else	// 0.5.0: MORPH is not offered as a target: its kind has no key (a saved MORPH slot can still be cleared with NONE)
-static const char *const kKindMap[] = {"PERF", "SCN", "TRACK", "FX", "SEND", "LOOP", "\n",
-				       "INS", "BUS", "MFX", "OUT", "SEQ", "ARP", "RFX", ""};
-static int kind_of_item (int i) { return i >= K_MORPH ? i + 1 : i; }
-static int item_of_kind (int k) { return k == K_MORPH ? -1 : k > K_MORPH ? k - 1 : k; }
+#define KM_MORPH "MORPH",
+#else
+#define KM_MORPH
 #endif
+#if SIDECAR_LOOPER
+#define KM_LOOP "LOOP",
+#else
+#define KM_LOOP
+#endif
+static const char *const kKindMap[] = {"PERF", KM_MORPH "SCN", "TRACK", "FX", "SEND", KM_LOOP "\n",
+				       "INS", "BUS", "MFX", "OUT", "SEQ", "ARP", "RFX", ""};
+static int kind_off (int k) { return (!SIDECAR_MORPH && k == K_MORPH) || (!SIDECAR_LOOPER && k == K_LOOP); }
+static int kind_of_item (int i) { for (int k = 0; k < K_N; k++) if (!kind_off (k) && !i--) return k; return 0; }
+static int item_of_kind (int k) { if (kind_off (k)) return -1; int n = 0; for (int j = 0; j < k; j++) n += !kind_off (j); return n; }
 
 static lv_obj_t *s_Page, *s_TitleBar, *s_Title, *s_Pad, *s_Hold, *s_SetupK, *s_Pos, *s_Sum[2 * SXY_SLOTS], *s_Info;
 static lv_obj_t *s_Setup, *s_AxT[2], *s_SlotK[2][SXY_SLOTS], *s_SlotV[2][SXY_SLOTS], *s_SlotS[2][SXY_SLOTS];
@@ -412,7 +418,7 @@ static void pick_refresh (void)
 	index_name (s_nKind, s_nIdx, t, sizeof t);
 	th_label_set (s_IdxL, t);
 	th_key_enable (s_IdxM, d->ni > 1), th_key_enable (s_IdxP, d->ni > 1);
-	if (s_PSet) th_key_enable (s_PSet, SIDECAR_MORPH || s_nKind != K_MORPH);	// 0.5.0: a saved MORPH slot shows, NONE clears it, SET is refused
+	if (s_PSet) th_key_enable (s_PSet, !kind_off (s_nKind));	// a saved MORPH / LOOP slot of an off feature shows, NONE clears it, SET is refused
 	if (s_nKind == K_MORPH) lv_snprintf (t, sizeof t, "THE SCENES' FADER");
 	else if (s_nKind == K_INS)	// "A1 CUT", "E1 HPF" (the label's slot letter / Q dropped), "A1 -" (the slot OFF)
 	{

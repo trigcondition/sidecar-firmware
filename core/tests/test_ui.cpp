@@ -1038,6 +1038,86 @@ int main() {
   core::engine_sysex(p11, 12);
   CHECK(remote_track_src14(0) == (7 << 7 | 0x30));
   src_view(0, 0);
+  {   // 2026-11-24 TBLB: WAVETABLE's table B (P13) in the same list: 4A's optional 6th byte, 12 = P13 (the only value). Its
+      // YES writes P13 (48 .. 12 .. flags 1), bank kept, P1 untouched; no byte: P1 as ever; any other value, or a machine
+      // that has no P13: a bad message, no list
+    const uint8_t wt_bd[2] = {46, core::kWaveMachine};
+    machines(0, 1, wt_bd);
+    CHECK(remote_track_src_param(0) == 0);
+    const uint8_t p1w[12] = {0xF0, 0x7D, 0x52, 0x54, 0x2A, 1, 0, 0, 1, 3, 0x00, 0xF7};   // P1 = A003
+    core::engine_sysex(p1w, 12);
+    const int src14_p1 = remote_track_src14(0);
+    const uint8_t o13[13] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 1, 2, 0x50, 0, 12, 0xF7};   // F002, the param byte 12
+    core::engine_sysex(o13, 13);
+    src_view(0, 1);
+    for (int i = 0; i < 4; ++i) remote_tick(t += 30);
+    CHECK(src_bank_state().on && src_bank_state().param == 12 && src_bank_state().bank == 5 && src_bank_state().row == 2);
+    CHECK(src_bank_state().machine == core::kWaveMachine && tabs_shown() && tab_inverted('F'));
+    from_rytm(0x31, 0, 0x41, 1), from_rytm(0x31, 0, 0x41, 0);   // RIGHT: bank G
+    from_rytm(0x32, 0, 64 + 3, 0);                              // the list's knob +3: row 5
+    for (int i = 0; i < 4; ++i) remote_tick(t += 30);
+    CHECK(src_bank_state().bank == 6 && src_bank_state().row == 5);
+    from_rytm(0x32, 4, 64 + 1, 0);   // knob E (the SMPL page's own index) turns the list of a P13 list too: row 6
+    for (int i = 0; i < 4; ++i) remote_tick(t += 30);
+    CHECK(src_bank_state().row == 6);
+    other.clear();
+    const uint8_t y13[13] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 0, 2, 0x50, 1, 12, 0xF7};   // YES, the byte on the close frame too
+    core::engine_sysex(y13, 13);
+    bool w13 = false, w1 = false;
+    for (auto& m : other) {
+      w13 = w13 || (m.size() == 12 && m[4] == 0x48 && m[6] == 0 && m[7] == 12 && m[8] == 6 && m[9] == 0x60 && m[10] == 1);
+      w1 = w1 || (m.size() >= 11 && m[4] == 0x48 && m[7] == 0);
+    }
+    CHECK(w13 && !w1 && !src_bank_state().on && remote_track_src14(0) == src14_p1);   // P13 written; P1 and its song word untouched
+    src_view(0, 0);
+    // no byte (the old frame): P1 as before
+    const uint8_t o1[12] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 1, 2, 0x50, 0, 0xF7};
+    core::engine_sysex(o1, 12);
+    src_view(0, 1);
+    remote_tick(t += 30);
+    CHECK(src_bank_state().on && src_bank_state().param == 0 && src_bank_state().bank == 5);
+    other.clear();
+    const uint8_t y1[12] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 0, 2, 0x50, 1, 0xF7};
+    core::engine_sysex(y1, 12);
+    w13 = w1 = false;
+    for (auto& m : other) {
+      w13 = w13 || (m.size() >= 11 && m[4] == 0x48 && m[7] == 12);
+      w1 = w1 || (m.size() == 12 && m[4] == 0x48 && m[6] == 0 && m[7] == 0 && m[8] == 2 && m[9] == 0x50 && m[10] == 1);
+    }
+    CHECK(w1 && !w13);
+    src_view(0, 0);
+    // a value other than 12: refused (bad message), no list opens
+    const uint8_t o5[13] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 1, 2, 0x50, 0, 5, 0xF7};
+    core::engine_sysex(o5, 13);
+    remote_tick(t += 30);
+    CHECK(!src_bank_state().on);
+    // a close frame (on 0) closes the list whatever its param byte says (a bad byte on it is not a reason to leave it open)
+    src_view(0, 1);
+    core::engine_sysex(o13, 13);
+    remote_tick(t += 30);
+    CHECK(src_bank_state().on && src_bank_state().param == 12);
+    const uint8_t c5[13] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 0, 2, 0x50, 0, 5, 0xF7};
+    core::engine_sysex(c5, 13);
+    remote_tick(t += 30);
+    CHECK(!src_bank_state().on);
+    src_view(0, 0);
+    // 12 on a machine without a table B: refused too (GRANULAR, DSP SAMPLE)
+    machines(0, 1, gran_bd);
+    core::engine_sysex(o13, 13);
+    remote_tick(t += 30);
+    CHECK(!src_bank_state().on);
+    machines(0, 1, dsps_bd);
+    core::engine_sysex(o13, 13);
+    remote_tick(t += 30);
+    CHECK(!src_bank_state().on);
+    // the P13 list needs only P13's 14 bits on its own: P13's 2A word is known to the host
+    machines(0, 1, wt_bd);
+    const uint8_t p13w[12] = {0xF0, 0x7D, 0x52, 0x54, 0x2A, 1, 0, 12, 1, 9, 0x40, 0xF7};
+    core::engine_sysex(p13w, 12);
+    CHECK(remote_track_src_word(0, 12) == (9 << 7 | 0x40) && remote_track_src_word(0, 0) == (3 << 7 | 0x00));
+    machines(0, 1, dsps_bd);
+    printf("ui: TBLB: 4A's 6th byte (12 = P13): the list targets P13 (48 k = 12, bank kept), no byte P1, other values refused\n");
+  }
   printf("ui: rui1045 DSP SAMPLE's SMP: the bank list (4A with P11), banks A..H, YES -> 48 0 10, FUNC + YES in every bank\n");
   machines(0, 1, juno_bd);
   printf("ui: the bank list (4A): tabs, RIGHT / knob A, bank G's names (47 + bank), YES -> 48 with the bank and flags ok\n");

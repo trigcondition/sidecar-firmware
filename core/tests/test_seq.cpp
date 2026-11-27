@@ -567,6 +567,7 @@ int main() {
     CHECK(s9.n == 1 && s9.note[0].pitch == 65 && s9.note[0].micro == 0);
     // the same from a keyboard on the Pi (core/keys.h, by channel: channel 1 = BD): recorded as the notes are heard,
     // the seq track's own voice playing them (nothing to the Rytm: it does not record a seq track)
+    cmd("seq=poly:1:chord=1");   // (a chord: recorded as one only with CHORD REC ON; the default records a mono line)
     keys::reset();
     CHECK(keys::command("keys=channel", b, sizeof b));
     k0 = (r.next_k / 16 + 1) * 16;
@@ -580,10 +581,148 @@ int main() {
     const seq::Step& s11 = seq::edit_track(0, false)->step[11];
     CHECK(s11.n == 2 && s11.note[0].pitch == 70 && s11.note[1].pitch == 74 && s11.note[0].micro == 0);
     keys::reset();
+    cmd("seq=poly:1:chord=0");
     cmd("seq=quant:0");
     state((int64_t)seq::frames(), {6, 0, 0});
     run(r, (int64_t)seq::frames() + 100);
     CHECK(seq::stats().recorded == 4);
+  }
+
+  // ---- CHORD REC (F6): live recording is mono unless the track's CHORD REC is ON; playing is poly either way
+  {
+    cmd("seq=quant:1");
+    state((int64_t)seq::frames(), {6, 1, 0});
+    run(r, (int64_t)seq::frames() + 10);
+    auto at_bar = [&](double x) {   // the Rytm frame of step x of the next bar, in host frames
+      int64_t k0 = (r.next_k / 16 + 1) * 16;
+      return r.t0 + (int64_t)((k0 + x) * r.period) + seq::stats().offset;
+    };
+    auto track = [&] { return seq::edit_track(0, false); };
+    CHECK(seq::poly_of(0).chord == 0);   // the default: OFF
+    // OFF: hold 60 on step 12, press 64 on step 13, release both: 60 cut at 64's start, then 64; both sounded
+    int64_t at = at_bar(12.0);
+    run(r, at);
+    poly::midi(0x90, 60, 100);
+    run(r, at + (int64_t)(1.0 * r.period));
+    poly::midi(0x90, 64, 100);
+    CHECK(poly::held_notes(0) >= 2);   // playing is unchanged: both notes sound
+    run(r, at + (int64_t)(1.6 * r.period));
+    poly::midi(0x80, 60, 0);   // the older one released first: nothing changes
+    run(r, at + (int64_t)(2.0 * r.period));
+    poly::midi(0x80, 64, 0);
+    {
+      const seq::Step& s12 = track()->step[12];
+      const seq::Step& s13 = track()->step[13];
+      CHECK(s12.n == 1 && s12.note[0].pitch == 60 && std::abs((int)s12.note[0].len - 96) <= 3);
+      CHECK(s13.n == 1 && s13.note[0].pitch == 64 && std::abs((int)s13.note[0].len - 96) <= 3);
+    }
+    // OFF: the newest released while an older one is held: the older does not resume in the recording
+    at = at_bar(14.0);
+    run(r, at);
+    poly::midi(0x90, 67, 100);
+    run(r, at + (int64_t)(1.0 * r.period));
+    poly::midi(0x90, 69, 100);
+    run(r, at + (int64_t)(1.5 * r.period));
+    poly::midi(0x80, 69, 0);
+    run(r, at + (int64_t)(3.0 * r.period));
+    poly::midi(0x80, 67, 0);
+    {
+      const seq::Step& s14 = track()->step[14];
+      const seq::Step& s15 = track()->step[15];
+      CHECK(s14.n == 1 && s14.note[0].pitch == 67 && std::abs((int)s14.note[0].len - 96) <= 3);
+      CHECK(s15.n == 1 && s15.note[0].pitch == 69 && std::abs((int)s15.note[0].len - 48) <= 3);
+    }
+    // OFF: two presses that land on one step: one note (the later one) from that pass
+    at = at_bar(7.0);
+    run(r, at);
+    poly::midi(0x90, 72, 100);
+    run(r, at + (int64_t)(0.1 * r.period));
+    poly::midi(0x90, 76, 100);
+    run(r, at + (int64_t)(1.0 * r.period));
+    poly::midi(0x80, 72, 0), poly::midi(0x80, 76, 0);
+    {
+      const seq::Step& s7 = track()->step[7];
+      CHECK(s7.n == 1 && s7.note[0].pitch == 76);
+    }
+    // ON: both notes keep their own lengths, overlapping
+    CHECK(cmd("seq=poly:1:chord=1").find("CHORD REC ON") != std::string::npos);
+    CHECK(seq::poly_of(0).chord == 1);
+    at = at_bar(8.0);
+    run(r, at);
+    poly::midi(0x90, 62, 100);
+    run(r, at + (int64_t)(2.0 * r.period));
+    poly::midi(0x90, 65, 100);
+    run(r, at + (int64_t)(3.0 * r.period));
+    poly::midi(0x80, 62, 0), poly::midi(0x80, 65, 0);
+    {
+      const seq::Step& s8 = track()->step[8];
+      const seq::Step& s10 = track()->step[10];
+      bool a = false, c = false;
+      for (int k = 0; k < s8.n; ++k) a |= s8.note[k].pitch == 62 && std::abs((int)s8.note[k].len - 288) <= 3;
+      for (int k = 0; k < s10.n; ++k) c |= s10.note[k].pitch == 65 && std::abs((int)s10.note[k].len - 96) <= 3;
+      CHECK(a && c);
+    }
+    cmd("seq=poly:1:chord=0");
+    CHECK(seq::poly_of(0).chord == 0);
+    // fix round 1 (MED 1): the older note is cut at the NEW note's RECORDED start (step + micro), not at the raw press
+    // positions: off-grid presses leave no overlap and no gap, quantise on or off
+    auto start_of = [&](const seq::Step& st, int pitch) {
+      for (int k = 0; k < st.n; ++k)
+        if (st.note[k].pitch == pitch) return (int)st.note[k].micro;
+      return 99999;
+    };
+    auto len_of = [&](const seq::Step& st, int pitch) {
+      for (int k = 0; k < st.n; ++k)
+        if (st.note[k].pitch == pitch) return (int)st.note[k].len;
+      return -1;
+    };
+    auto two_notes = [&](double x1, double x2) {   // 60 at x1, 64 at x2, both released a step later
+      seq::clear_steps(*track(), 12, 4);
+      int64_t at = at_bar(x1), at2 = at + (int64_t)((x2 - x1) * r.period);
+      run(r, at);
+      poly::midi(0x90, 60, 100);
+      run(r, at2);
+      poly::midi(0x90, 64, 100);
+      run(r, at2 + (int64_t)(1.0 * r.period));
+      poly::midi(0x80, 64, 0), poly::midi(0x80, 60, 0);
+    };
+    two_notes(12.58, 13.62);   // quantise on: steps 13 and 14
+    CHECK(len_of(track()->step[13], 60) >= 93 && len_of(track()->step[13], 60) <= 99 && len_of(track()->step[14], 64) > 0);
+    CHECK(track()->step[13].n == 1 && track()->step[14].n == 1);
+    two_notes(12.42, 13.55);   // quantise on: steps 12 and 14 (the older note runs to the newer one's step: 2 steps)
+    CHECK(std::abs(len_of(track()->step[12], 60) - 192) <= 3 && len_of(track()->step[14], 64) > 0);
+    cmd("seq=quant:0");
+    two_notes(12.58, 13.62);   // quantise off: steps 13 (micro -40) and 14 (micro -37)
+    {
+      const seq::Step& a = track()->step[13];
+      const seq::Step& b = track()->step[14];
+      CHECK(a.n == 1 && b.n == 1 && a.note[0].pitch == 60 && b.note[0].pitch == 64);
+      int sa = 13 * seq::kSub + start_of(a, 60), sb = 14 * seq::kSub + start_of(b, 64);
+      CHECK(std::abs(sa + len_of(a, 60) - sb) <= 2);   // 60 ends where 64 starts
+    }
+    cmd("seq=quant:1");
+    // fix round 1 (MED 2): a punch-out with a key held, then a punch-in: the old note is not rewritten
+    {
+      seq::clear_steps(*track(), 12, 4);
+      int64_t at = at_bar(12.0);
+      run(r, at);
+      poly::midi(0x90, 60, 100);
+      run(r, at + (int64_t)(0.5 * r.period));
+      int before = len_of(track()->step[12], 60);
+      state((int64_t)seq::frames(), {6, 0, 0});   // punch-out, the key still held
+      run(r, at + (int64_t)(1.0 * r.period));
+      poly::midi(0x80, 60, 0);
+      state((int64_t)seq::frames(), {6, 1, 0});   // punch-in
+      run(r, at + (int64_t)(1.5 * r.period));
+      poly::midi(0x90, 64, 100);
+      run(r, at + (int64_t)(2.5 * r.period));
+      poly::midi(0x80, 64, 0);
+      CHECK(before > 0 && len_of(track()->step[12], 60) == before);
+    }
+    seq::clear_steps(*track(), 12, 4);
+    cmd("seq=quant:0");
+    state((int64_t)seq::frames(), {6, 0, 0});
+    run(r, (int64_t)seq::frames() + 100);
   }
 
   // ---- pause / continue / stop
@@ -1290,6 +1429,23 @@ int main() {
     g_out.clear();
     seq::tick(now_ms());
     CHECK(sent(0x46).empty());   // only changes
+    // 0.5.0 looper: clock-only tracks per user (SONG, LOOP), OR-ed: BD stays clocked until both let go
+    {
+      auto ck = [&]() {
+        g_out.clear();
+        seq::tick(now_ms());
+        auto e = sent(0x2E);
+        return e.empty() ? -1 : e[0].size() >= 12 ? (e[0][9] | e[0][10] << 7) : 0;
+      };
+      seq::set_clock_tracks(seq::kClockSong, 1);
+      CHECK(ck() == 1);
+      seq::set_clock_tracks(seq::kClockLoop, 1);
+      CHECK(ck() == -1);   // OR-ed: no change on the wire
+      seq::set_clock_tracks(seq::kClockSong, 0);
+      CHECK(ck() == -1);   // LOOP still wants BD
+      seq::set_clock_tracks(seq::kClockLoop, 0);
+      CHECK(ck() == 0);
+    }
     // fix1052: a seq track's own pad plays its voice's own machine (pad_play: JUNO, PLAITS, DD, DAISY - not the pool),
     // which the silence did not count, so the VCA stayed closed under a sounding note [measured 2026-10-26, B07's SD
     // on JUNO: the Pi's output peak 250/1000 for a 2 s hold, nothing heard; the sequencer's notes on the same voice
@@ -1376,6 +1532,48 @@ int main() {
     int64_t now = (int64_t)seq::frames();
     state(now, [&] { std::vector<uint8_t> x = {1, 0}; auto bb = blk4(now - 700); x.insert(x.end(), bb.begin(), bb.end()); return x; }());
     deliver(now);
+    for (int i = 0; i < 10; ++i) block();
+  }
+  // ---- fix round 1 (MED 2): a key held across a pattern switch does not touch the new pattern. Pattern 0 holds a
+  // sentinel (step 12: 60, length 96); pattern 1 records 60 at its step 12 and holds it; the switch to pattern 0 comes;
+  // the release then must leave the sentinel alone
+  {
+    direct_state({2, 0, 0x7F});
+    while (seq::idle()) {}
+    seq::Track* z = seq::edit_track(0, true);
+    z->length = 16;
+    seq::clear_steps(*z, 12, 4);
+    seq::add_note(z->step[12], {60, 100, 96, 0, 0});
+    seq::touched();
+    advance_ms(1500);
+    while (seq::idle()) {}
+    direct_state({2, 1, 0x7F});
+    while (seq::idle()) {}
+    seq::Track* y = seq::edit_track(0, true);
+    y->length = 16;
+    seq::touched();
+    Run r4;
+    r4.t0 = (int64_t)seq::frames() + 3000;
+    r4.len = 16;
+    r4.jit = 0;
+    int64_t t0 = r4.t0;
+    state(t0 + r4.delay, [&] { std::vector<uint8_t> x = {1, 1}; auto bb = blk4(t0); x.insert(x.end(), bb.begin(), bb.end()); return x; }());
+    state(t0 + r4.delay, {6, 1, 0});   // REC + PLAY
+    run(r4, t0 + (int64_t)(10.0 * r4.period));
+    int64_t at = t0 + (int64_t)(12.0 * r4.period) + seq::stats().offset;
+    run(r4, at);
+    poly::midi(0x90, 60, 100);   // (channel 1 is bound to voice 0 by the live record block above)
+    int64_t sw = t0 + (int64_t)llround(16 * r4.period);
+    state(sw + r4.delay, [&] { std::vector<uint8_t> x = {3, 1, 0}; auto bb = blk4(sw); x.insert(x.end(), bb.begin(), bb.end()); return x; }());
+    run(r4, sw + (int64_t)(3.0 * r4.period));
+    CHECK(seq::view().pattern == 0);
+    poly::midi(0x80, 60, 0);
+    const seq::Step& s12 = seq::edit_track(0, false)->step[12];
+    CHECK(s12.n == 1 && s12.note[0].pitch == 60 && s12.note[0].len == 96);
+    state((int64_t)seq::frames(), {6, 0, 0});
+    int64_t nw = (int64_t)seq::frames();
+    state(nw, [&] { std::vector<uint8_t> x = {1, 0}; auto bb = blk4(nw - 700); x.insert(x.end(), bb.begin(), bb.end()); return x; }());
+    deliver(nw);
     for (int i = 0; i < 10; ++i) block();
   }
   // ---- latency calibration: the click rendered into BD's voice, back in its stream 700 + 13 frames later

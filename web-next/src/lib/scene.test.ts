@@ -1,12 +1,12 @@
 // web-next/src/lib/scene.test.ts
 import { describe, expect, it } from "vitest";
-import { SUGGEST, abLine, clearLine, copyLine, editLine, faderLine, lockLabel, lockLine, morphed, sceneView, selLine, suggest, targetName, unlockLine, valueText } from "./scene";
+import { ADD_TRACKS, SUGGEST, abLine, abSet, addPages, addParams, clearLine, copyLine, faderLine, lockLabel, lockLine, morphed, sceneView, selLine, suggest, targetName, unlockLine, valueText } from "./scene";
 
 describe("scene", () => {
   it("reads /status's scene (1-based there)", () => {
     expect(sceneView({})).toBeNull();
     const v = sceneView({ scene: { a: 3, b: 0, fader: 8192, played: 8000, sel: 3, locked: 0, edit: 1, s: [{ n: 3, l: [["V1:P3", 6400]] }], src: 3, rscn: 0 } })!;
-    expect([v.a, v.b, v.sel, v.edit, v.played, v.src, v.rscn]).toEqual([2, -1, 2, true, 8000, 3, 0]);
+    expect([v.a, v.b, v.sel, v.edit, v.side, v.played, v.src, v.rscn]).toEqual([2, -1, 2, true, 0, 8000, 3, 0]);
     expect(v.locks[2]).toEqual([{ name: "V1:P3", v: 6400 }]);
     expect(v.locks[0]).toEqual([]);
   });
@@ -16,7 +16,6 @@ describe("scene", () => {
     expect(selLine(11)).toBe("scene=sel:12");
     expect(clearLine(0)).toBe("scene=clear:1");
     expect(copyLine(0, 4)).toBe("scene=copy:1:5");
-    expect(editLine(true)).toBe("scene=edit:on");
     expect(lockLine(2, "V1:P3", 6400)).toBe("scene=lock:3:V1:P3:50");
     expect(lockLine(0, "MFX:LEV", 16383)).toBe("scene=lock:1:MFX:LEV:127.99");
     expect(unlockLine(2, "V1:P3")).toBe("scene=unlock:3:V1:P3");
@@ -43,5 +42,27 @@ describe("scene", () => {
     expect(t.find((o) => o.value === "V1:P3")).toBeUndefined(); // unused on its machine: not offered
     expect(suggest().filter((o) => o.value[0] === "V").length).toBe(64); // an older Pi: P1..P8 by number
     expect(SUGGEST).not.toContain("FX1:P1"); // send FX params are P2..P5
+    expect(SUGGEST.some((t) => t.startsWith("RYTM:"))).toBe(false); // 0.5.0 v2: no scene target
+  });
+  it("picker_adds_rt_lock: the ADD picker's track / page / param, and the line it sends (v2)", () => {
+    expect(ADD_TRACKS.length).toBe(21);
+    expect(addPages("RT1")).toEqual(["SRC", "SMPL", "FLTR", "AMP", "LFO"]);
+    const p = addParams("RT1", "FLTR");
+    expect(p[5]).toEqual({ value: "RT1:FRQ", label: "FRQ" });
+    expect(lockLine(2, p[5].value, 87 * 128)).toBe("scene=lock:3:RT1:FRQ:87");
+    expect(addParams("RFX", "REVERB")[1].value).toBe("RFX:RDEC");
+    expect(addParams("V1", "P1-8", [["ENG", "HRM", "", ...Array(13).fill("")]])).toEqual([
+      { value: "V1:P1", label: "P1 ENG" }, { value: "V1:P2", label: "P2 HRM" }]);
+    expect(addParams("V2", "P9-16").map((o) => o.value)[0]).toBe("V2:P9");
+  });
+  it("ab_same_scene_kept: A = B is allowed, the other end is never cleared (v2)", () => {
+    expect(abSet({ a: 2, b: 5 }, "a", 5)).toBe("scene=ab:6:6");
+    expect(abSet({ a: 2, b: 5 }, "b", 2)).toBe("scene=ab:3:3");
+    expect(abSet({ a: -1, b: 5 }, "a", 0)).toBe("scene=ab:1:6");
+  });
+  it("reads the gone targets (v2)", () => {
+    const v = sceneView({ scene: { a: 1, b: 2, fader: 0, played: 0, sel: 1, locked: 0, edit: 0, s: [], gone: ["V2:P16"] } });
+    expect(v?.gone).toEqual(["V2:P16"]);
+    expect(sceneView({ scene: { a: 1, b: 2, fader: 0, played: 0, sel: 1, locked: 0, edit: 0, s: [] } })?.gone).toEqual([]);
   });
 });

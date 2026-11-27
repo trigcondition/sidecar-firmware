@@ -280,6 +280,27 @@ int main() {
       CHECK((t ? wt::voice_notes(2) : gr::voice_notes(0)) == 0);
       src_view(t, 0);
     }
+    // the Rytm records live on the WAVETABLE track: the chord is not written back (a 28 01 would put CHD INV SPR VOI over
+    // TBL B, POS B, MIX and FTYPE), the notes play
+    seq_state({6, 1, 0});
+    seq_state({1, 1, 0, 0, 0, 0});
+    CHECK(seq::rytm_live_rec());
+    advance_ms(200);
+    src_view(1, 1);
+    g_out.clear();
+    uint32_t wr = keys::stats().writes;
+    key(0, 0x90, 60, 100);
+    advance_ms(2);
+    key(0, 0x90, 64, 100);
+    key(0, 0x90, 67, 100);
+    CHECK(wt::voice_notes(2) == 3);
+    advance_ms(poly::kGestureMs + 2);
+    for (auto& w : g_out) CHECK(!(w.size() == 13 && w[4] == 0x28 && w[5] == 0x01));
+    CHECK(keys::stats().writes == wr);
+    key(0, 0x80, 60, 0), key(0, 0x80, 64, 0), key(0, 0x80, 67, 0);
+    seq_state({6, 0, 0});
+    src_view(1, 0);
+    render(8000);
   }
 
   // ---- the settings: kept on the card

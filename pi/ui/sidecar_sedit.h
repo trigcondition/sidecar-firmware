@@ -6,7 +6,9 @@
 //                 the edit goes over it
 //   the keys      one a function (CROP NORMALISE TRIM FADE IN FADE OUT REVERSE GAIN +3 GAIN -3: a tap applies it to the
 //                 region), UNDO, PLAY (the region once on the track; from the pool: on a DSP SAMPLE / SAMPLER track), SAVE (asks SAVE + USE, only for an edit opened from
-//                 a track, or SAVE), CLOSE (asks before it drops an edit not saved)
+//                 a track, or SAVE), MAKE WT (the region as a wavetable in /WAVETABLES, into the WAVETABLES pool; onto the
+//                 voice's TBL when the edit came from a WAVETABLE voice) with FRAMES (16 .. 256, each tap the next), CLOSE (asks
+//                 before it drops an edit not saved)
 // LVGL only (pi/ui/host renders it); both themes (OLED, SIDECAR), all sizes. The caller hands it a view (sidecar_sedit_set,
 // ~10 a second, shown or not: the VOICE key needs to know an edit is open); it redraws only what changed. Every action is a console command through the command
 // function (sedit=...: core/samp/sedit.cpp command()).
@@ -21,7 +23,7 @@ extern "C" {
 
 enum { SSE_ST_CLOSED = 0, SSE_ST_LOADING, SSE_ST_READY, SSE_ST_BUSY, SSE_ST_SAVING, SSE_ST_ERROR };	// sedit::State
 enum { SSE_FN_CROP = 0, SSE_FN_NORM, SSE_FN_TRIM, SSE_FN_FADE_IN, SSE_FN_FADE_OUT, SSE_FN_REV, SSE_FN_GAIN_UP, SSE_FN_GAIN_DN, SSE_FN_N };	// sedit_dsp.h Fn
-enum { SSE_K_ZOOM_OUT = 0, SSE_K_ZOOM_IN, SSE_K_PLAY, SSE_K_UNDO, SSE_K_SAVE, SSE_K_CLOSE, SSE_K_N };	// the page's other keys
+enum { SSE_K_ZOOM_OUT = 0, SSE_K_ZOOM_IN, SSE_K_PLAY, SSE_K_UNDO, SSE_K_SAVE, SSE_K_WT, SSE_K_FR, SSE_K_CLOSE, SSE_K_N };	// the page's other keys
 enum { SSE_D_USE = 0, SSE_D_OK, SSE_D_CANCEL, SSE_D_N };	// the question's keys: SAVE + USE; SAVE / DISCARD; CANCEL
 
 // A flat copy of sedit::View (seditview_pi.cpp fills it)
@@ -32,6 +34,10 @@ typedef struct
 	char		name[48], msg[32];	// the source's file name; the editor's last refusal, error or note
 	unsigned	frames, rate, a, b, wa, wb;	// the length; the region [a, b); the window [wa, wb) the outline is of
 	int		ch, bits, fn, zoom, undo, dirty, has_track, track, progress, ncols;
+	int		making;			// MAKE WT: a table is being made or written (st BUSY / SAVING)
+	int		wt_frames;		// the table's frames' choice: 16 32 64 128 256
+	int		wt_voice;		// the WAVETABLE voice the edit came from (-1 none): the new table goes onto its TBL
+	int		file;			// opened from a card file (a table's), not a SAMPLES row: no PLAY
 	short		lo[SSE_COLS], hi[SSE_COLS];	// the outline: min / max of a column, full scale 32767
 	int		playhead;		// the preview's frame (-1 none)
 	int		unity;			// the outline's level of 0 dBFS (sedit-050: below 32767 when the edit goes over it; 0: as 32767)

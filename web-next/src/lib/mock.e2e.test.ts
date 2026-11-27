@@ -80,6 +80,16 @@ describe("against the mock server", () => {
       const sc = (s as Record<string, any>).scene;
       return sc?.a === 3 && sc.b === 1 && sc.fader === 16383 && sc.s.some((x: { n: number; l: [string, number][] }) => x.n === 3 && x.l[0][0] === "V4:P2" && x.l[0][1] === 6464);
     }));
+    // the looper: a grab, KEEP, BAL and the stop come back on /status "loop"
+    await c.command("loop=grab:8");
+    await c.command("loop=keep:#3");
+    await c.command("loop=bal:96");
+    await until(() => seen.some((s) => {
+      const lp = (s as Record<string, any>).loop;
+      return lp?.on === 1 && lp.bal === 96 && lp.grabs[0].hb === 16 && lp.grabs[0].kept === 1 && lp.msg === "KEPT sidecar_2026-11-13_1200";
+    }));
+    await c.command("loop=stop:cut:now");
+    await until(() => seen.some((s) => (s as Record<string, any>).loop?.state === "ring"));
     c.close();
   });
 

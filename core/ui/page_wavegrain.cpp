@@ -72,6 +72,9 @@ UI_ROM const Page kGrBankPage = {"SOURCE", kGranMachine, 1, kBankCells, {0, 1, 2
                                  {"SRC", "POS", "SPRY", "SIZE", "DENS", "PRND", "REV", "WIN"}};
 UI_ROM const Page kWtBankPage = {"TABLE", kWaveMachine, 1, kBankCells, {0, 1, 2, 3, 4, 5, 6, 7},
                                  {"TBL", "POS", "WARP", "AMT", "UNI", "SUB", "CUT", "RES"}};
+// 2026-11-24 TBLB: table B's list (4A with the param byte 12): the same list, TBLB / POSB / MIX under it
+UI_ROM const Page kWtBankPageB = {"TABLE B", kWaveMachine, 1, kBankCells, {12, 13, 14, 1, 2, 3, 4, 5},
+                                  {"TBLB", "POSB", "MIX", "POS", "WARP", "AMT", "UNI", "SUB"}};
 UI_ROM const Page kMsBankPage = {"INSTRUMENT", kMultiMachine, 1, kBankCells, {0, 1, 2, 3, 4, 5, 6, 7},
                                  {"INST", "VEL", "LEV", "RTRG", "ATK", "DEC", "SUS", "REL"}};
 // DSP SAMPLE's SMP (P11, rytm-mods 7h): knob A of its SRC page, as the others (ENG is SMPL knob D)
@@ -94,6 +97,7 @@ struct BankList {
   uint32_t pgen = 0;            // the index the browser's folder belongs to (a new walk: back to the root)
   int rcur = -1, rfolder = -1;  // the preset a full list's YES asked about: the second YES replaces the list's row
   int track = -1, vi = -1, machine = -1, bank = 0, row = 0, code0 = 0, commits = 0;
+  int param = 0;                // 2026-11-24 TBLB: the parameter the YES writes: 0 the machine's own (P1, SMP P11), 12 P13 (WAVETABLE's table B)
   uint32_t ms = 0;              // the cursor's last move (a GRANULAR / WAVETABLE preview after kSettleMs)
   bool previewed = true;
   // rui1040: FUNC + YES on a row - the card's files for that row (the machine's own browser, srclib); the pools
@@ -669,6 +673,10 @@ CORE_COLD int src_names_tick() {
   int sent = 0;
 #if CORE_MSAMP
   int st = remote_src_track(), sm = st >= 0 ? remote_track_machine(st) : -1, s14 = st >= 0 ? remote_track_src14(st) : -1;
+  if (sm >= 0 && (sm & 0x78) == kWaveMachine && remote_track_names_p13(st)) {   // 2026-11-24 TBLB: TBL and TBLB share list 1: the bank of the knob touched last
+    const int w = remote_track_src_word(st, 12);
+    if (w >= 0) s14 = w;
+  }
   for (int k = 0; k < 3; ++k) {
     int n = lst_n(k);
     if (n < 0) n = 0;
@@ -761,7 +769,7 @@ CORE_COLD bool browse_open(int t, int why) {
 }
 }  // namespace
 #endif
-CORE_COLD void src_bank_list(int t, int vi, int machine, int code, int on, int why) {
+CORE_COLD void src_bank_list(int t, int vi, int machine, int code, int on, int why, int param) {
 #if CORE_MSAMP
   if (on == 3) {   // rui1040: FUNC + YES on the list's row - the card's files for that row (B..H, rows 1..127)
     if (!bl.on || bl.track != t) {
@@ -785,6 +793,7 @@ CORE_COLD void src_bank_list(int t, int vi, int machine, int code, int on, int w
     batch_new = true;   // FILL: the next quick load starts a batch
     bl = BankList();
     bl.on = true, bl.track = t, bl.vi = vi & 7, bl.machine = machine, bl.commits = commits;
+    bl.param = param == 12 && machine == kWaveMachine ? 12 : 0;
     if (machine == kJuno || machine == kFm) {
       bl.preset = machine == kJuno ? presets::kIxJuno : presets::kIxFm;
       int n = presets::rows(bl.preset), row = srclib::index_of(code);
@@ -803,13 +812,13 @@ CORE_COLD void src_bank_list(int t, int vi, int machine, int code, int on, int w
   bl.on = false, bl.browse = false, bl.menu = -1, bl.edit_code = -1;
   bank_closed_ms = now_ms() | 1;
   if (why == 1) {   // YES: the cursor is the new P1 (the Rytm locks it on the steps held at the YES, else the kit)
-    remote_track_write(t, sample_machine(bl.machine) ? 10 : 0, bl.row, srclib::lo_of(bl.bank * srclib::kBankRows), 1);   // (P11: SMP)
+    remote_track_write(t, bl.param ? bl.param : sample_machine(bl.machine) ? 10 : 0, bl.row, srclib::lo_of(bl.bank * srclib::kBankRows), 1);   // (P11: SMP; P13: TBLB)
     if (bl.preset < 0) pools::seen(bank_kind(), bank_entry(bl.bank, bl.row));   // (the used set: a committed row)
     ++bl.commits;
     log(CORE_STR("rui: bank list on track %d: %c%03d chosen"), t, 'A' + bl.bank, bl.row);
   }
 #else
-  (void)t, (void)vi, (void)machine, (void)code, (void)on, (void)why;
+  (void)t, (void)vi, (void)machine, (void)code, (void)on, (void)why, (void)param;
 #endif
 }
 #if CORE_MSAMP
@@ -1135,7 +1144,7 @@ CORE_COLD bool src_bank_enc(int e, int delta, bool func) {
     if (int d = list_turn(e, delta)) preview_level(d);
     return true;
   }
-  if (!bl.on || e != 0) return false;
+  if (!bl.on || (e != 0 && !(bl.param == 12 && e == 4))) return false;   // (TBLB: the SMPL page's knob E turns its list)
   delta = list_turn_long(e, delta);
   if (!delta) return true;
   if (bl.preset >= 0) {   // (the index, or the list's rows)
@@ -1220,7 +1229,7 @@ CORE_COLD const Page* src_bank_page(int t, int machine) {
       lib::ref_for_path(path, &r);
       int e = pools::find_hash(k, r);
       if (e >= 0 && bl.machine == kGranMachine) gr::preview(bl.vi, e);   // (rui1045: not on a DSP SAMPLE voice)
-      else if (e >= 0 && bl.machine == kWaveMachine) wt::preview(bl.vi, e);
+      else if (e >= 0 && bl.machine == kWaveMachine && bl.param != 12) wt::preview(bl.vi, e);   // (a TBLB list: no preview, it would play as A)
     }
   }
   if (!bl.browse && !bl.previewed && now_ms() - bl.ms >= kSettleMs) {   // the cursor rested: GRANULAR / WAVETABLE preview it (loads it)
@@ -1228,10 +1237,10 @@ CORE_COLD const Page* src_bank_page(int t, int machine) {
     int e = bank_entry(bl.bank, bl.row), k = bank_kind();
     if (lst_lib(k, e) == srclib::kLibNone) {
       if (bl.machine == kGranMachine) gr::preview(bl.vi, e);   // (rui1045: no GRANULAR preview on a DSP SAMPLE voice)
-      else if (bl.machine == kWaveMachine) wt::preview(bl.vi, e);
+      else if (bl.machine == kWaveMachine && bl.param != 12) wt::preview(bl.vi, e);   // (a TBLB list: no preview, it would play as A)
     }
   }
-  return machine == kGranMachine || machine == kChopMachine ? &kGrBankPage : machine == kWaveMachine ? &kWtBankPage
+  return machine == kGranMachine || machine == kChopMachine ? &kGrBankPage : machine == kWaveMachine ? (bl.param == 12 ? &kWtBankPageB : &kWtBankPage)
        : machine == kDspSample ? &kDsBankPage : machine == kSmplMachine ? &kDsBankPageDt : &kMsBankPage;
 #else
   (void)t, (void)machine;
@@ -1250,9 +1259,9 @@ CORE_COLD bool fill_batch(int t, int kind, int* first, int* last) {
 }
 CORE_COLD BankListState src_bank_state() {
 #if CORE_MSAMP
-  return BankListState{bl.on, bl.track, bl.machine, bl.bank, bl.row, bl.commits, bl.browse, bl.cur, bl.assigns, bl.refusals, bl.menu};
+  return BankListState{bl.on, bl.track, bl.machine, bl.bank, bl.row, bl.commits, bl.browse, bl.cur, bl.assigns, bl.refusals, bl.menu, bl.param};
 #else
-  return BankListState{false, -1, -1, 0, 0, 0, false, 0, 0, 0, -1};
+  return BankListState{false, -1, -1, 0, 0, 0, false, 0, 0, 0, -1, 0};
 #endif
 }
 

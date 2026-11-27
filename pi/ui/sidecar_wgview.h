@@ -56,6 +56,7 @@ typedef struct
 	unsigned char	grev[WGV_GRAINS];
 	// WAVETABLE
 	int		frames;			// the table's frames
+	int		tbl_file;		// table A is a card file (its EDIT opens it in SAMPLE EDIT); else EDIT offers the SAMPLES list
 	float		pos;			// 0..1
 	float		cur[WGV_COLS];		// the frame at POS
 	float		stack[WGV_STACK][WGV_COLS];	// frames 0, 1/8 .. 1 of the table
@@ -76,6 +77,9 @@ typedef struct
 	char		lock_why[32];
 	int		playing;		// the Rytm plays (P3: a row in use is not replaced / unloaded then)
 	int		sel;			// the code the voice plays (-1 none / not this list)
+	int		sel_b;			// WAVETABLE: the code its table B (TBLB, P13) is set to (-1 none / not this list)
+	char		name_b[32];		// its table's name ("OFF" row 000; "" none)
+	int		mix0;			// WAVETABLE: B is silent for lack of MIX (MIX 0 and the warp neither FM nor RM)
 	char		note[24];		// the playing row's note: "LOADING", "TOO LONG: FIRST 87 S", its length
 	// the pool RAM ("MB and %", core::pools::ram (); ram_known 0 until the shared cache counts: shown "-")
 	int		ram_known;
@@ -136,6 +140,7 @@ void sidecar_wgview_set_page_list (int list);
 int sidecar_wgview_list_id (void);			// the list shown: the page's tab, else the voice's machine's (-1 none)
 int sidecar_wgview_selecting (void);			// SELECT UNUSED on (the provider fills unused[])
 int sidecar_wgview_target (void);			// the code FILES fills (-1 none)
+int sidecar_wgview_target_b (void);			// WAVETABLE's list picks for table B (TBLB, P13): the middle key; every open starts on A
 const char *sidecar_wgview_message (void);		// the message row ("" none), the confirm's question while it asks
 int sidecar_wgview_asking (void);			// a confirm (P3) or a row's menu is open: 1 confirm, 2 menu
 int sidecar_wgview_rows (int *top, int *head);		// the list's rows shown now (tests): the first one's index, the tab rows above it

@@ -35,7 +35,7 @@ namespace ui {
 CORE_COLD const char* machine_label(int m, int k) {
   static UI_ROM const char kPlaits2[8][5] = {"FM", "FIN", "AUX", "TMD", "MMD", "VEL", "GLD", "VOL"};   // PLAITS PAGE 2
   static UI_ROM const char kMs2[8][5] = {"TUNE", "FINE", "STRT", "LOOP", "CHD", "INV", "SPR", "VOI"};
-  static UI_ROM const char kWt2[8][5] = {"ATK", "DEC", "SUS", "ENV", "CHD", "INV", "SPR", "VOI"};
+  static UI_ROM const char kWt2[8][5] = {"ATK", "DEC", "SUS", "ENV", "TBLB", "POSB", "MIX", "FTYP"};
   static UI_ROM const char kGr2[8][5] = {"ATK", "REL", "HOLD", "ANIM", "CHD", "INV", "SPR", "VOI"};
   static UI_ROM const char kDaisyL[16][5] = {"ENG", "STR", "BRI", "DMP", "INP", "EXC", "TUN", "LEV",
                                             "XTN", "XDC", "SEED", "OUT", "XP4", "XLV", "XP5", "WID"};   // rui1050: P11 SEED

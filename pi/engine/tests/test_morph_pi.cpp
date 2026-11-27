@@ -50,22 +50,22 @@ int main() {
   scene::set_ab(2, 5);
   morph_pi::FillView(&a, 0);
   CHECK(a.gen != b.gen && a.a == 2 && a.b == 5);
-  // the rows from the scroll; a stepped Rytm target's range
-  CHECK(scene::lock(3, T("RYTM:SCN"), 5 * 128));
+  // the rows from the scroll; a stepped target's range (0.5.0 v2: T1:DIR 0..5; the Rytm's scene is no scene target)
+  CHECK(scene::lock(3, T("T1:DIR"), 3 * 128));
   for (int k = 0; k < 20; ++k) CHECK(scene::lock(3, mod::tid(mod::kV, k % 8, k / 8), (uint16_t)(k * 128)));
   scene::set_sel(3);
   morph_pi::FillView(&a, 0);
-  CHECK(a.sel == 3 && a.nlocks[3] == 21 && a.nrows == SMO_ROWS && !strcmp(a.row[0].name, "RYTM:SCN") && !strcmp(a.row[0].value, "5"));
-  CHECK(a.row[0].lo == 0 && a.row[0].hi == 12 && a.row[0].v == 5 * 127 / 12);
+  CHECK(a.sel == 3 && a.nlocks[3] == 21 && a.nrows == SMO_ROWS && !strcmp(a.row[0].name, "T1:DIR") && !strcmp(a.row[0].value, "3"));
+  CHECK(a.row[0].lo == 0 && a.row[0].hi == 5 && a.row[0].v == 3 * 127 / 5);
   morph_pi::FillView(&b, 10);
   CHECK(b.top == 10 && b.nrows == 11 && !strcmp(b.row[0].name, b.row[0].name) && b.gen != a.gen);
   char n[12];
   mod::name(scene::state().s[3].l[10].t, n, sizeof n);
   CHECK(!strcmp(b.row[0].name, n));
-  scene::set_edit(true);
+  scene::set_edit_side(0);
   morph_pi::FillView(&a, 10);
-  CHECK(a.edit && a.gen != b.gen);
-  scene::set_edit(false);
+  CHECK(a.edit == 1 && a.gen != b.gen);
+  scene::set_edit_side(-1);
   // core 3 publishes while wanted (every 50 ms at most), core 0 takes the newest once
   unsigned seen = 0;
   morph_pi::Tick();

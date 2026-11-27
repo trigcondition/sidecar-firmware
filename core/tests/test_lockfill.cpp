@@ -21,6 +21,7 @@
 #include "device/device.h"
 #include "host/core_port.h"
 #include "hooks.h"
+#include "host_link.h"
 #include "machines.h"
 #include "seq/filltargets.h"
 #include "seq/lockfill.h"
@@ -993,6 +994,110 @@ int main() {
       }
       ui::remote_reset();
     }
+    // 2026-11-24 re-hello: the link has seen Rytm traffic but no hello: the host asks for one (3C with flags bit 0), once,
+    // then at most every 5 s until a hello comes or 3 tries are spent. A hello turns every caps-gated feature on. Never
+    // for a box, never once a hello is known, never going down.
+    {
+      const std::vector<uint8_t> ask = {0xF0, 0x7D, 0x52, 0x54, 0x3C, 0x01, 0x01, 0xF7};
+      const uint32_t t0 = now_ms() + 100000;
+      ui::remote_reset();
+      g_out.clear();
+      ui::remote_tick(t0);
+      CHECK(!sent(ask));   // (no Rytm traffic yet: the link may be down)
+      send(msg(0x49, {4, 0}));   // Rytm traffic, no hello
+      ui::remote_tick(t0 + 10);
+      CHECK(sent(ask));
+      g_out.clear();
+      ui::remote_tick(t0 + 1000);
+      ui::remote_tick(t0 + 4900);
+      CHECK(!sent(ask));   // (rate: 5 s)
+      ui::remote_tick(t0 + 5100);
+      CHECK(sent(ask));    // the 2nd try
+      g_out.clear();
+      ui::remote_tick(t0 + 9000);
+      CHECK(!sent(ask));
+      ui::remote_tick(t0 + 10200);
+      CHECK(sent(ask));    // the 3rd
+      g_out.clear();
+      ui::remote_tick(t0 + 15500);
+      ui::remote_tick(t0 + 40000);
+      CHECK(!sent(ask));   // 3 tries spent
+      // M1: the tries are spent, then the Rytm's USB MIDI goes (core::link_lost) and comes back: asking starts over
+      core::link_lost();
+      g_out.clear();
+      ui::remote_tick(t0 + 41000);
+      CHECK(!sent(ask));   // (no traffic since the loss)
+      send(msg(0x49, {4, 0}));
+      ui::remote_tick(t0 + 41010);
+      CHECK(sent(ask));
+      g_out.clear();
+      ui::remote_tick(t0 + 41100);
+      CHECK(!sent(ask));   // (the 5 s rate holds again)
+      // a simulated reply: caps known, and what was gated on them turns on
+      ui::remote_reset();
+      g_out.clear();
+      send(msg(0x49, {4, 0}));
+      ui::remote_tick(t0 + 50000);
+      CHECK(sent(ask) && ui::remote_caps() == 0 && ui::remote_caps2() == 0);
+      g_out.clear();
+      send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows | ui::kCaps2Capture | ui::kCaps2Rehello}));
+      CHECK(ui::remote_caps() == 127 && ui::remote_caps2() == (ui::kCaps2Arrows | ui::kCaps2Capture | ui::kCaps2Rehello));
+      CHECK(sent(claim));                                                         // FILL's claim
+      CHECK(sent({0xF0, 0x7D, 0x52, 0x54, 0x5A, 0x01, 0x0B, 0x01, 0xF7}));       // the edit arm (host command, caps2 bit 2)
+      g_out.clear();
+      ui::remote_tick(t0 + 60000);
+      ui::remote_tick(t0 + 70000);
+      CHECK(!sent(ask));   // once caps are known: no request
+      // a hello before the first tick: nothing asked
+      ui::remote_reset();
+      g_out.clear();
+      send(msg(0x49, {4, 0}));
+      send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows}));
+      ui::remote_tick(t0 + 80000);
+      CHECK(!sent(ask));
+      // 2026-11-24 TBLB: the host announces "I draw the P13 lists" (4A 7D 1) after each hello, and only to a Rytm whose
+      // caps2 has kCaps2ListP13 (an older mod counts the 4A 7D as a bad message and never asks for a P13 list)
+      {
+        const std::vector<uint8_t> p13 = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 0x01, 0x7D, 0x01, 0xF7};
+        CHECK(ui::kCaps2ListP13 == 32 && !(ui::kCaps2ListP13 & (ui::kCaps2Arrows | ui::kCaps2QpMute | ui::kCaps2Capture | 8 | ui::kCaps2Rehello)));
+        ui::remote_reset();
+        g_out.clear();
+        send(msg(0x49, {4, 0}));   // Rytm traffic, no hello: nothing announced
+        CHECK(!sent(p13));
+        send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows | ui::kCaps2ListP13}));
+        CHECK(sent(p13) && ui::remote_caps2() == (ui::kCaps2Arrows | ui::kCaps2ListP13));
+        g_out.clear();
+        send(msg(0x35, {0, 6, 127, ui::kCaps2ListP13}));   // after each hello
+        CHECK(sent(p13));
+        g_out.clear();
+        send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows | ui::kCaps2Capture | ui::kCaps2Rehello}));   // an old Rytm: no bit 32
+        CHECK(!sent(p13) && sent(claim));
+        g_out.clear();
+        send(msg(0x35, {0, 5, 127}));   // and one with no caps2 at all
+        CHECK(!sent(p13));
+      }
+      // a box is never asked; going down neither
+      ui::remote_reset();
+      {
+        static device::Screen sc = {{"A", "B", "C", "D", "E", "F", "G", "H"}, ""};
+        static device::Profile pf;
+        pf.screen = &sc;
+        device::g_link.box = &pf;
+        g_out.clear();
+        const std::vector<uint8_t> m = msg(0x49, {4, 0});
+        ui::remote_sysex(m.data(), (int)m.size());
+        ui::remote_tick(t0 + 90000);
+        CHECK(!sent(ask));
+        device::g_link.box = nullptr;
+      }
+      ui::remote_reset();
+      ui::remote_going_down();
+      g_out.clear();
+      send(msg(0x49, {4, 0}));
+      ui::remote_tick(t0 + 100000);
+      CHECK(!sent(ask));
+      ui::remote_reset();
+    }
     g_out.clear();
     send(msg(0x35, {0, 5, 127}));
     CHECK(!sent(claim) && ui::remote_caps2() == 0);
@@ -1032,29 +1137,71 @@ int main() {
       CHECK(!sent(claim));
       send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows}));   // (the tests go on with the keys claimed)
       CHECK(sent(claim));
-    }
-    // the claim again about every 2 s while linked (a quick UP + RIGHT after a port drop): no key traffic needed, no flood
-    {
-      ui::remote_reset();
-      const uint32_t t = now_ms() + 100000;
-      ui::remote_tick(t);
-      send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows}));
+      // owner 2026-11-22 (hardware: a quick UP + RIGHT does nothing): the Rytm drops the claim at every USB port drop and
+      // the host claimed only at a hello. UP held 0.4 s (49 1 4 1) with the keys claimed claims again (idempotent on the
+      // Rytm); not with fill=keys:off, not without caps2, not after remote_going_down().
       g_out.clear();
-      ui::remote_tick(t + 1000);
-      CHECK(!sent(claim));   // (the hello's claim just went)
-      ui::remote_tick(t + 2100);
+      send(msg(0x49, {4, 1}));
       CHECK(sent(claim));
+      send(msg(0x49, {4, 0}));
       g_out.clear();
-      for (int i = 1; i <= 10; ++i) ui::remote_tick(t + 2100 + i * 100);
-      CHECK(!sent(claim));
-      ui::remote_tick(t + 4200);
-      CHECK(sent(claim));
+      send(msg(0x49, {4, 1}));
+      CHECK(sent(claim));   // (every time)
+      g_out.clear();
+      send(msg(0x49, {4, 0}));
+      CHECK(!sent(claim));   // (the release is no claim)
       cmd("fill=keys:off");
       g_out.clear();
-      ui::remote_tick(t + 9000);
+      send(msg(0x49, {4, 1}));
       CHECK(!sent(claim));
+      send(msg(0x49, {4, 0}));
+      cmd("fill=keys:on");
+      send(msg(0x35, {0, 5, 127}));   // an older mod: no caps2
+      g_out.clear();
+      send(msg(0x49, {4, 1}));
+      CHECK(!sent(claim));
+      send(msg(0x49, {4, 0}));
+      send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows}));
+      ui::remote_going_down();
+      ui::remote_tick(2000);
+      g_out.clear();
+      send(msg(0x49, {4, 1}));
+      CHECK(!sent(claim));
+      send(msg(0x49, {4, 0}));
       cmd("fill=keys:on");   // (the tests go on with the keys claimed)
       CHECK(sent(claim));
+      // the same claim about every 2 s while linked (the first quick UP + RIGHT after a port drop): no key traffic needed
+      {
+        uint32_t t = now_ms() + 100000;
+        ui::remote_tick(t);
+        send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows}));
+        g_out.clear();
+        ui::remote_tick(t + 1000);
+        CHECK(!sent(claim));   // (the hello's claim just went)
+        ui::remote_tick(t + 2100);
+        CHECK(sent(claim));
+        g_out.clear();
+        for (int i = 1; i <= 10; ++i) ui::remote_tick(t + 2100 + i * 100);
+        CHECK(!sent(claim));   // no flood
+        ui::remote_tick(t + 4200);
+        CHECK(sent(claim));
+        cmd("fill=keys:off");
+        g_out.clear();
+        ui::remote_tick(t + 9000);
+        CHECK(!sent(claim));
+        cmd("fill=keys:on");
+        send(msg(0x35, {0, 5, 127}));   // an older mod
+        g_out.clear();
+        ui::remote_tick(t + 12000);
+        CHECK(!sent(claim));
+        send(msg(0x35, {0, 6, 127, ui::kCaps2Arrows}));
+        ui::remote_going_down();
+        g_out.clear();
+        ui::remote_tick(t + 15000);
+        CHECK(!sent(claim));
+        cmd("fill=keys:on");   // (the tests go on with the keys claimed)
+        CHECK(sent(claim));
+      }
     }
     // the tracks: BD PLAITS, the rest Rytm machines
     std::vector<uint8_t> a33 = {0, 12};

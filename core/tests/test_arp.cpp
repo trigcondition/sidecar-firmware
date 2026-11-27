@@ -22,6 +22,7 @@
 #include "ui/extra.h"
 #include "ui/remote.h"
 #include "voices.h"
+#include "wavetable/wavetable.h"
 
 using namespace core;
 
@@ -635,6 +636,31 @@ int main() {
   CHECK(poly::plays_poly(sd));
   arp::set(1, cfg(arp::kOff));
   CHECK(!poly::plays_poly(sd));
+
+  // a voice forced to WAVETABLE (wt=voice:V) before its first report, still on the Rytm's 6-OP FM machine: its CHD word
+  // is a TBL B row there, never a chord
+  {
+    std::vector<int> p(16, 0);
+    send({0xF0, 0x7D, 0x52, 0x54, 0x33, 1, 1, 1, 40, (uint8_t)(0x48 | sd), 0xF7});
+    rep(0x04, 0x48 | sd, 60, 100, p);   // the 6-OP FM machine reported (v.fm), then let go
+    off(sd);
+    run(6000 * 2);
+    char wb[96];
+    char cb[96];
+    snprintf(cb, sizeof cb, "wt=voice:%d", sd);
+    CHECK(wt::command(cb, wb, sizeof wb));
+    CHECK(wt::forced(sd) && v[sd].fm && !v[sd].wt);
+    arp::set(1, cfg(arp::kUp));
+    float pf[16] = {};
+    pf[12] = 1;
+    CHECK(arp::trig(sd, 60, 100, pf));
+    CHECK(arp::held(sd) == 1);
+    arp::trig_off(sd);
+    snprintf(cb, sizeof cb, "wt=voice:%d:off", sd);
+    CHECK(wt::command(cb, wb, sizeof wb));
+    run(6000 * 2);
+    arp::set(1, cfg(arp::kOff));
+  }
 
   // 2E: the track pinned (not the MIDI machine's) and BD's ticks asked for
   {

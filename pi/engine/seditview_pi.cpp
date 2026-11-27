@@ -40,6 +40,7 @@ void Fill(sidecar_sedit_view_t* o) {
   memcpy(o->hi, g_v.hi, sizeof o->hi);
   o->playhead = g_v.playhead;
   o->unity = g_v.unity;
+  o->making = g_v.making, o->wt_frames = g_v.wt_frames, o->wt_voice = g_v.wt_voice, o->file = g_v.file;
   // the generation: everything drawn
   uint32_t h = 2166136261u;
   const uint8_t* b = (const uint8_t*)o;

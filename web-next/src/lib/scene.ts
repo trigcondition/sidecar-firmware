@@ -5,18 +5,21 @@ export const SCENES = 12, LOCKS = 64, FADER_MAX = 16383;
 export const SOURCES = ["", "the Rytm's page", "the touchscreen", "the web", "MIDI learn", "the QUICK PERF knob", "the console"];
 
 export interface SceneStatus {
-  a: number; b: number; fader: number; played: number; sel: number; locked: number; edit: number;
+  a: number; b: number; fader: number; played: number; sel: number; locked: number; edit: number; // edit: 0, 1 A, 2 B held
   s: { n: number; l: [string, number][] }[];
   src?: number; rscn?: number;
   pl?: Record<string, string>; // 2026-11: a locked param's name as the screens show it ("V1:P2" -> "V1:HRM")
   vl?: string[][]; // every voice's P1..P16 as its machine labels them ("" unused)
+  gone?: string[]; // v2 Task 7: locked targets that no longer resolve (an unused P, an RT word the track lacks)
 }
 export interface Lock { name: string; v: number } // v: the value x 128 (0..16383)
 export interface SceneView {
   a: number; b: number; fader: number; played: number; sel: number; locked: boolean; edit: boolean;
+  side: number; // 0.5.0 v2: the side PAGE + T15 / T16 holds on the Rytm (0 A, 1 B), -1 none
   locks: Lock[][]; // [scene 0..11]
   src: number; rscn: number;
   labels: Record<string, string>; vl: string[][];
+  gone: string[];
 }
 
 /** The state from /status (1-based A / B / sel there, 0 none; here 0-based, -1 none); null: this build has no scenes. */
@@ -26,8 +29,8 @@ export function sceneView(st: Record<string, unknown> | null | undefined): Scene
   const locks: Lock[][] = Array.from({ length: SCENES }, () => []);
   for (const sc of s.s ?? []) if (sc.n >= 1 && sc.n <= SCENES) locks[sc.n - 1] = sc.l.map(([name, v]) => ({ name, v }));
   return {
-    a: s.a - 1, b: s.b - 1, fader: s.fader, played: s.played ?? s.fader, sel: Math.max(0, s.sel - 1), locked: !!s.locked, edit: !!s.edit,
-    locks, src: s.src ?? 0, rscn: s.rscn ?? -1, labels: s.pl ?? {}, vl: s.vl ?? [],
+    a: s.a - 1, b: s.b - 1, fader: s.fader, played: s.played ?? s.fader, sel: Math.max(0, s.sel - 1), locked: !!s.locked, edit: !!s.edit, side: (s.edit ?? 0) - 1,
+    locks, src: s.src ?? 0, rscn: s.rscn ?? -1, labels: s.pl ?? {}, vl: s.vl ?? [], gone: s.gone ?? [],
   };
 }
 
@@ -36,11 +39,12 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, M
 export const valueText = (v128: number) => String(+(clamp(v128, 0, FADER_MAX) / 128).toFixed(2));
 
 export const abLine = (a: number, b: number) => `scene=ab:${clamp(a, -1, 11) + 1}:${clamp(b, -1, 11) + 1}`;
+/** Scene n on one end, the other end kept (v2 Task 7: A = B allowed, as on the Rytm and the touchscreen). */
+export const abSet = (v: { a: number; b: number }, side: "a" | "b", n: number) => abLine(side === "a" ? n : v.a, side === "b" ? n : v.b);
 export const faderLine = (f: number) => `scene=fader:${clamp(f, 0, FADER_MAX)}`;
 export const selLine = (n: number) => `scene=sel:${clamp(n, 0, 11) + 1}`;
 export const clearLine = (n: number) => `scene=clear:${clamp(n, 0, 11) + 1}`;
 export const copyLine = (from: number, to: number) => `scene=copy:${clamp(from, 0, 11) + 1}:${clamp(to, 0, 11) + 1}`;
-export const editLine = (on: boolean) => `scene=edit:${on ? "on" : "off"}`;
 /** A target name as core/mod/target.h writes it ("V3:P5", "MFX:LEV"); null when it cannot be one. */
 export function targetName(s: string): string | null {
   const t = s.trim().toUpperCase();
@@ -63,7 +67,7 @@ export const lockLabel = (v: SceneView | null | undefined, name: string) => v?.l
 export const SUGGEST: string[] = [
   ...Array.from({ length: 8 }, (_, v) => Array.from({ length: 8 }, (_, p) => `V${v + 1}:P${p + 1}`)).flat(),
   ...Array.from({ length: 8 }, (_, v) => [`O${v + 1}:LEV`, `O${v + 1}:PAN`]).flat(),
-  "MFX:LEV", "FX1:P2", "FX1:P3", "FX2:P2", "FX2:P3", "RYTM:PERF1", "RYTM:PERF2", "RYTM:PERF3", "RYTM:PERF4",
+  "MFX:LEV", "FX1:P2", "FX1:P3", "FX2:P2", "FX2:P3", // (0.5.0 v2: the Rytm's own scene and PERF macros are no scene target)
   // 0.5.0: the Rytm's own sound parameters (docs/RYTM-PARAMS.md; a Rytm without its 0.5 mod ignores them)
   "RT1:FRQ", "RT1:RES", "RT1:DEC", "RT2:FRQ", "RT2:DEC", "RFX:TIM", "RFX:FDB", "RFX:RDEC",
 ];
@@ -74,4 +78,31 @@ export function suggest(vl?: string[][]): { value: string; label: string }[] {
     ? vl.slice(0, 8).flatMap((ls, v) => ls.map((l, p) => ({ value: `V${v + 1}:P${p + 1}`, label: l ? `V${v + 1}:P${p + 1} ${l}` : "" })).filter((o) => o.label))
     : SUGGEST.filter((t) => t[0] === "V").map((t) => ({ value: t, label: t }));
   return [...voices, ...SUGGEST.filter((t) => t[0] !== "V").map((t) => ({ value: t, label: t }))];
+}
+
+/** The ADD picker (0.5.0 v2, as the MORPH page's ADD row: core/ui/page_morph.cpp): a track, its page, a param. */
+export const ADD_TRACKS: string[] = [...Array.from({ length: 12 }, (_, t) => `RT${t + 1}`), "RFX", ...Array.from({ length: 8 }, (_, v) => `V${v + 1}`)];
+const RT_PAGES: Record<string, string[]> = {
+  SRC: ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"], SMPL: ["TUN", "FIN", "SMP", "BR", "STA", "END", "LOP", "LEV"],
+  FLTR: ["FENV", "FATK", "FDEC", "FSUS", "FREL", "FRQ", "RES", "FTYP"], AMP: ["ATK", "HLD", "DEC", "OVR", "VOL", "PAN", "ACC", "DEL", "REV"],
+  LFO: ["MUL", "WAV", "MOD", "SPD", "FAD", "SPH", "DEP"],
+};
+const RFX_PAGES: Record<string, string[]> = {
+  DELAY: ["TIM", "X", "WID", "FDB", "DHPF", "DLPF", "DREV", "DVOL", "DOV"], REVERB: ["PRE", "RDEC", "RFRQ", "GAI", "RHPF", "RLPF", "RVOL"],
+  DIST: ["AMT", "SYM"], COMP: ["THR", "CATK", "CREL", "RAT", "SEQ", "MUP", "MIX", "CVOL"], LFO: ["SPD", "FAD", "DEP"],
+};
+const V_PAGES = ["P1-8", "P9-16"];
+export function addPages(track: string): string[] {
+  if (track === "RFX") return Object.keys(RFX_PAGES);
+  return track.startsWith("RT") ? Object.keys(RT_PAGES) : V_PAGES;
+}
+/** A page's params: value the target's name ("RT1:FRQ"), label as shown (a voice's by its machine: vl). */
+export function addParams(track: string, page: string, vl?: string[][]): { value: string; label: string }[] {
+  if (track === "RFX") return (RFX_PAGES[page] ?? []).map((p) => ({ value: `RFX:${p}`, label: p }));
+  if (track.startsWith("RT")) return (RT_PAGES[page] ?? []).map((p) => ({ value: `${track}:${p}`, label: p }));
+  const v = Number(track.slice(1)) - 1, k0 = page === "P9-16" ? 8 : 0;
+  return Array.from({ length: 8 }, (_, i) => {
+    const l = vl?.[v]?.[k0 + i];
+    return { value: `${track}:P${k0 + i + 1}`, label: vl?.length ? (l ? `P${k0 + i + 1} ${l}` : "") : `P${k0 + i + 1}` };
+  }).filter((o) => o.label);
 }

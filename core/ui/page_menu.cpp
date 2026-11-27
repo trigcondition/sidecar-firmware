@@ -45,6 +45,9 @@ UI_ROM const Entry kEntries[] = {
 #if SIDECAR_MORPH
     {"MORPH", "MORPH"},   // 0.5.0: off (sidecar_features.h)
 #endif
+#if SIDECAR_LOOPER
+    {"LOOP", "LOOP"},   // 0.5.0 (core/ui/page_loop.cpp): no UP shortcut (it would need the Rytm mod)
+#endif
 #if CORE_POLY && CORE_MSAMP
     {"SAMPLE EDIT", "SAMPLE EDIT"},   // the selected track's sample (page_sedit.cpp), or the edit open
 #endif

@@ -55,7 +55,9 @@ The four checks done before building [measured, rytm-mods 0026 design.md "1038"]
 - **The list (4A):** `4A 01 <track> <on> <hi> <lo> <why>` Rytm -> host: on 1 opened by knob A's first turn (it moves
   nothing, as stock's SAMPLE SLOT list), on 0 closed: why 1 YES, 2 NO, 3 another knob, 4 another key, 5 the view ended.
   While open knob A's turns go to the host (32 0), LEFT RIGHT UP DOWN too (31). Only while the host draws the SRC view
-  (an old host / no Sidecar: the knob is stock's).
+  (an old host / no Sidecar: the knob is stock's). **TBLB (2026-11-24):** WAVETABLE's table B (P13) uses the same list: the frame
+  may carry a 6th byte, `12` (the only value), the list's parameter; its YES then writes P13 (`48 .. 12 ..`), not P1; the host
+  announces it draws such lists with `4A 7D 1` after each hello, only to a Rytm whose hello's caps2 has bit 5 (docs/core.md).
 - **Commit (48 + flags):** `48 01 <track> 0 <index> <bank << 4> <flags 1>`; with trigs held at the YES (GRID REC) the Rytm
   locks P1 on those steps (answer status 4; 3 the pattern's 72 lock slots full), else it writes the kit (status 0).
 - **UP + T6..T10** -> `49 01 01 6..10` (stock binds nothing there [measured, 5 contexts]).

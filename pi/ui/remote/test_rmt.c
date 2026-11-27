@@ -145,7 +145,7 @@ static int wire_total (int view, const void *v)
 static void test_views (void)
 {
 	// pinned wire sizes: a field added to a view struct and not to the table fails here (and the schema hash moves)
-	static const int kWire[RMT_V_COUNT] = {0, 582, 782, 2570, 425, 9840, 4, 11156};
+	static const int kWire[RMT_V_COUNT] = {0, 586, 782, 2570, 425, 9840, 4, 11156};
 	for (int view = 1; view < RMT_V_COUNT; view++)
 	{
 		const rmt_view_info_t *vi = rmt_view_info (view);
@@ -276,6 +276,21 @@ static void test_seq_deltas (void)
 	snprintf (pv->where, sizeof pv->where, "from the Rytm 3 s ago");				// the texts: their own section
 	CHECK (rmt_vtx_emit (&t, RMT_V_PAT, pv, sink_fn, sk, 0) == 1 && sk->sec[0] == 1);
 	free (pv), free (sk);
+}
+
+// STATUS 1.1 appends bpm10 to the live section: it round-trips, an old Pi (the data stops before it) leaves it as it was, and
+// the schema says 1.1 (major 1: an old app still takes the view and ignores the new field)
+static void test_status_bpm10 (void)
+{
+	static sidecar_status_view_t a, b;
+	memset (&a, 0, sizeof a), memset (&b, 0, sizeof b);
+	a.valid = 1, a.bpm10 = 1215;
+	uint8_t buf[RMT_SEC_BUF];
+	int n = rmt_sec_encode (RMT_V_STATUS, 0, 0, &a, buf, sizeof buf);
+	CHECK (n > 4 && rmt_view_info (RMT_V_STATUS)->schema == 0x0101);
+	CHECK (rmt_sec_decode (RMT_V_STATUS, 0, 0, &b, buf, n) == 0 && b.bpm10 == 1215 && b.valid == 1);
+	b.bpm10 = 777;
+	CHECK (rmt_sec_decode (RMT_V_STATUS, 0, 0, &b, buf, n - 4) == 0 && b.bpm10 == 777 && b.valid == 1);
 }
 
 static void test_skew (void)
@@ -518,6 +533,7 @@ int main (void)
 	test_delta ();
 	test_seq_deltas ();
 	test_skew ();
+	test_status_bpm10 ();
 	test_client ();
 	test_garbage ();
 	printf ("%d checks, %d failed\n", g_n, g_fail);

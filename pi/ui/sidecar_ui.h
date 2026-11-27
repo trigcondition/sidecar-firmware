@@ -52,6 +52,7 @@ typedef struct
 	unsigned	poly;				// UX review S1: bit v - voice v plays a poly track (a POLY badge on HOME)
 	int		pattern;			// UX review T1: the Rytm's pattern 0..127 (-1 not known) and transport (0 stop,
 	int		transport;			// 1 play, 2 pause): HOME's NOW panel
+	int		bpm10;				// the Rytm's tempo x 10 (1215: 121.5 BPM), 0: not known (the header strip at 1024x600 and up)
 	int		touch_cal;			// 1: the touch is calibrated (touchcal=, Settings > Display), 0: the default
 	int		temp_c;				// the SoC's temperature, 0: not known
 	int		temp_warn;			// 1: the temperature warning is on (80 C up, off below 75 C: pi/engine/thermal.h): a banner
@@ -95,7 +96,8 @@ void sidecar_ui_set_command (sidecar_ui_command_t fn, void *param);
 // machine view's ALL POOLS), 16 SERVICE (settings), 17 CHOP (sidecar_chop.h: a CHOP voice's page; VOICE on a CHOP track), 18 PRESET (sidecar_preset.h: the POOL page's JUNO / 6-OP FM tabs),
 // 21 SAMPLE EDIT (sidecar_sedit.h: shown while the sample editor has an edit open), 22 XY PAD (sidecar_xy.h: Send FX > XY),
 // 23 settings/MIDI (0.5.0: the keyboards' route, auto channel, computer notes; MIDI learn's routes),
-// 24 HOME > Perform (0.5.1: the XY pad with HOLD and SETUP, the targets, kill tails and REC; sidecar_xy.h's second pad); page 0 is HOME > Overview
+// 24 HOME > Perform (0.5.1: the XY pad with HOLD and SETUP, the targets, kill tails and REC; sidecar_xy.h's second pad),
+// 25 LOOP (the master looper); page 0 is HOME > Overview
 void sidecar_ui_show (int page);
 // The remote UI's app (docs/remote-ui.md) feeds only some pages: a page it does not feed (on 0) shows "NOT IN THE REMOTE YET" over its
 // content, and its navigation key / sub-page pill is greyed (a section's key only when none of its pages is fed). Every page is fed
@@ -122,6 +124,7 @@ int sidecar_ui_nav_lit (void);					// the navigation key lit for it (-1: none; t
 // key ("T1"; "" when the device has no key for that page) - the tests hold the two to the same order (pi/ui/host/shot.c)
 const char *sidecar_ui_nav_page (int i);
 const char *sidecar_ui_nav_key (int i);
+void *sidecar_ui_home_obj (int what);	// the object behind a home_hit number (the host's checks; 17: the header's Rytm text)
 int sidecar_ui_home_hit (int what, int *x, int *y);		// HOME's tiles (tests): 0..7 voices, 8 Now, 9 XY, 10 / 11 send FX, 12 recorder, 13 health, 14 links, 15 Perform's REC, 16 its Kill tails; 1: given
 unsigned sidecar_ui_taps (void);				// the touch test's TAP count (tests)
 int sidecar_ui_touch_test_shown (void);				// HOME shows the touch test (until the first tap)

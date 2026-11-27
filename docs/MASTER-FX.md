@@ -35,7 +35,7 @@ The Rytm's own controls in through mode:
 Report 50 needs a Rytm with this 0.4.0 0030-fx-in. On older mods every stem is summed, centred: mono, and all tracks must be taken off main by
 hand or they double. The page says which.
 
-Take playback (and the looper, later) comes after the chain: it is not processed twice. The recorder's source 24 POST stays the
+Take playback (and the looper, which is not in 0.5.2) comes after the chain: it is not processed twice. The recorder's source 24 POST stays the
 voices' pair before the chain. MASTER (IN 0/1) holds the chain's output, the Rytm's mix around it.
 
 ## Levels

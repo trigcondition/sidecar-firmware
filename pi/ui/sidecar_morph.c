@@ -1,6 +1,8 @@
 // pi/ui/sidecar_morph.c - see sidecar_morph.h. The left half the A / B keys over the twelve pads (two rows of six), the
 // right half the selected scene's locks (a row: name, a slider, the value, DEL; UP / DN scroll), the crossfader across
-// the bottom with A's scene on its left and B's on its right. No fixed places: from the page's width and height.
+// the bottom with A's scene on its left and B's on its right. ADD (0.5.0 v2) puts a picker in the list's place: the
+// track (RT1..RT12, RFX, V1..V8), its page, the param, the value, ADD / BACK - the Rytm's MORPH page's ADD row's tables
+// (core/ui/page_morph.cpp). No fixed places: from the page's width and height.
 #include "sidecar_morph.h"
 #include "sidecar_theme.h"
 #include "lvgl.h"
@@ -11,6 +13,13 @@
 
 static lv_obj_t *s_Page, *s_TitleBar, *s_Title, *s_A, *s_B, *s_Pad[SMO_SCENES], *s_ListT, *s_Up, *s_Dn, *s_Name[SMO_ROWS],
 	*s_Sl[SMO_ROWS], *s_Val[SMO_ROWS], *s_Del[SMO_ROWS], *s_FadA, *s_FadB, *s_Fader, *s_Info;
+static lv_obj_t *s_AddK, *s_Add, *s_AddT, *s_AddL[3], *s_AddV, *s_AddS, *s_AddGo;
+static int s_bAdd, s_nAddTr, s_nAddPg, s_nAddPr, s_nAddV = 64;
+static lv_obj_t *s_Undo;	// DEL's undo (v2 Task 7): the removed lock, for 2 s
+static char s_UndoName[16], s_UndoLabel[16], s_UndoVal[8];
+static int s_nUndoScene = -1;
+static uint32_t s_nUndoMs;
+static char s_AddName[16];
 static sidecar_morph_view_t s_V;
 static unsigned s_nGen = ~0u;
 static sidecar_morph_command_t s_Cmd;
@@ -21,6 +30,93 @@ static int s_nSel = -2;		// the scene the list showed (another: the list from it
 
 static int oled (void) { return TH->id == THEME_OLED; }
 static void cmd (const char *c) { if (s_Cmd) s_Cmd (c); }
+
+// ---- the ADD picker's tables (core/ui/page_morph.cpp's ADD row; core/mod/kinds.cpp's names)
+#define ADD_TRACKS	21	// RT1..RT12, RFX, V1..V8
+typedef struct { const char *name; const char *const *p; int n; } add_page_t;
+static const char *const kSrc[] = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"};
+static const char *const kSmpl[] = {"TUN", "FIN", "SMP", "BR", "STA", "END", "LOP", "LEV"};
+static const char *const kFltr[] = {"FENV", "FATK", "FDEC", "FSUS", "FREL", "FRQ", "RES", "FTYP"};
+static const char *const kAmp[] = {"ATK", "HLD", "DEC", "OVR", "VOL", "PAN", "ACC", "DEL", "REV"};
+static const char *const kLfo[] = {"MUL", "WAV", "MOD", "SPD", "FAD", "SPH", "DEP"};
+static const char *const kDly[] = {"TIM", "X", "WID", "FDB", "DHPF", "DLPF", "DREV", "DVOL", "DOV"};
+static const char *const kRev[] = {"PRE", "RDEC", "RFRQ", "GAI", "RHPF", "RLPF", "RVOL"};
+static const char *const kDst[] = {"AMT", "SYM"};
+static const char *const kCmp[] = {"THR", "CATK", "CREL", "RAT", "SEQ", "MUP", "MIX", "CVOL"};
+static const char *const kFxLfo[] = {"SPD", "FAD", "DEP"};
+static const char *const kP1[] = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"};
+static const char *const kP9[] = {"P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16"};
+static const add_page_t kRtPg[] = {{"SRC", kSrc, 8}, {"SMPL", kSmpl, 8}, {"FLTR", kFltr, 8}, {"AMP", kAmp, 9}, {"LFO", kLfo, 7}};
+static const add_page_t kFxPg[] = {{"DELAY", kDly, 9}, {"REVERB", kRev, 7}, {"DIST", kDst, 2}, {"COMP", kCmp, 8}, {"LFO", kFxLfo, 3}};
+static const add_page_t kVPg[] = {{"P1-8", kP1, 8}, {"P9-16", kP9, 8}};
+static const add_page_t *add_pages (int tr, int *n)
+{
+	if (tr < 12) { *n = 5; return kRtPg; }
+	if (tr == 12) { *n = 5; return kFxPg; }
+	*n = 2; return kVPg;
+}
+static void add_track_name (int tr, char *b, int cap)
+{
+	if (tr < 12) lv_snprintf (b, cap, "RT%d", tr + 1);
+	else if (tr == 12) lv_snprintf (b, cap, "RFX");
+	else lv_snprintf (b, cap, "V%d", tr - 12);
+}
+static void add_refresh (void)
+{
+	int np;
+	const add_page_t *pg = add_pages (s_nAddTr, &np);
+	if (s_nAddPg >= np) s_nAddPg = 0;
+	if (s_nAddPr >= pg[s_nAddPg].n) s_nAddPr = 0;
+	char tr[8], t[40];
+	add_track_name (s_nAddTr, tr, sizeof tr);
+	lv_snprintf (s_AddName, sizeof s_AddName, "%s:%s", tr, pg[s_nAddPg].p[s_nAddPr]);
+	if (!s_Add) return;
+	lv_snprintf (t, sizeof t, "S%d ADD %s", s_V.sel + 1, s_AddName);
+	th_label_set (s_AddT, t);
+	th_label_set (s_AddL[0], tr);
+	th_label_set (s_AddL[1], pg[s_nAddPg].name);
+	th_label_set (s_AddL[2], pg[s_nAddPg].p[s_nAddPr]);
+	lv_snprintf (t, sizeof t, "%d", s_nAddV);
+	th_label_set (s_AddV, t);
+	if (!th_slider_dragging (s_AddS)) th_slider_set (s_AddS, s_nAddV);
+	th_key_enable (s_AddGo, s_V.sel >= 0 && s_V.nlocks[s_V.sel] < 64);
+}
+static void list_shown (int on);
+static void refresh (void);
+void sidecar_morph_add (int on)
+{
+	s_bAdd = !!on;
+	if (on) add_refresh ();
+	else s_AddName[0] = 0;
+	if (s_Add) list_shown (!on), refresh ();
+}
+void sidecar_morph_add_step (int field, int d)
+{
+	int np;
+	if (field == 0) s_nAddTr = (s_nAddTr + d + ADD_TRACKS) % ADD_TRACKS, s_nAddPg = s_nAddPr = 0;
+	else if (field == 1) { add_pages (s_nAddTr, &np); s_nAddPg = (s_nAddPg + d + np) % np, s_nAddPr = 0; }
+	else { const add_page_t *pg = add_pages (s_nAddTr, &np); s_nAddPr = (s_nAddPr + d + pg[s_nAddPg].n) % pg[s_nAddPg].n; }
+	add_refresh ();
+}
+void sidecar_morph_add_value (int v) { s_nAddV = v < 0 ? 0 : v > 127 ? 127 : v; add_refresh (); }
+void sidecar_morph_add_go (void)
+{
+	if (!s_bAdd || s_V.sel < 0) return;
+	add_refresh ();
+	char c[48];
+	lv_snprintf (c, sizeof c, "scene=lock:%d:%s:%d", s_V.sel + 1, s_AddName, s_nAddV);
+	cmd (c);
+}
+const char *sidecar_morph_add_name (void) { return s_bAdd ? s_AddName : ""; }
+static void addk_cb (lv_obj_t *o, int i, void *ud) { (void) o; (void) i; (void) ud; sidecar_morph_add (!s_bAdd); }
+static void adds_cb (lv_obj_t *o, int i, void *ud) { (void) o; (void) i; int w = (int) (intptr_t) ud; sidecar_morph_add_step (w / 2, w & 1 ? 1 : -1); }
+static void addv_cb (lv_obj_t *o, int v, void *ud) { (void) o; (void) ud; s_nAddV = v & 0xFFFF; add_refresh (); }
+static void addgo_cb (lv_obj_t *o, int i, void *ud)
+{
+	(void) o; (void) i;
+	if ((int) (intptr_t) ud) sidecar_morph_add_go ();
+	else sidecar_morph_add (0);
+}
 
 static void ab_cb (lv_obj_t *o, int i, void *ud)
 {
@@ -53,15 +149,42 @@ static void scroll_cb (lv_obj_t *o, int i, void *ud)
 	s_nTop += d * s_nRows;
 	s_nTop = s_nTop < 0 ? 0 : s_nTop > max ? max : s_nTop;
 }
+static void refresh (void);
+static void undo_show (int on)
+{
+	if (!s_Undo) return;
+	if (on) lv_obj_remove_flag (s_Undo, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag (s_Undo, LV_OBJ_FLAG_HIDDEN);
+}
 static void del_cb (lv_obj_t *o, int i, void *ud)
 {
 	(void) o; (void) i;
 	int r = (int) (intptr_t) ud;
 	if (r >= s_V.nrows || s_V.sel < 0) return;
+	const sidecar_morph_row_t *x = &s_V.row[r];
+	lv_snprintf (s_UndoName, sizeof s_UndoName, "%s", x->name);
+	lv_snprintf (s_UndoLabel, sizeof s_UndoLabel, "%s", x->label[0] ? x->label : x->name);
+	lv_snprintf (s_UndoVal, sizeof s_UndoVal, "%s", x->value);
+	s_nUndoScene = s_V.sel, s_nUndoMs = lv_tick_get () | 1;
 	char c[48];
-	lv_snprintf (c, sizeof c, "scene=unlock:%d:%s", s_V.sel + 1, s_V.row[r].name);
+	lv_snprintf (c, sizeof c, "scene=unlock:%d:%s", s_V.sel + 1, x->name);
 	cmd (c);
+	undo_show (1);
+	refresh ();
 }
+static void undo_cb (lv_obj_t *o, int i, void *ud)
+{
+	(void) o; (void) i; (void) ud;
+	if (!s_nUndoMs || s_nUndoScene < 0) return;
+	char c[48];
+	lv_snprintf (c, sizeof c, "scene=lock:%d:%s:%s", s_nUndoScene + 1, s_UndoName, s_UndoVal);
+	s_nUndoMs = 0;
+	undo_show (0);
+	cmd (c);
+	refresh ();
+}
+void sidecar_morph_del (int row) { if (row >= 0 && row < s_nRows) del_cb (0, 0, (void *) (intptr_t) row); }
+void sidecar_morph_undo (void) { undo_cb (0, 0, 0); }
+int sidecar_morph_undo_shown (void) { return s_nUndoMs != 0; }
 static void row_cb (lv_obj_t *o, int v, void *ud)
 {
 	(void) o;
@@ -90,7 +213,9 @@ static void fader_cb (lv_obj_t *o, int v, void *ud)
 void sidecar_morph_create (void *parent, int y0)
 {
 	const int o = oled ();
-	s_nGen = ~0u, s_nTop = 0, s_nAssign = 0, s_nSel = -2;
+	s_nGen = ~0u, s_nTop = 0, s_nAssign = 0, s_nSel = -2, s_bAdd = 0, s_Add = 0;
+	s_nAddTr = s_nAddPg = s_nAddPr = 0, s_nAddV = 64;
+	s_nUndoMs = 0, s_nUndoScene = -1, s_Undo = 0;
 	memset (&s_V, 0, sizeof s_V);
 	const int pw = o ? TH->w - 48 : th_page_w (), ph = TH->h - y0 - (o ? LU (25) : 0);
 	lv_obj_t *pg = th_box ((lv_obj_t *) parent, 0, y0, pw, ph + (o ? LU (25) : 0));
@@ -126,7 +251,8 @@ void sidecar_morph_create (void *parent, int y0)
 	// the right half: the list
 	const int rx = x0 + lw + gap * 3, rw = w - lw - gap * 3, kw = LU (o ? 26 : 44);
 	s_ListT = th_label (pg, rx, top, f, dim, "");
-	lv_obj_set_width (s_ListT, rw - 2 * kw - 2 * gap);
+	lv_obj_set_width (s_ListT, rw - 3 * kw - 3 * gap);
+	s_AddK = th_key (pg, rx + rw - 3 * kw - 2 * gap, top, kw, keyh * 2 / 3, "ADD", kind, addk_cb, 0);
 	s_Up = th_key (pg, rx + rw - 2 * kw - gap, top, kw, keyh * 2 / 3, "UP", kind, scroll_cb, (void *) (intptr_t) -1);
 	s_Dn = th_key (pg, rx + rw - kw, top, kw, keyh * 2 / 3, "DN", kind, scroll_cb, (void *) (intptr_t) 1);
 	const int ly = top + keyh * 2 / 3 + gap, rh = o ? LU (16) + TH->pdy / 20 : LU (30) + TH->pdy / 10;
@@ -148,6 +274,32 @@ void sidecar_morph_create (void *parent, int y0)
 			lv_obj_add_flag (s_Val[r], LV_OBJ_FLAG_HIDDEN), lv_obj_add_flag (s_Del[r], LV_OBJ_FLAG_HIDDEN);
 		}
 	}
+	// ADD's picker in the list's place: TRACK / PAGE / PARAM (- name +), the value's slider, ADD / BACK
+	{
+		const int ah = fy - gap * 2 - ly, arh = ah / 6, sk = o ? LU (24) : LU (48), lw3 = o ? 34 : 70;
+		s_Add = th_box (pg, rx, ly, rw, ah);
+		s_AddT = th_label (s_Add, 0, 0, f, ink, "");
+		lv_obj_set_width (s_AddT, rw);
+		static const char *const cap[3] = {"TRACK", "PAGE", "PARAM"};
+		for (int r = 0; r < 3; r++)
+		{
+			int y = (r + 1) * arh;
+			th_label (s_Add, 0, y + (arh - lv_font_get_line_height (f)) / 2, f, dim, cap[r]);
+			th_key (s_Add, lw3, y + 1, sk, arh - 2, "-", kind, adds_cb, (void *) (intptr_t) (2 * r));
+			s_AddL[r] = th_label (s_Add, lw3 + sk + gap, y + (arh - lv_font_get_line_height (f)) / 2, f, ink, "");
+			lv_obj_set_width (s_AddL[r], rw - lw3 - 2 * sk - 2 * gap);
+			lv_obj_set_style_text_align (s_AddL[r], LV_TEXT_ALIGN_CENTER, 0);
+			th_key (s_Add, rw - sk, y + 1, sk, arh - 2, "+", kind, adds_cb, (void *) (intptr_t) (2 * r + 1));
+		}
+		th_label (s_Add, 0, 4 * arh + (arh - lv_font_get_line_height (f)) / 2, f, dim, "VALUE");
+		s_AddS = th_slider (s_Add, lw3, 4 * arh + 2, rw - lw3 - vw - gap, arh - 4, 0, 127, addv_cb, 0);
+		s_AddV = th_label (s_Add, rw - vw, 4 * arh + (arh - lv_font_get_line_height (f)) / 2, f, ink, "");
+		lv_obj_set_width (s_AddV, vw);
+		const int bw = (rw - gap) / 2;
+		s_AddGo = th_key (s_Add, 0, 5 * arh + 1, bw, arh - 2, "ADD", o ? kind : TH_KEY_ACCENT, addgo_cb, (void *) (intptr_t) 1);
+		th_key (s_Add, bw + gap, 5 * arh + 1, bw, arh - 2, "BACK", kind, addgo_cb, (void *) (intptr_t) 0);
+		lv_obj_add_flag (s_Add, LV_OBJ_FLAG_HIDDEN);
+	}
 	// the crossfader: A's scene left, B's right
 	const int lab = LU (o ? 26 : 48);
 	s_FadA = th_label (pg, x0, fy + (fh - lv_font_get_line_height (f)) / 2, f, ink, "A -");
@@ -158,6 +310,9 @@ void sidecar_morph_create (void *parent, int y0)
 	th_slider_default (s_Fader, 0);	// a double tap: A (the scene crossfade off); the lock rows' targets have no default to go back to (DEL removes a lock)
 	s_Info = th_label (pg, x0, ph - foot - (o ? 0 : LU (8)) + LU (o ? 4 : 10), f, o ? TH->faint : dim, "");
 	lv_obj_set_width (s_Info, w);
+	const int uw = LU (o ? 36 : 88), uh = LU (o ? 15 : 34);	// UNDO at the hint line's right end, while offered
+	s_Undo = th_key (pg, x0 + w - uw, ph - foot - (o ? 0 : 8) + (o ? 2 : 4), uw, uh, "UNDO", kind, undo_cb, 0);
+	lv_obj_add_flag (s_Undo, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_add_flag (pg, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -174,6 +329,18 @@ int sidecar_morph_shown (void) { return s_Page && !lv_obj_has_flag (s_Page, LV_O
 int sidecar_morph_top (void) { return s_nTop; }
 void *sidecar_morph_fader (void) { return s_Fader; }
 
+static void list_shown (int on)	// the lock list's rows, or (ADD) the picker in their place
+{
+	for (int r = 0; r < s_nRows; r++)
+	{
+		lv_obj_t *w[4] = {s_Name[r], s_Sl[r], s_Val[r], s_Del[r]};
+		for (int k = 0; k < 4; k++) if (on) lv_obj_remove_flag (w[k], LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag (w[k], LV_OBJ_FLAG_HIDDEN);
+	}
+	if (on) lv_obj_remove_flag (s_Up, LV_OBJ_FLAG_HIDDEN), lv_obj_remove_flag (s_Dn, LV_OBJ_FLAG_HIDDEN), lv_obj_add_flag (s_Add, LV_OBJ_FLAG_HIDDEN);
+	else lv_obj_add_flag (s_Up, LV_OBJ_FLAG_HIDDEN), lv_obj_add_flag (s_Dn, LV_OBJ_FLAG_HIDDEN), lv_obj_remove_flag (s_Add, LV_OBJ_FLAG_HIDDEN);
+	th_key_check (s_AddK, !on);
+}
+
 static void refresh (void)
 {
 	const sidecar_morph_view_t *v = &s_V;
@@ -181,8 +348,9 @@ static void refresh (void)
 	int n = v->sel >= 0 ? v->nlocks[v->sel] : 0;
 	if (v->sel != s_nSel) s_nSel = v->sel, s_nTop = 0;
 	if (s_nTop > 0 && s_nTop >= n) s_nTop = n > s_nRows ? n - s_nRows : 0;	// the scene has fewer locks now
-	if (v->a >= 0 && v->b >= 0) lv_snprintf (r, sizeof r, "A%d  B%d%s", v->a + 1, v->b + 1, v->edit ? "  EDIT" : "");
-	else lv_snprintf (r, sizeof r, "%s", v->edit ? "EDIT" : "");
+	const char *ed = v->edit == 1 ? "EDIT A" : v->edit == 2 ? "EDIT B" : "";
+	if (v->a >= 0 && v->b >= 0) lv_snprintf (r, sizeof r, "A%d  B%d%s%s", v->a + 1, v->b + 1, ed[0] ? "  " : "", ed);
+	else lv_snprintf (r, sizeof r, "%s", ed);
 	if (s_TitleBar) th_titlebar_set (s_TitleBar, "MORPH", r, 0);
 	else { lv_snprintf (t, sizeof t, "MORPH  %s", r); th_label_set (s_Title, t); }
 	for (int k = 0; k < SMO_SCENES; k++)
@@ -199,10 +367,16 @@ static void refresh (void)
 	th_label_set (s_ListT, t);
 	th_key_enable (s_Up, s_nTop > 0);
 	th_key_enable (s_Dn, s_nTop + s_nRows < n);
-	for (int i = 0; i < s_nRows; i++)
+	for (int i = 0; i < s_nRows && !s_bAdd; i++)
 	{
 		int on = i < v->nrows;
-		th_label_set (s_Name[i], on ? (v->row[i].label[0] ? v->row[i].label : v->row[i].name) : "");
+		if (on && v->row[i].stale)	// the target no longer resolves: its name with "?", faint (as the Rytm's "?")
+		{
+			lv_snprintf (t, sizeof t, "%s?", v->row[i].name);
+			th_label_set (s_Name[i], t);
+		}
+		else th_label_set (s_Name[i], on ? (v->row[i].label[0] ? v->row[i].label : v->row[i].name) : "");
+		th_label_color (s_Name[i], on && v->row[i].stale ? TH->faint : oled () ? TH->ink : TH->win_ink);
 		th_label_set (s_Val[i], on ? v->row[i].value : "");
 		th_slider_set (s_Sl[i], on ? v->row[i].v : 0);
 		if (on) lv_obj_remove_flag (s_Sl[i], LV_OBJ_FLAG_HIDDEN), lv_obj_remove_flag (s_Del[i], LV_OBJ_FLAG_HIDDEN);
@@ -213,14 +387,22 @@ static void refresh (void)
 	if (v->b >= 0) lv_snprintf (t, sizeof t, "B%d", v->b + 1); else lv_snprintf (t, sizeof t, "B -");
 	th_label_set (s_FadB, t);
 	if (!th_slider_dragging (s_Fader)) th_slider_set (s_Fader, v->fader);
-	th_label_set (s_Info, !v->valid ? "WAITING FOR THE ENGINE"
+	if (s_bAdd) add_refresh ();
+	if (s_nUndoMs) lv_snprintf (t, sizeof t, "REMOVED %s", s_UndoLabel);
+	th_label_set (s_Info, s_nUndoMs ? t : !v->valid ? "WAITING FOR THE ENGINE"
 		: v->locked ? "SCENES LOCKED: THE FILE IS FROM A NEWER BUILD, NOT SAVED"
-		: !n ? "NO LOCKS: HOLD A SCENE KEY ON THE RYTM (EDIT ON) AND TURN A KNOB"
+		: !n ? "NO LOCKS: ADD ONE, OR HOLD PAGE + T15 / T16 AND TURN A KNOB"
 		: "TAP A OR B, THEN A PAD: THAT END OF THE FADER");
 }
 
 void sidecar_morph_set (const sidecar_morph_view_t *v)
 {
+	if (s_nUndoMs && lv_tick_elaps (s_nUndoMs) >= 2000)	// the undo's 2 s are over
+	{
+		s_nUndoMs = 0;
+		undo_show (0);
+		if (s_Page) refresh ();
+	}
 	if (!s_Page || v->gen == s_nGen) return;
 	s_V = *v;
 	s_nGen = v->gen;

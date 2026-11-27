@@ -300,7 +300,7 @@ with the three lists' tabs and their counts; DONE goes back where it came from. 
   each .sfz with +INST"). "Pool & presets" is now **Presets**. `bank_json` carries `ro` (a foreign-newer list: edits in
   RAM only).
 - **Drop zone (Files tab):** WAVs dropped or chosen there are uploaded to `/Samples/Inbox` (made when missing) and each is
-  added with `pool=smp:take:PATH`. Edit a sample with the SAMPLE EDIT page: `docs/SAMPLE-EDIT.md` (the POOL page's EDIT).
+  added with `pool=smp:take:PATH`. Edit a sample with the SAMPLE EDIT page: `docs/SAMPLE-EDIT.md` (the POOL page's EDIT). On the touchscreen a SAMPLES row's menu has EDIT too; a wavetable can be made from a sample there (MAKE WT: the row lands in WAVETABLES).
 
 ### The console (`pools::command`, the control core; the web's `/cmd`, the serial `:` lines)
 

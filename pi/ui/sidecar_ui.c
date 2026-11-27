@@ -23,6 +23,7 @@
 #include "sidecar_insfx.h"		// page 9: INSERT FX, a voice's inserts and sends (fx-ins)
 #include "sidecar_mfx.h"		// MASTER FX
 #include "sidecar_morph.h"		// page 20: MORPH (0.5.0 scenes: the pads, a scene's locks, the crossfader)
+#include "sidecar_loop.h"		// page 25: LOOP (0.5.0 the master looper: grabs, STOP, KEEP, BAL / LEV; core/loop)
 #include "sidecar_xy.h"		// page 22: XY PAD (0.5.0: the touchscreen as an XY controller, core/mod/xypad.h)
 #include "sidecar_song.h"		// page 10: SONG, SONG RECORD's timeline (core/song)
 #include "sidecar_rec.h"		// page 11: REC, the Overbridge multitrack recorder (UP + T7, the home page's REC status)
@@ -40,7 +41,7 @@
 
 enum { SEG_NOTES, SEG_OUT, SEG_MAC, SEG_VOICE, SEG_MACH, SEG_DRONE, SEG_SAVER, SEG_STYLE, SEG_LOOK, SEG_CONTRAST, SEG_CLOCK, SEG_USB, SEG_KEYS, SEG_KEYSMAC, SEG_SUB, SEG_N = SEG_SUB + 8 };	// SEG_SUB + section: that section's sub-page row (0.5.1)
 enum { PG_HOME, PG_SOUND, PG_FX, PG_ABOUT, PG_SEQ, PG_RYTM, PG_DISPLAY, PG_MACH, PG_VOICE, PG_INS, PG_SONG, PG_REC, PG_SCOPE, PG_STATUS, PG_PROJECT, PG_POOL,
-       PG_SERVICE, PG_CHOP, PG_PRESET, PG_MFX, PG_MORPH, PG_SEDIT, PG_XY, PG_MIDI, PG_PERFORM, PG_N };	// SERVICE (UX review T18): FIFO and the test drone, out of the musician's Sound page; the tab is called System: the CPU clock too
+       PG_SERVICE, PG_CHOP, PG_PRESET, PG_MFX, PG_MORPH, PG_SEDIT, PG_XY, PG_MIDI, PG_PERFORM, PG_LOOP, PG_N };	// SERVICE (UX review T18): FIFO and the test drone, out of the musician's Sound page; the tab is called System: the CPU clock too
 
 // Pool: the POOL page (the three lists, sidecar_wgview.h), a page of its own
 static const char *const kOnOff[] = {"Off", "On", ""};
@@ -70,6 +71,7 @@ static const char *const kSendName[SIDECAR_UI_SENDS] = {"BD", "SD", "RS", "CP", 
 static const char *const kAboutName[8] = {"Web page", "Address", "IP", "Web server", "Link", "USB-C", "Version", "Libraries"};
 
 // ---- the objects (both themes build all of them)
+static lv_obj_t *s_Strip;			// C: the header's pixel status strip
 static lv_obj_t *s_Title, *s_Rytm, *s_Blocks, *s_Underruns;
 static lv_obj_t *s_NowPat, *s_NowTr, *s_NowRec, *s_Health;	// HOME > Overview: Now, the recorder, the health line
 static lv_obj_t *s_Project, *s_USlot[5];	// (the project's name; s_USlot: the user slots' state, the health line reads it)
@@ -106,13 +108,23 @@ static const char *const kHomeMap[] = {"Overview", "Status", "Project", "Perform
 static const int kHomePg[] = {PG_HOME, PG_STATUS, PG_PROJECT, PG_PERFORM};
 static const char *const kVoiceMap[] = {"Sound", "Insert", "Source", "Scope", ""};
 static const int kVoicePg[] = {PG_VOICE, PG_INS, PG_MACH, PG_SCOPE};
+// FX's sub-pages: Morph (0.5.0) and Loop (0.5.2) are out with SIDECAR_MORPH / SIDECAR_LOOPER 0 (core/sidecar_features.h)
 #if SIDECAR_MORPH
-static const char *const kFxMap[] = {"Sends", "Master", "Morph", "XY", ""};
-static const int kFxPg[] = {PG_FX, PG_MFX, PG_MORPH, PG_XY};
+#define FX_MORPH_N	"Morph",
+#define FX_MORPH_P	PG_MORPH,
 #else
-static const char *const kFxMap[] = {"Sends", "Master", "XY", ""};
-static const int kFxPg[] = {PG_FX, PG_MFX, PG_XY};
+#define FX_MORPH_N
+#define FX_MORPH_P
 #endif
+#if SIDECAR_LOOPER
+#define FX_LOOP_N	"Loop",
+#define FX_LOOP_P	, PG_LOOP
+#else
+#define FX_LOOP_N
+#define FX_LOOP_P
+#endif
+static const char *const kFxMap[] = {"Sends", "Master", FX_MORPH_N "XY", FX_LOOP_N ""};
+static const int kFxPg[] = {PG_FX, PG_MFX, FX_MORPH_P PG_XY FX_LOOP_P};
 static const char *const kSongMap[] = {"Timeline", "Setup", ""};
 static const int kSongPg[] = {PG_SONG, PG_SONG};
 static const char *const kRecMap[] = {"Record", "Takes", ""};
@@ -169,7 +181,7 @@ static void map_cols (int mixed, char *c1, char *c2, int cap)	// c1: the title a
 static lv_obj_t *s_Home, *s_Pages, *s_Pg[PG_N], *s_Nav[NAV_N], *s_SetTitle;
 static lv_obj_t *s_PageName;			// SIDECAR's header from 1024x600: the page's name in the dot font
 static const char *const kPageName[PG_N] = {"HOME", "SOUND", "SEND FX", "ABOUT", "SEQ", "PAT", "DISPLAY", "MACHINE", "VOICE",
-	"INSERT FX", "SONG", "REC", "SCOPE", "STATUS", "PROJECT", "POOL", "SYSTEM", "CHOP", "PRESET", "MASTER FX", "MORPH", "EDIT", "XY PAD", "MIDI", "PERFORM"};
+	"INSERT FX", "SONG", "REC", "SCOPE", "STATUS", "PROJECT", "POOL", "SYSTEM", "CHOP", "PRESET", "MASTER FX", "MORPH", "EDIT", "XY PAD", "MIDI", "PERFORM", "LOOP"};
 static lv_obj_t *s_UsbInfo;			// Settings > Sound: what USB-C is now, OVERBRIDGE's warning
 static lv_obj_t *s_KeysAuto, *s_KeysIn, *s_KeysLast, *s_LearnInfo;	// Settings > MIDI
 static int s_nAutoLocal;				// the auto channel the - / + keys asked for (0: none waits)
@@ -484,7 +496,7 @@ static int page_sec (int page)
 	case PG_SEQ: return NAV_SEQ;
 	case PG_RYTM: return NAV_PAT;
 	case PG_VOICE: case PG_MACH: case PG_SCOPE: case PG_CHOP: case PG_SEDIT: case PG_INS: return NAV_VOICE;
-	case PG_FX: case PG_MFX: case PG_MORPH: case PG_XY: return NAV_FX;
+	case PG_FX: case PG_MFX: case PG_MORPH: case PG_XY: case PG_LOOP: return NAV_FX;
 	case PG_SONG: return NAV_SONG;
 	case PG_REC: return NAV_REC;
 	case PG_POOL: case PG_PRESET: return pool_from_voice () ? NAV_VOICE : NAV_SET;
@@ -547,6 +559,7 @@ static void show_page (int page)
 	sidecar_morph_show (page == PG_MORPH);
 	sidecar_xy_show (page == PG_XY);
 	sidecar_xy_perform_show (page == PG_PERFORM);
+	sidecar_loop_show (page == PG_LOOP);
 	sidecar_xy_overview (page == PG_HOME);
 	sidecar_song_show (page == PG_SONG);
 	sidecar_rec_show (page == PG_REC);
@@ -884,7 +897,7 @@ static void home_overview (lv_obj_t *h)
 	// NOW: the pattern, the transport, the project
 	const int nw = (O ? LU (124) : LU (236)) + TH->dx / 4;
 	lv_obj_t *np = th_panel (h, M, y0, nw, r1, O ? "NOW" : "Now", kind);
-	s_NowPat = label (np, O ? LU (6) : LU (12), O ? LU (12) : THEME_BOXED (TH->id) ? LU (28) : LU (22), O ? TH->f_big : TH->f_hero, ink, "-");
+	s_NowPat = label (np, O ? LU (6) : LU (12), O ? LU (12) : THEME_BOXED (TH->id) ? LU (28) : LU (22), O ? TH->f_big : TH->f_pxh ? TH->f_pxh : TH->f_hero, ink, "-");
 	const int tx = O ? LU (56) : LU (124);
 	s_NowTr = label_w (np, tx, O ? LU (14) : LU (30), nw - tx - pad, val, dim, "-");
 	label (np, O ? LU (6) : LU (12), r1 - (O ? LU (27) : LU (44)), lab, dim, O ? "PROJECT" : "Project");
@@ -1189,6 +1202,8 @@ static void oled_build (lv_obj_t *scr)
 	sidecar_morph_set_command (command);
 	OLED_UNDER (scr, sidecar_xy_create (scr, 0));
 	sidecar_xy_set_command (command);
+	OLED_UNDER (scr, sidecar_loop_create (scr, 0));
+	sidecar_loop_set_command (command);
 	home_perform (s_Pg[PG_PERFORM]);
 	OLED_UNDER (scr, sidecar_song_create (scr, 0, song_cmd));
 	OLED_UNDER (scr, sidecar_rec_create (scr, 0, rec_cmd));
@@ -1425,6 +1440,20 @@ static void sc_build (lv_obj_t *scr)
 				    fp, TH->ink, "");
 		s_Rytm = label_w (bar, W - LU (16) - LU (240), (LU (52) - TH->f_small->line_height) / 2, LU (240), TH->f_small, TH->win_dim, "");
 		lv_obj_set_style_text_align (s_Rytm, LV_TEXT_ALIGN_RIGHT, 0);
+		if (TH->f_pxs && TH->w >= 1024)		// a small Rytm-OLED strip in the header: pattern, tempo, transport, in the pixel face on black
+		{
+			const lv_font_t *f = TH->f_pxs;
+			const int sw = th_text_width (f, "H16  888.8  PAUS") + 2 * LU (10), sh = f->line_height + LU (10);
+			s_Strip = th_label (bar, W - LU (16) - LU (240) - LU (14) - sw, (LU (52) - sh) / 2, f, TH->ink, "");
+			lv_obj_set_style_bg_color (s_Strip, lv_color_hex (0x000000), 0);
+			lv_obj_set_style_bg_opa (s_Strip, LV_OPA_COVER, 0);
+			lv_obj_set_style_border_color (s_Strip, lv_color_hex (TH->win_edge), 0);
+			lv_obj_set_style_border_width (s_Strip, TH->edge_w, 0);
+			lv_obj_set_style_pad_hor (s_Strip, LU (10) - TH->edge_w, 0);
+			lv_obj_set_style_pad_ver (s_Strip, (sh - f->line_height) / 2 - TH->edge_w, 0);
+			lv_obj_set_width (s_Strip, sw);
+			lv_label_set_long_mode (s_Strip, LV_LABEL_LONG_MODE_CLIP);
+		}
 		lv_obj_t *r = th_box (scr, W, 0, rail, TH->h);		// the rail: the Rytm's T1..T8, the page's key a light pill
 		lv_obj_set_style_bg_color (r, lv_color_hex (TH->hc ? 0x000000 : THEME_BOXED (TH->id) ? TH->bg : 0x0D0A2A), 0);	// (the rail's own night blue, black in high contrast; its keys at 0: the border shifts the content by 1)
 		lv_obj_set_style_bg_opa (r, LV_OPA_COVER, 0);
@@ -1473,6 +1502,8 @@ static void sc_build (lv_obj_t *scr)
 	sidecar_morph_set_command (command);
 	sidecar_xy_create (scr, LU (110));
 	sidecar_xy_set_command (command);
+	sidecar_loop_create (scr, LU (110));
+	sidecar_loop_set_command (command);
 	home_perform (s_Pg[PG_PERFORM]);
 	sidecar_song_create (scr, LU (110), song_cmd);
 	sidecar_rec_create (scr, LU (110), rec_cmd);
@@ -1662,6 +1693,7 @@ static void build (void)
 	memset (s_Seg, 0, sizeof s_Seg);
 	memset (s_Pg, 0, sizeof s_Pg);
 	memset (s_Nav, 0, sizeof s_Nav);
+	s_Strip = 0;
 	s_Title = s_Rytm = s_SetTitle = s_Taps2 = s_Touch2 = s_Map = s_Stale = s_PageName = 0;
 	s_NoFeed = s_NoFeedName = 0;
 	s_CalOv = s_CalState = 0;					// (the top layer was cleaned)
@@ -2119,6 +2151,13 @@ void sidecar_ui_status (const sidecar_ui_status_t *s)
 		if (s->pattern >= 0) lv_snprintf (b, sizeof b, "%c%02d", 'A' + s->pattern / 16 % 8, s->pattern % 16 + 1);
 		else lv_snprintf (b, sizeof b, "-");
 		set_text (s_NowPat, b);
+		if (s_Strip)		// the header strip: pattern, tempo, transport (the Rytm's top line; "---" what is not known)
+		{
+			char sb[40], tp[8] = "---";
+			if (s->bpm10 > 0 && s->bpm10 < 10000) lv_snprintf (tp, sizeof tp, "%d.%d", s->bpm10 / 10, s->bpm10 % 10);
+			lv_snprintf (sb, sizeof sb, "%s  %s  %s", s->pattern >= 0 ? b : "---", tp, !s->rytm ? "----" : s->rec == 2 ? "REC" : s->transport == 1 ? "PLAY" : s->transport == 2 ? "PAUS" : "STOP");
+			set_text (s_Strip, sb);
+		}
 		char nb[32];
 		lv_snprintf (nb, sizeof nb, oled () ? "NO %s" : "no %s", oled () ? s_BoxUp : s_Box);
 		set_text (s_NowTr, !s->rytm ? nb : s->transport == 1 ? (oled () ? "PLAYING" : "playing")
@@ -2349,10 +2388,14 @@ void sidecar_ui_combo_map (int on)
 int sidecar_ui_combo_map_shown (void) { return s_Map && !lv_obj_has_flag (s_Map, LV_OBJ_FLAG_HIDDEN); }
 // HOME > Overview's parts, the middle of each (UI coordinates; the host's taps): 0..7 the voice tiles in their order, 8 Now, 9 the XY tile,
 // 10 / 11 the send FX tiles, 12 the recorder, 13 health, 14 links, 15 Perform's REC key
+void *sidecar_ui_home_obj (int what)
+{
+	return what >= 0 && what < 8 ? s_Track[what] : what == 8 ? s_NowPat : what == 9 ? s_OvXy : what == 10 || what == 11 ? s_OvFx[what - 10]
+	       : what == 12 ? s_NowRec : what == 13 ? s_Health : what == 14 ? s_OvLink[0] : what == 15 ? s_PerfRec : what == 16 ? s_PerfKill : what == 17 ? s_Rytm : 0;
+}
 int sidecar_ui_home_hit (int what, int *x, int *y)
 {
-	lv_obj_t *o = what >= 0 && what < 8 ? s_Track[what] : what == 8 ? s_NowPat : what == 9 ? s_OvXy : what == 10 || what == 11 ? s_OvFx[what - 10]
-		    : what == 12 ? s_NowRec : what == 13 ? s_Health : what == 14 ? s_OvLink[0] : what == 15 ? s_PerfRec : what == 16 ? s_PerfKill : 0;
+	lv_obj_t *o = (lv_obj_t *) sidecar_ui_home_obj (what);
 	if (!o) return 0;
 	lv_area_t c;
 	lv_obj_get_coords (o, &c);

@@ -54,6 +54,7 @@ inline constexpr const char kStatusTitle[] = "SIDECAR MINI";
 
 void remote_sysex(const uint8_t* d, int len);   // a whole 0x30..0x3F message from the Rytm
 void remote_tick(uint32_t ms);                  // every pass of the platform's control loop (any ms clock)
+void remote_link_lost();                        // the Rytm's USB MIDI gone: the re-hello asking starts over at the next Rytm traffic
 void remote_resync();                           // records for the Rytm were lost (no hello comes): what is owed goes again
 void remote_request(bool on);                   // the host opens / closes the page (3A 0 on)
 bool remote_open();
@@ -62,6 +63,22 @@ int remote_caps();   // fix1049: the Rytm's last hello's caps (bit 0: 36; bit 1,
 // requests 49 1 1 kPageGenerator / kPageFill once claimed (remote.cpp fill_claim: 4A 7E 1 after each hello).
 int remote_caps2();
 constexpr int kCaps2Arrows = 1;
+// 0.5.0 v2 Task 6: the mod's QPERF report (2D 01 0E) carries the macros' mute in flags bit 2 (FUNC + QPER); the host
+// trusts that bit only from a mod whose hello has this (scene::qperf: QPERF FADER MUTED ONLY acts as OFF without it)
+constexpr int kCaps2QpMute = 2;
+// 0.5.0 v2 P2: kCaps2Capture - PAGE + T15 / T16 on the Rytm's own pages is the MORPH scene edit, once armed (5A 01 0B 1,
+// sent after every hello: core/mod/rytm_out.h kOpEditArm); its reports 2D 01 12 / 13 (core/mod/scene.h capture)
+constexpr int kCaps2Capture = 4;
+// 0.5.0 v2 P3: kCaps2Morph - the Rytm morphs its own params itself: 5A 01 09 MORPH-SET (each lock's A / B once) and
+// 0A FADER (core/mod/rytm_param.h rp_morph_set / rp_fader); without it the morph goes as 05 overrides
+constexpr int kCaps2Morph = 8;
+// 0.5.2 re-hello: kCaps2Rehello - the Rytm answers 3C with flags bit 0 (the keepalive) with its hello again, at most once a
+// second (remote.cpp rehello_tick: sent when Rytm traffic came but no hello). Bit 3 is the morph-v2 branch's (5A 01 09 / 0A).
+constexpr int kCaps2Rehello = 16;
+// 0.5.2 TBLB: kCaps2ListP13 - the Rytm opens the host's bank list for table B (P13) from the SMPL page of a WAVETABLE track: 4A's
+// optional 6th byte (12 = P13). The host says it draws such lists with 4A 7D 1 after each hello, and only to a Rytm with this bit
+// (remote.cpp list_p13_announce). Bit 3 is the morph-v2 branch's, bit 4 re-hello's.
+constexpr int kCaps2ListP13 = 32;
 // FILL's claim dropped (4A 7E 0: the Rytm's UP + LEFT / RIGHT stock's again) - fill-keys review L1: a claim left on a
 // Rytm whose host stopped answering. remote_fill_keys(false) (fill=keys:off): dropped, no claim after a hello until
 // remote_fill_keys(true) claims again; control core. remote_going_down(): a planned reboot or power-off (the Pi's
@@ -74,6 +91,7 @@ constexpr int kPageGenerator = 15, kPageFill = 16;
 // The page drawn by code titled `title` (extra.h: "SEQ", "LFO" ..) shown: at once when the page is open, else the page
 // opened (3A 0 1) and that page shown when the Rytm says it is open (30).
 void remote_show_page(const char* title);
+void remote_morph_qperf_move();   // a QUICK PERF fader move (scene): on the open MORPH page its frames commit every 50 ms while playing
 const char* remote_page_title();   // the page shown now when it is one drawn by code (open), else null
 
 // The platform's numbers for the SYSTEM page (any time; plain words, a stale value at worst). The fields after cpu
@@ -245,7 +263,15 @@ uint32_t remote_vparam_gen();
 int remote_track_src14_fresh(int t);
 // 1027e: track t's P(k+1) as the SRC view draws it (the Rytm's 2A; -1 none yet)
 int remote_track_src_value(int t, int k);
+// 2026-11-24 TBLB: track t's P(k+1) as a 14-bit word (value << 7 | fraction: a banked knob's code), -1 none yet
+int remote_track_src_word(int t, int k);
+// P13 (WAVETABLE's table B) was the knob touched last on track t, P1 not since (the names bank for the Rytm's value text follows it)
+bool remote_track_names_p13(int t);
 int remote_track_src_param(int t);
+// 0.5.2 rc4: P(k+1) of track t picks a source or preset from a list (the Rytm's bank list: GRANULAR SRC, WAVETABLE TBL /
+// TBLB, MULTISAMPLE INST, CHOP SRC, JUNO / 6-OP FM's preset, DSP SAMPLE / SAMPLER's SMP): never a MORPH scene lock (a
+// morph would sweep through the pool)
+bool remote_track_src_list(int t, int k);
 // The Rytm's mods are 0.4.0's or newer (its slot asks say 36 names, core/user/um.cpp): DSP SAMPLE's knob A is SMP (rytm-mods 7h)
 void remote_rytm_040(bool on);
 bool remote_rytm_040();

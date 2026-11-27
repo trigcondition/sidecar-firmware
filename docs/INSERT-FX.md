@@ -272,6 +272,80 @@ NOTLITE, the cap, silence, noise at every knob corner, the texts and the INSERT 
 -> AMP; -> AMP with GAIN up; -> AMP -> SPACE H1 slapback; H123 synced 1/8 with REPEAT and AGE; a dub throw). Without
 MODEL capture A is SYNTHETIC (random weights, not an amp: no amp colour); with MODEL a real A2-Lite capture.
 
+## SIDECHAIN (0.5.2): pump and duck from a source
+
+One gain stage per insert chain (V1..V8, B1..B3, M1, M2), after the chain's two slots and before its POST EQ. Off is the
+default: the stage is skipped, bit for bit, and costs nothing.
+
+| MODE | knobs (A..F of the page's C..H) |
+|---|---|
+| PUMP | DPTH ATT HOLD REL SHAP THR |
+| DUCK | THR RAT ATT REL KBAS KWID |
+
+**SRC.** A Rytm track BD..CB (its Overbridge stem; RS/CP, MT/HT, CH/OH and CY/CB share one stem each, but each track has its
+own trig), AUDIO IN L, R or L+R, or a Sidecar voice V1..V8 (its sound before its own chain: a voice keyed by itself is a COMP on its own pre-chain signal, there is no loop).
+Stems and AUDIO IN exist only in Overbridge mode: when the source is not there DUCK does nothing, and the page says why
+(`NO STEMS`, `NO AUDIO IN`). PUMP keyed by a Rytm track needs no stem: it runs on the track's MIDI trigs, with or
+without Overbridge (AUDIO IN has no trigs: its onset needs the audio). B1 and B2 run inside send FX 1 / 2's return, so
+with that send FX OFF their sidechain does nothing too (`SEND FX OFF`). Choosing the mode a chain is already in changes
+nothing (the knobs stay); a different mode loads that mode's defaults. A mode or source change ramps the gain over
+about 5 ms, never a step, and a new source's trig counter is taken as it is (no trig from an old count).
+
+**PUMP** is a trig-driven gain envelope, sample-exact from the frame it starts on (`j` = frames since the trig frame):
+attack `g0 -> 1 - DPTH` linear over ATT (ATT 0: the trig's own frame is already down; `g0` is the gain when the trig
+came, so a retrigger is continuous), hold HOLD, release back to 1 over REL on the curve `u^e` (`e = 2^((SHAP-64)/32)`,
+SHAP 64 is linear, below it the gain comes back fast first, above it slow first). DPTH is linear (127 = silence),
+ATT 0..30 ms, HOLD 0..250 ms, REL 10 ms..1.5 s (all squared knobs). The trig is the Rytm's note-out on the track's
+channel (channel 1..12 = track 1..12), a voice's note, or for AUDIO IN a level onset (key high-passed at 80 Hz, a peak
+follower, THR -60..0 dB, re-armed below half of it, 20 ms lock). A trig reaches the stage at the start of its next chunk
+(16 frames at most, 0.33 ms).
+
+**DUCK** is the INSERT COMP (its detector and gain computer are the same code), keyed by the source instead of the
+chain's own signal: THR 0..-40 dB, RAT 1..20, ATT 0.3..30 ms and REL 40..640 ms (each on its own knob), then the key's
+band-pass (0.5.2), on the key only, never on the sound:
+
+- **KBAS** (0.5.2; the 0.5.0 / 0.5.1 HPF): the key's high pass, 18 dB per octave (a 3rd order Butterworth: one pole and
+  one 2-pole section at the same corner), OFF or 20 Hz..19.6 kHz (log), shown in Hz. -3 dB at the corner.
+- **KWID**: the key's low pass, 12 dB per octave (2-pole), KWID octaves above KBAS: `KBAS x 2^KWID`, KWID 0.5..9.9 octaves
+  or OFF. With KBAS OFF the low pass is a plain low pass from 20 Hz x 2^KWID. Both corners are kept below 0.45 x the sample
+  rate. The low pass is 12 dB per octave whatever KBAS does; KBAS and KWID OFF is the key as it is, bit for bit.
+
+A kick-keyed duck that ignores the hi-hats: KBAS 60 Hz, KWID 3 oct (the key is 60..480 Hz). Keyed by the chain's own
+signal with KBAS and KWID OFF it gives COMP's answer exactly [tested].
+
+**MON** (0.5.2) plays the filtered key (what the detector sees, before its level) in place of the chain's output, both
+sides, so KBAS and KWID can be set by ear. It is per chain, only on a DUCK stage, and a 5 ms ramp each way (no click). It
+is **not saved** with the kit's card (a card never loads with MON on) and it ends by itself with a mode or source change,
+another chain in the view, leaving the view, the page or the web page, and a kit change. MON from the web is a lease of about 3 s the page
+renews every second with `ins=C:sc:mon:renew` (which never switches MON on): a closed tab or a lost link lets it lapse (the Rytm's T1 has no lease). MON is clamped to +-2 and a runaway
+or NaN key is not played (the same guard as the chain's). Rytm: T1 in the SIDECHAIN view (the
+INSERT and MASTER pages; its LED shows it; T1 is the page's only in that view, on a DUCK stage). Web: Mix > Sidechain >
+Monitor the key. Console: `ins=V2:sc:mon:on|off`; `/status` `"ins"` `"sc"` `"mon":0|1`.
+
+**Trial cards.** The sidechain was never in a release before 0.5.2. A trial card from an earlier 0.5.2 development build has
+`SC V1 DUCK ...` with HPF in its fifth knob (a 12 dB per octave high pass, 40 Hz..2.5 kHz) and nothing in the sixth. It loads as
+the nearest KBAS (the same corner within half a step, 0 = OFF) and KWID OFF; the slope is now 18 dB per octave, so a key with
+energy below the corner reaches the detector 6 to 12 dB lower. A line with no HPF knob gets the old default (HPF 40, about 148 Hz). The next save writes the stage as
+`SCK V1 DUCK BD 50 70 10 50 KBAS KWID` (PUMP stays `SC`); a Sidecar older than 0.5.2 counts an `SCK` line as unreadable and keeps the file.
+
+**Control.** The six knobs take LFOs and scenes: targets `I3:S1`..`S6` (`B1:S1`, `M2:S6`; param 12..17 of the chain),
+labelled by the mode (`SDPT`, `STHR`; in DUCK S5 and S6 are KBAS and KWID, `SKBA`, `SKWI`). Mode and source are lists and are not modulated. No p-locks (the step-lock space
+is full).
+
+**UI.** The Rytm: on the INSERT page press RIGHT for the EQ view, then DOWN: the SIDECHAIN view (A MODE, B SRC, C..H
+the knobs; YES steps voice > bus 1 > 2 > 3; T1 toggles MON on a DUCK stage; LEFT, DOWN or NO back); the MASTER FX page the same (YES: M1 / M2). Web:
+Mix > Sidechain. Console: `ins=V2:sc:mode:pump`, `ins=V2:sc:src:bd`, `ins=V2:sc:p1:90`, `ins=V2:sc:off`; `/status` `"ins"`
+`"sc"` has 13 entries. The touchscreen's INSERT FX page has no dials for it.
+
+**Card.** `SC V1 PUMP BD 90 0 20 60 40 50` (MODE SRC P1..P6) per chain that is on, in the kit's INSERT file; a DUCK stage is
+`SCK V1 DUCK BD 50 70 10 50 0 0` (0.5.2, above).
+
+**Cost** [measured on a Mac, -O2, `test_sidechain`]: PUMP about 0.02 % and DUCK about 0.04 % of a core at 48 kHz per chain;
+with KBAS and KWID on 0.06 % (stereo; mono 0.057 %), MON adds nothing worth naming.
+
+**Release note (0.5.2):** The sidechain's DUCK listens to a band of the key: KBAS (high pass, 18 dB per octave) and KWID
+(low pass, 12 dB per octave, that many octaves above), and MON lets you hear that key.
+
 ## Control: knob, p-lock, LFO
 
 `ins::control.play` is what the DSP reads: the knob, or a step's p-lock in its place, plus the LFO's offset.

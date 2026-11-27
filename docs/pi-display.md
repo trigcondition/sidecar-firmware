@@ -118,6 +118,10 @@ shown) and the bank's rows `000 OFF`, `001 name`, `---`. Row states: LOADING, RA
 The title shows the list and the pool RAM (`RAM 412 MB 40%`, `RAM -` until the shared cache counts). Rows are 36 px (a touch
 target); what does not fit is paged with UP / DOWN (at 800x480 about five rows show under the tab row).
 - a tap on a row with content: the voice plays it (`gr=pick:V:C005`, `wt=pick:V:C005`, `msamp=pick:V:C005`: the Rytm's P1);
+  **WAVETABLE's list has a target**: its middle key (`TBL A` / `TBL B`; `SELECT UNUSED` stays on the POOL page's list) picks the
+  table the rows set. On B the title reads `TABLES  WAVETABLE V3 B`, the playing row marked is table B's, and a tap sends
+  `wt=pickb:V:C005` (the Rytm's TBLB, P13). Table B is silent while MIX is 0 and WARP is not FM or RM: such a pick says
+  `B IS SILENT: MIX IS 0` for a few seconds. Every open of the list starts on A;
   on an empty row: FILES aimed at it - the list machine's browser (`browse=gr|wt|ms:open:I`, `up`, `root`; the root shows
   `@INPUTS/` and `@BUILT-IN/` where the list takes them), a file or virtual item goes into the row
   (`pool=smp|wt|inst:assign:C005:I`, then the next empty row), FILL B the folder's files into the bank's empty rows

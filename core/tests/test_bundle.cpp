@@ -224,8 +224,8 @@ static void fixture() {
   put("/.rytm/lfo/AR PERC.txt", "L1 V1 TIM SIN 40 20\n");
   put("/.rytm/lfo/AR PERC/k001.txt", "L1 V2 TIM TRI 30 10\n");
   put("/.rytm/ins/AR PERC.txt", "V1 A FILTER 80 20 0 0\n");
-  put("/.rytm/scene/AR PERC.txt", "#sidecar scene 1\nAB 1 2\nL 1 V1:P3 6400\n");   // 0.5.0 (core/mod/scene.h)
-  put("/.rytm/scene/AR PERC/k001.txt", "#sidecar scene 1\nAB 1 0\nL 1 V2:P1 1280\n");
+  put("/.rytm/scene/AR PERC.txt", "#sidecar scene 2\nAB 1 2\nL 1 V1:P3 6400\n");   // 0.5.0 (core/mod/scene.h)
+  put("/.rytm/scene/AR PERC/k001.txt", "#sidecar scene 2\nAB 1 0\nL 1 V2:P1 1280\n");
   put("/.rytm/xy/AR PERC.txt", "#sidecar xy 1\nH 0\nX 1 RYTM:PERF1 100\n");   // 0.5.0 (core/mod/xypad.h)
   put("/.rytm/xy/AR PERC/k001.txt", "#sidecar xy 1\nH 1\nY 2 MORPH -50\n");
   put("/.rytm/ins/AR PERC/k002.txt", "V2 A DRIVE 40 0 0 0\n");

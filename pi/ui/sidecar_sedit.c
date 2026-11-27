@@ -12,8 +12,8 @@ static const char *const kFnO[SSE_FN_N] = {"CROP", "NORM", "TRIM", "FD IN", "FD 
 static const char *const kFnC[SSE_FN_N] = {"Crop", "Normalise", "Trim", "Fade in", "Fade out", "Reverse", "Gain +3 dB", "Gain -3 dB"};
 static const char *const kFnBusy[SSE_FN_N] = {"CROP", "NORMALISE", "TRIM", "FADE IN", "FADE OUT", "REVERSE", "GAIN +3", "GAIN -3"};
 static const char *const kFnCmd[SSE_FN_N] = {"CROP", "NORM", "TRIM", "FADEIN", "FADEOUT", "REV", "GAIN+", "GAIN-"};
-static const char *const kKeyO[SSE_K_N] = {"ZOOM -", "ZOOM +", "PLAY", "UNDO", "SAVE", "CLOSE"};
-static const char *const kKeyC[SSE_K_N] = {"Zoom -", "Zoom +", "Play", "Undo", "Save", "Close"};
+static const char *const kKeyO[SSE_K_N] = {"ZOOM -", "ZOOM +", "PLAY", "UNDO", "SAVE", "MAKE WT", "64 FR", "CLOSE"};
+static const char *const kKeyC[SSE_K_N] = {"Zoom -", "Zoom +", "Play", "Undo", "Save", "Make WT", "64 frames", "Close"};
 enum { DLG_NONE, DLG_SAVE, DLG_DISCARD };
 #define MIN_SPAN 64u	// ZOOM +'s smallest window (frames)
 
@@ -166,7 +166,8 @@ static void wave_draw (lv_event_t *e)
 	}
 	if (s_V.st == SSE_ST_BUSY || s_V.st == SSE_ST_SAVING)	// a job: its name and progress across the middle
 	{
-		const char *n = s_V.st == SSE_ST_SAVING ? (O ? "SAVING" : "Saving") : kFnBusy[s_V.fn >= 0 && s_V.fn < SSE_FN_N ? s_V.fn : 0];
+		const char *n = s_V.making && s_V.st == SSE_ST_BUSY ? (O ? "MAKE WT" : "Make WT")
+			      : s_V.st == SSE_ST_SAVING ? (O ? "SAVING" : "Saving") : kFnBusy[s_V.fn >= 0 && s_V.fn < SSE_FN_N ? s_V.fn : 0];
 		lv_snprintf (t, sizeof t, "%s %d%%", n, s_V.progress);
 		int tw = th_text_width (fb, t) + 8 * u, y0 = mid - bh / 2 - 2 * u, y1 = mid + bh / 2 + 4 * u;
 		th_fill (l, &c, w / 2 - tw / 2, y0, w / 2 + tw / 2, y1, O ? TH->bg : TH->win, LV_OPA_COVER, 0);
@@ -300,9 +301,16 @@ static void keys_update (void)
 	for (int i = 0; i < SSE_FN_N; i++) th_key_enable (s_Fn[i], rd);
 	th_key_enable (s_Key[SSE_K_ZOOM_OUT], wv && span () < s_V.frames);
 	th_key_enable (s_Key[SSE_K_ZOOM_IN], wv && span () / 2 >= MIN_SPAN);
-	th_key_enable (s_Key[SSE_K_PLAY], rd);	// (the track's voice; from the pool a DSP SAMPLE / SAMPLER track's: sedit-050)
+	th_key_enable (s_Key[SSE_K_PLAY], rd && !s_V.file);	// (the track's voice; from the pool a DSP SAMPLE / SAMPLER track's: sedit-050)
 	th_key_enable (s_Key[SSE_K_UNDO], rd && s_V.undo);
 	th_key_enable (s_Key[SSE_K_SAVE], rd);
+	th_key_enable (s_Key[SSE_K_WT], rd);
+	th_key_enable (s_Key[SSE_K_FR], rd);
+	{	// the frames' choice on its key
+		char fr[16];
+		lv_snprintf (fr, sizeof fr, O ? "%d FR" : "%d frames", s_V.wt_frames > 0 ? s_V.wt_frames : 64);
+		th_key_text (s_Key[SSE_K_FR], fr);
+	}
 	th_key_enable (s_Key[SSE_K_CLOSE], open_ ());
 	const char *l = "SAMPLE EDIT";
 	char r[80], nm[48];
@@ -353,6 +361,13 @@ static void key_cb (lv_obj_t *o, int idx, void *ud)
 	case SSE_K_PLAY: if (ready ()) send ("sedit=preview"); break;
 	case SSE_K_UNDO: if (ready ()) send ("sedit=undo"); break;
 	case SSE_K_SAVE: if (ready ()) dlg_show (DLG_SAVE); break;
+	case SSE_K_WT: if (ready ()) send ("sedit=makewt"); break;
+	case SSE_K_FR:	// the next choice: 16 32 64 128 256 and round
+	{
+		int n = s_V.wt_frames > 0 ? s_V.wt_frames : 64;
+		cmd2 ("sedit=wtn:%u", n >= 256 ? 16 : (unsigned) n * 2, 0);
+		break;
+	}
 	default:		// CLOSE: an edit not saved is asked about first (the Rytm's NO asks the same)
 		if (s_V.dirty) dlg_show (DLG_DISCARD);
 		else send ("sedit=close");
@@ -390,7 +405,7 @@ void sidecar_sedit_create (void *parent, int y0)
 	int rw = pw - 2 * x0, kw = (rw - (SSE_K_N - 1) * g) / SSE_K_N;
 	for (int i = 0; i < SSE_K_N; i++)
 	{
-		int kind = i == SSE_K_SAVE ? TH_KEY_ACCENT : i == SSE_K_PLAY ? TH_KEY_FUNC : TH_KEY;
+		int kind = i == SSE_K_SAVE ? TH_KEY_ACCENT : i == SSE_K_PLAY || i == SSE_K_WT || i == SSE_K_FR ? TH_KEY_FUNC : TH_KEY;
 		s_Key[i] = th_key (pg, x0 + i * (kw + g), ky1, kw, kh, O ? kKeyO[i] : kKeyC[i], kind, key_cb, (void *) (intptr_t) i);
 		if (!O) th_key_font (s_Key[i], TH->f_body);
 	}

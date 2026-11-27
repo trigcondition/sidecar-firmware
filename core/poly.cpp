@@ -472,6 +472,9 @@ CORE_COLD void close_window(int ch) {
   if (v[c.vi].mi) return;   // MIDI: P13..P16 are its CC numbers, no chord words (the notes went out as played)
 #endif
   if (!v[c.vi].fm && !is_ms(c.vi)) return;   // bound for the arpeggiator: a machine without chord words
+#if CORE_MSAMP
+  if (nm::of(c.vi) == kWaveMachine) return;   // WAVETABLE (also forced by wt=voice:V): P13..P16 are TBL B, POS B, MIX, FTYPE (its notes play as the pads' own)
+#endif
   Chord w = d.c;   // VOI written as the count (AUTO plays the same notes when it is the chord's own)
   uint8_t back[kMaxNotes];
   if (w.chd) w.voi = expand(d.root, d.c, back);

@@ -2,13 +2,40 @@
 // Overbridge channel, the fade-in over 200 ms, the -12 dBFS limit (a soft knee: no flat top), silence (counted) when the
 // FIFO runs dry.
 #include <cmath>
+#include <cstdio>
 
 #include "check.h"
 #include "output.h"
 
 static int16_t blk[12][8];
 
+// the looper's playback position: the render frame of the next frame Pull hands out (0.5.0, core/loop)
+static void test_pulled_frame() {
+  static Output u;
+  int32_t f[7][12];
+  int16_t b[12][8] = {};
+  CHECK(u.PulledFrame() == 0);
+  for (int k = 0; k < 10; ++k) u.Push(b, 12);   // 120 render frames 0..119
+  u.Pull(f, 7);
+  CHECK(u.PulledFrame() == 7);
+  u.Pull(f, 7);
+  CHECK(u.PulledFrame() == 14);
+  u.Reset();   // a new stream drops what is queued: those frames are gone, the next one is 120
+  CHECK(u.PulledFrame() == 120);
+  u.Push(b, 12);
+  u.Pull(f, 7);
+  CHECK(u.PulledFrame() == 127);
+  u.Reset();
+  u.Pull(f, 7);   // an empty FIFO is silence, not a frame
+  CHECK(u.PulledFrame() == 132);
+  for (int k = 0; k < 200; ++k) u.Push(b, 12);   // 2400 frames into 2048: a full FIFO refuses the rest, counted as passed
+  CHECK(u.Level() == Output::kFifo);
+  CHECK(u.PulledFrame() == 132 + (2400 - Output::kFifo));
+  printf("test_output: pulled frame ok\n");
+}
+
 int main() {
+  test_pulled_frame();
   static Output o;
   int32_t f[7][12];
   o.Pull(f, 7);   // empty: silence, counted

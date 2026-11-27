@@ -21,6 +21,7 @@ OBJS += remote_srv.o remote_pi.o   # the remote UI service over the USB-C cable 
 OBJS += ../ui/remote/rmt_proto.o ../ui/remote/rmt_views.o ../ui/remote/rmt_sha256.o	# its wire protocol (pi/ui/remote, portable C)
 OBJS += usbnet_pi.o            # the USB-C network (usbnet_pi.h; the portable parts are ncm_ntb.h, dhcpd_lite.h, usbnet_cfg.h)
 OBJS += usbc_pi.o              # the USB-C mode for the SIDECAR MENU > USB-C on the Rytm (usbc_pi.h; the portable part is usb_mode.h)
+OBJS += loop_pi.o              # the master looper's boot RAM, audio hooks and KEEP (loop_pi.h; the portable parts: loop_keep.cpp in PORT_SRC, core/loop in CORE_SRC)
 OBJS += update_pi.o             # the firmware update from the web page (update_pi.h; the portable part update.cpp is in PORT_SRC)
 # the volumes besides the card and the storage bench (docs/STORAGE.md): Circle's side; the logic is hosted (PORT_SRC)
 OBJS += stor_pi.o
@@ -82,6 +83,8 @@ OBJS += ../ui/sidecar_insfx.o
 OBJS += ../ui/sidecar_mfx.o
 # 0.5.0: the MORPH page (pi/ui/sidecar_morph.h, core/mod/scene.h), its view built on core 3 by morph_pi.cpp
 OBJS += ../ui/sidecar_morph.o
+# 0.5.0: the LOOP page (pi/ui/sidecar_loop.h, core/loop/loop.h), its view built on core 3 by loopview_pi.cpp
+OBJS += ../ui/sidecar_loop.o
 # 0.5.0: the XY page (pi/ui/sidecar_xy.h, core/mod/xypad.h), its view built on core 3 by xypad_pi.cpp
 OBJS += ../ui/sidecar_xy.o
 # the REC page (pi/ui/sidecar_rec.h, the Overbridge recorder), filled by rec_pi.cpp
@@ -96,7 +99,7 @@ OBJS += ../ui/sidecar_project.o
 # core/host/newlib_rand.cpp: DAISYSP's rand() with newlib's sequence, without newlib's libc (the one host file here).
 CORE_SRC := $(addprefix $(CORE)/,md/md.cpp project_key.cpp lfo.cpp hooks.cpp notes.cpp voices.cpp poly.cpp inst.cpp inst_alloc.cpp keys.cpp sysex.cpp host_link.cpp slots.cpp engine.cpp fx/send_fx.cpp fx/send_fx_card.cpp fx/insert.cpp fx/insert_card.cpp fx/master.cpp fx/amp.cpp fx/out.cpp fx/out_measure.cpp \
             ui/canvas.cpp ui/widgets.cpp ui/pages.cpp ui/remote.cpp \
-            pool/card_index.cpp pool/pool.cpp pool/pcache.cpp pool/sample_ram_pool.cpp pool/stream_budget.cpp presets/libs.cpp presets/preset_index.cpp msamp/sfz.cpp msamp/elmulti.cpp msamp/msamp.cpp msamp/sdtest.cpp wavetable/tables.cpp wavetable/wavetable.cpp granular/granular.cpp livein/livein.cpp midim/midim.cpp arp/arp.cpp chop/chop.cpp chop/slicemap.cpp host/newlib_rand.cpp user/um.cpp user/lists.cpp)
+            pool/card_index.cpp pool/pool.cpp pool/pcache.cpp pool/sample_ram_pool.cpp pool/stream_budget.cpp presets/libs.cpp presets/preset_index.cpp msamp/sfz.cpp msamp/elmulti.cpp msamp/msamp.cpp msamp/sdtest.cpp wavetable/tables.cpp wavetable/wavetable.cpp wavetable/wt_make.cpp granular/granular.cpp livein/livein.cpp midim/midim.cpp arp/arp.cpp chop/chop.cpp chop/slicemap.cpp host/newlib_rand.cpp user/um.cpp user/lists.cpp)
 CORE_SRC += $(wildcard $(CORE)/ui/page_*.cpp)
 CORE_SRC += $(wildcard $(CORE)/device/*.cpp)   # the device profiles (core/device/device.h)
 CORE_SRC += $(wildcard $(CORE)/seq/*.cpp)   # the Sidecar sequencer (core/seq/seq.h)
@@ -104,6 +107,7 @@ CORE_SRC += $(wildcard $(CORE)/song/*.cpp)  # SONG RECORD (core/song/song.h)
 CORE_SRC += $(wildcard $(CORE)/bundle/*.cpp)   # project bundles (core/bundle, docs/BUNDLES.md)
 CORE_SRC += $(wildcard $(CORE)/lib/*.cpp) $(wildcard $(CORE)/fmt/*.cpp)   # the source browser and pools (srclib), the sample library and sha256 (docs/LIBRARY.md), the format registry (core/fmt)
 CORE_SRC += $(wildcard $(CORE)/mod/*.cpp)   # the modulation layer (core/mod, spec-050 section 1)
+CORE_SRC += $(wildcard $(CORE)/loop/*.cpp)   # the master looper (core/loop, spec-050 section 3)
 CORE_SRC += $(wildcard $(CORE)/store/*.cpp)   # the RAM store: one project's card files in RAM, filled by the card core (core/store/store.h)
 CORE_SRC += $(CORE)/rec/rec_names.cpp   # the recorder's sources, channel lists and take names (shared with the Sidecar Mini)
 CORE_SRC += $(CORE)/msamp/cardq.cpp $(wildcard $(CORE)/samp/*.cpp)   # the card queue (core/msamp/cardq.h); sampling, auto-sampler (core/samp)
@@ -111,7 +115,7 @@ CORE_SRC += $(CORE)/msamp/cardq.cpp $(wildcard $(CORE)/samp/*.cpp)   # the card 
 # messages, the slot map), hosted: user machines on the Pi (core/user/um.cpp, docs/user-machines-pi.md)
 RMPSRC := ../../teensy/libraries/RytmPlugins/src
 RMP_SRC := rmp_loader.cpp rmp_manifest.cpp rmp_meta.cpp rmp_proto.cpp rmp_resolve.cpp rmp_slots.cpp rmp_presets.cpp rmp_pool.cpp
-PORT_SRC := neon_bench.cpp output.cpp a4_in.cpp midi_in.cpp bridge.cpp emu_proto.cpp tones.cpp sendfx_pi.cpp spectrum_pi.cpp masterfx_pi.cpp fsweb.cpp update.cpp bundleweb.cpp poolweb.cpp bundle_pi.cpp recorder.cpp rec_play.cpp wifi_conf.cpp paircode.cpp power_state.cpp wgview_pi.cpp preset_pi.cpp chopview_pi.cpp seditview_pi.cpp presetweb.cpp voice_pi.cpp insfx_pi.cpp song_pi.cpp morph_pi.cpp xypad_pi.cpp \
+PORT_SRC := neon_bench.cpp loop_keep.cpp output.cpp a4_in.cpp midi_in.cpp bridge.cpp emu_proto.cpp tones.cpp sendfx_pi.cpp spectrum_pi.cpp masterfx_pi.cpp fsweb.cpp update.cpp bundleweb.cpp poolweb.cpp bundle_pi.cpp recorder.cpp rec_play.cpp wifi_conf.cpp paircode.cpp power_state.cpp wgview_pi.cpp preset_pi.cpp chopview_pi.cpp seditview_pi.cpp presetweb.cpp voice_pi.cpp insfx_pi.cpp song_pi.cpp morph_pi.cpp loopview_pi.cpp xypad_pi.cpp \
             scope_pi.cpp status_pi.cpp stor_vol.cpp stor_bench.cpp lib_pi.cpp sdgrow.cpp
 # the SEQ page's engine side (seqed_pi.cpp, ../ui/seq_touch.cpp): only with the sequencer's engine in the tree
 # (core/seq/seq.cpp, the seq-mvp branch); without it the page says there is no sequencer

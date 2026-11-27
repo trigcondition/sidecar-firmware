@@ -318,6 +318,7 @@ const Place kPlaces[] = {
     {"keys", "/.rytm/keys.txt", 0},
     {"learn", "/.rytm/learn.txt", 0},   // 0.5.0 (core/mod/learn.h)
     {"preview", "/.rytm/preview.txt", 0},   // 0.5.0: PREVIEW LEVEL (core/samp/preview.h)
+    {"loop", "/.rytm/loop.txt", 0},   // 0.5.0: the looper's settings (core/loop/loop.h)
     {"fxin", "/.rytm/fxin.txt", 0},
     {"sendfx", "/.rytm/sendfx.txt", 0},
     {"wifi", "/.rytm/wifi.txt", 0},

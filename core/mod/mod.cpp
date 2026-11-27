@@ -15,6 +15,7 @@
 #include "mod/scene.h"
 #include "mod/xypad.h"
 #include "platform.h"
+#include "ui/remote.h"
 #include "voices.h"
 
 namespace core {
@@ -101,7 +102,9 @@ CORE_COLD void restore(Entry& e) {
     put(e.t, 0);
   } else if (k == kFx || k == kSnd) {
     put(e.t, e.base);
-  }   // (kSeq kArp kLoop kRytm: nothing to put back - their writers take a value, not a state; Phases 3, 4)
+  } else if (k == kLoop) {
+    put(e.t, -1.0f);   // the knob plays again
+  }   // (kSeq kArp kRytm: nothing to put back - their writers take a value, not a state; Phases 3, 4)
 #if CORE_POLY
   if (k == kRytm) rytm_out_forget(param_of(e.t));   // the Rytm may change it meanwhile: the next lock's value goes out
   if (is_remote(k)) rp_release(e.t), rp_morph_off(e.t);   // (its offset went to 0 above: put; now a release)
@@ -161,7 +164,13 @@ CORE_COLD void morph_parts(Tid t, bool has_a, float a, bool has_b, float b, floa
     return;
   }
   e->live = 1, e->morph_on = 1, e->morph = has_b ? b : a;
-  rp_morph(t, has_a, a, has_b, b, f, step, upper);
+  if (!step && (ui::remote_caps2() & ui::kCaps2Morph)) {   // P3: the Rytm morphs a continuous word itself (09 / 0A)
+    float x = f < 0 ? 0 : f > 1 ? 1 : f;
+    rp_fader((uint16_t)(x * 16383.0f + 0.5f));
+    rp_morph_set(t, has_a, a, has_b, b);
+  } else {
+    rp_morph(t, has_a, a, has_b, b, f, step, upper);
+  }
   ++g_stats.scene_sets;
 }
 #endif

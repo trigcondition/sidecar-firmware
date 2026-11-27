@@ -78,6 +78,7 @@ typedef struct
 	char		lib_waiting[16];	// "PLAYING" ... while it waits, "" running
 	char		build[48], circle[24];
 	char		rytm_mod[32];		// "RUI1036+ (SEEN)", "" none seen
+	int		bpm10;			// the Rytm's tempo x 10, 0 unknown (appended: the remote UI's STATUS schema 1.1)
 	unsigned	gen;			// changes with anything above
 } sidecar_status_view_t;
 

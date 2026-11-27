@@ -24,7 +24,8 @@ namespace {
 constexpr int kRow0 = 28, kRow1 = 43, kStripY = 12, kStripH = 13;
 
 struct MfxPage {
-  bool eq = false;
+  bool eq = false, sc = false;   // 0.5.0: the SIDECHAIN view (DOWN on the EQ view; YES: M1 / M2)
+  int mch = 0;
   int slot = 0;
   int touched = -1;
   bool full = false;   // 0.5.0: F skipped the send TYPEs for want of room (the buses share it: master.h kFxSlots)
@@ -62,6 +63,7 @@ CORE_COLD void mfx_draw(Canvas& c, int page, int npages, uint32_t ms) {
   c.clear();
   char lab[8][6], val[8][8], b[kTextLen + 1];
   int e = mp.touched;
+  if (mp.sc) return sc_view_draw(c, page, npages, ins::kM0 + mp.mch, "MASTER SC", mp.mch ? "M2" : "M1", "YES: M1 M2  T1: MON");
   if (mp.eq) {
     header(c, "MASTER EQ", page, npages, "");
     strip(c);
@@ -126,6 +128,7 @@ CORE_COLD void mfx_enc(int e, int d, bool func) {
   if (!d) return;
   mp.touched = e;
   const int st = func ? 8 : 1, l = list_turn(e, d);   // the slot, type and switches: lists; the rest values
+  if (mp.sc) return sc_view_enc(ins::kM0 + mp.mch, e, d, func, l);
   if (mp.eq) {
     if (e < ins::kEqParams) {
       const int cur = ins::eq_param(master::kEqChain, e);   // LOW / HIGH: 64 is flat, the detent
@@ -162,6 +165,7 @@ CORE_COLD void mfx_enc(int e, int d, bool func) {
 
 // 0.5.0 (EDIT): the target mfx_enc's turn of e edits now, as its mod::manual_knob names it (0 none)
 CORE_COLD uint16_t mfx_enc_tid(int e) {
+  if (mp.sc) return sc_view_tid(ins::kM0 + mp.mch, e);
   if (mp.eq) return e < ins::kEqParams ? mod::tid(mod::kIns, master::kEqChain, 8 + e) : e == 7 ? mod::tid(mod::kMfx, 0, 0) : 0;
   const int ch = master::chain(mp.slot), s = master::slot(mp.slot), t = ins::control.type[ch][s];
   if (e < 4) return t ? mod::tid(mod::kIns, ch, s * 4 + e) : 0;
@@ -170,6 +174,11 @@ CORE_COLD uint16_t mfx_enc_tid(int e) {
 }
 
 CORE_COLD bool mfx_key(int code) {
+  if (code == 0x43 && mp.eq && !mp.sc) return mp.sc = true, mp.touched = -1, true;   // DOWN on the EQ view: the SIDECHAIN view
+  if (mp.sc && sc_view_key(ins::kM0 + mp.mch, code)) return true;                     // 0.5.2 T1: MON
+  if ((code == 0x40 || code == 0x43) && mp.sc) return ins::sc_mon_off_all(), mp.sc = false, mp.touched = -1, true;   // LEFT, DOWN: back to the EQ view
+  if (code == 0x44 && mp.sc) return ins::sc_mon_off_all(), mp.mch ^= 1, true;         // YES: M1 <-> M2
+  if (code == 0x45 && mp.sc) return ins::sc_mon_off_all(), mp.sc = mp.eq = false, mp.touched = -1, true;     // NO: out
   if (code == 0x41 && !mp.eq) return mp.eq = true, mp.touched = -1, true;    // RIGHT: the EQ view
   if ((code == 0x40 || code == 0x45) && mp.eq) return mp.eq = false, mp.touched = -1, true;   // LEFT, NO: back
   if (code == 0x44) return master::set_byp(!master::control.byp), true;      // YES: bypass
@@ -188,7 +197,10 @@ CORE_COLD bool mfx_shown() {
 
 }  // namespace
 
-UI_ROM const ExtraPage kMasterPage = {"MASTER", mfx_shown, mfx_draw, mfx_enc, mfx_key, 0xFF, false, nullptr, nullptr, nullptr,
+CORE_COLD uint16_t mfx_trigs() { return mp.sc ? sc_view_trigs(ins::kM0 + mp.mch) : 0; }   // 0.5.2: T1 is MON's in the SIDECHAIN view
+CORE_COLD bool mfx_leds(uint8_t c[16]) { return mp.sc && sc_view_leds(ins::kM0 + mp.mch, c); }
+
+UI_ROM const ExtraPage kMasterPage = {"MASTER", mfx_shown, mfx_draw, mfx_enc, mfx_key, 0xFF, false, nullptr, mfx_trigs, mfx_leds,
                                       false, nullptr, mfx_enc_tid};
 
 #if CORE_UI_TOOLS

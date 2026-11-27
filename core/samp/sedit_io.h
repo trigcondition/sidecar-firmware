@@ -29,7 +29,9 @@ int edit_name(const char* src_path, char* out, int cap);
 // answer at a later call: 1 still listing, 0 done (out holds the name), -1 too long, -2 the folder not there. begin: 0,
 // -1 too long, -2 no folder in src_path, kErrBusy (the last listing still runs). One at a time (edit_name's stem).
 struct Namer {
-  int begin(const char* src_path, char* out, int cap);
+  // sfx: the text before the number ("-ed"; WAVETABLE's tables "-wt": <stem>-wt<N>.wav)
+  // make_dir: the folder is made when it is not there (a table's /WAVETABLES on a card that has none yet)
+  int begin(const char* src_path, char* out, int cap, const char* sfx = "-ed", bool make_dir = false);
   int step();
   uint32_t waits = 0;   // the steps that only waited for the card core (the caller's step did no work)
 
@@ -47,7 +49,8 @@ void edit_name_from(const char* stem, const int* taken, int ntaken, char* out, i
 // pcache block (blk) allocated after the header is read; the caller owns it once step returned 0 and frees it with
 // pcache::release. An error frees it and closes the file.
 struct Loader {
-  int begin(const char* path);   // 0, kErrName, or kErrBusy (its last request still runs)
+  // allow_float: a 32-bit float WAV is read too (a wavetable's file); else it is refused (kErrFormat)
+  int begin(const char* path, bool allow_float = false);   // 0, kErrName, or kErrBusy (its last request still runs)
   int step();                    // 1 more, 0 done, < 0 a kErr* code
   uint32_t loaded() const { return frame_; }   // the frames decoded so far
   uint32_t waits = 0;                          // the steps that only waited for the card core (no work done)
@@ -63,6 +66,8 @@ struct Loader {
   char path_[cardq::kPathMax] = "";
   uint8_t st_ = 0;
   int err_ = 0;
+  bool fl_ = false;
+  uint16_t fmt_ = 1;
   uint32_t size_ = 0, fb_ = 0, data_off_ = 0, data_len_ = 0, pos_ = 0, carry_ = 0, frame_ = 0, ask_ = 0;
 };
 
@@ -72,7 +77,8 @@ struct Loader {
 // is held back while the card queue is busy (at most kUploadWaitMs), as the sampler's WavWriter is.
 struct Saver {
   // 0, kErrName, kErrFormat, kErrBusy (its last request still runs)
-  int begin(const char* target, const float* x, int ch, int bits, uint32_t rate, uint32_t frames);
+  // table: a wavetable (ch 1, bits 32): the samples written as float32 with a 'clm ' chunk naming 2048 (wav_read.h)
+  int begin(const char* target, const float* x, int ch, int bits, uint32_t rate, uint32_t frames, bool table = false);
   int step();   // 1 more, 0 done, < 0 a kErr* code
   uint32_t written() const { return pos_; }   // the frames encoded so far
   uint32_t waits = 0;   // the steps that only waited (a card request running, or a piece held back for a stream)
@@ -89,7 +95,7 @@ struct Saver {
   int ch_ = 1, bits_ = 16, err_ = 0;
   uint32_t rate_ = 0, frames_ = 0, pos_ = 0, bytes_ = 0, len_ = 0, wait0_ = 0;
   uint8_t st_ = 0;
-  bool waiting_ = false, filled_ = false;
+  bool waiting_ = false, filled_ = false, table_ = false;
 };
 
 }  // namespace sedit

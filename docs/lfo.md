@@ -1,6 +1,6 @@
 # LFOs on the Sidecar (`core/lfo.*`)
 
-> The MORPH fader (the scenes, A and B) comes in 0.5.2: in 0.5.0 it is switched off (`core/sidecar_features.h`, `SIDECAR_MORPH`). Where this page mentions it, read it as 0.5.2.
+> The MORPH fader (the scenes, A and B) is in 0.5.2 (0.5.0 and 0.5.1 had it switched off: `core/sidecar_features.h`, `SIDECAR_MORPH`).
 
 Extra LFOs that run on the Sidecar: 26 on the Pi (and the Mac), two a Rytm track (0.5.0), 4 on the Sidecar Mini. Each
 one modulates one target,

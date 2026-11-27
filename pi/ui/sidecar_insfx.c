@@ -165,7 +165,7 @@ void sidecar_insfx_create (void *parent, int y0)
 	else
 	{
 		const int sp = LU (380) + dx / 2, kp = LU (94) + dx / 8, g = LU (8);
-		const int yv = LU (12), yt = yv + K + g, yk = yt + K + g, hk = LU (84) + e, yval = yk + hk + 2, ys = yval + LU (18), pit = LU (22) + e / 2;
+		const int yv = LU (12), yt = yv + K + g, yk = yt + K + g, hk = LU (84) + e, yval = yk + hk + 2 + (TH->f_pxs ? LU (6) : 0), ys = yval + LU (18) + (TH->f_pxs ? LU (10) : 0), pit = LU (22) + e / 2;
 		const int yo = ys + 3 * pit + LU (2);
 		s_TitleBar = 0;
 		th_panel (pg, LU (8), LU (6), LU (784) + dx, LU (414) + dy, "", TH_PANEL_WINDOW);
@@ -181,7 +181,7 @@ void sidecar_insfx_create (void *parent, int y0)
 				int i = s * 4 + k, x = 24 + s * sp + k * kp;
 				s_Knob[i] = th_meter (pg, x, yk, kp - LU (8), hk, 127, TH_METER_KNOB, TH->accent);
 				th_meter_edit (s_Knob[i], knob_cb, (void *) (intptr_t) i);
-				s_Val[i] = th_label (pg, x, yval, TH->f_small, TH->win_dim, "");
+				s_Val[i] = th_label (pg, x, yval, TH->f_pxs ? TH->f_pxs : TH->f_small, TH->f_pxs ? TH->win_ink : TH->win_dim, "");	// the value in the pixel face
 				lv_obj_set_width (s_Val[i], kp - LU (8));
 				lv_obj_set_style_text_align (s_Val[i], LV_TEXT_ALIGN_CENTER, 0);
 			}

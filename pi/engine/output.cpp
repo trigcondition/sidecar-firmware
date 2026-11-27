@@ -22,8 +22,7 @@ void Output::Reset() {
   // Pops what is queued now, as the FIFO's consumer: the producer may keep pushing meanwhile, bounded by the count.
   const uint32_t level = fifo_.size();
   Frame f;
-  for (uint32_t n = level; n && fifo_.pop(&f); --n) {
-  }
+  for (uint32_t n = level; n && fifo_.pop(&f); --n) ++pulled_;   // (the frames dropped are gone: the next one is later)
   if (streams_ == 0) d_.pre_reset_pulled = d_.since_reset;
   d_ = Diag{d_.pre_reset_pulled, level, kNone, kNone, 0, kNone, kNone, kNone, kNone, 0};
   main_.Reset();
@@ -40,6 +39,7 @@ uint32_t Output::Push(const int16_t (*frames)[kVoices], uint32_t n, const int16_
     f.st = st;
     if (!fifo_.push(f)) break;
   }
+  if (k < n) dropped_ += n - k;   // a full FIFO: those render frames never get pulled (PulledFrame counts them)
   return k;
 }
 
@@ -70,7 +70,9 @@ void Output::Pull(int32_t (*out)[kChannels], uint32_t n, int16_t (*voices)[kVoic
     if (taps && taps->feed) memset(taps->feed[i], 0, sizeof taps->feed[i]);
     if (taps && taps->pairs) memset(taps->pairs[i], 0, sizeof taps->pairs[i]);
     Frame f;
-    if (!fifo_.pop(&f)) {
+    bool got = fifo_.pop(&f);
+    if (got) ++pulled_;
+    if (!got) {
       uint32_t pos = base + i;
       // a glitch: armed, or a stream (with a target) that has had its refill grace and still never reached it - a
       // stream that never fills is starved, and calling all of it "restart" read as `under 0` (audit 2026-10-26)

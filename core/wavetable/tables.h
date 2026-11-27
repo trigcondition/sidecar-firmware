@@ -27,6 +27,8 @@ constexpr int kFrameFloats = (level_off(kLevels) - 1 + 3) & ~3;   // 7200 (28.1 
 
 // A frame's harmonics: c[2h], c[2h+1] = re, im of c_h (h = 1..kHarm), x(t) = sum Re(c_h e^(2 pi i h t)); c[0..1] DC.
 constexpr int kSpec = 2 * (kHarm + 1);
+// The in-place radix-2 complex FFT of n (a power of two) points, sign -1 forward, +1 inverse (unscaled): wt_make.cpp's.
+void fft_inplace(float* re, float* im, int n, int sign);
 // x: n samples of one cycle (n >= 4); c: kSpec floats. scratch: 4 * max(n, 2048) floats.
 void analyze(const float* x, int n, float* c, float* scratch);
 // Every level of a frame into fr (kFrameFloats) from its harmonics. scratch: 2 * kFrame floats.

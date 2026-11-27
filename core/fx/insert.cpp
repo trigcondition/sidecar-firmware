@@ -140,6 +140,7 @@ float exp2c(float x) {   // 2^x, |x| < 30 (cold: the names)
   return fast_exp2(x);
 }
 
+void sc_clear();
 void clear_settings() {
   for (int c = 0; c < kChains; ++c)
     for (int s = 0; s < kSlots; ++s) {
@@ -149,6 +150,7 @@ void clear_settings() {
   for (int c = 0; c < kChains; ++c)
     for (int k = 0; k < kEqParams; ++k) g_eq[c][k] = kEqFlat(k), eq_refresh(c, k);   // ins1112
   for (int c = 0; c < kChains; ++c) g_bw_width[c] = 127;   // sfx-basewidth: no WIDTH remembered
+  sc_clear();   // 0.5.0 SIDECHAIN
   for (int v = 0; v < kVoices; ++v)
     for (int b = 0; b < kBuses; ++b) g_send_knob[v][b] = 0, send_refresh(v, b);
   control.route3 = 0;
@@ -394,6 +396,205 @@ void eq_value_text(int k, int v, char* b, int cap) {
   int a = db10 < 0 ? -db10 : db10;   // ("%+d" would print "+0.5DB" for -0.5 dB: the sign is carried by hand)
   sniprintf(b, cap, CORE_STR("%s%d.%dDB"), db10 < 0 ? "-" : "+", a / 10, a % 10);
 }
+// ---- 0.5.0 SIDECHAIN (fx/sidechain.h): the stage's settings. The mode and the source are lists (never modulated), the six knobs
+// take the LFOs' offsets (core/mod kIns params 12..17). No p-locks: the step-lock space is full (as the POST EQ's).
+}  // namespace ins
+namespace sc {
+namespace {
+const char* const kModeNames[kModes] = {"OFF", "PUMP", "DUCK"};
+const char* const kSrcNames[kSrcs] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB",
+                                      "AINL", "AINR", "AINLR", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8"};
+const char* const kLabelsM[kModes][kParams] = {{"-", "-", "-", "-", "-", "-"},
+                                              {"DPTH", "ATT", "HOLD", "REL", "SHAP", "THR"},
+                                              {"THR", "RAT", "ATT", "REL", "KBAS", "KWID"}};
+const uint8_t kDefs[kModes][kParams] = {{0, 0, 0, 0, 0, 0}, {90, 0, 20, 60, 40, 50}, {50, 70, 10, 50, 0, 0}};
+bool same_c(const char* a, const char* b) {
+  for (; *a && *b; ++a, ++b) {
+    char x = *a >= 'a' && *a <= 'z' ? (char)(*a - 32) : *a, y = *b >= 'a' && *b <= 'z' ? (char)(*b - 32) : *b;
+    if (x != y) return false;
+  }
+  return *a == *b;
+}
+// "4.0MS" / "120MS" / "1.2S" from milliseconds x 10
+void ms_text(int ms10, char* b, int cap) {
+  if (ms10 < 1000) sniprintf(b, cap, CORE_STR("%d.%dMS"), ms10 / 10, ms10 % 10);
+  else if (ms10 < 10000) sniprintf(b, cap, CORE_STR("%dMS"), (ms10 + 5) / 10);
+  else sniprintf(b, cap, CORE_STR("%d.%dS"), ms10 / 10000, (ms10 % 10000) / 1000);
+}
+}  // namespace
+const char* mode_name(int m) { return m >= 0 && m < kModes ? kModeNames[m] : "?"; }
+int mode_from_name(const char* s) {
+  for (int m = 0; m < kModes; ++m)
+    if (same_c(s, kModeNames[m])) return m;
+  if (s[0] >= '0' && s[0] <= '9' && !s[1] && s[0] - '0' < kModes) return s[0] - '0';
+  return -1;
+}
+const char* src_name(int s) { return s >= 0 && s < kSrcs ? kSrcNames[s] : "?"; }
+int src_from_name(const char* s) {
+  for (int i = 0; i < kSrcs; ++i)
+    if (same_c(s, kSrcNames[i])) return i;
+  if (same_c(s, "AIN")) return kAinLR;
+  return -1;
+}
+const char* label(int m, int k) { return m >= 0 && m < kModes && k >= 0 && k < kParams ? kLabelsM[m][k] : "-"; }
+uint8_t def(int m, int k) { return m >= 0 && m < kModes && k >= 0 && k < kParams ? kDefs[m][k] : 0; }
+}  // namespace sc
+namespace ins {
+
+namespace {
+void sc_vt(int m, int k, int v, char* b, int cap) {
+  v = v < 0 ? 0 : v > 127 ? 127 : v;
+  const float p = (float)v / 127.0f;
+  if (m == sc::kPump) {
+    switch (k) {
+      case 0: return (void)sniprintf(b, cap, CORE_STR("%d%%"), (int)(100.0f * p + 0.5f));
+      case 1: return v ? sc::ms_text((int)(300.0f * p * p + 0.5f), b, cap) : (void)sniprintf(b, cap, "INST");
+      case 2: return sc::ms_text((int)(2500.0f * p * p + 0.5f), b, cap);
+      case 3: return sc::ms_text((int)((10.0f + 1490.0f * p * p) * 10.0f + 0.5f), b, cap);
+      case 4:
+        if (v == 64) return (void)sniprintf(b, cap, "LIN");
+        return (void)sniprintf(b, cap, CORE_STR("%c%d"), v < 64 ? '-' : '+', v < 64 ? 64 - v : v - 64);
+      case 5: return (void)sniprintf(b, cap, CORE_STR("-%dDB"), (int)(60.0f * (1.0f - p) + 0.5f));
+      default: break;
+    }
+  } else if (m == sc::kDuck) {
+    switch (k) {
+      case 0: return (void)sniprintf(b, cap, CORE_STR("-%dDB"), (v * 40 + 63) / 127);
+      case 1: {
+        int r10 = (int)(10.0f * (1.0f + 19.0f * p * p) + 0.5f);
+        return (void)sniprintf(b, cap, CORE_STR("%d.%d:1"), r10 / 10, r10 % 10);
+      }
+      case 2: return sc::ms_text((int)((0.3f + 30.0f * p * p) * 10.0f + 0.5f), b, cap);
+      case 3: return sc::ms_text((int)((40.0f + 600.0f * p) * 10.0f + 0.5f), b, cap);
+      case 4: {   // KBAS
+        if (!v) return (void)sniprintf(b, cap, "OFF");
+        const int h = (int)(sc::kbas_hz(v) + 0.5f);
+        if (h < 1000) sniprintf(b, cap, CORE_STR("%dHZ"), h);
+        else sniprintf(b, cap, CORE_STR("%d.%dK"), h / 1000, (h % 1000) / 100);
+        return;
+      }
+      case 5: {   // KWID, octaves
+        if (!v) return (void)sniprintf(b, cap, "OFF");
+        const int o10 = (int)(sc::kwid_oct(v) * 10.0f + 0.5f);
+        return (void)sniprintf(b, cap, CORE_STR("%d.%d OCT"), o10 / 10, o10 % 10);
+      }
+      default: break;
+    }
+  }
+  sniprintf(b, cap, "-");
+}
+uint8_t g_scp[kChains][sc::kParams];
+uint32_t g_mon_until[kChains];   // the web's MON lease (ms; 0: none)
+int16_t g_sc_lfo[kChains][sc::kParams];
+bool sc_valid(int c) { return c >= 0 && c < kChains; }
+void sc_refresh(int c, int k) {
+  control.scp[c][k] = (uint8_t)clampi((int)g_scp[c][k] + g_sc_lfo[c][k], 0, 127);
+}
+// which key rings and trigs a chain reads: the writers skip the others
+void sc_wanted() {
+  uint32_t keys = 0, trigs = 0;
+  for (int c = 0; c < kChains; ++c) {
+    if (!control.scmode[c]) continue;
+    const int s = control.scsrc[c], key = sc::key_of(s), tg = sc::trig_of(s);
+    if (key >= 0) keys |= 1u << key;
+    if (s == sc::kAinLR) keys |= 1u << (sc::kStems + 1);
+    if (tg >= 0) trigs |= 1u << tg;
+  }
+  sc::bus().wanted = keys, sc::bus().wanted_trig = trigs;
+}
+void sc_clear() {
+  for (int c = 0; c < kChains; ++c) {
+    control.scmode[c] = sc::kOff, control.scsrc[c] = 0, control.scmon[c] = 0, g_mon_until[c] = 0;
+    for (int k = 0; k < sc::kParams; ++k) g_scp[c][k] = 0, sc_refresh(c, k);
+  }
+  sc_wanted();
+}
+}  // namespace
+
+void sc_value_text(int mode, int k, int v, char* b, int cap) { sc_vt(mode, k, v, b, cap); }
+void set_sc_mode(int c, int m, bool keep) {
+  if (!sc_valid(c) || m < 0 || m >= sc::kModes) return;
+  if (control.scmode[c] == m) return;   // the mode it is in: nothing reloaded, the knobs stay
+  if (!keep)
+    for (int k = 0; k < sc::kParams; ++k) g_scp[c][k] = sc::def(m, k);
+  control.scmode[c] = (uint8_t)m;
+  control.scmon[c] = 0, g_mon_until[c] = 0;   // 0.5.2: MON ends with a mode change
+  for (int k = 0; k < sc::kParams; ++k) sc_refresh(c, k);
+  sc_wanted();
+  ++g_stats.sets;
+  changed();
+}
+void set_sc_src(int c, int s) {
+  if (!sc_valid(c) || s < 0 || s >= sc::kSrcs) return;
+  if (control.scsrc[c] != s) control.scmon[c] = 0, g_mon_until[c] = 0;   // 0.5.2: MON ends with a source change
+  control.scsrc[c] = (uint8_t)s;
+  sc_wanted();
+  ++g_stats.sets;
+  changed();
+}
+void set_sc_param(int c, int k, int v) {
+  if (!sc_valid(c) || k < 0 || k >= sc::kParams) return;
+  g_scp[c][k] = (uint8_t)clampi(v, 0, 127);
+  sc_refresh(c, k);
+  ++g_stats.sets;
+  changed();
+}
+// 0.5.2 MON: DUCK plays its filtered key instead of the chain's output. Per chain, never saved; only on a DUCK stage
+void set_sc_mon(int c, bool on) {   // the Rytm's T1: no lease
+  if (!sc_valid(c)) return;
+  const uint8_t v = on && control.scmode[c] == sc::kDuck ? 1 : 0;
+  g_mon_until[c] = 0;
+  if (control.scmon[c] == v) return;
+  control.scmon[c] = v;
+  ++g_stats.sets;
+}
+// the web's MON (the console line): it lapses 3 s after the last one unless the page sends it again (a closed tab, a lost link)
+void set_sc_mon_lease(int c, bool on) {
+  set_sc_mon(c, on);
+  if (on && sc_mon(c)) g_mon_until[c] = now_ms() + 3000u | 1u;
+}
+void renew_sc_mon(int c) {   // the web's renew-only line: extends a lease that is running, never switches MON on
+  if (sc_valid(c) && control.scmon[c] && g_mon_until[c]) g_mon_until[c] = now_ms() + 3000u | 1u;
+}
+void sc_mon_tick() {   // from save(), every idle pass
+  for (int c = 0; c < kChains; ++c)
+    if (g_mon_until[c] && (int32_t)(now_ms() - g_mon_until[c]) > 0) g_mon_until[c] = 0, control.scmon[c] = 0;
+}
+bool sc_mon(int c) { return sc_valid(c) && control.scmon[c] != 0; }
+void sc_mon_off_all() {
+  for (int c = 0; c < kChains; ++c) control.scmon[c] = 0, g_mon_until[c] = 0;
+}
+int sc_mode(int c) { return sc_valid(c) ? control.scmode[c] : 0; }
+int sc_src(int c) { return sc_valid(c) ? control.scsrc[c] : 0; }
+int sc_param(int c, int k) { return sc_valid(c) && k >= 0 && k < sc::kParams ? g_scp[c][k] : 0; }
+int sc_playing(int c, int k) { return sc_valid(c) && k >= 0 && k < sc::kParams ? control.scp[c][k] : 0; }
+void sc_mod_offset(int c, int k, int off) {
+  if (!sc_valid(c) || k < 0 || k >= sc::kParams) return;
+  g_sc_lfo[c][k] = (int16_t)clampi(off, -127, 127);
+  sc_refresh(c, k);
+  ++g_stats.lfo_sets;
+}
+bool sc_on(int c) { return sc_valid(c) && control.scmode[c] != sc::kOff; }
+bool sc_any_on() {
+  for (int c = 0; c < kChains; ++c)
+    if (control.scmode[c]) return true;
+  return false;
+}
+bool sc_status(int c, char* why, int cap) {
+  sniprintf(why, cap, "OK");
+  if (!sc_on(c)) return sniprintf(why, cap, "OFF"), true;
+  if (c >= kBus0 && c < kBus0 + 2 && fx::control.knob[c - kBus0][0] == fx::kOff)   // bus 1 / 2's chain runs inside its send FX's return
+    return sniprintf(why, cap, "SEND FX OFF"), false;
+  const int key = sc::key_of(control.scsrc[c]);
+  if (key < 0) return sniprintf(why, cap, "NO SRC"), false;
+  if (control.scmode[c] == sc::kPump && sc::trig_of(control.scsrc[c]) >= 0) return true;   // PUMP on a track runs on its MIDI trigs
+  if (key < sc::kStems + 2) {   // the Overbridge IN side's: stems, AUDIO IN. A voice's ring is written by its own render
+    const sc::Bus& b = sc::bus();
+    if (!b.w[key] || now_ms() - b.ms[key] > 300) return sniprintf(why, cap, key < sc::kStems ? "NO STEMS" : "NO AUDIO IN"), false;
+  }
+  return true;
+}
+
 void lock(int vi, int s, int k, int v) {
   if (vi < 0 || vi >= kVoices || !valid(vi, s, k)) return;
   g_lock[vi][s][k] = (int16_t)(v < 0 ? -1 : clampi(v, 0, 127));
@@ -412,7 +613,7 @@ bool any_on() {
   for (int c = 0; c < kChains; ++c)
     for (int s = 0; s < kSlots; ++s)
       if (control.type[c][s]) return true;
-  return eq_any_on();   // ins1112
+  return eq_any_on() || sc_any_on();   // ins1112; 0.5.0 SIDECHAIN
 }
 
 // ---------------------------------------------------------------------------------------------------- the DSP hooks
@@ -434,6 +635,14 @@ void voice_out(int vi, int16_t (*ring)[kVoices], const int* row, int n, int16_t 
   if (vi < 0 || vi >= kVoices) return;
   amp::service(vi);   // an AMP capture offered to a slot not playing AMP: taken now
   if (!ring_r) g_engine.MarkMono(vi);
+  if (sc::wants_voice(vi)) {   // 0.5.0: a chain's SIDECHAIN source: this voice as it was rendered, before its own chain
+    float k[64];
+    const int m = n > 64 ? 64 : n;
+    for (int i = 0; i < m; ++i) k[i] = ring[row[i]][vi] * (1.0f / 32768.0f);
+    if (ring_r)
+      for (int i = 0; i < m; ++i) k[i] = 0.5f * (k[i] + ring_r[row[i]][vi] * (1.0f / 32768.0f));
+    sc::write(sc::kStems + 2 + vi, k, m);
+  }
   if (!g_engine.Active(vi, control)) return;
   float x[64], r[64];
   if (n > 64) n = 64;
@@ -580,6 +789,7 @@ bool command(const char* p, char* o, int cap) {
   int c = chain_from_name(a);
   static const char kHelp[] =
       "ins=C:S:type:T|p1..p4:V|off (C V1..V8 B1..B3, S A|B), ins=Bn:S:mix:V (a send TYPE's), ins=C:eq:hpf|lpf|low|high|base|width:V|off, "
+      "ins=C:sc:mode:off|pump|duck, ins=C:sc:src:bd..cb|ainl|ainr|ainlr|v1..v8, ins=C:sc:p1..p6:V, ins=C:sc:mon:on|off|renew (DUCK: hear the filtered key; C V1..V8 B1..B3 M1 M2), "
       "ins=Vn:send:B:V (B 1..3), ins=b3:route:pre|post, ins=reset";
   if (c < 0) {
     sniprintf(o, cap, "%s", kHelp);
@@ -632,6 +842,46 @@ bool command(const char* p, char* o, int cap) {
     eq_bw(c, &bs, &w);
     sniprintf(o, cap, CORE_STR("ins: %s POST EQ %s %s %s %s %s %s %s %s (BASE %d WIDTH %d)"), kChainNames[c], L.label[0],
               v4[0], L.label[1], v4[1], L.label[2], v4[2], L.label[3], v4[3], bs, w);
+    return true;
+  }
+  if (same_ci(b, "sc")) {   // 0.5.0 SIDECHAIN: ins=V2:sc:mode:pump|duck|off, :src:bd|ainl|ainlr|v3.., :p1..p6:V, :off
+    if (same_ci(key, "off")) {
+      set_sc_mode(c, sc::kOff);
+    } else if (same_ci(key, "mode")) {
+      int m = sc::mode_from_name(val);
+      if (m < 0) {
+        sniprintf(o, cap, "%s", kHelp);
+        return true;
+      }
+      set_sc_mode(c, m);
+    } else if (same_ci(key, "src")) {
+      int sr = sc::src_from_name(val);
+      if (sr < 0) {
+        sniprintf(o, cap, "ins: no source \"%s\" (BD SD RS CP BT LT MT HT CH OH CY CB AINL AINR AINLR V1..V8)", val);
+        return true;
+      }
+      set_sc_src(c, sr);
+    } else if (same_ci(key, "mon") && same_ci(val, "renew")) {
+      renew_sc_mon(c);
+    } else if (same_ci(key, "mon")) {
+      if (!same_ci(val, "on") && !same_ci(val, "off") && !same_ci(val, "1") && !same_ci(val, "0")) {
+        sniprintf(o, cap, "%s", kHelp);
+        return true;
+      }
+      set_sc_mon_lease(c, same_ci(val, "on") || same_ci(val, "1"));
+    } else if ((key[0] == 'p' || key[0] == 'P') && key[1] >= '1' && key[1] <= '0' + sc::kParams && !key[2] && num(val) >= 0) {
+      set_sc_param(c, key[1] - '1', num(val)), fx::edited(mod::tid(mod::kIns, c, 12 + key[1] - '1'));
+    } else {
+      sniprintf(o, cap, "%s", kHelp);
+      return true;
+    }
+    const int m = sc_mode(c);
+    char v6[sc::kParams][8], why[16];
+    for (int k = 0; k < sc::kParams; ++k) sc_value_text(m, k, sc_param(c, k), v6[k], sizeof v6[k]);
+    sc_status(c, why, sizeof why);
+    sniprintf(o, cap, CORE_STR("ins: %s SIDECHAIN %s src %s %s %s %s %s %s %s %s %s %s %s %s %s (%s)%s"), kChainNames[c], sc::mode_name(m),
+              sc::src_name(sc_src(c)), sc::label(m, 0), v6[0], sc::label(m, 1), v6[1], sc::label(m, 2), v6[2], sc::label(m, 3), v6[3],
+              sc::label(m, 4), v6[4], sc::label(m, 5), v6[5], why, sc_mon(c) ? " MON" : "");
     return true;
   }
   int s = same_ci(b, "A") || same_ci(b, "1") ? 0 : same_ci(b, "B") || same_ci(b, "2") ? 1 : -1;
@@ -733,6 +983,28 @@ int json(char* o, int cap) {
   }
   int k = sniprintf(o + n, n < cap ? cap - n : 0, "],");
   if (k > 0) n += k;
+  // 0.5.0 SIDECHAIN: every chain (V1..V8 B1..B3 M1 M2): off as {"m":"OFF"}; else its mode, source, knobs (set / playing), names, status
+  k = sniprintf(o + n, n < cap ? cap - n : 0, "\"sc\":[");
+  if (k > 0) n += k;
+  for (int c = 0; c < kChains && n < cap; ++c) {
+    if (!sc_on(c)) {
+      k = sniprintf(o + n, cap - n, CORE_STR("%s{\"m\":\"OFF\"}"), c ? "," : "");
+    } else {
+      const int m = sc_mode(c);
+      char why[16];
+      sc_status(c, why, sizeof why);
+      k = sniprintf(o + n, cap - n,
+                    CORE_STR("%s{\"m\":\"%s\",\"s\":\"%s\",\"p\":[%d,%d,%d,%d,%d,%d],\"l\":[%d,%d,%d,%d,%d,%d],\"n\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"],\"st\":\"%s\",\"mon\":%d}"),
+                    c ? "," : "", sc::mode_name(m), sc::src_name(sc_src(c)), sc_param(c, 0), sc_param(c, 1), sc_param(c, 2),
+                    sc_param(c, 3), sc_param(c, 4), sc_param(c, 5), sc_playing(c, 0), sc_playing(c, 1), sc_playing(c, 2),
+                    sc_playing(c, 3), sc_playing(c, 4), sc_playing(c, 5), sc::label(m, 0), sc::label(m, 1), sc::label(m, 2),
+                    sc::label(m, 3), sc::label(m, 4), sc::label(m, 5), why, sc_mon(c) ? 1 : 0);
+    }
+    if (k < 0 || k >= cap - n) return cap;
+    n += k;
+  }
+  k = sniprintf(o + n, n < cap ? cap - n : 0, "],");
+  if (k > 0) n += k;
   if (n < cap) n += out::json(o + n, cap - n);
   k = sniprintf(o + n, n < cap ? cap - n : 0, ",");
   if (k > 0) n += k;
@@ -757,6 +1029,8 @@ void reset() {
       }
   for (int c = 0; c < kChains; ++c)
     for (int k = 0; k < kEqParams; ++k) g_eq_lfo[c][k] = 0, eq_refresh(c, k);   // ins1112
+  for (int c = 0; c < kChains; ++c)
+    for (int k = 0; k < sc::kParams; ++k) g_sc_lfo[c][k] = 0, sc_refresh(c, k);   // 0.5.0 SIDECHAIN
   for (int v = 0; v < kVoices; ++v)
     for (int b = 0; b < kBuses; ++b) g_send_g[v][b] = 0.0f, g_send_off[v][b] = 0, send_refresh(v, b);
   g_engine.Reset();

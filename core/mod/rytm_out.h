@@ -21,6 +21,11 @@ constexpr uint8_t kHostCmd = 0x5A;    // sim/protocol.py HOST_CMD (free in the r
 constexpr uint8_t kHostAck = 0x10;    // 2D 01 10 <op> <status>: the mod's answer (core/seq/seq.h kStateCmd kind)
 constexpr int kCapsHostCmd = 16;      // the hello's caps bit "the mod command" (rytm-mods 0026 0.5.0: caps 31)
 enum : uint8_t { kOpMute = 1, kOpScene = 2, kOpPerf = 3 };
+// 0.5.0 v2 (rytm-mods 0026 "ms", the hello's caps2 bit ui::kCaps2Capture): the MORPH scene edit on the Rytm's own pages.
+// 08 READOUT <n 1..16> <ASCII 0x20..0x5F>: drawn over the Rytm's header for ~1 s; 0B EDIT <0/1>: PAGE + T15 / T16 is
+// the scene edit there (a hello clears it: sent again after each). Their answers never mean "CCs from now on".
+enum : uint8_t { kOpReadout = 8, kOpEditArm = 0x0B };
+constexpr int kReadoutMax = 16;
 constexpr uint8_t kSceneCc = 92, kMuteCc = 94;
 constexpr uint8_t kPerfCc[12] = {35, 36, 37, 39, 40, 41, 42, 43, 44, 45, 46, 47};   // hardware 2026-11-05: no CC 38
 constexpr uint32_t kSpacingMs = 5;
@@ -31,6 +36,8 @@ void rytm_mute(uint16_t set, uint16_t clr);      // the tracks in set muted, tho
 void rytm_host_cmd(bool on);                     // the hello's caps: the mod command there (a refusal is forgotten);
                                                  // a hello is a new link: every value sent is forgotten
 void rytm_ack(int op, int status);               // 2D 01 10 <op> <status>
+void rytm_readout(const char* text);             // 08: up to kReadoutMax characters (lower case raised, others '?')
+void rytm_edit_arm(bool on);                     // 0B
 void rytm_out_forget(int slot);                  // 0 the scene, 1..12 a macro: the value sent is no longer known
 void rytm_out_tick(uint32_t ms);                 // mod::tick: the values whose kSpacingMs has passed
 void rytm_out_reset();                           // tests (mod::reset): nothing sent, the CCs

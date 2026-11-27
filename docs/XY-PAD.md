@@ -1,6 +1,8 @@
 # XY pad
 
-> MORPH as a target (the scenes' fader) comes in 0.5.2: in 0.5.0 it is switched off (`core/sidecar_features.h`, `SIDECAR_MORPH`) and not offered. A saved MORPH slot is kept and does nothing.
+> MORPH as a target (the scenes' fader) is in 0.5.2 (0.5.0 and 0.5.1 had it switched off: `core/sidecar_features.h`, `SIDECAR_MORPH`). A saved MORPH slot from those builds is kept and works again.
+>
+> **Not in 0.5.2: the looper.** Where this page lists LOOP as a target kind, it is not offered: the picker has no LOOP kind and a LOOP target cannot be set (`SIDECAR_LOOPER 0`). A saved LOOP slot is kept and does nothing.
 
 The touchscreen as a "Kaoss pad" controller (0.5.0, Pi). A finger on the pad moves up to four targets on X and four
 on Y at once, each with its own depth. Set up on the touchscreen only; saved per kit, with a project default.

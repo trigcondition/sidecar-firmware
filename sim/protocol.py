@@ -1092,8 +1092,20 @@ def rui_fill_claim(on=True) -> bytes:
     return bytes([0xF0, 0x7D, 0x52, 0x54, 0x4A, PROTO_VER, RUI_FILL_CLAIM, 1 if on else 0, 0xF7])
 
 
+def rui_list_p13_announce() -> bytes:
+    """host -> Rytm 4A 7D 1: "the host draws the bank list of P13 (WAVETABLE's table B)", after every hello and only to a Rytm
+    whose hello's caps2 has RUI_CAPS2_LISTP13 (an older one counts it as a bad message)."""
+    return bytes([0xF0, 0x7D, 0x52, 0x54, 0x4A, PROTO_VER, RUI_LIST_P13, 1, 0xF7])
+
+
 def rui_keepalive() -> bytes:
     return _msg(RUI_KEEPALIVE, [])
+
+
+def rui_rehello() -> bytes:
+    """3C with flags bit 0: "say hello again" (only to a Rytm whose hello's caps2 has RUI_CAPS2_REHELLO; an older one
+    takes it as a plain keepalive: its 3C handler reads no payload)."""
+    return _msg(RUI_KEEPALIVE, [RUI_KEEP_REHELLO])
 
 
 def rui_mask(encs=(), keys=()) -> bytes:
@@ -1385,10 +1397,15 @@ def host_mute(set_mask, clr_mask) -> bytes:
 # at 127> <flags>. t 0..12 (12 the FX track), w 1..41 the sound words, 48..51
 # VM1..4, 52..55 AT1..4 (offsets only), 56 VEL; ramp in Rytm blocks (32 frames). A refusal: 2D 01 HOST_ACK <op> <1
 # refused, 2 the slots full>. The hello's caps bit HOST_PM_CAPS says the mod has them. The Rytm's arithmetic: pm_model.py.
+# 0.5.0 v2 P3 (the hello's caps2 RUI_CAPS2_MORPH): 09 MORPH-SET <kit> <n 1..20> {<t> <w> <flags: 1 A, 2 B; 0 removes>
+# <a hi7> <lo7> <b hi7> <lo7>} (1/128 step: the Rytm interpolates each part itself), 0A FADER <kit> <f hi7> <lo7> <ramp>
+# (f 0..16383); 07's answer has one more byte: the morph parts in use.
 HOST_PM_OFFSET, HOST_PM_OVERRIDE, HOST_PM_CLEAR, HOST_PM_STATUS = 4, 5, 6, 7
+HOST_PM_MORPH_SET, HOST_PM_FADER = 9, 10
 HOST_PM_CAPS = 64
+RUI_CAPS2_MORPH = 8
 PM_STATUS = 0x11
-PM_MAX_OFFSETS, PM_MAX_OVERRIDES = 28, 22
+PM_MAX_OFFSETS, PM_MAX_OVERRIDES, PM_MAX_MORPHS = 28, 22, 20
 
 
 def pm_offset(kit, ramp, recs) -> bytes:
@@ -1419,11 +1436,26 @@ def pm_status() -> bytes:
     return host_cmd(HOST_PM_STATUS)
 
 
+def pm_morph_set(kit, recs) -> bytes:
+    """09: recs [(t, w, flags, a, b)] with a, b in 1/128 steps (0..16383); flags 1 has A, 2 has B, 0 removes."""
+    assert 1 <= len(recs) <= PM_MAX_MORPHS
+    b = [kit, len(recs)]
+    for t, w, fl, a, v in recs:
+        b += [t, w, fl, (a >> 7) & 0x7F, a & 0x7F, (v >> 7) & 0x7F, v & 0x7F]
+    return host_cmd(HOST_PM_MORPH_SET, *b)
+
+
+def pm_fader(kit, f, ramp) -> bytes:
+    """0A: the fader f 0..16383, ramped over `ramp` blocks."""
+    return host_cmd(HOST_PM_FADER, kit, (f >> 7) & 0x7F, f & 0x7F, ramp)
+
+
 def decode_pm_status(b):
     """2D 01 11's bytes after the kind -> dict, else None."""
-    if len(b) != 7:
+    if len(b) not in (7, 8):   # (8: P3's morph parts)
         return None
-    return dict(slots=b[0], ring_drops=b[1] << 7 | b[2], kit_drops=b[3] << 7 | b[4], timeouts=b[5], flags=b[6])
+    return dict(slots=b[0], ring_drops=b[1] << 7 | b[2], kit_drops=b[3] << 7 | b[4], timeouts=b[5], flags=b[6],
+                morph_parts=b[7] if len(b) > 7 else None)
 
 
 def decode_qperf(b):
@@ -1431,6 +1463,29 @@ def decode_qperf(b):
     if len(b) != 5:
         return None
     return dict(pos=b[0] << 7 | b[1], mask=b[2] | b[3] << 7, flags=b[4])
+
+
+# 0.5.0 v2 P2 (rytm-mods 0026 "ms"; core/mod/scene.h capture / stock_edit): the MORPH scene edit on the Rytm's own pages.
+# The hello's caps2: bit 1 RUI_CAPS2_QP_MUTE (SEQ_QPERF flags bit 2 = the macros muted), bit 2 RUI_CAPS2_CAPTURE. Host
+# -> Rytm HOST_CMD 01 HOST_EDIT_ARM <0/1> (PAGE + T15 / T16 is the edit; a hello clears it), HOST_READOUT <n 1..16>
+# <ASCII 0x20..0x5F> (drawn over the Rytm's header ~1 s). Rytm -> host 2D 01 SEQ_CAPTURE <side 0 A / 1 B> <t 0..12>
+# <w 1..41> <delta s7 detents> <func: fine> <base hi7> <lo7> (the kit's value x 128); 2D 01 SEQ_EDIT_KEY <ev 1 held / 0
+# let go / 2 picked> <side> <n 0..11 or 7F>.
+RUI_CAPS2_QP_MUTE, RUI_CAPS2_CAPTURE = 2, 4
+HOST_READOUT, HOST_EDIT_ARM = 8, 0x0B
+SEQ_CAPTURE, SEQ_EDIT_KEY = 0x12, 0x13
+
+
+def host_readout(text) -> bytes:
+    t = [ord(c) for c in text.upper()[:16]]
+    return host_cmd(HOST_READOUT, len(t), *[c if 0x20 <= c <= 0x5F else ord("?") for c in t])
+
+
+def decode_capture(b):
+    """2D 01 12's bytes after the kind -> dict(side, t, w, delta, func, base), else None."""
+    if len(b) != 7:
+        return None
+    return dict(side=b[0], t=b[1], w=b[2], delta=b[3] - 128 if b[3] & 0x40 else b[3], func=b[4], base=b[5] << 7 | b[6])
 SEQ_SILENT = 0x46
 SEQ_FLAG_NO_PIN = 4
 SEQ_EDIT_OPS = {1: "COPY PAT", 2: "PASTE PAT", 3: "CLEAR PAT", 4: "UNDO PAT", 5: "COPY TRK", 6: "PASTE TRK",
@@ -1948,6 +2003,16 @@ RUI_BANK_LIST = 0x4A
 # caps2 has bit 0 (an older one counts it as a bad message), again after every hello: the Rytm clears it at each hello.
 RUI_FILL_CLAIM = 0x7E
 RUI_CAPS2_ARROWS = 1
+# caps2 bits: 0 ARROWS, 1 QP_MUTE, 2 CAPTURE, 3 morph (5A 01 09 / 0A, the morph-v2 branch), 4 REHELLO, 5 LISTP13 (below)
+RUI_CAPS2_REHELLO = 16   # the Rytm answers 3C <flags bit 0> with one hello (35), at most once a second
+# 2026-11-24 TBLB: the Rytm opens the host's bank list for WAVETABLE's table B (P13) from the SMPL page. Rytm -> host 4A gets an
+# optional 6th byte, the list's parameter (12 = P13, the only value; without it the machine's own P1 / SMP P11); the host's
+# commit (YES, why 1) writes that parameter (48 k = 12), the bank kept. Host -> Rytm 4A 7D 1 (rui_list_p13_announce) after every
+# hello, only to a Rytm whose hello's caps2 has RUI_CAPS2_LISTP13: it opens no P13 list before that.
+RUI_LIST_P13 = 0x7D
+RUI_CAPS2_LISTP13 = 32
+RUI_BANK_PARAM_P13 = 12
+RUI_KEEP_REHELLO = 1
 RUI_PAGE_GENERATOR, RUI_PAGE_FILL = 15, 16
 BANK_WHY = {0: "open", 1: "yes", 2: "no", 3: "knob", 4: "key", 5: "view", 6: "srcyes"}   # 6 (rui1049, on 3): FUNC + YES
 #                                                                                     on the SRC view: the host aims an OFF
@@ -1979,14 +2044,19 @@ def rui_names_bank(lst, replace, bank, names) -> bytes:
 
 
 def decode_bank_list(payload):
-    """Rytm -> host 4A's payload (<ver> <track> <on> <hi> <lo> <why>, as parse() gives it) -> dict(track, on, code, why)
-    or None"""
+    """Rytm -> host 4A's payload (<ver> <track> <on> <hi> <lo> <why> [<param>], as parse() gives it) -> dict(track, on, code,
+    why[, param]) or None. param (the optional 6th byte, TBLB): 12 = P13, the only value."""
     if not payload or payload[0] != PROTO_VER:
         return None
     b = payload[1:]
-    if len(b) != 5 or b[0] > 11 or (b[1] > 1 and b[1] != 3):   # rui1040: on 3 = FUNC + YES (the row's files)
+    if len(b) not in (5, 6) or b[0] > 11 or (b[1] > 1 and b[1] != 3):   # rui1040: on 3 = FUNC + YES (the row's files)
         return None
-    return dict(track=b[0], on=b[1], code=src_of_wire(b[2], b[3]), why=BANK_WHY.get(b[4], b[4]))
+    if len(b) == 6 and b[5] != RUI_BANK_PARAM_P13:
+        return None
+    d = dict(track=b[0], on=b[1], code=src_of_wire(b[2], b[3]), why=BANK_WHY.get(b[4], b[4]))
+    if len(b) == 6:
+        d["param"] = b[5]
+    return d
 
 
 def rui_bank_browse(track, on):

@@ -153,6 +153,10 @@ extern const ExtraPage kRecPage;
 extern const ExtraPage kLfoPage;
 // ---- the MORPH page (page_morph.cpp, core/mod/scene.h, spec-050 2.6): the scenes, A / B, the fader, a scene's locks
 extern const ExtraPage kMorphPage;
+// ---- the LOOP page (page_loop.cpp, core/loop/loop.h, spec-050 3.12): the master looper's grabs, BAL / LEV, STOP, KEEP
+extern const ExtraPage kLoopPage;
+void loop_page_reset();   // the page's own state (the grab shown, a note) cleared (tests)
+int loop_page_sel();      // the grab shown on it (0 newest)
 // 0.5.0 (the owner): MIDI (page_midi.cpp, CORE_POLY), the SIDECAR MENU's row: the keyboards' route, auto channel and
 // computer notes (core/keys.h), the MIDI-learn routes (core/mod/learn.h), the USB-A devices and the last key's way
 extern const ExtraPage kMidiPage;
@@ -175,6 +179,7 @@ bool fill_batch(int t, int kind, int* first, int* last);
 void morph_page_reset();   // the page's own state (holds, the question) cleared (tests)
 int morph_page_held();     // the scene key held on it (0..11), -1 none
 void morph_value_text(uint16_t tid, uint16_t v, char* b, int cap);   // a lock's value (x 128) as the page shows it
+bool morph_stale(uint16_t tid);   // a lock's target no longer resolves (an unused P, an RT word the track lacks; v2 Task 7)
 #if CORE_POLY
 extern const ExtraPage kSeqPage;   // the Sidecar sequencer's page (page_seq.cpp, core/seq/seq.h)
 // fix1028: NOTE EDIT's roll (page_seq.cpp) gives each pitch its lane and, when the page has more pitches than lanes
@@ -190,8 +195,19 @@ struct NeRoll {   // the last NOTE EDIT frame's roll (tests)
 };
 NeRoll ne_roll_shown();
 extern const ExtraPage kSongPage;  // SONG RECORD (page_song.cpp, core/song/song.h), last
+bool ins_wants_updown();   // the INSERT page takes UP / DOWN now (its EQ / SIDECHAIN view: DOWN in and out of SIDECHAIN)
 extern const ExtraPage kInsPage;   // fx-ins: the INSERT page (page_ins.cpp, core/fx/insert.h), after SEQ
 extern const ExtraPage kMasterPage;   // the master FX (page_mfx.cpp, core/fx/master.h), after INSERT
+// 0.5.0 SIDECHAIN view of chain ch (insert.h), drawn / turned by the INSERT page and the MASTER FX page; nav: the footer's hint
+void sc_view_draw(Canvas& c, int page, int npages, int ch, const char* title, const char* right, const char* nav);
+void sc_view_enc(int ch, int e, int d, bool func, int list_delta);
+uint16_t sc_view_tid(int ch, int e);   // the mod target the turn of knob e edits (0 none)
+// 0.5.2 MON (DUCK plays its filtered key): T1 in the view, taken only while the chain's stage is DUCK; its LED shows it. The view
+// left, another chain, or the page left (remote.cpp: sc_mon_page_left) turns it off
+bool sc_view_key(int ch, int code);
+uint16_t sc_view_trigs(int ch);
+bool sc_view_leds(int ch, uint8_t c[16]);
+void sc_mon_page_left();   // the shown page changed or closed, or a hello: MON off on every chain
 void ins_open_out();   // rui1047: the INSERT page on its OUT view of the Rytm's selected track (UP + AMP: 30 page 3)
 // rui1048: POLY CONFIG (page_poly.cpp): a track's poly config (seq.h PolyCfg) on the Rytm's screen. poly_page_open: the
 // device's page request for track t (the Rytm's track menu item: 30 page 0x20 + t, from_menu: NO goes back to the stock
@@ -231,6 +247,10 @@ void chop_page_up_cancel();   // a UP combo reached the host (49 / 30 / 29): the
 extern const ExtraPage kSeditPage;
 bool sedit_src_push(int track, int code, bool down);
 void sedit_page_open(int track, int code);
+bool sedit_page_leaves();   // remote_tick: true once when a table made for a voice has closed the editor (the page goes back)
+// The POOL page on the SAMPLES list with EDIT chosen, to pick a sample to make a wavetable of (the WAVETABLE SRC view's push of B on
+// a built-in or OFF table A: page_sedit.cpp; sedit::set_wt_voice first)
+void pool_page_pick_sample();
 #if CORE_UI_TOOLS
 void chop_page_set(int view, int sel, int zoom);   // tests and the renderer: the editor's view (0 EDIT 1 SLICE 1 2 SLICE 2 3 SLICE 3)
 int chop_page_sel();
@@ -242,7 +262,7 @@ void poly_page_closed();
 int poly_page_track();   // the track it shows (tests)
 #if CORE_UI_TOOLS
 // tests and the renderer: the view (track -1: the Rytm's; out: the OUT view; eq: ins1112's EQ view, RIGHT)
-void ins_page_set(bool bus, int slot, int busel, int track, bool out = false, bool eq = false);
+void ins_page_set(bool bus, int slot, int busel, int track, bool out = false, bool eq = false, bool sc = false);
 void mfx_page_set(int slot, bool eq);
 #endif
 #endif
@@ -346,7 +366,9 @@ void src_names_resend();
 // the host answers 4A 01 <track> 1 (the Rytm's YES / NO then the browser's, 31) and 4A 01 <track> 0 when the browser
 // ends (a file set into the row through the pool's rules - core/lib/pools.h set_file / set_special: one entry per hash,
 // P3's ask on a row in use, refused while the Rytm plays - or NO / LEFT at its top).
-void src_bank_list(int t, int vi, int machine, int code, int on, int why);
+// 2026-11-24 TBLB: param 12 (4A's optional 6th byte, only on WAVETABLE) aims the list at P13, table B: its YES writes P13 (48 k = 12) and
+// the names bank follows P13 while it was the knob touched last; 0 (no byte) the machine's own P1 / P11.
+void src_bank_list(int t, int vi, int machine, int code, int on, int why, int param = 0);
 // 0.5.0 (the sample browser, docs/SRC-BANKS.md "0.5.0"): down 0 a release, 1 a press, 2 a press with FUNC held (the 0.5.0
 // 0026 inside its open list / browser; an older 0026 never sends 2). The new keys (RIGHT quick load and re-entry, FUNC +
 // LEFT / RIGHT banks, FUNC + YES preview, FUNC + RIGHT the file menu, FUNC + UP OFF) only with a Rytm that has them:
@@ -357,7 +379,7 @@ bool src_bank_key(int code, int down);
 bool src_bank_new_keys();   // the new keys are on (above)
 bool src_bank_enc(int e, int delta, bool func);
 const Page* src_bank_page(int t, int machine);
-struct BankListState { bool on; int track, machine, bank, row, commits; bool browse; int cur, assigns, refusals, menu; };
+struct BankListState { bool on; int track, machine, bank, row, commits; bool browse; int cur, assigns, refusals, menu, param; };
 BankListState src_bank_state();   // tests
 // P1's value as a name on those machines' pages (the bottom bar, no echo): null on any other page / parameter.
 const char* src_value_name(const Page& p, int param, const Source& s);

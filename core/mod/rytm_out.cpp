@@ -104,7 +104,26 @@ CORE_COLD void rytm_host_cmd(bool on) {
 CORE_COLD void rytm_out_forget(int slot) {
   if (slot >= 0 && slot < 13) g_s[slot].sent = g_s[slot].want = -1;
 }
+CORE_COLD void rytm_readout(const char* text) {
+  uint8_t m[8 + kReadoutMax + 1] = {0xF0, 0x7D, 0x52, 0x54, kHostCmd, 1, kOpReadout, 0};
+  int n = 0;
+  for (; text && text[n] && n < kReadoutMax; ++n) {
+    char c = text[n];
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    m[8 + n] = (uint8_t)(c >= 0x20 && c <= 0x5F ? c : '?');
+  }
+  if (!n) return;
+  m[7] = (uint8_t)n;
+  m[8 + n] = 0xF7;
+  to_rytm(m, 9 + n);
+  ++g_st.cmds;
+}
+CORE_COLD void rytm_edit_arm(bool on) {
+  const uint8_t b[2] = {kOpEditArm, (uint8_t)(on ? 1 : 0)};
+  sysex(b, 2);
+}
 CORE_COLD void rytm_ack(int op, int status) {
+  if (op == kOpReadout || op == kOpEditArm) return;   // (the scene edit's: never the CC fallback)
   if (!status) return;
   ++g_st.refused;
   if (g_cmd && !g_said)

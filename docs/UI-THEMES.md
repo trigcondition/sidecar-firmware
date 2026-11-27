@@ -215,11 +215,9 @@ contrast entry either (it would need a Rytm mods change).
 | knob | track `#2c2950`, value accent, light dot | track `#767676` (4.6:1), value accent, white dot with a black edge |
 | piano roll | lavender rows and lines | rows `#000` / `#161616`, root rows the accent at 16 %, lines `#333` step / `#777` beat / `#fff` page, play head white, notes the accent with black text, the selected note yellow; keys `#e6e6e6` and black, each edged white |
 | meters, sliders | filled tracks | a white outline, the accent inside (yellow past 90 %); a slider's track `#767676` |
-| disabled key | `#2c2950` outline | `#a6a6a6` and a **dashed** edge |
+| disabled key | `#2c2950` outline | `#767676` outline, `#a6a6a6` text |
 
-Disabled keys are dashed along their straight top and bottom edges (gaps cut in the outline; the rounded ends stay solid), so
-disabled does not rest on colour alone. A p-lock keeps the Rytm page's own cues besides its colour (the dotted underline under a
-trig). What is still drawn in its own colours in this look: the boot screen (`sidecar_splash.c`, drawn before the setting is read), and the help
+Disabled keys keep a solid outline in the muted track colour and the faint text colour (high contrast: `#767676` and `#a6a6a6`, both readable on black); the dashed edge belongs to the OLED look's dotted disabled keys only. A p-lock keeps the Rytm page's own cues besides its colour (the dotted underline under a trig). What is still drawn in its own colours in this look: the boot screen (`sidecar_splash.c`, drawn before the setting is read), and the help
 texts that name colours ("Lavender: FX 1, coral: FX 2" on Send FX).
 
 The shots: `make -C pi/ui/host shots-hc` (`sidecar-hc-*`, `sidecar-hcg-*` beside the others; `./shot DIR [WxH] hc|hcg` is one look), and the plain
@@ -298,14 +296,14 @@ yellow or blue anywhere, in the same layout (`viper_apply`, `OS` in `sidecar_the
 |---|---|---|
 | bg | `#001000` | screen and every panel |
 | graticule / track | `#0c3410` | scope divisions, empty meter / track, roll steps (decor, never text) |
-| dim | `#28a030` | borders (2 px), disabled text (and a dashed edge) |
+| dim | `#28a030` | borders (2 px), disabled text |
 | mid | `#48d050` | secondary text, labels, hints |
 | bright | `#78f880` | primary text, traces, meters, accent, selection fill (dark text) |
 | peak | `#c0ffc0` | alerts, REC, warnings, the play head, the selected note's frame |
 
 WCAG: bright on bg 14.5, mid 9.7, dim 5.7, peak 17.0, ink on a bright fill 14.5, the border on bg 5.7. **Warnings, REC and "bad"** have no hue to use: they are the peak green as an
 **inverted** bar (dark text on a peak fill: health lines, the REC banner and the recorder line, the power warning in the header), and **every inverted bar has notched corners**
-(a stair-stepped cut at both top corners, `notch`), so an alert is told from a selection (a bright, plain fill) by shape and not only by a 1.18:1 difference in colour. Danger keys keep
+(a stair-stepped cut at both top corners, `notch`), so an alert is told from a selection (a bright, plain fill) by shape and not only by a 1.18:1 difference in colour. The bar is drawn by `label_alert`, not as the label's background: it is as wide as the text (not the space the label was given) and padded round it (the label's box is only its font's line height, which cut the descenders and put the first glyph against the notch; the pale slab across a whole panel on HOME was this). `th_alert_bar` and a check in `shot` keep it that way. Danger keys keep
 a peak edge. Panels at least 150 x 100 px carry a graticule: 8 columns of 1 px divisions, a brighter centre cross with minor ticks, under the widgets. Meters, knob arcs and the
 roll are bright traces over graticule-coloured tracks.
 
@@ -314,6 +312,15 @@ dot-face hero of the old SIDECAR, `uistyle=square` and the Display row's item, `
 
 The shots: `make -C pi/ui/host shots-grid [SIZE=1024x600|1280x720]` writes `grid-*.png` beside the others (`./shot DIR [WxH] grid` is one theme, as `hc` / `hcg` are looks of SIDECAR), and `bounds`
 runs OLED + SIDECAR, both high contrast looks and GRID at 800x480, 1024x600 and 1280x720 (the text-fit and check runs, then the layout comparison).
+
+### The pixel accent (SIDECAR, 0.5.2)
+
+The Rytm's pixel font (the OLED look's 5x9 and 5x7 dot tables) comes back as a sparing accent in the four SIDECAR contrasts, drawn bold (two columns a stroke) as round dots, integer scales
+only (`f_pxv`, `f_pxh`, `f_pxs`; 0 in GRID and OLED): the **value** face (5x9 at 2 / 2 / 3 on 800x480 / 1024x600 / 1280x720) for the knob values inside the VOICE and INSERT FX arcs and the SEQ
+tempo, the **hero** face (5x9 at 3 / 4 / 5) for HOME's pattern, the **small** face (5x7 at 2) for INSERT FX's value row under the captions (in the window ink, with a little more air than the
+Arimo row had) and the header strip. The strip (1024x600 and 1280x720, none at 800x480) is a small black box in the header with the Rytm's top line: the pattern, the tempo and PLAY / PAUS /
+STOP / REC (`---` for what is not known, `----` without the Rytm). The tempo is `bpm10` in `sidecar_ui_status_t` (from `core::seq::tempo()`, 0 unknown) and in the remote UI's STATUS view
+(appended to the live section, schema 1.1: an older app ignores it, an older Pi leaves it 0). Labels, lists, buttons and the other values stay Arimo.
 
 ## Sections and sub-page rows (0.5.1)
 
@@ -328,7 +335,7 @@ numbers (`sidecar_ui_show`, the Rytm's UP + T requests in `voice_pi`) are unchan
 | T2 SEQ | (own row) | the pattern editor; its header row holds the tracks (T9 / T10 ...), the pattern's pages and RYTM |
 | T3 PAT | (own row) | the Rytm's pattern, read only; its header row holds the pages 1 2 3 4 ALL and SEQ |
 | T4 VOICE | Sound, Insert, Source, Scope | VOICE; INSERT FX (moved here from FX); the machine view with POOL, PRESET, CHOP and SAMPLE EDIT under it; SCOPE |
-| T5 FX | Sends, Master, (Morph), XY | Send FX (moved here from Settings); MASTER FX; MORPH (only in a build with `SIDECAR_MORPH`); the XY pad |
+| T5 FX | Sends, Master, (Morph), XY | Send FX (moved here from Settings); MASTER FX; MORPH (in 0.5.2; hidden in a build without `SIDECAR_MORPH`); the XY pad |
 | T6 SONG | Timeline, Setup | the timeline; the MIDI CONFIG how-to (the CFG key became the pill) |
 | T7 REC | Record, Takes | the recorder; its takes list (the TAKES key became the pill) |
 | T8 SET | Sound, MIDI, Display, Pool, System, About | the settings pages (Send FX moved out; the touch test and calibration stay on Display, power and service on System) |
@@ -370,8 +377,8 @@ set the captions and supporting lines in the body face and the values in the tit
 row (Setup opens FX > XY on its setup), the **Targets** (X and Y slots, depth) and the **Quick keys**: **Kill tails** (`killfx`) and **REC** (a take
 running: `rec=stop`; else the REC page, which asks first when the card may fall behind).
 
-**Left out (no data or no engine support in the UI today):** MORPH tile and fader (`SIDECAR_MORPH` is off), LOOP tile, loop keys and Loop mute (the
-looper has no console or view), LFO tile ("5 of 8 on": the LFO state is not in the UI's status), Song arm (the song view is fed only while SONG
+**Left out (no data or no engine support in the UI today):** MORPH tile and fader (not on HOME: the MORPH page has them), LOOP tile, loop keys and Loop mute (the
+looper is not in 0.5.2: no page, no console command), LFO tile ("5 of 8 on": the LFO state is not in the UI's status), Song arm (the song view is fed only while SONG
 shows, so no armed state), BPM, the kit name ("shared set": only the project name exists), the recorder's file name, bit depth and the card's free
 space (REC's view only), a per-voice live level (only the selected voice's stem has one; the bar is the render load), the header's "A04 playing
 121.5" on Perform.
@@ -383,7 +390,7 @@ the key height; where four rows of pads would be under it, 800x480, the pads are
 rows 36 px under a header of the font's height), SAMPLE EDIT on the OLED, the machine view's POOL, the POOL page and PRESET (36 px rows: the list
 pages with UP / DOWN), REC's OLED take rows, and SET > Display (every row 44 px, 48 px apart). Not changed: SEQ's tool column and arp rows (a dense
 editor of its own, 23 to 26 px keys before this work too), the XY setup's depth sliders (a 12 px track with the slider's wider touch area), the
-take rows' DELETE keys (the row's height, 36 to 42 px, with their touch area widened to the row), MORPH (the feature is off).
+take rows' DELETE keys (the row's height, 36 to 42 px, with their touch area widened to the row).
 
 ## Components
 
@@ -554,7 +561,7 @@ page's make prompt says `FUNC+CHRO: POLY CONFIG`. An older host reads page 0x20 
 UP + AMP), POOL (UP + T13, or SRC LIST's) and CHOP (a push on its SRC view) work on what the selected track holds, so
 they are not in the SIDECAR MENU and not on the LEFT / RIGHT ring (`page_keys.h sc_rytm_mk2_only`, read by
 `sc_shortcut_only`; `core/ui/remote.cpp page_ids`): they open from that track by their keys. The SIDECAR MENU lists
-POLY CONFIG, ARP, SAMPLE, AUTO SAMPLE, SONG, REC, SCOPE, LFO, MORPH (off until 0.5.2), SAMPLE EDIT, PROJECT, STATUS, SYSTEM, USER SLOTS, MIDI (0.5.0, docs/pi-engine.md "Keyboards and MIDI settings"), USB-C, WEB UI and KEYS (ALL COMBOS) (`test_ui` holds
+POLY CONFIG, ARP, SAMPLE, AUTO SAMPLE, SONG, REC, SCOPE, LFO, MORPH (0.5.2), SAMPLE EDIT, PROJECT, STATUS, SYSTEM, USER SLOTS, MIDI (0.5.0, docs/pi-engine.md "Keyboards and MIDI settings"), USB-C, WEB UI and KEYS (ALL COMBOS) (`test_ui` holds
 the rule, not the count). NO on a page opened by a shortcut goes back to where it was opened from: the stock screen
 (the page closes, `3A 0 0`, one NO not two) when it was opened there, the Sidecar page under it when it was opened over
 one (two levels kept: SCOPE, then UP + LFO, then UP + T12: NO PROJECT -> LFO -> SCOPE -> SIDECAR); a page opened from

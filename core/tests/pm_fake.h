@@ -6,6 +6,10 @@
 //   eff   = clamp(base + mix x (ovr - base) + rmod + off, 0, 0x7fff); an override on a scene-locked word is skipped
 // Ramps per block (32 frames at 48 kHz); OFFSET v x 4 in 8.8, OVERRIDE v x 2, mix /127; the 250 ms timeout, the kit
 // check, CLEAR, the 128 slots, the refusals (2D 01 10 op 1 / 2), 07's answer. Time: advance(us) runs the blocks.
+// The Rytm-side morph (0.5.0 v2 P3, rytm-mods 0026 "pm morph"): 09 MORPH-SET a part per entry (a, b 1/128 step; flags
+// 1 has A, 2 has B, 0 removes it: its value stays, the mix to 0 over 8 blocks), 0A FADER f 0..16383 (ramped; kept
+// across kits). Each block an entry's part is its override: both a + (b - a) f, mix 1; A only a, mix 1 - f; B only b,
+// mix f. A CLEAR, the timeout or a kit change ends the part as they end the entry.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -21,6 +25,8 @@ struct Ent {
   int ovr_n = 0;
   double mix = 0, mix_to = 0, mix_step = 0;
   int mix_n = 0;
+  int mfl = 0;               // the morph part (P3): 1 has A, 2 has B, 0 none
+  double ma = 0, mb = 0;     // 8.8
 };
 
 struct Rytm {
@@ -36,6 +42,8 @@ struct Rytm {
   std::vector<std::vector<uint8_t>> rx;        // every param message taken (ops 04..07)
   static constexpr double kBlockUs = 32.0 * 1e6 / 48000.0;
   double block_acc = 0;
+  double fad = 0, fad_to = 0, fad_step = 0;   // the fader 0..1 (P3)
+  int fad_n = 0;
 
   Rytm() {
     for (auto& r : base)
@@ -52,6 +60,12 @@ struct Rytm {
     int n = 0;
     for (auto& r : e)
       for (auto& x : r) n += x.used;
+    return n;
+  }
+  int morphs() const {
+    int n = 0;
+    for (auto& r : e)
+      for (auto& x : r) n += x.used && x.mfl;
     return n;
   }
   void refuse(int op, int st) { answers.push_back({0x2D, 1, 0x10, (uint8_t)op, (uint8_t)st}); }
@@ -77,7 +91,7 @@ struct Rytm {
     if (n < 8 || m[0] != 0xF0 || m[1] != 0x7D || m[2] != 0x52 || m[3] != 0x54 || m[4] != 0x5A || m[5] != 1 || m[n - 1] != 0xF7)
       return false;
     int op = m[6];
-    if (op < 4 || op > 7) return false;
+    if ((op < 4 || op > 7) && op != 9 && op != 10) return false;
     rx.emplace_back(m, m + n);
     for (int i = 6; i < n - 1; ++i)
       if (m[i] > 0x7F) return refuse(op, 1), true;
@@ -87,7 +101,38 @@ struct Rytm {
       if (len) return refuse(op, 1), true;
       int kd = kit_drops > 16383 ? 16383 : kit_drops;   // (the contract: the counters saturate)
       answers.push_back({0x2D, 1, 0x11, (uint8_t)(used() > 127 ? 127 : used()), 0, 0, (uint8_t)(kd >> 7), (uint8_t)(kd & 0x7F),
-                         (uint8_t)(timeouts > 127 ? 127 : timeouts), 2});
+                         (uint8_t)(timeouts > 127 ? 127 : timeouts), 2, (uint8_t)(morphs() > 127 ? 127 : morphs())});
+      return true;
+    }
+    if (op == 10) {   // FADER <kit> <f hi7> <lo7> <ramp>
+      if (len != 4) return refuse(op, 1), true;
+      if (b[0] != kit) return ++kit_drops, true;
+      last_op_us = us, timing_out = false;
+      ramp(fad, fad_to, fad_step, fad_n, (b[1] << 7 | b[2]) / 16383.0, b[3]);
+      ++done;
+      return true;
+    }
+    if (op == 9) {    // MORPH-SET <kit> <n 1..20> {<t> <w> <flags> <a hi lo> <b hi lo>} x n
+      int cnt = len >= 2 ? b[1] : 0;
+      if (cnt < 1 || cnt > 20 || len != 2 + 7 * cnt) return refuse(op, 1), true;
+      for (int i = 0; i < cnt; ++i) {
+        const uint8_t* r = b + 2 + 7 * i;
+        if (!word_ok(r[0], r[1]) || r[1] > 0x3F || (r[1] >= 48 && r[1] <= 55) || r[2] > 3) return refuse(op, 1), true;
+      }
+      if (b[0] != kit) return ++kit_drops, true;
+      last_op_us = us, timing_out = false;
+      for (int i = 0; i < cnt; ++i) {
+        const uint8_t* r = b + 2 + 7 * i;
+        Ent& y = e[r[0]][r[1]];
+        if (!r[2]) {   // removed: the value stays, the mix out over 8 blocks
+          if (y.used && y.mfl) end_part(y, 0, 8);
+          continue;
+        }
+        Ent* x = slot(r[0], r[1], op);
+        if (!x) continue;
+        x->mfl = r[2], x->ma = (r[3] << 7 | r[4]) * 2.0, x->mb = (r[5] << 7 | r[6]) * 2.0;
+      }
+      ++done;
       return true;
     }
     if (len < 2) return refuse(op, 1), true;
@@ -101,7 +146,7 @@ struct Rytm {
           for (Ent& x : e[t])
             if (x.used) {
               ramp(x.off, x.off_to, x.off_step, x.off_n, 0, b[1]);
-              ramp(x.mix, x.mix_to, x.mix_step, x.mix_n, 0, b[1]);
+              end_part(x, 0, b[1]);
               if (!b[1]) x = Ent();
             }
       ++done;
@@ -137,16 +182,32 @@ struct Rytm {
     ++done;
     return true;
   }
+  void end_part(Ent& x, double target, int r) {   // a part ends: its last value stays as a plain override
+    x.mfl = 0, x.ovr_n = 0;
+    ramp(x.mix, x.mix_to, x.mix_step, x.mix_n, target, r);
+  }
+  void free_all() {   // a kit change (the Rytm frees every entry and part; the fader stays)
+    for (auto& r : e)
+      for (Ent& x : r) x = Ent();
+  }
   void block() {
     if (!timing_out && us - last_op_us >= 250000 && used()) {   // the timeout: everything to 0 over 32 blocks
       timing_out = true, ++timeouts;
       for (auto& r : e)
         for (Ent& x : r)
-          if (x.used) ramp(x.off, x.off_to, x.off_step, x.off_n, 0, 32), ramp(x.mix, x.mix_to, x.mix_step, x.mix_n, 0, 32);
+          if (x.used) ramp(x.off, x.off_to, x.off_step, x.off_n, 0, 32), end_part(x, 0, 32);
     }
+    if (fad_n > 0 && --fad_n == 0) fad = fad_to;
+    else if (fad_n > 0) fad += fad_step;
     for (auto& r : e)
       for (Ent& x : r) {
         if (!x.used) continue;
+        if (x.mfl) {   // the part is the override this block
+          if (x.mfl == 3) x.ovr = x.ma + (x.mb - x.ma) * fad, x.mix = 1;
+          else if (x.mfl == 1) x.ovr = x.ma, x.mix = 1 - fad;
+          else x.ovr = x.mb, x.mix = fad;
+          x.ovr_n = x.mix_n = 0;
+        }
         auto adv = [](double& c, double to, double st, int& n) {
           if (n > 0 && --n == 0) c = to;
           else if (n > 0) c += st;
@@ -154,7 +215,7 @@ struct Rytm {
         adv(x.off, x.off_to, x.off_step, x.off_n);
         adv(x.ovr, x.ovr_to, x.ovr_step, x.ovr_n);
         adv(x.mix, x.mix_to, x.mix_step, x.mix_n);
-        if (x.off == 0 && x.mix == 0 && !x.off_n && !x.mix_n) x = Ent();   // done: freed
+        if (x.off == 0 && x.mix == 0 && !x.off_n && !x.mix_n && !x.mfl) x = Ent();   // done: freed
       }
   }
   void advance(uint64_t to_us) {

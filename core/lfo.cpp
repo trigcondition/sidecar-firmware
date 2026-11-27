@@ -538,7 +538,8 @@ CORE_COLD int target_pos(int t) {
 // 0.5.0 owner test: SAMPLER names P9..P16 only - its list had eight empty "P1 -".."P8 -" rows.
 static CORE_COLD uint32_t voice_params(int t, int keep) {
   uint32_t m = 0;
-  for (int p = 0; p < 16; ++p) {
+  const bool wave = ui::remote_voice_machine(t - kTVoice) == kWaveMachine;
+  for (int p = 0; p < (wave ? 12 : 16); ++p) {   // (WAVETABLE's P13..P16 are TBL B, POS B, MIX, FTYPE: not targets)
     char b[8];
     if (ui::voice_label(t - kTVoice, p, b, sizeof b)[0]) m |= 1u << p;
   }
@@ -602,7 +603,7 @@ CORE_COLD int target_from_name(const char* s) {
 CORE_COLD int params_of(int t) {
   if (is_voice(t)) return 16;
   if (is_fx(t)) return 4;
-  if (is_ins(t) || is_mchain(t)) return 8 + ins::kEqParams;   // ins1112: 8..11 the chain's POST EQ
+  if (is_ins(t) || is_mchain(t)) return 8 + ins::kEqParams + sc::kParams;   // ins1112: 8..11 the chain's POST EQ; 0.5.0: 12..17 its SIDECHAIN
   if (is_out(t) || is_isnd(t)) return 3;
   if (is_mfx(t)) return kMfxParams;   // LEV, MIX1..4, B1A..B3B (the bus slots' send TYPE MIX, 0.5.0)
   if (is_snd(t)) return 2;
@@ -621,6 +622,9 @@ CORE_COLD const char* param_name(int t, int p, char* b, int cap) {
     if (l && l->label[p & 3] && *l->label[p & 3]) sniprintf(b, cap, "%s", l->label[p & 3]);
     else sniprintf(b, cap, "-");   // a knob the TYPE leaves unused
 #if CORE_POLY
+  } else if ((is_ins(t) || is_mchain(t)) && p >= 12) {   // 0.5.0 SIDECHAIN: "SDPT" "STHR" (S: the stage; the label by its mode)
+    const int ch = is_ins(t) ? t - kTIns : ins::kM0 + t - kTMaster;
+    sniprintf(b, cap, CORE_STR("S%.3s"), sc::label(ins::sc_mode(ch), (p - 12) % sc::kParams));
   } else if ((is_ins(t) || is_mchain(t)) && p >= 8) {   // ins1112: the chain's POST EQ, "QHPF" (Q: after the slots)
     sniprintf(b, cap, CORE_STR("Q%.3s"), ins::eq_labels().label[(p - 8) & 3]);
   } else if (is_ins(t) || is_mchain(t)) {   // "ACUT": the slot's letter and the TYPE's label of the param
@@ -746,6 +750,9 @@ CORE_COLD void clock(uint8_t status, uint16_t spp) {
 CORE_COLD void midi_in(uint8_t st, uint8_t d1, uint8_t d2) {
   (void)d1;
   if ((st & 0x0F) > 12 || (st & 0xF0) != 0x90 || !d2) return;
+#if CORE_POLY
+  if ((st & 0x0F) < sc::kTracks) sc::trig_track(st & 0x0F);   // 0.5.0: a SIDECHAIN source: the Rytm track's trig (its note out)
+#endif
   for (int i = 0; i < kLfos; ++i)   // a trig on one of the Rytm's tracks (its note out): the FX targets' TRIG
     if (g_set[i].retrig == kOnTrig && is_fx(g_set[i].target)) g_run[i].retrig = true;
 #if CORE_POLY

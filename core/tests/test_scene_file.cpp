@@ -98,15 +98,15 @@ static void round_trip() {
   CHECK(scene::kit() == 0);
   for (int n = 0; n < scene::kScenes; ++n)
     for (int k = 0; k <= n; ++k) CHECK(scene::lock(n, mod::tid(k % 2 ? mod::kV : mod::kIns, k % 8, k % 12), (uint16_t)(n * 1000 + k)));
-  CHECK(scene::lock(5, T("RYTM:SCN"), 640) && scene::lock(5, T("MFX:MIX2"), 12800) && scene::lock(5, T("S12:F2"), 1));
+  CHECK(scene::lock(5, T("MFX:MIX2"), 12800) && scene::lock(5, T("S12:F2"), 1));
   // 0.5.0: the Rytm's own sound parameters, kept by name (rytm-param-mod 5.1; H9)
   CHECK(scene::lock(5, T("RT3:FRQ"), 100 << 7) && scene::lock(5, T("RFX:TIM"), 1) && scene::lock(5, T("RT12:FTYP"), 3 << 7));
   scene::set_ab(2, 6), scene::set_sel(4), scene::set_fader(8192, scene::kConsole);
   scene::save_due();
   flush();
   std::string f = rd("/.rytm/scene/SCN/k001.txt");
-  CHECK(f.find("#sidecar scene 1\n") == 0 && f.find("AB 3 7\n") != std::string::npos && f.find("F 8192\n") != std::string::npos);
-  CHECK(f.find("S 5\n") != std::string::npos && f.find("L 6 RYTM:SCN 640\n") != std::string::npos);
+  CHECK(f.find("#sidecar scene 2\n") == 0 && f.find("AB 3 7\n") != std::string::npos && f.find("F 8192\n") != std::string::npos);
+  CHECK(f.find("S 5\n") != std::string::npos && f.find("RYTM:") == std::string::npos);
   CHECK(f.find("L 6 RT3:FRQ 12800\n") != std::string::npos && f.find("L 6 RFX:TIM 1\n") != std::string::npos &&
         f.find("L 6 RT12:FTYP 384\n") != std::string::npos);
   scene::State before = scene::state();
@@ -117,7 +117,7 @@ static void round_trip() {
     CHECK(s.s[n].n == before.s[n].n);
     for (int i = 0; i < s.s[n].n; ++i) CHECK(s.s[n].l[i].t == before.s[n].l[i].t && s.s[n].l[i].v == before.s[n].l[i].v);
   }
-  printf("scene file: the round trip (%zu bytes)\n", f.size());
+  printf("scene file: the round trip (%zu bytes), v2_header_written\n", f.size());
 }
 
 static void kit_switch_reads_ram_only() {
@@ -143,7 +143,7 @@ static void kit_switch_reads_ram_only() {
 }
 
 static void kit_without_file_uses_project_default() {
-  wr("/.rytm/scene/SCD.txt", "#sidecar scene 1\nAB 1 2\nL 1 V2:P3 6400\n");
+  wr("/.rytm/scene/SCD.txt", "#sidecar scene 2\nAB 1 2\nL 1 V2:P3 6400\n");
   to_project("SCD");
   kit(8);   // kit 9: no file of its own
   CHECK(scene::kit() == 8 && !scene::locked() && scene::state().s[0].n == 1 && scene::state().s[0].l[0].t == T("V2:P3"));
@@ -151,12 +151,12 @@ static void kit_without_file_uses_project_default() {
   scene::save_due();
   flush();
   CHECK(rd("/.rytm/scene/SCD/k009.txt").find("L 1 V2:P4 1280") != std::string::npos);
-  CHECK(rd("/.rytm/scene/SCD.txt") == "#sidecar scene 1\nAB 1 2\nL 1 V2:P3 6400\n");   // the default untouched
+  CHECK(rd("/.rytm/scene/SCD.txt") == "#sidecar scene 2\nAB 1 2\nL 1 V2:P3 6400\n");   // the default untouched
   printf("scene file: a kit without its own file starts from the project's\n");
 }
 
 static void unknown_line_locks_file() {
-  const char* text = "#sidecar scene 1\nAB 2 0\nL 2 V1:P1 100\nL 2 ZZ9:Q1 5\nL 2 V1:P2 200\n";
+  const char* text = "#sidecar scene 2\nAB 2 0\nL 2 V1:P1 100\nL 2 ZZ9:Q1 5\nL 2 V1:P2 200\n";
   wr("/.rytm/scene/SCL/k002.txt", text);
   to_project("SCL");
   kit(1);
@@ -313,6 +313,27 @@ static void project_switch_saves_old() {
   printf("scene file: a project switch saves the old project's edit, loads the new one's\n");
 }
 
+// 0.5.0 v2 (S12): no migration. A v1 file (or a RYTM: line, no scene target any more) loads what it can and locks
+static void v1_file_locks() {
+  const char* text = "#sidecar scene 1\nAB 1 2\nL 1 V1:P1 100\nL 2 V1:P2 200\n";
+  wr("/.rytm/scene/SV1/k001.txt", text);
+  const char* rytm = "#sidecar scene 2\nAB 1 2\nL 1 V1:P1 100\nL 1 RYTM:PERF3 16256\n";
+  wr("/.rytm/scene/SV1/k002.txt", rytm);
+  to_project("SV1");
+  kit(0);
+  CHECK(scene::kit() == 0 && scene::locked() && scene::state().s[0].n == 1 && scene::state().s[1].n == 1);
+  lk(3, "V1:P3", 9);
+  scene::save_due();
+  flush();
+  CHECK(rd("/.rytm/scene/SV1/k001.txt") == text);
+  kit(1);
+  CHECK(scene::kit() == 1 && scene::locked() && scene::state().s[0].n == 1 && scene::state().s[0].l[0].t == T("V1:P1"));
+  scene::save_due();
+  flush();
+  CHECK(rd("/.rytm/scene/SV1/k002.txt") == rytm);
+  printf("scene file: v1_file_locks (a v1 file and a RYTM: line load what they can and lock)\n");
+}
+
 int main() {
   char tmpl[] = "/tmp/core_scenefile_XXXXXX";
   CHECK(mkdtemp(tmpl));
@@ -327,6 +348,7 @@ int main() {
   kit_switch_reads_ram_only();
   kit_without_file_uses_project_default();
   unknown_line_locks_file();
+  v1_file_locks();
   save_mid_morph_stores_knobs();
   fader_move_alone_not_dirty();
   fader_saved_on_kit_change();

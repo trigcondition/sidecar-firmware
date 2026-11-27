@@ -92,5 +92,30 @@ class PmModel(unittest.TestCase):
         self.assertEqual((st["kit_drops"], st["timeouts"]), (16383, 127))
 
 
+class MorphP3(unittest.TestCase):
+    """0.5.0 v2 P3: 09 parts on the 0A fader (the same numbers as core/tests/pm_fake.h and the mod's pm_emu morph)."""
+
+    def test_parts_fader_remove_status(self):
+        r = Rytm(kit=3)
+        r.take(P.pm_fader(3, 4096, 0))
+        r.take(P.pm_morph_set(3, [(0, 30, 3, 100 << 7, 20 << 7), (0, 31, 1, 100 << 7, 0), (0, 25, 2, 0, 100 << 7)]))
+        r.advance(r.us + 2 * BLOCK_US)
+        f = 4096 / 16383
+        self.assertAlmostEqual(r.eff(0, 30), 100 + (20 - 100) * f, places=3)
+        self.assertAlmostEqual(r.eff(0, 31), 64 + (1 - f) * 36, places=3)   # A only over the Rytm's own 64
+        self.assertAlmostEqual(r.eff(0, 25), 64 + f * 36, places=3)
+        r.take(P.pm_status())
+        self.assertEqual(P.decode_pm_status(r.answers[-1][3:])["morph_parts"], 3)
+        r.take(P.pm_fader(3, 16383, 8))   # ramped: half way after 4 blocks
+        r.advance(r.us + 4 * BLOCK_US + 1)
+        self.assertAlmostEqual(r.eff(0, 30), 100 + (20 - 100) * (f + (1 - f) / 2), places=2)
+        r.take(P.pm_morph_set(3, [(0, 30, 0, 0, 0)]))   # removed: the value stays, the mix out over 8 blocks
+        r.advance(r.us + 9 * BLOCK_US)
+        self.assertAlmostEqual(r.eff(0, 30), 64, places=3)
+        self.assertNotIn((0, 30), r.e)
+        r.take(P.pm_morph_set(3, [(0, 50, 1, 0, 0)]))   # VM words: refused
+        self.assertEqual(r.answers[-1][3:], bytes([P.HOST_PM_MORPH_SET, 1]))
+
+
 if __name__ == "__main__":
     unittest.main()

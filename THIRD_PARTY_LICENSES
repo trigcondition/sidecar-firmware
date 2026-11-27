@@ -1179,6 +1179,10 @@ MODEL E (plugins/modele): the oscillator bank of ModelDigi (https://github.com/s
 Licence: GNU GPL version 2 or later: licenses/GPL-2.0.txt, and the upstream LICENSE unchanged in plugins/modele/third_party/modeldigi/LICENSE. Vendored unchanged: dsp/oscillator.c, oscillator.h, edge_kernel.h, mixer_curve.h (SPDX lines in each file). The whole package is GPL-2.0-or-later (plugins/modele/LICENSE, NOTICE); in the sidecar-pi-plugins zip since 0.4.1, outside the zip's MIT LICENSE.txt: modele.a64.rmp with modele-LICENSE.txt (the GPL), modele-NOTICE.txt and modele-source.tar.gz (its complete source, which goes with the binary; make package).
 ------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------
+WAVETABLE's warps and filters (core/wavetable/wavetable.cpp): derived from Vital by Matt Tytel (https://github.com/mtytel/vital, commit 636ca0e)
+Licence: GNU GPL version 3 or later: licenses/GPL-3.0.txt (Vital's LICENSE is that text). Copyright 2013-2019 Matt Tytel. Pi and Mac builds only (the Teensy has no WAVETABLE). Ported to float C from Vital's synthesis code: the phase warps (synth_oscillator.cpp: syncPhase, halfSinWindow, quantizePhase, bendPhase, squeezePhase, fmPhase, rmWindow, setDistortionValues' amount laws), the digital SVF (filters/digital_svf.cpp: setupFilter, tickBasic, tick, tick24), the ladder filter (filters/ladder_filter.cpp, one_pole_filter.h) and futils' tanh / hardTanh. No wavetable, preset or other data of Vital is included. A Pi engine binary with them is distributed under GPL version 3 (as with Circle, above); the complete source goes with it.
+------------------------------------------------------------------------------
 
 ##############################################################################
 # NEW WEB APP (web-next; served from the SD card at /next, not built into the kernel)

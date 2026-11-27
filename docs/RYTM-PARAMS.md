@@ -1,6 +1,6 @@
 # The Rytm's own sound parameters, modulated from the Sidecar (0.5.0)
 
-> The MORPH fader (the scenes, A and B) comes in 0.5.2: in 0.5.0 it is switched off (`core/sidecar_features.h`, `SIDECAR_MORPH`). Where this page mentions it, read it as 0.5.2.
+> The MORPH fader (the scenes, A and B) is in 0.5.2 (0.5.0 and 0.5.1 had it switched off: `core/sidecar_features.h`, `SIDECAR_MORPH`).
 
 From 0.5.0 the Sidecar's LFOs, the XY pad, MIDI learn, the MORPH fader and the sequencer's p-locks on poly tracks can
 move the Analog Rytm MKII's **own** sound parameters: a track's filter, amp, LFO, synth and sample page, its trig

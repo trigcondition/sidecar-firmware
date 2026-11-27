@@ -27,7 +27,7 @@ const Mach kMachs[] = {
     // WAVETABLE (wavetable.h): BASIC at POS 40, SYNC warp, 3 unison, half sub, LP a little closed; ATK 0 DEC 70 SUS 90,
     // ENV +24 onto POS
     // (TBL A001: the WAVETABLES pool's template has BASIC there)
-    {"wt", 0x28, {1, 40, 40, 30, 40, 30, 54, 20, 0, 70, 90, 88, 0, 0, 0, 0}, 0},
+    {"wt", 0x28, {1, 40, 21, 30, 40, 30, 54, 20, 0, 70, 90, 88, 0, 0, 0, 0}, 0},
     // GRANULAR (granular.h): the built-in PAD (SRC H011: the SAMPLES pool's template), 140 ms grains at 64 a second,
     // some spray and pitch spread
     {"gr", 0x38, {11, 30, 30, 80, 100, 10, 20, 0, 20, 60, 0, 0, 0, 0, 0, 0}, 7 << 4},

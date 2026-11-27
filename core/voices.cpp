@@ -890,6 +890,9 @@ __attribute__((noinline)) CORE_COLD void voice_report(int cmd, const uint8_t* d,
   else return;
   if (cmd == 0x04) silenced[vi] = false;
   if (cmd == 0x04 && hooks.trig_seen) hooks.trig_seen();
+#if CORE_POLY
+  if (cmd == 0x04) sc::trig_voice(vi);   // 0.5.0: a SIDECHAIN source: this voice's trig (fx/sidechain.h)
+#endif
   V& x = v[vi];
   bool was_juno = x.juno, was_fm = x.fm;
   int was_kind = engine_sig(x);   // E0: the engine (the instances' kind)
@@ -1135,6 +1138,9 @@ static CORE_COLD void play_mono(int vi, int note, int vel) {
 // E0: the sequencer's mono note (voices.h): the voice's own machine plays it as a Rytm trig would (and wakes it)
 CORE_COLD void voice_play(int vi, int note, int vel) {
   vi &= 7;
+#if CORE_POLY
+  sc::trig_voice(vi);   // 0.5.0: a SIDECHAIN source: the sequencer's / a pad's note on this voice
+#endif
   V& x = v[vi];
   silenced[vi] = false;
   if (x.md) {   // MD: the sequencer's note is a hit (pitch none: PTCH is its own knob)

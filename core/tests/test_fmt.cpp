@@ -127,7 +127,7 @@ int main() {
                       {"wtpool", fmt::kProject, 1}, {"instpool", fmt::kProject, 1}, {"poolused", fmt::kDerived, 1},
                       {"slicemap", fmt::kProject, 2}, {"kits", fmt::kProject, 1}, {"scene", fmt::kProject, 1},
                       {"xy", fmt::kProject, 1},
-                      {"learn", fmt::kSetting, 1}, {"preview", fmt::kSetting, 1}};
+                      {"learn", fmt::kSetting, 1}, {"preview", fmt::kSetting, 1}, {"loop", fmt::kSetting, 1}};
   for (const Want& w : inv) {
     const fmt::Format* f = fmt::find(w.name);
     CHECK(f && f->cls == w.cls && f->current == w.current && f->sniff);
@@ -172,6 +172,7 @@ int main() {
   CHECK(!strcmp(fmt::path("sqp", "LIVE", 5, p, sizeof p), "/.rytm/seq/LIVE/p005.sqp"));
   CHECK(!strcmp(fmt::path("keys", nullptr, 0, p, sizeof p), "/.rytm/keys.txt"));
   CHECK(!strcmp(fmt::path("preview", nullptr, 0, p, sizeof p), "/.rytm/preview.txt"));   // 0.5.0 (core/samp/preview.h)
+  CHECK(!strcmp(fmt::path("loop", nullptr, 0, p, sizeof p), "/.rytm/loop.txt"));   // 0.5.0 (core/loop/loop.h)
   CHECK(!strcmp(fmt::path("library", nullptr, 0, p, sizeof p), "/.rytm/library/index.bin"));
   // the pools (generation 2: the project's own folder)
   CHECK(!strcmp(fmt::path("samplepool", "LIVE", 0, p, sizeof p), "/.rytm/projects/LIVE/samples.pool.txt"));

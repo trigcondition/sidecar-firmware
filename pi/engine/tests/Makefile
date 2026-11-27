@@ -40,6 +40,11 @@ build/test_ob_usb: test_ob_usb.cpp ../ob_usb.cpp ../ob_usb.h ../ep_halt.h ../ob_
 	@mkdir -p build/ob_src
 	cp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h build/ob_src/
 	$(CXX) -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all -Ibuild/ob_src -Ishim_ob -I.. -I../../../core -I../../../teensy/libraries/RytmHost -o $@ test_ob_usb.cpp build/ob_src/ob_usb.cpp build/ob_src/ob_follow.cpp ../a4_in.cpp ../output.cpp $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp -DOB_USB_TEST
+# the looper's Pi side (test_loop_pi.cpp): the real ob_usb.cpp on the fake Circle, test_ob_usb.cpp's Bus, loop_keep.cpp on a temp folder
+build/test_loop_pi: test_loop_pi.cpp test_ob_usb.cpp ../loop_keep.cpp ../loop_keep.h ../loop_plan.h ../loop_pi.h ../ob_usb.cpp ../ob_usb.h ../ep_halt.h ../ob_follow.cpp ../ob_follow.h ../a4_in.cpp ../a4_in.h ../drift_src.h $(CORE)/device/a4.h ../output.cpp ../output.h ../recorder.h $(CORE)/rec/rec_names.cpp $(CORE)/rec/rec_names.h $(CORE)/rec/rec_wav.h $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/device/device.h $(CORE)/fx/out.h $(CORE)/fx/out.cpp $(CORE)/loop/loop.h $(wildcard shim_ob/*.h) $(wildcard shim_ob/circle/*.h) $(wildcard shim_ob/circle/usb/*.h) check.h
+	@mkdir -p build/loop_ob_src
+	cp ../ob_usb.cpp ../ob_usb.h ../ob_follow.cpp ../ob_follow.h build/loop_ob_src/
+	$(CXX) -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=all -Ibuild/loop_ob_src -Ishim_ob -I.. -I../../../core -I../../../teensy/libraries/RytmHost -o $@ test_loop_pi.cpp build/loop_ob_src/ob_usb.cpp build/loop_ob_src/ob_follow.cpp ../a4_in.cpp ../output.cpp ../loop_keep.cpp $(CORE)/rec/rec_names.cpp $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/fx/out.cpp $(CORE)/fx/out_measure.cpp -DOB_USB_TEST
 # usb=mirror's box side: the same, built with CIRCLE_GADGET_MIRROR and RASPPI=4 (the xHC's Reset Endpoint), against the
 # recording gadget of shim_ob/sidecar_gadget.h
 build/test_ob_mirror: test_ob_mirror.cpp ../ob_usb.cpp ../ob_usb.h ../ep_halt.h ../ob_follow.cpp ../ob_follow.h ../a4_in.cpp ../a4_in.h ../mirror_desc.h ../drift_src.h $(CORE)/device/a4.h ../output.cpp ../../../teensy/libraries/RytmHost/ob_block.h $(CORE)/device/digitakt.cpp $(CORE)/device/a4.cpp $(CORE)/device/device.h $(CORE)/fx/out.h $(wildcard shim_ob/*.h) $(wildcard shim_ob/circle/*.h) $(wildcard shim_ob/circle/usb/*.h) check.h
@@ -166,6 +171,17 @@ build/test_voice_gate: test_voice_gate.cpp ../voice_pi.cpp ../voice_pi.h ../../u
 	sed '/#include "core_port.h"/d' ../voice_pi.cpp > build/voice_pi_mac.cpp
 	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -DCORE_POLY=1 -DCORE_MSAMP=1 -I$(CORE)/host -I$(CORE) -I.. -I$(ENG)/Plaits -I$(ENG)/Juno -I$(ENG)/DaisySP -I$(ENG)/Sampler -I$(CORE)/../sdk -I$(RMPSRC) \
 	  -fsanitize=address,undefined -fno-sanitize-recover=all -o $@ test_voice_gate.cpp build/voice_pi_mac.cpp ../seditview_pi.cpp ../../ui/rytm_pattern.c $(CORE)/build/libcore.dylib -Wl,-rpath,$(abspath $(CORE)/build)
+# TBLB: the machine view's table B fields (wgview_pi.cpp Fill) on the core's Mac library. wgview_pi.cpp includes platform.h (the
+# core's host/ one here); the sidecar_wgview_* state it asks the display for is the test's own (LVGL is not built here)
+build/test_wgview_pi: test_wgview_pi.cpp ../wgview_pi.cpp ../wgview_pi.h ../../ui/sidecar_wgview.h check.h $(CORE)/build/libcore.dylib
+	@mkdir -p build
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -DCORE_POLY=1 -DCORE_MSAMP=1 -I$(CORE)/host -I$(CORE) -I.. -I$(ENG)/Plaits -I$(ENG)/Juno -I$(ENG)/DaisySP -I$(ENG)/Sampler -I$(CORE)/../sdk -I$(RMPSRC) \
+	  -fsanitize=address,undefined -fno-sanitize-recover=all -o $@ test_wgview_pi.cpp ../wgview_pi.cpp $(CORE)/build/libcore.dylib -Wl,-rpath,$(abspath $(CORE)/build)
+# 0.5.0: the display's LOOP page view (loopview_pi.cpp) from the looper (core/loop/loop.h) on the core's Mac library
+build/test_loopview_pi: test_loopview_pi.cpp ../loopview_pi.cpp ../loopview_pi.h ../../ui/sidecar_loop.h $(CORE)/loop/loop.h check.h $(CORE)/build/libcore.dylib
+	@mkdir -p build
+	$(CXX) -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -DCORE_POLY=1 -DCORE_MSAMP=1 -I$(CORE)/host -I$(CORE) -I.. \
+	  -fsanitize=address,undefined -fno-sanitize-recover=all -o $@ test_loopview_pi.cpp ../loopview_pi.cpp $(CORE)/build/libcore.dylib -Wl,-rpath,$(abspath $(CORE)/build)
 # 0.5.0: the display's XY page view (xypad_pi.cpp) from the XY pad (core/mod/xypad.h) on the core's Mac library
 build/test_xypad_pi: test_xypad_pi.cpp ../xypad_pi.cpp ../xypad_pi.h ../../ui/sidecar_xy.h $(CORE)/mod/xypad.h check.h $(CORE)/build/libcore.dylib
 	@mkdir -p build
@@ -272,7 +288,7 @@ CONTENT_FLAGS := -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -ffp-cont
   -I$(CORE) -I$(CORE)/host -I$(RMPSRC) $(ENG_INC) $(ENG_FLAGS)
 # (bridge::tick calls the display's MORPH / XY / SONG pages' Tick: their portable halves linked too; test_content has
 # its own song_pi::Tick)
-BRIDGE_SRC := ../bridge.cpp ../morph_pi.cpp ../xypad_pi.cpp ../song_pi.cpp
+BRIDGE_SRC := ../bridge.cpp ../morph_pi.cpp ../loopview_pi.cpp ../xypad_pi.cpp ../song_pi.cpp
 build/test_content: test_content.cpp $(BRIDGE_SRC) ../bridge.h check.h $(CORE)/build/libcore.dylib
 	@mkdir -p build
 	$(CXX) $(CONTENT_FLAGS) -o $@ $< $(filter-out ../song_pi.cpp,$(BRIDGE_SRC)) $(CORE)/build/libcore.dylib -Wl,-rpath,$(abspath $(CORE)/build)

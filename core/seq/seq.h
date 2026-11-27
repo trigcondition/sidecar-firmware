@@ -54,7 +54,10 @@ enum : uint8_t { kTransport = 1, kPattern = 2, kSwitch = 3, kScale = 4, kMutes =
                  kPos = 9, kEdit = 10, kDirty = 11, kFill = 12, kSolo = 13,   // kSolo: fix1049 (rytm-mods 0026 1049)
                  kQperf = 14, kSceneRep = 15,   // 0.5.0: the QUICK PERF knob, the Rytm's scene (core/mod/scene.h)
                  kHostAck = 16,     // 0.5.0: the mod command's answer (core/mod/rytm_out.h)
-                 kPmStatus = 17 };  // 0.5.0: the Rytm's params' STATUS answer (core/mod/rytm_param.h op 07)
+                 kPmStatus = 17,    // 0.5.0: the Rytm's params' STATUS answer (core/mod/rytm_param.h op 07)
+                 kCapture = 18,     // 0.5.0 v2: a turn under PAGE + T15 / T16 on a Rytm page (core/mod/scene.h capture)
+                 kEditKey = 19,     // 0.5.0 v2: that gesture's side held / let go, a scene picked (scene.h stock_edit)
+                 kCaptureClear = 20 };   // 0.5.2: a knob press under that gesture: that parameter's lock removed (capture_clear)
 // 2D 0A EDIT's ops (rytm-mods 0026 "1033"): the stock edit functions the Rytm ran (src 0) or seq mode's own gesture
 // (src 1: a host trig / PAGE held + FUNC + RECORD / STOP / PLAY)
 enum : uint8_t { kPCopy = 1, kPPaste, kPClear, kPUndo, kTCopy, kTPaste, kTClear, kTUndo, kGCopy, kGPaste, kGClear, kGUndo,
@@ -202,10 +205,13 @@ struct PolyCfg {
   uint8_t group;    // 0 none; 1..kPolyGroups: a poly group across tracks (data model only: docs/POLYPHONY.md "E0")
   int8_t oct;       // -3..+3 (BACKLOG 7g PAD OCT): 12 x oct added to the pads' notes (CHRO) and the Rytm's pad 0x04 notes
                     // on this track's voice; steps record the shifted pitch; host keyboards and playback unshifted
+  uint8_t chord;    // CHORD REC: 0 OFF (the default): live recording writes a mono line (last note wins: a new note
+                    // cuts the held one's recorded length); 1 ON: every held note is recorded with its own length.
+                    // Playing (pads, keyboard) is poly either way
 };
 constexpr int kMaxPadOct = 3;
 inline bool poly_default(const PolyCfg& c) {
-  return !c.voices && !c.alloc && c.unison <= 1 && !c.detune && !c.spread && !c.group && !c.oct;
+  return !c.voices && !c.alloc && c.unison <= 1 && !c.detune && !c.spread && !c.group && !c.oct && !c.chord;
 }
 // seqtop P2 (docs/SEQ-IDEAS.md P2): a track's own speed, a ratio of the Rytm track's step clock (which already runs at
 // the Rytm track's SCALE). 0 FOLLOW = 1:1 (as before). Elektron's set (1/8 .. 2 with 3/4 and 3/2) and the free ratios
@@ -415,7 +421,9 @@ void reset();                                  // tests: everything stopped and 
 bool sysex(const uint8_t* d, int len);         // a whole 2C / 2D from the Rytm (true: it was one)
 void hello(int up20 = -1);                     // the Rytm's hello (35, its uptime in 1/20 s, -1 unknown): 2E again, a resync asked
 // Clock-only tracks in the 2E (ticked in 2C, nothing else; core/song: BD while SONG RECORD is armed or replaying)
-void set_clock_tracks(uint16_t mask);
+// per user, OR-ed: kClockSong (core/song), kClockLoop (core/loop); each user's mask replaces its own earlier one
+enum { kClockSong = 0, kClockLoop = 1, kClockUsers = 2 };
+void set_clock_tracks(int user, uint16_t mask);
 // The arpeggiator (core/arp/arp.h): the tracks to pin as its notes are the host's, and whether it wants the clock (BD's ticks)
 void set_arp_tracks(uint16_t pins, bool clock);
 // Its time: position p in 1/16ths since PLAY falls at host frame origin + p per16, `latency` early as the sequencer's notes. false: no
@@ -633,6 +641,7 @@ struct Stats {
   uint32_t solos;         // fix1049: 2D 0D SOLO reports taken
 };
 uint16_t silenced();      // fix1049: the Rytm tracks not heard now: muted (2D 05), or not soloed while any is (2D 0D)
+uint16_t muted();         // the Rytm tracks it reports muted (2D 05; bit k: track k + 1), solo not counted (the looper's auto-mute)
 const Stats& stats();
 // tests: the events waiting (frame, on 1 / off 0, voice, note)
 int pending(int64_t* frames, uint8_t* on, uint8_t* voice, uint8_t* note, int max);

@@ -3,7 +3,7 @@
 //
 // A track's poly config (seq.h PolyCfg, the Analog Four MKII's POLY CONFIG words): A VOICES (AUTO, 1..8), B ALLOCATION
 // (REASSIGN / ROTATE / RESET), C UNISON (OFF, 2..8), D DETUNE and E SPREAD (0..127; FUNC: by 8), F GROUP (OFF, 1..4:
-// stored, not played yet), G PAD OCT (-3..+3: the pads' range on this track, BACKLOG 7g). The line under the title is what it resolves to on the track's machine now, as the
+// stored, not played yet), G PAD OCT (-3..+3: the pads' range on this track), H CHORD REC (OFF / ON: live recording writes a mono line, or every held note). The line under the title is what it resolves to on the track's machine now, as the
 // touchscreen's POLY tool says it (inst::describe_short's words, the machine left out for the Rytm's 25 characters:
 // "4 NOTES 4 INST 2.92%", CUT when the budget or the machine's maximum cut it). Every edit is the console's
 // `seq=poly:T:<key>=<value>` (seq::command): the pattern's config and the track's default, as there.
@@ -29,8 +29,8 @@ namespace ui {
 namespace {
 
 UI_ROM const char* const kTrackNames[12] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"};
-UI_ROM const char* const kLab[8] = {"VOIC", "ALLC", "UNIS", "DTUN", "SPRD", "GRP", "OCT", "-"};
-UI_ROM const char* const kLong[7] = {"VOICES", "ALLOCATION", "UNISON", "DETUNE", "SPREAD", "GROUP", "PAD OCT"};
+UI_ROM const char* const kLab[8] = {"VOIC", "ALLC", "UNIS", "DTUN", "SPRD", "GRP", "OCT", "CHRD"};
+UI_ROM const char* const kLong[8] = {"VOICES", "ALLOCATION", "UNISON", "DETUNE", "SPREAD", "GROUP", "PAD OCT", "CHORD REC"};
 UI_ROM const char* const kAllocShort[seq::kAllocs] = {"REASGN", "ROTATE", "RESET"};
 constexpr int kInfoY = 12, kRow0 = 28, kRow1 = 43;   // the info line; the encoder rows' label rows (values 6 below)
 
@@ -72,6 +72,7 @@ CORE_COLD void value_text(const seq::PolyCfg& c, int e, char* b, int cap) {
     case 4: sniprintf(b, cap, CORE_STR("%d"), c.spread); break;
     case 5: c.group ? sniprintf(b, cap, CORE_STR("%d"), c.group) : sniprintf(b, cap, "OFF"); break;
     case 6: c.oct ? sniprintf(b, cap, CORE_STR("%s%d"), c.oct < 0 ? "-" : "+", c.oct < 0 ? -c.oct : c.oct) : sniprintf(b, cap, "0"); break;
+    case 7: sniprintf(b, cap, c.chord ? "ON" : "OFF"); break;
     default: sniprintf(b, cap, "-"); break;
   }
 }
@@ -126,7 +127,7 @@ CORE_COLD void poly_draw(Canvas& c, int page, int npages, uint32_t ms) {
   int e = pp.touched;
   if (!poly) {
     footer(c, "YES: MAKE IT A POLY TRACK");
-  } else if (e >= 0 && e < 7) {
+  } else if (e >= 0 && e < 8) {
     char v[12];
     if (e == 1) sniprintf(v, sizeof v, "%s", inst::alloc_name(cfg.alloc));
     else value_text(cfg, e, v, sizeof v);
@@ -147,7 +148,7 @@ CORE_COLD void apply(int t, const char* key, int v) {
 }
 
 CORE_COLD void poly_enc(int e, int d, bool func) {
-  if (!d || e < 0 || e > 6) return;
+  if (!d || e < 0 || e > 7) return;
   int t = track_now(), m = -1;
   if (kind_of(t, &m) != 2 || !seq::owns_track(t)) return;   // (no config to edit: the page says why)
   pp.touched = e;
@@ -162,7 +163,8 @@ CORE_COLD void poly_enc(int e, int d, bool func) {
     case 3: apply(t, "detune", clampi(c.detune + d * (func ? 8 : 1), 0, 127)); break;
     case 4: apply(t, "spread", clampi(c.spread + d * (func ? 8 : 1), 0, 127)); break;
     case 5: apply(t, "group", clampi(c.group + step, 0, seq::kPolyGroups)); break;
-    default: apply(t, "oct", clampi(c.oct + step, -seq::kMaxPadOct, seq::kMaxPadOct)); break;
+    case 6: apply(t, "oct", clampi(c.oct + step, -seq::kMaxPadOct, seq::kMaxPadOct)); break;
+    default: apply(t, "chord", clampi(c.chord + step, 0, 1)); break;
   }
 }
 
@@ -204,7 +206,7 @@ CORE_COLD bool poly_shown() {
 
 }  // namespace
 
-UI_ROM const ExtraPage kPolyPage = {"POLY", poly_shown, poly_draw, poly_enc, poly_key, 0x7F, false, nullptr, nullptr, nullptr,
+UI_ROM const ExtraPage kPolyPage = {"POLY", poly_shown, poly_draw, poly_enc, poly_key, 0xFF, false, nullptr, nullptr, nullptr,
                                     true};
 
 CORE_COLD void poly_page_open(int track, bool from_menu) {

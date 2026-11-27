@@ -9,7 +9,10 @@
 //   05 OVERRIDE <kit> <ramp> <n 1..22> {<t> <w | jump << 6> <hi7> <lo7> <mix 0..127>} x n    v 1/128 step, mix 0 releases
 //   06 CLEAR    <kit> <ramp> <mask lo7> <mask hi6>                 every entry of the tracks in the 13-bit mask
 //   07 STATUS                                                      answered 2D 01 11 <slots> <rd hi> <lo> <kd hi> <lo>
-//                                                                  <timeouts> <flags>
+//                                                                  <timeouts> <flags> [<morph parts> (P3)]
+//   09 MORPH-SET <kit> <n 1..20> {<t> <w> <flags: 1 A, 2 B> <a hi7> <lo7> <b hi7> <lo7>} x n    v 1/128 step; flags 0
+//                                                                  removes the part (0.5.0 v2 P3, the hello's caps2 bit 3)
+//   0A FADER    <kit> <f hi7> <lo7> <ramp>                         f 0..16383: the Rytm interpolates every part itself
 // t 0..12 (12 the FX track), w 1..41 the sound words, 48..51 VM1..4, 52..55 AT1..4, 56 VEL; kit the Rytm's active kit
 // as its 3B said (a message for another kit is dropped by the Rytm); ramp in Rytm blocks (32 frames, 0.667 ms).
 // Policy (section 2.4):
@@ -35,6 +38,13 @@
 //   all again. A kit change or a project change sends 06 for every track.
 // - A refusal (2D 01 10 <op 4..7> <status>) is counted and logged, never the 0.5.0 commands' CC fallback (rytm_out.h
 //   rytm_ack). A message with a byte above 0x7f is a bug: refused here (bad), nothing booked as sent.
+// - The Rytm-side morph (0.5.0 v2 P3, rytm-mods 0026 "pm morph"; a mod whose hello's caps2 has ui::kCaps2Morph):
+//   a continuous word's morph goes as a part (09: A / B, a p-lock the missing side) once per change, the fader as 0A
+//   (on a move, at most one a grid, ramped over its own pace; again every kRefreshMs while a part lives: the Rytm's
+//   timeout never fires) - a sweep sends 0A alone. 0A goes before the parts it drives. A part that ends (the morph
+//   let go, the word inactive) sends a remove record (flags 0), then a p-lock left goes back on 05. Every live part again
+//   every kMorphRefreshMs (a part lost to a stall comes back). The Rytm's morph wins over a 05 on the same word, so
+//   no 05 goes for a word with a part. Stepped words and an older mod: 05 as before (rp_morph).
 // Exclusions (rytm_active): words 9..24 of a track playing a Sidecar machine (they are its P1..P16), a machine's empty
 // synth slots ("--"; all of 9..16 on DISABLE, BT IMPROVED, FUNC. GEN.). The FX track's compressor words are live (M0b).
 // Control side (core 3 on the Pi), cold; CORE_POLY builds only.
@@ -47,10 +57,12 @@ namespace core {
 namespace mod {
 
 constexpr int kCapsParamMod = 64;     // the hello's caps bit: the Rytm has ops 04..07 (rytm-param-mod 2.3)
-enum : uint8_t { kOpOffset = 4, kOpOverride = 5, kOpClear = 6, kOpStatus = 7 };
+enum : uint8_t { kOpOffset = 4, kOpOverride = 5, kOpClear = 6, kOpStatus = 7, kOpMorphSet = 9, kOpFader = 10 };
 constexpr uint8_t kPmStatus = 0x11;   // 2D 01 11 ...: 07's answer (core/seq/seq.h kStateCmd kinds)
 constexpr int kRpEntries = 128;       // live (track, word) pairs (the Rytm's slots)
 constexpr int kRpMaxOffsets = 28, kRpMaxOverrides = 22;   // records a message (<= 123 / 121 B)
+constexpr int kRpMaxMorphs = 20;      // 09 records a message (<= 150 B)
+constexpr uint32_t kMorphRefreshMs = 1000;   // every live morph part again (P3: the 0A refresh is the keepalive)
 constexpr uint32_t kGridUs = 5000;    // one 04 and one 05 at most this often
 constexpr uint32_t kRefreshMs = 100;  // every live record again (the keepalive)
 constexpr uint32_t kBytesPerS = 16384;   // the feature's cap on the link
@@ -75,6 +87,10 @@ uint32_t rp_lead_us();                                       // kRpLeadUs, or rp
 // the fader 0..1, step a list word (the side's whole value, switched at halfway: upper). Each tick the morph holds t
 void rp_morph(Tid t, bool has_a, float a, bool has_b, float b, float f, bool step, bool upper);
 void rp_morph_off(Tid t);                                    // the morph left t: its override released (ramped)
+// P3, the Rytm-side morph (a continuous word, the hello's caps2 ui::kCaps2Morph; mod::morph_parts picks): t's parts as a
+// 09 part (A / B in steps; a p-lock the missing side), the fader every part shares as 0A (0..16383)
+void rp_morph_set(Tid t, bool has_a, float a, bool has_b, float b);
+void rp_fader(uint16_t f);
 // ---- the link
 void rp_hello(int caps);               // the Rytm's hello: caps bit kCapsParamMod; everything sent is forgotten
 void rp_kit(int kit);                  // the Rytm's 3B: its active kit 0..127 (a change: 06 for every track)
@@ -104,10 +120,12 @@ bool rp_command(const char* p, char* out, int cap);
 // "\"rp\":{\"on\":1,\"live\":N,\"bps\":B,\"refused\":R,\"full\":F,\"bad\":X,\"sent\":S,\"sat\":0|1}"
 int rp_json(char* out, int cap);
 // sat_ms: the time saturated since the reset (ms, counted at the grid's slots); rel_cut: releases sent past the credit
-struct RpStats { uint32_t offsets, overrides, clears, msgs, bytes, refused, full, dropped, held, bad, sat_ms, rel_cut; };
+// morphs / faders (P3): 09 records and 0A messages sent
+struct RpStats { uint32_t offsets, overrides, clears, msgs, bytes, refused, full, dropped, held, bad, sat_ms, rel_cut, morphs, faders; };
 const RpStats& rp_stats();
-// tests: an entry's state (false: none): the offset wanted / sent (1/64 step, INT16_MIN none), the override
-struct RpView { int16_t off_sent; uint16_t ovr; uint8_t mix; bool locked, morph; };
+// tests: an entry's state (false: none): the offset wanted / sent (1/64 step, INT16_MIN none), the override; part: its
+// flags on the Rytm (P3: 09 sent, -1 none), pa / pb / pfl the part composed (1/128 step; flags 1 A, 2 B, 0 none; sent only while the word is active)
+struct RpView { int16_t off_sent; uint16_t ovr; uint8_t mix; bool locked, morph; int8_t part; uint16_t pa, pb; uint8_t pfl; };
 bool rp_view(int track, int word, RpView* out);
 int rp_live();
 void rp_reset();                       // tests (mod::reset): nothing sent, no entries, caps and kit unknown

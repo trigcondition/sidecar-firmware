@@ -11,8 +11,13 @@ override on a word a Rytm scene locks is skipped (owner decision O3: the scene l
 x 4 in 8.8, OVERRIDE v x 2, mix / 127. A message for another kit is dropped (counted); 250 ms without any param op: every
 entry to 0 over 32 blocks (counted); 128 slots, the 129th refused (2D 01 10 op 2); a bad message refused whole
 (2D 01 10 op 1); 07 answered 2D 01 11.
+
+0.5.0 v2 P3, the Rytm-side morph (protocol.pm_morph_set / pm_fader; rytm-mods 0026 "pm morph"): 09 gives an entry a
+part (a, b x 2 in 8.8; flags 1 has A, 2 has B; flags 0 removes it: its value stays, the mix to 0 over 8 blocks), 0A the
+fader f / 16383 (ramped; kept across kits). Each block a part is the entry's override: both a + (b - a) f, mix 1; A only
+a, mix 1 - f; B only b, mix f. A CLEAR or the timeout ends the part as it ends the entry; 07 has the parts in use last.
 """
-from protocol import HOST_ACK, HOST_CMD, PM_STATUS, PROTO_VER
+from protocol import HOST_ACK, HOST_CMD, HOST_PM_FADER, HOST_PM_MORPH_SET, PM_STATUS, PROTO_VER
 
 BLOCK_US = 32 * 1e6 / 48000
 SLOTS = 128
@@ -48,13 +53,19 @@ class _Ramp:
 
 
 class _Ent:
-    __slots__ = ("off", "ovr", "mix")
+    __slots__ = ("off", "ovr", "mix", "mfl", "ma", "mb")
 
     def __init__(self):
         self.off, self.ovr, self.mix = _Ramp(), _Ramp(), _Ramp()
+        self.mfl, self.ma, self.mb = 0, 0.0, 0.0
+
+    def end_part(self, ramp):
+        self.mfl = 0
+        self.ovr.n = 0
+        self.mix.set(0, ramp)
 
     def done(self):
-        return self.off.cur == 0 and self.mix.cur == 0 and not self.off.n and not self.mix.n
+        return self.off.cur == 0 and self.mix.cur == 0 and not self.off.n and not self.mix.n and not self.mfl
 
 
 class Rytm:
@@ -70,6 +81,7 @@ class Rytm:
         self.answers = []                # what the Rytm sends back: 2D 01 10 / 11 bodies (after F0 7D 52 54)
         self._acc = 0.0
         self.full_us = None
+        self.fad = _Ramp()               # P3: the fader 0..1
 
     def _refuse(self, op, st):
         self.refused += 1
@@ -93,7 +105,7 @@ class Rytm:
         if len(m) < 8 or m[:4] != b"\xf0\x7d\x52\x54" or m[4] != HOST_CMD or m[5] != PROTO_VER or m[-1] != 0xF7:
             return False
         op, b = m[6], m[7:-1]
-        if not 4 <= op <= 7:
+        if not 4 <= op <= 7 and op not in (HOST_PM_MORPH_SET, HOST_PM_FADER):
             return False
         if any(x > 0x7F for x in m[6:-1]):
             return self._refuse(op, 1) or True
@@ -101,8 +113,39 @@ class Rytm:
             if b:
                 return self._refuse(op, 1) or True
             kd = min(self.kit_drops, 16383)   # (the contract: the counters saturate; slots and timeouts at 127)
+            parts = sum(1 for x in self.e.values() if x.mfl)
             self.answers.append(bytes([0x2D, PROTO_VER, PM_STATUS, min(len(self.e), 127), 0, 0, kd >> 7, kd & 0x7F,
-                                       min(self.timeouts, 127), 2]))
+                                       min(self.timeouts, 127), 2, min(parts, 127)]))
+            return True
+        if op == HOST_PM_FADER:
+            if len(b) != 4:
+                return self._refuse(op, 1) or True
+            if b[0] != self.kit:
+                self.kit_drops += 1
+                return True
+            self.last_op_us, self.timing_out = self.us, False
+            self.fad.set((b[1] << 7 | b[2]) / 16383.0, b[3])
+            return True
+        if op == HOST_PM_MORPH_SET:
+            n = b[1] if len(b) > 1 else 0
+            if not 1 <= n <= 20 or len(b) != 2 + 7 * n:
+                return self._refuse(op, 1) or True
+            recs = [b[2 + 7 * i:9 + 7 * i] for i in range(n)]
+            if any(not word_ok(r[0], r[1]) or 48 <= r[1] <= 55 or r[2] > 3 for r in recs):
+                return self._refuse(op, 1) or True
+            if b[0] != self.kit:
+                self.kit_drops += 1
+                return True
+            self.last_op_us, self.timing_out = self.us, False
+            for r in recs:
+                if not r[2]:
+                    x = self.e.get((r[0], r[1]))
+                    if x and x.mfl:
+                        x.end_part(8)
+                    continue
+                x = self._slot(r[0], r[1], op)
+                if x:
+                    x.mfl, x.ma, x.mb = r[2], (r[3] << 7 | r[4]) * 2.0, (r[5] << 7 | r[6]) * 2.0
             return True
         if len(b) < 2:
             return self._refuse(op, 1) or True
@@ -117,7 +160,7 @@ class Rytm:
             for (t, w), x in list(self.e.items()):
                 if mask >> t & 1:
                     x.off.set(0, b[1])
-                    x.mix.set(0, b[1])
+                    x.end_part(b[1])
                     if not b[1]:
                         del self.e[(t, w)]
             return True
@@ -157,13 +200,23 @@ class Rytm:
             self.timeouts += 1
             for x in self.e.values():
                 x.off.set(0, 32)
-                x.mix.set(0, 32)
+                x.end_part(32)
+        self.fad.adv()
+        f = self.fad.cur
         for k, x in list(self.e.items()):
+            if x.mfl:   # P3: the part is the override this block
+                x.ovr.cur, x.mix.cur = ((x.ma + (x.mb - x.ma) * f, 1.0) if x.mfl == 3 else
+                                        (x.ma, 1.0 - f) if x.mfl == 1 else (x.mb, f))
+                x.ovr.n = x.mix.n = 0
             x.off.adv()
             x.ovr.adv()
             x.mix.adv()
             if x.done():
                 del self.e[k]
+
+    def free_all(self):
+        """A kit change: every entry and part freed (the fader stays)."""
+        self.e.clear()
 
     def advance(self, to_us):
         if to_us <= self.us:

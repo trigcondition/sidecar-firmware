@@ -24,10 +24,12 @@
 #include "screens_util.h"
 #include "samp/dsp.h"
 #include "samp/sedit.h"
+#include "mod/scene.h"
 #include "samp/sedit_dsp.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
 #include "voices.h"
+#include "wavetable/wavetable.h"
 
 #include "../../pi/engine/voice_pi.cpp"       // the touchscreen's VOICE routing (as test_page_keys.cpp has it)
 #include "../../pi/engine/seditview_pi.cpp"   // (voice_pi asks it whether an edit is open)
@@ -234,6 +236,30 @@ static void t_screens() {
   tap(0x43);   // any key ends the turn display
   draw();
   CHECK(!strcmp(g_c.txt[ui::kSlotTitle].s, "SAMPLE EDIT") && !strcmp(g_c.txt[ui::kSlotFoot].s, "YES"));
+}
+
+static void t_push_under_side() {   // 0.5.2: a knob press under PAGE + T15 / T16 is the scene edit's, not the SRC view's
+  ui::remote_reset();
+  ui::sedit_page_reset();
+  from_rytm({0x33, 1, 0, 1, 49, (uint8_t)(kDspSample | 0)});
+  from_rytm({0x29, 1, 0, 1});
+  tick();
+  CHECK(ui::remote_src_track() == 0 && !ui::remote_open());
+  cmd_close();
+  tick();
+  CHECK(vw().st == sedit::kClosed);
+  scene::set_edit_side(1);
+  down(0x71);   // under the side: no SAMPLE EDIT
+  CHECK(vw().st == sedit::kClosed);
+  scene::set_edit_side(-1);   // the side let go before the release: the release is still the gesture's
+  up(0x71);
+  CHECK(vw().st == sedit::kClosed);
+  down(0x71);   // no side: the view's push as before
+  up(0x71);
+  CHECK(vw().st != sedit::kClosed);
+  cmd_close();
+  tick();
+  printf("sedit: a push under the held side does not reach the SRC view\n");
 }
 
 static void t_send_mask() {   // A..E and FUNC (FUNC + YES, FUNC + A / B / D) are the page's
@@ -658,6 +684,135 @@ static void t_sampler_idle_pick() {
   printf("sedit page: SAMPLER - a pool pick on an idle voice (2A) opens in SAMPLE EDIT with no trig\n");
 }
 
+// MAKE WT (docs/SAMPLE-EDIT.md): a push of B on a WAVETABLE track's SRC view opens table A's card file; FUNC + YES offers MAKE
+// WT first (B the frames), YES makes the table, its row lands on the track's TBL (a 48 write), the editor closes itself and
+// the Rytm's page goes back to the SRC view. A built-in table A opens the POOL page on the SAMPLES list instead, EDIT chosen:
+// YES on a sample opens it for the voice; the new table goes onto the track the same way.
+static void write_saw16(const char* path, uint32_t frames) {
+  uint8_t h[samp::kWavHeaderMax];
+  int hn = samp::wav_header(h, 1, 16, 48000, frames);
+  std::vector<uint8_t> b(h, h + hn);
+  uint8_t o[2];
+  for (uint32_t f = 0; f < frames; ++f) {
+    double a = 0;
+    for (int k = 1; k <= 40; ++k) a += sin(2 * M_PI * k * 220.0 * f / 48000.0) / k;
+    samp::put16(o, (float)(0.3 * a));
+    b.insert(b.end(), o, o + 2);
+  }
+  FILE* fp = fopen(host_path(path).c_str(), "wb");
+  CHECK(fp);
+  fwrite(b.data(), 1, b.size(), fp);
+  fclose(fp);
+}
+static void run_closed() {
+  for (int i = 0; i < 400000 && vw().st != sedit::kClosed; ++i) pass();
+  CHECK(vw().st == sedit::kClosed);
+}
+static void t_wavetable_make() {
+  if (vw().st != sedit::kClosed) cmd_close();
+  ui::remote_reset();
+  ui::sedit_page_reset();
+  for (int i = 0; i < 20; ++i) pass();
+  CHECK(system(("mkdir -p '" + g_card + "/WAVETABLES'").c_str()) == 0);
+  write_saw16("/WAVETABLES/own.wav", 24000);
+  {
+    char o[256];
+    host_card_core(0);
+    lib::touched("/WAVETABLES/own.wav", nullptr, 0);
+    host_card_core(3);
+    for (int i = 0; i < 200000 && (i < 20 || lib::busy()); ++i) pass();
+    CHECK(pools::command("pool=wt:set:A007:/WAVETABLES/own.wav", o, sizeof o));
+    for (int i = 0; i < 4000 && (pools::pending() || strcmp(pools::at(pools::kTables, code("A007")).path, "/WAVETABLES/own.wav")); ++i) pass();
+  }
+  for (int i = 0; i < 400; ++i) pass();   // (the table list composed from the pool)
+  from_rytm({0x33, 1, 0, 1, 46, (uint8_t)(kWaveMachine | 0)});   // track 0 (voice 0): WAVETABLE
+  CHECK((ui::remote_track_machine(0) & 0x78) == kWaveMachine && ui::remote_track_voice(0) == 0);
+  from_rytm({0x29, 1, 0, 1});   // its SRC view
+  tick();
+  from_rytm({0x2A, 1, 0, 0, 1, 7, 0});   // TBL A007: the card file
+  tick();
+  CHECK(ui::remote_src_track() == 0 && !ui::remote_open());
+  CHECK(!ui::sedit_src_push(0, 0x72, true) && !ui::sedit_src_push(0, 0x70, true));   // C and A: not SAMPLE EDIT's
+  down(0x71);   // push B: SAMPLE EDIT on the table's file, for voice 0
+  up(0x71);
+  CHECK(vw().st == sedit::kLoading && vw().file && vw().wt_voice == 0 && vw().wt_track == 0 && !vw().has_track);
+  from_rytm({0x30, 1, 0, 1, 0});
+  tick();
+  run();
+  CHECK(title_is("SAMPLE EDIT") && vw().st == sedit::kReady && vw().frames == 24000 && vw().file);
+  tick();
+  CHECK(shows("OWN.WAV"));
+  down(0x80);   // FUNC + YES: the choice, MAKE WT first
+  tap(0x44);
+  up(0x80);
+  CHECK(shows("MAKE WT") && shows("SAVE") && shows("CANCEL") && !shows("SAVE+USE") && shows("B: 64 FRAMES"));
+  png("sedit-make-wt.png");
+  turn(1, -1);   // B: 32 frames
+  CHECK(shows("B: 32 FRAMES") && vw().wt_frames == 32);
+  turn(1, +1), turn(1, +1), turn(1, +1), turn(1, +1);   // (the end of the choice: 256)
+  CHECK(shows("B: 256 FRAMES"));
+  turn(1, -1), turn(1, -1), turn(1, -1);
+  CHECK(shows("B: 32 FRAMES"));
+  g_sent.clear();
+  const int closes0 = g_closes;
+  tap(0x44);   // YES: make
+  CHECK(vw().st == sedit::kBusy && vw().making);
+  tick();
+  CHECK(shows("MAKE WT"));
+  for (int i = 0; i < 400000 && vw().st != sedit::kReady && vw().st != sedit::kClosed; ++i) pass();
+  tick();
+  CHECK(vw().st == sedit::kReady && vw().wt_back && shows("WT A008 PITCHED 220HZ"));
+  png("sedit-made-wt.png");
+  CHECK(sent48(0, 0));   // the TBL written to the Rytm (P1 of track 0)
+  CHECK(exists("/WAVETABLES/own-wt1.wav") && pools::at(pools::kTables, code("A008")).type == pools::kSample);
+  run_closed();   // the editor closes itself 1.8 s later
+  tick(6);
+  CHECK(g_closes > closes0);   // and the Rytm's page goes back to the SRC view (it closes: 30 0, its SRC view again)
+  from_rytm({0x30, 1, 0, 0, 0});
+  from_rytm({0x29, 1, 0, 1});
+  tick();
+  // a built-in table A (A001 BASIC): B opens the POOL page on the SAMPLES list, EDIT chosen, a sample picked, the table made
+  from_rytm({0x2A, 1, 0, 0, 1, 1, 0});
+  tick();
+  CHECK(ui::remote_src_track() == 0);
+  down(0x71);
+  up(0x71);
+  CHECK(vw().st == sedit::kClosed);
+  from_rytm({0x30, 1, 0, 1, 0});
+  tick();
+  CHECK(title_is("POOL"));
+  tap(0x44);   // YES on the first sample (EDIT): its editor, for voice 0
+  CHECK(vw().st == sedit::kLoading && !vw().file && vw().wt_voice == 0 && !vw().has_track);
+  run();
+  CHECK(title_is("SAMPLE EDIT") && vw().st == sedit::kReady);
+  g_sent.clear();
+  down(0x80);
+  tap(0x44);
+  up(0x80);
+  CHECK(shows("MAKE WT"));
+  tap(0x44);
+  for (int i = 0; i < 400000 && vw().st != sedit::kReady && vw().st != sedit::kClosed; ++i) pass();
+  tick();
+  CHECK(vw().st == sedit::kReady && sent48(0, 0) && strstr(vw().msg, "WT A009"));
+  run_closed();
+  CHECK(exists("/WAVETABLES/kick-wt1.wav"));
+  tick(6);
+  CHECK(!title_is("SAMPLE EDIT"));
+  // the editor opened another way keeps no voice: a SAVE choice has no MAKE WT first
+  CHECK(sedit::open_code(code("A001")) == 0);
+  run();
+  CHECK(vw().wt_voice == -1);
+  ui::sedit_page_open(-1, -1);
+  tick();
+  down(0x80);
+  tap(0x44);
+  up(0x80);
+  CHECK(shows("SAVE") && shows("MAKE WT"));
+  tap(0x45);
+  cmd_close();
+  printf("sedit page: WAVETABLE - B on its SRC view opens table A's file or the SAMPLES list, MAKE WT puts the new row on its TBL\n");
+}
+
 int main() {
   char tmpl[] = "/tmp/sedit-page-XXXXXX";
   CHECK(mkdtemp(tmpl));
@@ -698,6 +853,8 @@ int main() {
   t_open_other_slots();
   t_sampler_idle_pick();
   t_sampler_src();
+  t_wavetable_make();
+  t_push_under_side();
   CHECK(system(("rm -rf '" + g_card + "'").c_str()) == 0);
   printf("test_sedit_page: PASS\n");
   return 0;

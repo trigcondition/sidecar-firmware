@@ -6,6 +6,7 @@
 
 #include "fmt/fmt.h"
 #include "mod/mod.h"
+#include "mod/rytm_out.h"
 #include "platform.h"
 #include "sidecar_features.h"
 #include "pool/pool.h"
@@ -24,17 +25,21 @@ namespace {
 
 State g_st;
 // the played fader: from g_from at g_set_ms to g_st.fader g_smooth_ms later, linearly
-int g_played = 0, g_from = 0;
+int g_played = 0, g_from = 0, g_last_played = 0;   // g_last_played: g_played at the last tick
 uint32_t g_set_ms = 0, g_now_ms = 0;
 uint32_t g_smooth_ms = kSmoothMs;   // this move's smoothing (the QPERF knob's: its reports' interval)
 int g_src = 0;                      // the fader's last source (Source), 0 none
-// the QPERF knob (Task 47): its macros; the position last acted on (a baseline or a take), -1 none since the link came
-// up (Phase 7 review M2); whether a take since then sets the smoothing's interval, and when
-uint16_t g_qp_mask = 0;
+// the QPERF knob (Task 47): the position last acted on (a baseline or a take), -1 none since the link came up (Phase 7
+// review M2); whether a take since then sets the smoothing's interval, and when
 int g_qp_pos = -1;
 bool g_qp_seen = false;
 uint32_t g_qp_ms = 0;
+uint8_t g_qp_mode = kQpMutedOnly;   // QPERF FADER (v2 Task 6): a box setting, kept in learn.txt
+bool g_qp_muted = false;            // the macros' mute as last reported (only from a mod with kCaps2QpMute)
+QpView g_qv = {-1, false, false, 0};   // the screens' readout (v2 Task 7)
+uint32_t g_kit_ms = 0;              // when the Rytm's kit last changed (the MORPH header's note), 0 never
 int g_rscn = -1;                    // the Rytm's own scene as reported (2D 01 0F), -1 none
+int g_side = -1;                    // EDIT (v2): the side held, 0 A (PAGE + T15), 1 B (PAGE + T16), -1 none
 bool g_upper = false;            // the stepped targets' side: B's (true) or A's; switched with 1/64 hysteresis
 int g_last_a = -1, g_last_b = -1;   // the A / B the layer's entries are of (an A / B change releases the old ones)
 // A's and B's locks merged: each target once, with its A value and its B value (-1: that side does not lock it)
@@ -47,6 +52,8 @@ int g_mn = 0;
 bool g_stale = true;   // the merged list needs rebuilding
 
 CORE_COLD bool ok_scene(int n) { return n >= 0 && n < kScenes; }
+// 0.5.0 v2 (S7): the Rytm's own scene and PERF macros are no scene targets (the XY pad and MIDI learn keep them)
+CORE_COLD bool target_ok(mod::Tid t) { return mod::valid(t) && mod::kind_of(t) != mod::kRytm; }
 CORE_COLD int find_lock(const Scene& s, mod::Tid t) {
   for (int i = 0; i < s.n; ++i)
     if (s.l[i].t == t) return i;
@@ -139,7 +146,7 @@ CORE_COLD bool take_line(const char* b) {
     mod::Tid t;
     if (!num(&p, &a) || a < 1 || a > kScenes) return false;
     word(&p, nm, sizeof nm);
-    if (!mod::parse(nm, &t) || !num(&p, &c) || c > kFaderMax) return false;
+    if (!mod::parse(nm, &t) || !target_ok(t) || !num(&p, &c) || c > kFaderMax) return false;
     Scene& s = g_st.s[a - 1];
     int i = find_lock(s, t);
     if (i < 0) {
@@ -155,7 +162,7 @@ CORE_COLD bool take_line(const char* b) {
 }
 // the file's text into g_text: its length; 0 when it does not fit (cannot happen at 768 locks)
 CORE_COLD uint32_t to_text() {
-  int n = sniprintf(g_text, sizeof g_text, CORE_STR("#sidecar scene 1\nAB %d %d\nF %u\nS %d\n"), g_st.a + 1, g_st.b + 1,
+  int n = sniprintf(g_text, sizeof g_text, CORE_STR("#sidecar scene 2\nAB %d %d\nF %u\nS %d\n"), g_st.a + 1, g_st.b + 1,
                     (unsigned)g_st.fader, g_st.sel + 1);
   for (int sc = 0; sc < kScenes; ++sc)
     for (int i = 0; i < g_st.s[sc].n; ++i) {
@@ -174,7 +181,7 @@ CORE_COLD const State& state() { return g_st; }
 
 CORE_COLD bool lock(int n, mod::Tid t, uint16_t v) {
   if (!SIDECAR_MORPH) return false;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
-  if (!ok_scene(n) || !mod::valid(t) || v > kFaderMax) return false;
+  if (!ok_scene(n) || !target_ok(t) || v > kFaderMax) return false;
   Scene& s = g_st.s[n];
   int i = find_lock(s, t);
   if (i < 0) {
@@ -237,9 +244,11 @@ CORE_COLD void move_fader(uint16_t v, int source, uint32_t smooth_ms) {   // whi
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
   if (v > kFaderMax) v = kFaderMax;
   if (v == g_st.fader) return;
+  if (g_src && source != g_src) smooth_ms = kHandoverMs;   // a handover glides, it does not jump (UX 2b)
   g_from = g_played, g_set_ms = now_ms(), g_smooth_ms = smooth_ms;
   g_st.fader = v;
   g_src = source;
+  if (source == kQperf) ui::remote_morph_qperf_move();
   mod::fader_moved();   // a held manual edit lets go (spec-050 2.5)
 }
 }  // namespace
@@ -249,10 +258,24 @@ CORE_COLD void set_fader(uint16_t v, int source) { move_fader(v, source, kSmooth
 CORE_COLD uint16_t fader_played() { return (uint16_t)g_played; }
 CORE_COLD int fader_source() { return g_src; }
 
+CORE_COLD void set_qp_mode(int m) { g_qp_mode = (uint8_t)(m == kQpOff || m == kQpAlways ? m : kQpMutedOnly); }
+CORE_COLD int qp_mode() { return g_qp_mode; }
+CORE_COLD const char* qp_mode_name(int m) { return m == kQpOff ? "off" : m == kQpAlways ? "always" : "muted"; }
+
 CORE_COLD void qperf(int pos, uint16_t mask, uint8_t flags) {
   if (!SIDECAR_MORPH) return;   // 0.5.0: the morph is off (sidecar_features.h): no edits, the data stays as loaded
-  g_qp_mask = (uint16_t)(mask & 0xFFF);
+  (void)mask;
   if (!(flags & kQpMoved) || pos < 0 || pos > 255) return;   // the hello's report before the knob ever sent: no position
+  // QPERF FADER (v2 Task 6): bit 2 only from a mod that reports the mute; its edge makes this position a baseline
+  const bool muted = (ui::remote_caps2() & ui::kCaps2QpMute) && (flags & kQpMuted);
+  if (muted != g_qp_muted) g_qp_muted = muted, qperf_rebase();
+  const int was = g_qv.pos;
+  g_qv.pos = pos, g_qv.moved = true, g_qv.muted = muted;
+  if (g_qp_mode == kQpOff || (g_qp_mode == kQpMutedOnly && !muted)) {   // not the fader now: the next allowed one a baseline
+    if (g_qp_mode == kQpMutedOnly && pos != was) g_qv.ignored_ms = now_ms() | 1;   // (the page's FUNC+QPER hint)
+    qperf_rebase();
+    return;
+  }
   if (g_qp_pos < 0) {   // the first report since the link came up: a baseline only, the knob takes on a change (M2)
     g_qp_pos = pos;
     return;
@@ -263,12 +286,19 @@ CORE_COLD void qperf(int pos, uint16_t mask, uint8_t flags) {
   if ((g_src != kQperf || mod::held_any()) && d < kQpTakeSteps) return;
   uint16_t v = (uint16_t)(pos * kFaderMax / 255);
   uint32_t ms = now_ms(), gap = ms - g_qp_ms;
-  uint32_t sm = g_qp_seen && gap <= kQpSmoothMaxMs ? (gap > kSmoothMs ? gap : kSmoothMs) : kSmoothMs;
+  // the first take after a baseline catches up over kHandoverMs (the 2-step guard's start jump, UX 2b); then the
+  // reports' interval
+  uint32_t sm = !g_qp_seen ? kHandoverMs : gap <= kQpSmoothMaxMs ? (gap > kSmoothMs ? gap : kSmoothMs) : kSmoothMs;
   g_qp_seen = true, g_qp_pos = pos, g_qp_ms = ms;
   move_fader(v, kQperf, sm);
 }
 CORE_COLD void qperf_rebase() { g_qp_pos = -1, g_qp_seen = false; }
-CORE_COLD uint16_t qperf_mask() { return g_src == kQperf ? g_qp_mask : 0; }
+CORE_COLD QpView qperf_view() { return g_qv; }
+CORE_COLD bool qp_wants_knob() {
+  return g_qp_mode == kQpAlways || (g_qp_mode == kQpMutedOnly && (ui::remote_caps2() & ui::kCaps2QpMute));
+}
+CORE_COLD int rytm_kit() { return g_rytm_kit; }
+CORE_COLD int kit_note(uint32_t now) { return g_kit_ms && now - g_kit_ms < 2000 && g_rytm_kit >= 0 ? g_rytm_kit : -1; }
 CORE_COLD void rytm_scene_seen(int n) { g_rscn = n >= 0 && n <= kScenes ? n : 0; }
 CORE_COLD int rytm_scene() { return g_rscn; }
 
@@ -278,6 +308,8 @@ CORE_COLD void tick(uint32_t ms) {
   uint32_t el = ms - g_set_ms;
   int to = g_st.fader;
   g_played = el >= g_smooth_ms ? to : g_from + (to - g_from) * (int)el / (int)g_smooth_ms;
+  if (g_played != g_last_played && g_src == kQperf) ui::remote_morph_qperf_move();   // the glide, its last step too, is not held
+  g_last_played = g_played;
   float f = (float)g_played / (float)kFaderMax;
   constexpr float kH = 1.0f / 64.0f;
   if (g_st.a != g_last_a || g_st.b != g_last_b) {
@@ -313,14 +345,6 @@ CORE_COLD void tick(uint32_t ms) {
       step = lists[vi] >> mod::param_of(m.t) & 1;
     }
     float a = m.av >= 0 ? (float)m.av / 128.0f : 0, b = m.bv >= 0 ? (float)m.bv / 128.0f : 0;
-    // the Rytm's own scene / macros (kRytm) have no base the Sidecar can read: a one-sided lock acts on its own half
-    // only (its value, past halfway with the hysteresis) and leaves the Rytm alone on the other half
-    // a PERF macro the QPERF knob moves while it is the fader: the Rytm moves it itself (spec 2.7), not followed
-    if (k == mod::kRytm && mod::param_of(m.t) >= 1 && (qperf_mask() >> (mod::param_of(m.t) - 1) & 1)) continue;
-    if (k == mod::kRytm && (m.av < 0 || m.bv < 0)) {
-      if (m.bv < 0 ? !g_upper : g_upper) mod::morph(m.t, m.bv < 0 ? a : b);
-      continue;
-    }
     // the Rytm's own sound parameters (RT / RFX, 0.5.0): no base here either; the parts go to the Rytm as an override's
     // value and mix (rytm-param-mod 5.3), its own value under a one-sided lock's other half
     if (mod::is_remote(k)) {
@@ -338,15 +362,17 @@ CORE_COLD void tick(uint32_t ms) {
 CORE_COLD void reset() {
   memset(&g_st, 0, sizeof g_st);
   g_st.a = g_st.b = -1;
-  g_played = g_from = 0;
+  g_played = g_from = g_last_played = 0;
   g_set_ms = now_ms(), g_now_ms = g_set_ms;
   g_smooth_ms = kSmoothMs, g_src = 0;
-  g_qp_mask = 0, g_qp_pos = -1, g_qp_seen = false, g_qp_ms = 0;
+  g_qp_pos = -1, g_qp_seen = false, g_qp_ms = 0;
+  g_qp_mode = kQpMutedOnly, g_qp_muted = false, g_qv = QpView{-1, false, false, 0}, g_kit_ms = 0;
   g_rscn = -1;
   g_upper = false;
   g_last_a = g_last_b = -1;
   g_mn = 0, g_stale = true;
   g_dirty = g_locked = false, g_kit = g_rytm_kit = -1;
+  g_side = -1;
 }
 
 // ---------------------------------------------------------------------------------------------------- the card
@@ -357,7 +383,6 @@ CORE_COLD bool locked() { return g_locked; }
 // ---------------------------------------------------------------------------------------------------- console, JSON
 
 namespace {
-bool g_edit = false;
 // the next ':'-separated field of *pp into f (at most cap - 1 chars); false: none left
 CORE_COLD bool field(const char** pp, char* f, int cap) {
   const char* p = *pp;
@@ -392,7 +417,7 @@ CORE_COLD int value128(const char* s) {   // "50", "50.5", "127.99": x 128, roun
 }
 CORE_COLD int state_line(char* o, int cap) {
   int n = sniprintf(o, cap, CORE_STR("scene: A %d B %d fader %u (%d played) sel %d edit %s"), g_st.a + 1, g_st.b + 1,
-                    (unsigned)g_st.fader, g_played, g_st.sel + 1, g_edit ? "on" : "off");
+                    (unsigned)g_st.fader, g_played, g_st.sel + 1, g_side == 0 ? "A" : g_side == 1 ? "B" : "off");
   bool first = true;
   for (int i = 0; i < kScenes && n > 0 && n < cap; ++i) {
     if (!g_st.s[i].n) continue;
@@ -402,10 +427,114 @@ CORE_COLD int state_line(char* o, int cap) {
   if (g_locked && n > 0 && n < cap) n += sniprintf(o + n, cap - n, CORE_STR(" - SCENES LOCKED (NEWER FILE)"));
   return n;
 }
+CORE_COLD mod::Tid stock_target(int track, int word) {   // a stock page's (track, word) -> its scene target, 0 none
+  mod::Tid tg = 0;
+  const int vi = ui::remote_track_voice(track), m = ui::remote_track_machine(track);
+  if (track >= 0 && track < 12 && word >= 9 && word <= 24 && vi >= 0 && m >= 0 && m != 0x7F) {
+    if (ui::remote_track_src_list(track, word - 9)) return 0;   // 0.5.2 rc4: a source / preset list: NOT LOCKABLE
+    tg = mod::tid(mod::kV, vi, word - 9);   // a Sidecar machine: its voice's P1..P16
+  } else
+    tg = mod::rytm_tid(track, word);
+  return tg && mod::valid(tg) ? tg : 0;
+}
 }  // namespace
 
-CORE_COLD void set_edit(bool on) { g_edit = on; }
-CORE_COLD bool edit() { return g_edit; }
+CORE_COLD void set_edit_side(int side) { g_side = side == 0 || side == 1 ? side : -1; }
+CORE_COLD int edit_side() { return g_side; }
+CORE_COLD int side_scene(int side) { return side == 0 ? g_st.a : side == 1 ? g_st.b : -1; }
+CORE_COLD bool lock_side(int side, mod::Tid t, uint16_t v) {
+  int n = side_scene(side);
+  return n >= 0 && lock(n, t, v);
+}
+
+CORE_COLD void stock_edit(int ev, int side, int n) {
+  if (side != 0 && side != 1) return;
+  char t[mod::kReadoutMax + 1];
+  const char sd = side ? 'B' : 'A';
+  if (ev == kEditLetGo) {
+    if (g_side == side) g_side = -1;
+    return;
+  }
+  if (ev == kEditPicked && n >= 0 && n < kScenes) set_ab(side == 0 ? n : g_st.a, side == 1 ? n : g_st.b);
+  else if (ev != kEditHeld) return;
+  g_side = side;
+  const int sn = side_scene(side);
+  if (sn < 0) sniprintf(t, sizeof t, CORE_STR("SET %c: T1-12"), sd);
+  else sniprintf(t, sizeof t, CORE_STR("EDIT %c: SCENE %d"), sd, sn + 1);
+  mod::rytm_readout(t);
+}
+CORE_COLD bool capture(int side, int track, int word, int delta, bool func, uint16_t base) {
+  char t[mod::kReadoutMax + 1];
+  const char sd = side ? 'B' : 'A';
+  if ((side != 0 && side != 1) || g_side != side) {   // the gesture ended here (a kit change) before its turns came
+    mod::rytm_readout("EDIT ENDED");
+    return false;
+  }
+  const int n = side_scene(side);
+  if (n < 0) {
+    sniprintf(t, sizeof t, CORE_STR("SET %c FIRST"), sd);
+    mod::rytm_readout(t);
+    return false;
+  }
+  const mod::Tid tg = stock_target(track, word);
+  if (!tg) {
+    mod::rytm_readout("NOT LOCKABLE");
+    return false;
+  }
+  const Scene& sc = g_st.s[n];
+  int cur = -1;
+  for (int i = 0; i < sc.n; ++i)
+    if (sc.l[i].t == tg) cur = sc.l[i].v;
+  const mod::Range r = mod::range(tg);
+  const bool off = mod::is_offset(mod::kind_of(tg));
+  const int lo = off || r.lo < 0 ? 0 : (int)r.lo, hi = off || r.hi > 127 ? 127 : (int)r.hi;
+  const int from = cur >= 0 ? cur : base > 16383 ? 16383 : base;
+  int v;
+  if (r.mode == mod::kStep) {   // a list: one entry a detent
+    int u = (from + 64) / 128 + (delta > 0 ? 1 : delta < 0 ? -1 : 0);
+    v = (u < lo ? lo : u > hi ? hi : u) * 128;
+  } else {
+    v = from + delta * (func ? 8 : 128);
+    v = v < lo * 128 ? lo * 128 : v > hi * 128 + 127 ? hi * 128 + 127 : v;
+    if (v > 16383) v = 16383;
+  }
+  if (!lock(n, tg, (uint16_t)v)) {
+    mod::rytm_readout("SCENE FULL");
+    return false;
+  }
+  char pl[8];
+  mod::param_label(tg, pl, sizeof pl);
+  const int sv = (v + 64) / 128, kv = (base + 64) / 128;
+  sniprintf(t, sizeof t, CORE_STR("%c %s %d %c%d"), sd, pl, sv, sv > kv ? '>' : sv < kv ? '<' : '=', kv);
+  mod::rytm_readout(t);
+  return true;
+}
+
+CORE_COLD bool capture_clear(int side, int track, int word) {
+  char t[mod::kReadoutMax + 1];
+  const char sd = side ? 'B' : 'A';
+  if ((side != 0 && side != 1) || g_side != side) {   // the gesture ended here (a kit change) before its press came
+    mod::rytm_readout("EDIT ENDED");
+    return false;
+  }
+  const int n = side_scene(side);
+  if (n < 0) {
+    sniprintf(t, sizeof t, CORE_STR("SET %c FIRST"), sd);
+    mod::rytm_readout(t);
+    return false;
+  }
+  const mod::Tid tg = stock_target(track, word);
+  if (!tg) {
+    mod::rytm_readout("NOT LOCKABLE");
+    return false;
+  }
+  char pl[8];
+  mod::param_label(tg, pl, sizeof pl);
+  const bool had = unlock(n, tg);   // this entry only
+  sniprintf(t, sizeof t, CORE_STR("%c %s %s"), sd, pl, had ? "CLR" : "NONE");
+  mod::rytm_readout(t);
+  return had;
+}
 
 CORE_COLD bool command(const char* p, char* o, int cap) {
   if (strncmp(p, "scene", 5) != 0 || (p[5] && p[5] != '=')) return false;
@@ -416,12 +545,21 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
   const char* q = p + 6;
   char k[8], a[8], b[12], c[12];
   bool ok = field(&q, k, sizeof k);
-  bool full = false;
+  bool full = false, refused = false;
   if (!ok) {
   } else if (!strcmp(k, "ab")) {
     int x = field(&q, a, sizeof a) ? dec(a, 0, kScenes) : -1, y = field(&q, b, sizeof b) ? dec(b, 0, kScenes) : -1;
     ok = x >= 0 && y >= 0 && !q;
     if (ok) set_ab(x - 1, y - 1);
+  } else if (!strcmp(k, "qperf")) {
+    int m = !field(&q, a, sizeof a) || q ? -1 : !strcmp(a, "muted") ? kQpMutedOnly : !strcmp(a, "off") ? kQpOff
+                                                : !strcmp(a, "always") ? kQpAlways : -1;
+    ok = m >= 0;
+    if (ok) {
+      set_qp_mode(m);
+      sniprintf(o, cap, CORE_STR("scene: qperf %s"), qp_mode_name(m));
+      return true;
+    }
   } else if (!strcmp(k, "fader")) {
     int x = field(&q, a, sizeof a) ? dec(a, 0, kFaderMax) : -1;
     ok = x >= 0 && !q;
@@ -444,20 +582,19 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
     if (ok && k[0] == 'l') {
       int v = field(&q, c, sizeof c) ? value128(c) : -1;
       ok = v >= 0 && !q;
-      if (ok && !lock(x - 1, t, (uint16_t)v)) ok = false, full = true;
+      if (ok && !target_ok(t)) ok = false, refused = true;
+      else if (ok && !lock(x - 1, t, (uint16_t)v)) ok = false, full = true;
     } else if (ok) {
       ok = !q && unlock(x - 1, t);
     }
-  } else if (!strcmp(k, "edit")) {
-    ok = field(&q, a, sizeof a) && !q && (!strcmp(a, "on") || !strcmp(a, "off"));
-    if (ok) set_edit(a[1] == 'n');
   } else {
     ok = false;
   }
   if (full) sniprintf(o, cap, CORE_STR("scene: SCENE FULL (%d locks)"), kLocks);
+  else if (refused) sniprintf(o, cap, CORE_STR("scene: NOT A SCENE TARGET (%s)"), p);
   else if (!ok)
     sniprintf(o, cap, CORE_STR("scene: cannot \"%s\" (scene=ab:A:B | fader:V | sel:N | lock:N:NAME:V | unlock:N:NAME | "
-                               "clear:N | copy:N:M | edit:on|off)"), p);
+                               "clear:N | copy:N:M | qperf:muted|off|always)"), p);
   else state_line(o, cap);
   return true;
 }
@@ -465,7 +602,7 @@ CORE_COLD bool command(const char* p, char* o, int cap) {
 CORE_COLD int json(char* o, int cap) {
   int n = sniprintf(o, cap, CORE_STR("\"scene\":{\"a\":%d,\"b\":%d,\"fader\":%u,\"played\":%d,\"sel\":%d,\"locked\":%d,"
                                      "\"edit\":%d,\"s\":["), g_st.a + 1, g_st.b + 1, (unsigned)g_st.fader, g_played,
-                    g_st.sel + 1, g_locked ? 1 : 0, g_edit ? 1 : 0);
+                    g_st.sel + 1, g_locked ? 1 : 0, g_side + 1);
   bool first = true;
   for (int i = 0; i < kScenes; ++i) {
     const Scene& s = g_st.s[i];
@@ -522,6 +659,21 @@ CORE_COLD int json(char* o, int cap) {
       ok = put(CORE_STR("%s%s\"%s\"%s"), vi && !k ? "," : "", k ? "," : "[", lb, k == 15 ? "]" : "");
     }
   ok = ok && put("%s%s%s%s", "]", "", "", "");
+  // v2 Task 7 (UX 17): "gone" the locked targets that no longer resolve (ui::morph_stale), once each
+  ok = ok && put("%s%s%s%s", ",\"gone\":[", "", "", "");
+  bool first_g = true;
+  for (int i = 0; ok && i < kScenes; ++i)
+    for (int j = 0; ok && j < g_st.s[i].n; ++j) {
+      mod::Tid t = g_st.s[i].l[j].t;
+      if (!core::ui::morph_stale(t)) continue;
+      bool seen = false;   // (a gone target is rare: the earlier locks searched only for those)
+      for (int i2 = 0; i2 <= i && !seen; ++i2)
+        for (int j2 = 0; j2 < (i2 < i ? g_st.s[i2].n : j) && !seen; ++j2) seen = g_st.s[i2].l[j2].t == t;
+      if (seen) continue;
+      char nm[16];
+      ok = put(CORE_STR("%s\"%s\"%s%s"), first_g ? "" : ",", mod::name(t, nm, sizeof nm), "", ""), first_g = false;
+    }
+  ok = ok && put("%s%s%s%s", "]", "", "", "");
   if (!ok) n = at;   // (no room: the old fields only)
 #endif
   if (n >= cap) return cap;
@@ -576,7 +728,8 @@ CORE_COLD void load() {
   }
   int n = 0, bad = 0;
   fmt::Sniffed sn;   // a newer build's version: read what can be read, never written
-  if (fmt::text_header(fmt::Bytes{d, len}, "scene", &sn) && sn.version > 1) ++bad;
+  // v2 (0.5.0 S12, no migration): a v1 file (or none of the header) reads what it can and locks, as a newer one
+  if (!fmt::text_header(fmt::Bytes{d, len}, "scene", &sn) || sn.version != 2) ++bad;
   for (int k; (k = fmt::next_line(d, len, &at, b, sizeof b)) >= 0;) {
     if (k == 0 || b[0] == '#') continue;
     if (take_line(b)) ++n;
@@ -631,6 +784,7 @@ CORE_COLD void project_changed() {
 
 CORE_COLD void kit_changed(int kit) {
   if (kit < 0 || kit > 127) return;
+  if (kit != g_rytm_kit) g_side = -1, g_kit_ms = now_ms() | 1;   // v2: a held EDIT ends with the kit (its scenes go)
   g_rytm_kit = kit;
   // a project's store still filling: its load takes this kit; a rename moving the files: the switch after it does
   if (!store::ready() || rename::moving()) return;
@@ -640,7 +794,10 @@ CORE_COLD void kit_changed(int kit) {
 CORE_COLD void load() {}
 CORE_COLD bool save() { return false; }
 CORE_COLD void project_changed() {}
-CORE_COLD void kit_changed(int kit) { g_rytm_kit = kit; }
+CORE_COLD void kit_changed(int kit) {
+  if (kit != g_rytm_kit) g_side = -1, g_kit_ms = now_ms() | 1;
+  g_rytm_kit = kit;
+}
 #endif
 
 }  // namespace scene

@@ -141,6 +141,80 @@ static void unarmed_cc_not_taken() {
   printf("learn: a CC no route has is not taken\n");
 }
 
+// ---- 0.5.0 v2 Task 6: a fader route takes the fader from another source on a change of >= 2 CC steps (7 bit) / 256
+// (14 bit) from its last value; once it has the fader it follows every step. A 14-bit MSB keeps the last LSB.
+static void fader_route_needs_two_steps_to_take() {
+  fresh();
+  learn::arm("fader"), learn::midi(1, 0xB0, 7, 64);
+  CHECK(scene::fader_source() == scene::kLearn && scene::state().fader == 64 * 129);
+  scene::set_fader(3000, scene::kPage);   // the page takes it
+  CHECK(learn::midi(1, 0xB0, 7, 65) && scene::state().fader == 3000);   // a flicker: 1 step
+  CHECK(learn::midi(1, 0xB0, 7, 63) && scene::state().fader == 3000);
+  CHECK(learn::midi(1, 0xB0, 7, 66) && scene::state().fader == 66 * 129 && scene::fader_source() == scene::kLearn);
+  // 14 bit: 256 counts
+  fresh();
+  learn::arm("fader"), learn::midi(0, 0xB0, 1, 64), learn::midi(0, 0xB0, 33, 0);
+  CHECK(scene::state().fader == 64 << 7);
+  scene::set_fader(3000, scene::kPage);
+  learn::midi(0, 0xB0, 33, 100);   // 100 counts
+  CHECK(scene::state().fader == 3000);
+  learn::midi(0, 0xB0, 1, 65), learn::midi(0, 0xB0, 33, 0);   // 128 counts: no
+  CHECK(scene::state().fader == 3000);
+  learn::midi(0, 0xB0, 1, 66), learn::midi(0, 0xB0, 33, 0);   // 256 from 64 << 7: takes
+  CHECK(scene::state().fader == 66 << 7 && scene::fader_source() == scene::kLearn);
+  printf("learn: a fader route takes the fader on 2 CC steps (7 bit) / 256 (14 bit), not on a flicker\n");
+}
+static void fader_route_follows_once_owner() {
+  fresh();
+  learn::arm("fader"), learn::midi(1, 0xB0, 7, 64);
+  for (int c = 65; c < 70; ++c) CHECK(learn::midi(1, 0xB0, 7, (uint8_t)c) && scene::state().fader == c * 129);
+  CHECK(learn::midi(1, 0xB0, 7, 68) && scene::state().fader == 68 * 129);
+  printf("learn: once the route has the fader it follows every step\n");
+}
+static void msb_keeps_last_lsb() {
+  fresh();
+  learn::arm("fader"), learn::midi(0, 0xB0, 1, 63), learn::midi(0, 0xB0, 33, 120);
+  CHECK(scene::state().fader == (63 << 7 | 120));
+  // the same MSB again: the last LSB (no dip to 63 / 0)
+  CHECK(learn::midi(0, 0xB0, 1, 63) && scene::state().fader == (63 << 7 | 120));
+  // up past an MSB boundary: 64 / 0 until the LSB, never 64 / 120 (no overshoot, review L1)
+  CHECK(learn::midi(0, 0xB0, 1, 64) && scene::state().fader == (64 << 7));
+  CHECK(learn::midi(0, 0xB0, 1, 64) && scene::state().fader == (64 << 7));   // the MSB again before its LSB
+  CHECK(learn::midi(0, 0xB0, 33, 2) && scene::state().fader == (64 << 7 | 2));
+  // down past one: 63 / 127, never 63 / 2
+  CHECK(learn::midi(0, 0xB0, 1, 63) && scene::state().fader == (63 << 7 | 127));
+  printf("learn: a 14-bit MSB keeps the last LSB\n");
+}
+// QPERF FADER is kept with the routes: "QP muted|off|always" (written when not the default MUTED ONLY)
+static void qp_line_round_trip() {
+  fresh();
+  ::remove((g_card + "/.rytm/learn.txt").c_str());
+  learn::load();
+  CHECK(scene::qp_mode() == scene::kQpMutedOnly && !learn::dirty());
+  char o[200];
+  scene::command("scene=qperf:always", o, sizeof o);
+  CHECK(learn::dirty());
+  flush();
+  CHECK(rd("/.rytm/learn.txt") == "#sidecar learn 1\nQP always\n");
+  scene::set_qp_mode(scene::kQpOff);
+  learn::arm("fader"), learn::midi(1, 0xB0, 7, 0);
+  flush();
+  CHECK(rd("/.rytm/learn.txt") == "#sidecar learn 1\nQP off\nR 1 1 7 fader\n");
+  scene::set_qp_mode(scene::kQpMutedOnly);
+  learn::reset();
+  learn::load();   // a boot: OFF back
+  CHECK(scene::qp_mode() == scene::kQpOff && !learn::dirty() && !learn::locked());
+  scene::set_qp_mode(scene::kQpMutedOnly);
+  flush();
+  CHECK(rd("/.rytm/learn.txt") == "#sidecar learn 1\nR 1 1 7 fader\n");
+  wr("/.rytm/learn.txt", "#sidecar learn 1\nQP loud\n");   // a value this build does not know: locked, default
+  learn::load();
+  CHECK(learn::locked() && scene::qp_mode() == scene::kQpMutedOnly);
+  ::remove((g_card + "/.rytm/learn.txt").c_str());
+  learn::load();
+  printf("learn: QPERF FADER saved as QP muted|off|always, read back at boot\n");
+}
+
 int main() {
   char tmpl[] = "/tmp/core_learn_XXXXXX";
   CHECK(mkdtemp(tmpl));
@@ -155,6 +229,10 @@ int main() {
   routes_file_round_trip();
   ab_by_cc();
   unarmed_cc_not_taken();
+  fader_route_needs_two_steps_to_take();
+  fader_route_follows_once_owner();
+  msb_keeps_last_lsb();
+  qp_line_round_trip();
   printf("test_learn: PASS\n");
   return 0;
 }

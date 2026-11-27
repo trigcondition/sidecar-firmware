@@ -15,6 +15,8 @@
 #include "../ui/remote.h"
 #include "../ui/ui.h"
 #include "../voices.h"
+#include "../wavetable/wavetable.h"
+#include "../wavetable/wt_make.h"
 #include "dsp.h"
 #include "sedit_dsp.h"
 #include "sedit_io.h"
@@ -25,7 +27,7 @@ namespace sedit {
 namespace {
 
 // The job in hand, stepped by step(): a load, an apply's passes, a save. The outline is rebuilt after any of them.
-enum Job : uint8_t { kNoJob, kLoad, kApply, kSave };
+enum Job : uint8_t { kNoJob, kLoad, kApply, kSave, kMake };
 // An apply's passes, in order (each in pieces of kEditPiece frames; the ones a function does not need are skipped)
 enum Pass : uint8_t { kPeak, kFloor, kFirst, kLast, kCopy, kOp, kFade, kSwap };
 // A save's: the name, the write, then the pool once the library's published index has the file
@@ -34,6 +36,8 @@ enum SavePass : uint8_t { kName, kWrite, kPool };
 // pools read follows at its next publish, 250 ms or more apart on a big index)
 constexpr uint32_t kPublishWaitMs = 5000;
 constexpr int kJumpMax = 64;   // jump(): detents a call at most
+constexpr uint32_t kWantMs = 120000;   // a sample picked for a WAVETABLE voice counts this long
+constexpr uint32_t kBackMs = 1800;   // a table made for a voice: the editor shows its row this long, then closes
 
 struct Ed {
   State st = kClosed;
@@ -75,6 +79,19 @@ struct Ed {
   bool post_save = false;
   uint32_t lgen = 0, pool_ms = 0;   // kPool: the library's gen() and the time when the file was whole
   bool pool_off = false;            // the project changed during the save: the copy stays out of the new one's pool
+  // MAKE WT (docs/SAMPLE-EDIT.md): the region as a wavetable (wt_make.h), written to /WAVETABLES by the save's passes
+  bool mk = false;                  // the job in hand makes a table (kMake, then kSave's name / write / pool passes)
+  bool file = false;                // opened from a card file (a table's), not a SAMPLES row: no live play
+  float* tbl = nullptr;             // the table (wn x 2048 floats), its pcache block
+  int bw = -1;
+  uint8_t wn = 2;                   // the frames' choice (wt::make::kChoices: 16 32 64 128 256; default 64)
+  int8_t wvi = -1;                  // the WAVETABLE voice the edit was opened from (-1 none): the new row goes on its TBL
+  int wcode = -1;                   // its table A's row when opened (the new row goes into that bank)
+  int8_t wtrack = -1;               // its track
+  int8_t wnext = -1;                // a WAVETABLE voice the next open belongs to (the POOL page's sample pick)
+  uint32_t wnext_ms = 0, back_ms = 0;   // when it was asked; when the editor closes by itself after a table made for a voice
+  uint8_t wmethod = 0;
+  float wper = 0;
   // a close while a card job runs: the job finishes out of sight, then everything goes
   bool drain = false;
   // live play: the edit as int16 in two play buffers that take turns, the one not in the voices' override refilled
@@ -116,6 +133,7 @@ Retired g_ret[kRetired];
 int g_nret = 0;
 Saver g_save;
 Namer g_name;
+wt::make::Maker g_mk;
 
 UI_ROM const char* const kStNames[] = {"closed", "loading", "ready", "busy", "saving", "error"};
 // The console's short names for the functions (sedit_dsp.h Fn order); kFnNames' are taken too
@@ -207,8 +225,13 @@ CORE_COLD void whole_window() {
   e.wa = 0, e.wb = e.frames, e.zoom = 0;
 }
 
+CORE_COLD void mk_free() {
+  if (e.bw >= 0) pcache::release(e.bw);
+  e.bw = -1, e.tbl = nullptr, e.mk = false;
+}
 CORE_COLD void release_all() {
   release_play();
+  mk_free();
   if (e.bx >= 0) pcache::release(e.bx);
   if (e.by >= 0) pcache::release(e.by);
   e.bx = e.by = -1;
@@ -268,7 +291,7 @@ CORE_COLD bool step_load() {
   {   // the play buffers: (frames + a guard frame) x ch int16 each (every open: sedit-050 #1). Not to be had: the edit
       // opens anyway, without live play (fix round 1, M3; the footer says so once)
     e.pcap = e.frames;
-    e.nolive = false;
+    e.nolive = e.file;   // (a card file's open: no pool row, no live play, nothing said)
     for (int k = 0; k < 2 && !e.nolive; ++k) {
       void* q = nullptr;
       e.bp[k] = pcache::alloc_private((uint64_t)(e.frames + 1) * e.ch * 2, &q);
@@ -282,7 +305,7 @@ CORE_COLD bool step_load() {
       }
     e.tlen = e.frames;
     e.vi = (int8_t)(e.track >= 0 ? ui::remote_track_voice(e.track) : -1);
-    e.slot = slot_of(e.code);
+    e.slot = e.file ? 0 : slot_of(e.code);
   }
   if (e.track >= 0) {   // STA..END (0..120 onto frames - 1, either way round, END inclusive)
     float lo = e.sta < e.end ? e.sta : e.end, hi = e.sta < e.end ? e.end : e.sta;
@@ -297,7 +320,7 @@ CORE_COLD bool step_load() {
   whole_window();
   e.undo = e.dirty = false;
   e.msg[0] = 0;
-  if (e.nolive) say("NO LIVE PLAY: RAM");
+  if (e.nolive && !e.file) say("NO LIVE PLAY: RAM");
   play_changed();
   job_done();
   return true;
@@ -474,6 +497,28 @@ CORE_COLD void saved() {
   }
 }
 
+// The table saved: into the WAVETABLES pool (the bank of the table the voice had, else the shown one), then onto the
+// voice's TBL (the Rytm's, as wt=pick writes it); said with the method used; for a voice the editor closes itself soon
+CORE_COLD void mk_pooled() {
+  if (e.pool_off || e.drain) return;
+  int code = -1;
+  int r = e.wcode >= 0 ? pools::add_file(pools::kTables, pools::bank_of(e.wcode), e.target, &code) : pools::kErrFull;
+  if (r == pools::kErrFull) r = pools::add_take(pools::kTables, e.target, &code);
+  char row[8], m[32];
+  if (r != pools::kOk && r != pools::kExisting) {
+    say(r == pools::kErrPath ? "WT SAVED, NOT IN POOL" : pools::result_text(r));
+    return;
+  }
+  pools::row_text(code, row);
+  const char* how = e.wmethod == wt::make::kPitched ? "PITCHED" : "SPECTRAL";
+  if (e.wmethod == wt::make::kPitched && e.wper > 0 && e.rate)
+    sniprintf(m, sizeof m, "WT %s %s %uHZ", row, how, (unsigned)((float)e.rate / e.wper + 0.5f));
+  else
+    sniprintf(m, sizeof m, "WT %s %s", row, how);
+  say(m);
+  if (e.wvi >= 0 && wt::pick(e.wvi, code)) e.back_ms = now_ms() | 1;
+}
+
 // The save wrote a region short of the edit: the edit is cropped to it next (save_done)
 CORE_COLD bool crop_follows() {
   return e.x && !e.drain && (e.s_a != 0 || e.s_b != e.frames) && e.s_b <= e.frames && e.s_a < e.s_b;
@@ -482,6 +527,18 @@ CORE_COLD bool crop_follows() {
 // The save's end: the copy pooled, the job over (a close meanwhile: everything goes now)
 CORE_COLD bool save_done() {
   e.job = kNoJob;
+  if (e.mk) {   // a table: into the WAVETABLES pool, on the voice's TBL, said; then back (the editor closes itself)
+    mk_pooled();
+    mk_free();
+    if (e.drain) {
+      e.drain = false;
+      release_all();
+      return true;
+    }
+    e.st = kReady;
+    touch();
+    return true;
+  }
   saved();
   if (e.drain) {
     e.drain = false;
@@ -511,6 +568,40 @@ CORE_COLD bool step_pool() {
   return save_done();
 }
 
+// MAKE WT's first part: the converter in pieces; then the name (/WAVETABLES/<stem>-wt<N>.wav) and the save's passes
+CORE_COLD bool step_make() {
+  e.step_frames = 0;
+  int r = g_mk.step();
+  if (r > 0) {
+    e.progress = (uint8_t)g_mk.progress();
+    touch();
+    return true;
+  }
+  if (r < 0) {
+    e.job = kNoJob, e.st = kReady;
+    mk_free();
+    say(r == wt::make::kErrSilent ? "SILENT" : "NOT A TABLE");
+    return true;
+  }
+  e.wmethod = g_mk.method(), e.wper = g_mk.period();
+  char path[cardq::kPathMax];
+  const char* dot = strrchr(e.name, '.');
+  sniprintf(path, sizeof path, "/WAVETABLES/%.*s.wav", dot ? (int)(dot - e.name) : (int)strlen(e.name), e.name);
+  int nr = g_name.begin(path, e.target, sizeof e.target, "-wt", true);
+  if (nr < 0) {
+    e.job = kNoJob, e.st = kReady;
+    mk_free();
+    say(nr == -1 ? err_text(kErrName) : nr == kErrBusy ? "BUSY" : "NO FOLDER");
+    return true;
+  }
+  e.use = false, e.scode = -1;
+  e.s_frames = (uint32_t)wt::make::kChoices[e.wn] * wt::make::kFrameLen;
+  e.spass = kName, e.pool_off = false;
+  e.job = kSave, e.st = kSaving, e.progress = 0;
+  touch();
+  return true;
+}
+
 CORE_COLD bool step_save() {
   if (e.spass == kPool) return step_pool();
   if (e.spass == kName) {
@@ -525,12 +616,15 @@ CORE_COLD bool step_save() {
     }
     if (r < 0) {
       e.job = kNoJob, e.st = kReady;
+      mk_free();
       say(r == -1 ? err_text(kErrName) : "NO FOLDER");
       return true;
     }
-    r = g_save.begin(e.target, e.x + (size_t)e.s_a * e.ch, e.ch, e.bits, e.rate, e.s_frames);   // START..END only
+    if (e.mk) r = g_save.begin(e.target, e.tbl, 1, 32, e.rate, e.s_frames, true);   // a table's N x 2048 floats
+    else r = g_save.begin(e.target, e.x + (size_t)e.s_a * e.ch, e.ch, e.bits, e.rate, e.s_frames);   // START..END only
     if (r < 0) {
       e.job = kNoJob, e.st = kReady;
+      mk_free();
       say(err_text(r));
       return true;
     }
@@ -551,6 +645,7 @@ CORE_COLD bool step_save() {
     return true;
   }
   e.job = kNoJob;
+  mk_free();
   if (e.drain) {
     e.drain = false;
     release_all();
@@ -693,6 +788,38 @@ CORE_COLD uint32_t onset_landing(uint32_t o) {
   return l;
 }
 
+// The editor on a file: a SAMPLES row's (code >= 0, track or not) or a card file's (a table's: file, no row, no live
+// play; float WAVs read too); the load started. 0 loading, -1 refused.
+CORE_COLD int start_load(const char* path, int code, int track, float sta, float end, bool file) {
+  // (BUSY too while the retired list could not take this open's play buffers at its close)
+  if (e.drain || (e.st != kReady && e.st != kClosed && e.st != kError) || g_nret > kRetired - 2) {
+    say("BUSY");
+    return -1;
+  }
+  const int wnext = e.wnext;
+  const uint32_t wnext_ms = e.wnext_ms;
+  close();
+  e.wnext = -1;
+  sniprintf(e.src, sizeof e.src, "%s", path);
+  const char* sl = strrchr(e.src, '/');
+  sniprintf(e.name, sizeof e.name, "%s", sl ? sl + 1 : e.src);
+  e.code = code, e.track = (int8_t)track, e.sta = sta, e.end = end, e.file = file;
+  // a sample picked for a WAVETABLE voice (the POOL page, opened from its SRC view): the new table goes onto that voice
+  if (!file && track < 0 && wnext >= 0 && now_ms() - wnext_ms < kWantMs) e.wvi = (int8_t)wnext;
+  e.frames = e.rate = 0, e.ch = e.bits = 0, e.a = e.b = e.wa = e.wb = 0;
+  e.undo = e.dirty = false;
+  e.msg[0] = 0;
+  e.progress = 0;
+  int r = g_load.begin(e.src, file);
+  if (r < 0) {
+    fail(err_text(r));
+    return -1;
+  }
+  e.job = kLoad;
+  e.st = kLoading;
+  touch();
+  return 0;
+}
 CORE_COLD int start_open(int code, int track, float sta, float end) {
   if (code < 0 || code >= pools::kCodes || !pools::row_of(code)) {
     say("NO SAMPLE");
@@ -703,29 +830,7 @@ CORE_COLD int start_open(int code, int track, float sta, float end) {
     say("NO SAMPLE");
     return -1;
   }
-  // (BUSY too while the retired list could not take this open's play buffers at its close)
-  if (e.drain || (e.st != kReady && e.st != kClosed && e.st != kError) || g_nret > kRetired - 2) {
-    say("BUSY");
-    return -1;
-  }
-  close();
-  sniprintf(e.src, sizeof e.src, "%s", en.path);
-  const char* sl = strrchr(e.src, '/');
-  sniprintf(e.name, sizeof e.name, "%s", sl ? sl + 1 : e.src);
-  e.code = code, e.track = (int8_t)track, e.sta = sta, e.end = end;
-  e.frames = e.rate = 0, e.ch = e.bits = 0, e.a = e.b = e.wa = e.wb = 0;
-  e.undo = e.dirty = false;
-  e.msg[0] = 0;
-  e.progress = 0;
-  int r = g_load.begin(e.src);
-  if (r < 0) {
-    fail(err_text(r));
-    return -1;
-  }
-  e.job = kLoad;
-  e.st = kLoading;
-  touch();
-  return 0;
+  return start_load(en.path, code, track, sta, end, false);
 }
 
 CORE_COLD bool parse_i64(const char** p, int64_t* v) {   // [-] digits
@@ -781,10 +886,96 @@ CORE_COLD int open_track(int track) {
 
 CORE_COLD int open_code(int code) { return start_open(code, -1, 0, 120); }
 
+// A WAVETABLE voice's table A (the track's 2A when it has one the voice has not reported over, else the voice's): its
+// list entry
+CORE_COLD int wt_entry(int track, int vi) {
+  int c14 = track >= 0 ? ui::remote_track_src14_fresh(track) : -1;
+  return c14 >= 0 ? srclib::code_of14(c14) : wt::src_entry(vi, v[vi].p[0]);
+}
+CORE_COLD bool wt_table_file(int track, int vi) {
+  if (vi < 0 || vi >= kVoices) return false;
+  int ent = wt_entry(track, vi);
+  const char* path = ent >= 0 ? wt::entry_path(ent) : "";
+  return path && path[0];
+}
+// A WAVETABLE track's (or voice's) table A: a card file opens as a sample (the region the whole file; the new table
+// goes onto the voice's TBL, in the bank of that row); a built-in or OFF has no file: 1, and the caller offers the
+// SAMPLES list
+CORE_COLD int open_wt(int track, int vi) {
+  if (vi < 0 || vi >= kVoices || !(v[vi].wt || wt::forced(vi) || (track >= 0 && (ui::remote_track_machine(track) & 0x78) == kWaveMachine))) {
+    say("NOT A WAVETABLE VOICE");
+    return -1;
+  }
+  int ent = wt_entry(track, vi);
+  const char* path = ent >= 0 ? wt::entry_path(ent) : "";
+  if (!path || !path[0]) return 1;
+  int r = start_load(path, -1, -1, 0, 120, true);
+  if (r == 0) e.wvi = (int8_t)vi, e.wcode = ent, e.wtrack = (int8_t)track;
+  return r;
+}
+CORE_COLD int open_wt_track(int track) {
+  const int vi = track >= 0 && track < 12 ? ui::remote_track_voice(track) : -1;
+  if (vi < 0 || (ui::remote_track_machine(track) & 0x78) != kWaveMachine) {
+    say("NOT A WAVETABLE TRACK");
+    return -1;
+  }
+  return open_wt(track, vi);
+}
+CORE_COLD int open_wt_voice(int vi) { return open_wt(-1, vi); }
+CORE_COLD int open_file(const char* path) { return start_load(path, -1, -1, 0, 120, true); }
+CORE_COLD void set_wt_voice(int vi) {
+  e.wnext = (int8_t)(vi >= 0 && vi < kVoices ? vi : -1);
+  e.wnext_ms = now_ms();
+}
+CORE_COLD void set_wt_frames(int n) {
+  for (int i = 0; i < 5; ++i)
+    if (wt::make::kChoices[i] == n) e.wn = (uint8_t)i;
+  touch();
+}
+CORE_COLD int wt_frames() { return wt::make::kChoices[e.wn]; }
+
+// MAKE WT: the region (START..END, the functions applied) as a wavetable of wt_frames() frames: the converter runs in
+// pieces (kMake), then the file /WAVETABLES/<stem>-wt<N>.wav is written (a float32 WAV with a `clm ` chunk naming
+// 2048) and added to the WAVETABLES pool, on the voice's TBL when the edit came from a WAVETABLE track. 0 started, -1
+// refused (the view's msg says why).
+CORE_COLD int make_wt() {
+  if (refuse_busy()) return -1;
+  if (e.b - e.a < (uint32_t)wt::make::kMinSelection) {
+    say("TOO SHORT FOR A TABLE");
+    return -1;
+  }
+  mk_free();
+  const int n = wt::make::kChoices[e.wn];
+  void* p = nullptr;
+  e.bw = pcache::alloc_private((uint64_t)n * wt::make::kFrameLen * 4, &p);
+  if (e.bw < 0) {
+    say(err_text(kErrRam));
+    return -1;
+  }
+  e.tbl = (float*)p;
+  if (g_mk.begin(e.x + (size_t)e.a * e.ch, e.ch, e.b - e.a, e.rate, n, e.tbl) < 0) {
+    mk_free();
+    say("TOO SHORT FOR A TABLE");
+    return -1;
+  }
+  e.mk = true;
+  e.job = kMake;
+  e.st = kBusy;
+  e.progress = 0;
+  e.msg[0] = 0;
+  touch();
+  return 0;
+}
+
 CORE_COLD void close() {
   release_play();   // the track on its own sample first (the save in flight reads the float edit only)
   // a card job in flight (the load, the name's listing, the save) is finished by step() first; then the buffers go
-  if (e.job == kLoad || e.job == kSave) e.drain = true;
+  e.back_ms = 0;
+  e.wvi = -1, e.wcode = -1, e.wtrack = -1, e.file = false;
+  if (e.job == kMake) {   // (the converter is not a card job: nothing to finish out of sight)
+    release_all();
+    e.job = kNoJob;
+  } else if (e.job == kLoad || e.job == kSave) e.drain = true;
   else {
     release_all();
     e.job = kNoJob;
@@ -988,6 +1179,10 @@ CORE_COLD int preview_voice() {
 }
 CORE_COLD int preview() {
   if (refuse_busy()) return -1;
+  if (e.file) {
+    say("NO PLAY FOR A FILE");
+    return -1;
+  }
   int vi = preview_voice();
   if (vi < 0) {
     say("NO SAMPLE TRACK");
@@ -1084,10 +1279,16 @@ CORE_COLD bool step() {
   e.step_frames = 0;
   if (g_use_on) use_poll();   // (no work done: a few answers looked at)
   if (g_nret) retired_step();
+  if (e.back_ms && (int32_t)(now_ms() - e.back_ms) >= (int32_t)kBackMs && e.job == kNoJob) {   // a table made for a voice: back to it
+    e.back_ms = 0;
+    close();
+    return true;
+  }
   switch (e.job) {
     case kLoad: return step_load();
     case kApply: return step_apply();
     case kSave: return step_save();
+    case kMake: return step_make();
     default: break;
   }
   if (e.rf && e.x) {
@@ -1117,6 +1318,12 @@ CORE_COLD void view(View* o) {
   o->playhead = -1;
   o->unity = e.unity;
   o->gen = e.gen;
+  o->making = e.mk;
+  o->wt_frames = (uint16_t)wt::make::kChoices[e.wn];
+  o->wt_voice = e.wvi;
+  o->wt_track = e.wtrack;
+  o->file = e.file;
+  o->wt_back = e.back_ms != 0;
 }
 
 // ---- the console
@@ -1139,11 +1346,17 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     int64_t x = 0, y = 0;
     bool ok = true;
     if (word("open")) {
-      bool track = word("track"), code = !track && word("code");
-      ok = (track || code) && num(&x) && !*a;
+      if (word("file")) {   // a card file (a table's too: float WAVs read): the whole file, no row
+        open_file(a);
+        return command("sedit", out, cap);
+      }
+      bool track = word("track"), code = !track && word("code"), wtt = !track && !code && word("wt"), wtv = !track && !code && !wtt && word("wtv");
+      ok = (track || code || wtt || wtv) && num(&x) && !*a;
       // (out of range: -1, refused as such - never cast into a valid track or row)
       int k = x < 0 || x >= pools::kCodes ? -1 : (int)x;
-      if (ok && track) open_track(k);
+      if (ok && wtt) open_wt_track(x < 0 || x >= 12 ? -1 : (int)x);   // (a built-in or OFF table A: nothing opens, 1)
+      else if (ok && wtv) open_wt_voice(x < 0 || x >= kVoices ? -1 : (int)x);
+      else if (ok && track) open_track(k);
       else if (ok) open_code(k);
     } else if (word("close")) {
       close();
@@ -1197,6 +1410,15 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
       if (!*a) save(false);
       else if (!strcmp(a, "use")) save(true);
       else ok = false;
+    } else if (word("makewt")) {
+      ok = !*a;
+      if (ok) make_wt();
+    } else if (word("wtvoice")) {   // the next open of a SAMPLES row belongs to WAVETABLE voice V (the touchscreen's pick)
+      ok = num(&x) && !*a && x >= 0 && x < kVoices;
+      if (ok) set_wt_voice((int)x);
+    } else if (word("wtn")) {
+      ok = num(&x) && !*a && (x == 16 || x == 32 || x == 64 || x == 128 || x == 256);
+      if (ok) set_wt_frames((int)x);
     } else if (word("preview")) {
       preview();
     } else {
@@ -1204,7 +1426,7 @@ CORE_COLD bool command(const char* p, char* out, int cap) {
     }
     if (!ok) {
       sniprintf(out, cap, "sedit=open:track:T|open:code:C|close|start:F|end:F|region:A:B|nudge:S|E:N[:c]|jump:S|E:N|"
-                          "zoom:L|pan:N[:c]|window:A:B|fn:N|NAME|apply[:NAME]|undo|save|save:use|preview");
+                          "zoom:L|pan:N[:c]|window:A:B|fn:N|NAME|apply[:NAME]|undo|save|save:use|makewt|wtn:N|wtvoice:V|open:wt:T|open:wtv:V|open:file:PATH|preview");
       return true;
     }
   }

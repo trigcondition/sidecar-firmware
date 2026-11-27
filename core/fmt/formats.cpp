@@ -203,6 +203,7 @@ bool rd_song(const Bytes& in, const Sniffed& s, char* why, int cap) {   // json.
 bool sn_display(const Bytes& in, Sniffed* o) { return sniff_kv(in, "display", o); }
 bool sn_keys(const Bytes& in, Sniffed* o) { return sniff_kv(in, "keys", o); }
 bool sn_preview(const Bytes& in, Sniffed* o) { return sniff_kv(in, "preview", o); }
+bool sn_loop(const Bytes& in, Sniffed* o) { return sniff_kv(in, "loop", o); }
 bool sn_fxin(const Bytes& in, Sniffed* o) { return sniff_kv(in, "fxin", o); }
 bool sn_sendfx(const Bytes& in, Sniffed* o) { return sniff_kv(in, "sendfx", o); }
 bool sn_wifi(const Bytes& in, Sniffed* o) { return sniff_kv(in, "wifi", o); }
@@ -352,6 +353,7 @@ const Format kFormats[] = {
     {"keys", kSetting, kKeyValue, 1, 1, 1, sn_keys, rd_kv, nullptr, 0, nullptr, "/.rytm/keys.txt", 16 * K},
     {"learn", kSetting, kText, 1, 1, 1, sn_learn, rd_kitlines, nullptr, 0, nullptr, "/.rytm/learn.txt", 16 * K},
     {"preview", kSetting, kKeyValue, 1, 1, 1, sn_preview, rd_kv, nullptr, 0, nullptr, "/.rytm/preview.txt", 16 * K},
+    {"loop", kSetting, kKeyValue, 1, 1, 1, sn_loop, rd_kv, nullptr, 0, nullptr, "/.rytm/loop.txt", 16 * K},
     {"fxin", kSetting, kKeyValue, 1, 1, 1, sn_fxin, rd_kv, nullptr, 0, nullptr, "/.rytm/fxin.txt", 16 * K},
     {"sendfx", kSetting, kKeyValue, 1, 1, 1, sn_sendfx, rd_kv, nullptr, 0, nullptr, "/.rytm/sendfx.txt", 16 * K},
     {"wifi", kSetting, kKeyValue, 1, 1, 1, sn_wifi, rd_kv, nullptr, 0, nullptr, "/.rytm/wifi.txt", 16 * K},

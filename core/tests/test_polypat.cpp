@@ -615,6 +615,8 @@ int main() {
     g_out.clear();   // (a fresh mask: -1 if none was sent)
     page(1), tick();
     CHECK(remote_page_title() && !strcmp(remote_page_title(), "LFO") && caught(0x42) == 0 && caught(0x43) == 0);
+    remote_show_page("POOL"), tick();   // (POOL keeps UP / DOWN: POLY's mask differs from it, so a fresh one is sent; CHORD REC
+                                        // made POLY's encoder mask 0xFF, the same as LFO's)
     g_out.clear();   // (a fresh mask: -1 if none was sent)
     remote_show_page("POLY"), tick();
     CHECK(remote_page_title() && !strcmp(remote_page_title(), "POLY") && caught(0x42) == 0 && caught(0x43) == 0);

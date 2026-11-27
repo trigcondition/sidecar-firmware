@@ -378,7 +378,7 @@ void clock(bool on) {
   Engine& e = eng();
   if (on == e.clock_on) return;
   e.clock_on = on;
-  seq::set_clock_tracks(on ? 1u << kClockTrack : 0);
+  seq::set_clock_tracks(seq::kClockSong, on ? 1u << kClockTrack : 0);
 }
 
 // ---- fetches (the arm snapshot, the config check): one request at a time

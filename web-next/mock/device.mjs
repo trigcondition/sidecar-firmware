@@ -121,6 +121,7 @@ export function createDevice({ scenario = "" } = {}) {
     cpu: { setting: "max", mhz: 2400, budgetUs: 125 },
     machines: d.machines,
     scene: sceneJson(d.scene),
+    loop: loopJson(d.loop),
     src: TRACKS.map((t, i) => ({ m: i < 8 ? d.machines[i].toUpperCase() : "RYTM", vb: i })).concat([{ m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }, { m: "RYTM", vb: 0 }]),
     version: "0.4.2",
     commit: "mock000",
@@ -192,6 +193,7 @@ export function createDevice({ scenario = "" } = {}) {
     else if ((m = /^usbmode=(class|overbridge|cmdline)$/.exec(c))) d.usbMode = { ...d.usbMode, set: m[1] === "cmdline" ? "class" : m[1], runs: m[1] === "overbridge" ? "overbridge" : "class", shown: m[1] === "overbridge" ? "box" : "sidecar" };
     else if ((m = /^notemach=(\d):(\w+)$/.exec(c)) && MACHINES.includes(m[2])) d.machines[+m[1]] = m[2];
     else if (c.startsWith("scene=")) sceneCommand(d.scene, c);
+    else if (c === "loop" || c.startsWith("loop=")) loopCommand(d.loop, c);
     else if ((m = /^voicepick=(-?\d+)$/.exec(c))) d.voiceTrack = +m[1] >= 0 && +m[1] < 12 ? +m[1] : 4;
     else if ((m = /^drone=(\d|all|off)$/.exec(c))) d.drone = m[1] === "off" ? -1 : m[1] === "all" ? 8 : +m[1];
     else if ((m = /^screensaver=(\d+)$/.exec(c))) d.screensaver = +m[1];
@@ -434,6 +436,9 @@ export function createDevice({ scenario = "" } = {}) {
   // the morph scenes (0.5.0, core/mod/scene.h): two scenes with locks, 1 on A, 2 on B, the fader a third of the way
   d.scene = { a: 0, b: 1, fader: 5461, sel: 0, edit: false, src: 1, rscn: 0,
     s: Array.from({ length: 12 }, (_, i) => (i === 0 ? [["V1:P3", 1280], ["V2:P1", 15360], ["MFX:LEV", 12800]] : i === 1 ? [["V1:P3", 15360], ["V2:P1", 2560], ["O1:PAN", 4096]] : i === 4 ? [["RYTM:PERF2", 8192]] : [])) };
+  // the master looper (0.5.0, core/loop/loop.h): two grabs held, 1 bar playing, the ring holding 41 s
+  d.loop = { on: true, state: "playing", ring_s: 41, bal: 64, lev: 100, fade: 2, mute: false, live: 0, post_lat: 0, cal: 0, msg: "", msg_n: 0, sel: 0, next_id: 3,
+    grabs: [{ id: 2, hb: 4, bpm: 120, kept: 0, gap: 0, copied: 1 }, { id: 1, hb: 2, bpm: 118.5, kept: 1, gap: 0, copied: 1 }], playing: 0, started: Date.now() };
   d.voices = () => voiceView(d.voiceTrack, d.voiceTrack < 8 ? d.machines[d.voiceTrack] : null);
   d.seqpos = () => {
     const stepMs = 60000 / 120 / 4;
@@ -477,6 +482,38 @@ function voiceView(track, mach) {
       mod: [2, 0, 8, 0, 32, 0], car: 21, fbSrc: 5, fbDst: 5, out: [99, 78, 96, 64, 90, 82], freq: ["1.00", "14.0", "1.00", "1.00", "1.00", "3.00"] };
   if (mach === "daisy") v.daisy = { model: 0, ratio: [100, 276, 540, 893, 1334, 1863], ring: [240, 200, 170, 130, 90, 60] };
   return v;
+}
+
+// the looper console (core/loop/loop.cpp command): what the app sends
+function loopCommand(l, c) {
+  let m;
+  const say = (t) => { l.msg = t; l.msg_n++; };
+  if ((m = /^loop=grab:(0\.5|1|2|4|8|16)$/.exec(c))) {
+    const hb = m[1] === "0.5" ? 1 : +m[1] * 2;
+    l.grabs.unshift({ id: l.next_id++, hb, bpm: 120, kept: 0, gap: 0, copied: 1 });
+    l.grabs.length = Math.min(l.grabs.length, 8);
+    l.playing = l.playing >= 0 ? l.playing + 1 : -1;
+    if (l.playing >= 8) l.playing = -1;
+    if (l.state === "ring") l.state = "wait";
+  } else if ((m = /^loop=play:#(\d+)$/.exec(c))) { const i = l.grabs.findIndex((g) => g.id === +m[1]); if (i >= 0) { l.playing = i; l.state = "wait"; } else say("NO GRAB / PLAY FIRST"); }
+  else if (/^loop=stop(:cut)?(:now)?$|^loop=stop:fade$/.test(c)) { l.state = "ring"; l.playing = -1; }
+  else if ((m = /^loop=keep:#(\d+)$/.exec(c))) {
+    const g = l.grabs.find((x) => x.id === +m[1]);
+    if (!g) say("NO GRAB"); else if (g.kept) say("ALREADY KEPT"); else { g.kept = 1; say("KEPT sidecar_2026-11-13_1200"); }
+  } else if ((m = /^loop=bal:(\d+)$/.exec(c))) l.bal = Math.min(127, +m[1]);
+  else if ((m = /^loop=lev:(\d+)$/.exec(c))) l.lev = Math.min(127, +m[1]);
+  else if ((m = /^loop=fade:(1\/4|1\/2|1|2|4)$/.exec(c))) l.fade = ["1/4", "1/2", "1", "2", "4"].indexOf(m[1]);
+  else if ((m = /^loop=mute:(on|off)$/.exec(c))) l.mute = m[1] === "on";
+  else if ((m = /^loop=live:(off|perf(\d+))$/.exec(c))) l.live = m[1] === "off" ? 0 : Math.min(12, +m[2]);
+  else if (c === "loop=cal") { l.cal = 1; setTimeout(() => { l.cal = 0; l.post_lat = 30; say("POST LAT 30"); }, 1500); }
+}
+function loopJson(l) {
+  if (!l.on) return { on: 0 };
+  const g = l.grabs[l.playing];
+  const out = { on: 1, state: l.state, ring_s: l.ring_s, bal: l.bal, lev: l.lev, fade: l.fade, mute: l.mute ? 1 : 0, live: l.live, post_lat: l.post_lat, pending: 0, cal: l.cal,
+    msg: l.msg, msg_n: l.msg_n, grabs: l.grabs.map((x, i) => ({ ...x, playing: i === l.playing ? 1 : 0 })) };
+  if (g && l.state !== "ring") { const bars = g.hb / 2, t = ((Date.now() - l.started) / 2000) % bars; out.bars = bars; out.bar = +t.toFixed(3); }
+  return out;
 }
 
 // the scene console (core/mod/scene.cpp command): what the app sends

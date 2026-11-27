@@ -44,6 +44,8 @@ export const routes: RouteRecordRaw[] = [
   ]),
   // 0.5.0: the Morph page is off (the scene morph comes in 0.5.2: core/sidecar_features.h SIDECAR_MORPH); 0.5.2 puts this line back
   // { path: "/morph", name: "morph", component: () => import("./pages/Morph.vue"), meta: { title: "Morph" } },
+  // 0.5.2: the Loop page is off (the looper comes back with the redesign: core/sidecar_features.h SIDECAR_LOOPER); that release puts this line back
+  // { path: "/loop", name: "loop", component: () => import("./pages/Loop.vue"), meta: { title: "Loop" } },
   { path: "/seq", name: "seq", component: () => import("./pages/Seq.vue"), meta: { title: "Seq" } },
   sections("/rec", "rec", "Rec", [
     { path: "recorder", title: "Recorder", component: () => import("./pages/rec/RecorderCard.vue") },

@@ -18,13 +18,13 @@ SEQFLAGS = -std=c++17 -O1 -Wall -Wno-unused-function -DCORE_POLY=1 -DCORE_MSAMP=
 	   -I$(CORE)/../teensy/libraries/RytmPlugins/src -I$(CORE)/../sdk -I$(ENG)/Plaits -I$(ENG)/Juno -I$(ENG)/DaisySP \
 	   -I$(ENG)/Sampler -I obj -I $(LVGL) -DLV_CONF_INCLUDE_SIMPLE
 UI_C := ../sidecar_ui.c ../sidecar_theme.c ../sidecar_dot.c ../sidecar_dotfont.c ../sidecar_wordmark.c ../sidecar_seqed.c \
-	../sidecar_rytmpat.c ../rytm_pattern.c ../sidecar_wgview.c ../sidecar_voice.c ../sidecar_insfx.c ../sidecar_mfx.c ../sidecar_morph.c ../sidecar_xy.c ../sidecar_song.c ../sidecar_rec.c \
+	../sidecar_rytmpat.c ../rytm_pattern.c ../sidecar_wgview.c ../sidecar_voice.c ../sidecar_insfx.c ../sidecar_mfx.c ../sidecar_morph.c ../sidecar_loop.c ../sidecar_xy.c ../sidecar_song.c ../sidecar_rec.c \
 	../sidecar_scope.c ../sidecar_status.c ../sidecar_project.c ../sidecar_chop.c ../sidecar_sedit.c ../sidecar_preset.c ../touch_cal.c rytm_fake.c
 UI_O := $(addprefix obj/ui-,$(notdir $(UI_C:.c=.o)))
 FONT_O := $(patsubst %,obj/ui-sidecar_arb%.o,11 12 14 16 18 19 20 24 30 36 44) $(patsubst %,obj/ui-sidecar_ar%.o,13 18 28)
 SEQ_O := obj/fuzz_blit.o obj/seq_touch.o obj/seqdemo.o obj/seq_pattern.o obj/seq_music.o obj/seq_xcmd.o obj/poly.o obj/rytm_dump.o obj/inst_alloc.o
 UI_H := ../sidecar_ui.h ../sidecar_theme.h ../sidecar_dot.h ../sidecar_dotfont.h ../sidecar_seqed.h ../sidecar_rytmpat.h \
-	../rytm_pattern.h ../seq_touch.h ../sidecar_wgview.h ../sidecar_voice.h ../sidecar_insfx.h ../sidecar_mfx.h ../sidecar_morph.h ../sidecar_xy.h ../sidecar_song.h ../sidecar_rec.h \
+	../rytm_pattern.h ../seq_touch.h ../sidecar_wgview.h ../sidecar_voice.h ../sidecar_insfx.h ../sidecar_mfx.h ../sidecar_morph.h ../sidecar_loop.h ../sidecar_xy.h ../sidecar_song.h ../sidecar_rec.h \
 	../sidecar_scope.h ../sidecar_status.h ../sidecar_project.h ../sidecar_chop.h ../sidecar_sedit.h ../sidecar_preset.h ../touch_cal.h ../sidecar_logo.h
 
 # shots/: every page in both themes (oled-*.png, sidecar-*.png: home, sound, fx, display, about, hidden, home-info,

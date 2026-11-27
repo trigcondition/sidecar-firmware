@@ -84,6 +84,18 @@ class RemoteUi(unittest.TestCase):
         self.assertIsNone(P.decode_rui(P.RUI_SRC_VIEW, bytes([1, 12, 1])))                 # past track 11
         self.assertFalse({P.RUI_SRC_VIEW, P.RUI_SRC_VALS} & {P.FXIN, P.FXIN_STATE, P.SLOT_PRINTS, P.SENDFX})
 
+    def test_bank_list_param_and_p13_announce(self):
+        # 2026-11-24 TBLB: 4A's optional 6th byte (12 = P13, the only value) and the host's 4A 7D 1 (caps2 bit 32)
+        self.assertEqual((P.RUI_CAPS2_LISTP13, P.RUI_BANK_PARAM_P13), (32, 12))
+        self.assertEqual(P.rui_list_p13_announce(), bytes([0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0x7D, 1, 0xF7]))
+        old = P.decode_bank_list(bytes([1, 0, 1, 5, 0x50, 0]))
+        self.assertEqual(old, dict(track=0, on=1, code=5 * 128 + 5, why="open"))   # no byte: as before
+        new = P.decode_bank_list(bytes([1, 0, 1, 5, 0x50, 0, 12]))
+        self.assertEqual(new, dict(track=0, on=1, code=5 * 128 + 5, why="open", param=12))
+        self.assertIsNone(P.decode_bank_list(bytes([1, 0, 1, 5, 0x50, 0, 5])))      # any other value
+        self.assertIsNone(P.decode_bank_list(bytes([1, 0, 1, 5, 0x50, 0, 12, 0])))  # longer
+        self.assertFalse(P.RUI_CAPS2_LISTP13 & (P.RUI_CAPS2_ARROWS | 2 | 4 | 8 | P.RUI_CAPS2_REHELLO))
+
     def test_pixel_layout(self):
         fb = bytearray(1024)
         R.pset(fb, 0, 0)

@@ -33,6 +33,14 @@ struct E {
   uint32_t ovr_ms = 0;
   bool due = false;          // a p-lock change: at due_us, a jump, outside the grid
   uint32_t due_us = 0;
+  // P3, the Rytm-side morph: rm the morph goes as a 09 part; the part wanted (flags 1 A, 2 B; 1/128 step, a p-lock the
+  // missing side) and sent (mfl_sent -1 none since the hello / kit, 0 removed), when it last went
+  bool rm = false;
+  uint8_t mfl = 0;
+  uint16_t ma = 0, mb = 0;
+  int8_t mfl_sent = -1;
+  uint16_t ma_sent = 0, mb_sent = 0;
+  uint32_t m_ms = 0;
 };
 E g_e[kRpEntries];
 int g_caps = 0;
@@ -52,6 +60,12 @@ bool g_said_any = false;
 uint8_t g_status[8];
 int g_status_n = 0;
 RpStats g_st;
+// P3: the fader for the Rytm-side morph (0..16383), the last 0A (-1 none since the hello / kit), when it went, the gap
+// between its last two moves (the ramp), the last 0A / 09 grid slots
+uint16_t g_fad = 0;
+int32_t g_fad_sent = -1;
+uint32_t g_fad_ms = 0, g_fad_chg_ms = 0, g_fad_gap = 0, g_fad_us = 0, g_mph_us = 0;
+bool g_morph_ok = false;   // the hello's caps2 has ui::kCaps2Morph (latched at rp_hello; review L5)
 // rp_saturated: a backlog of changed offsets at the grid's slots since g_bl_ms (g_bl), the last slot that found it kSatMs
 // on end (g_sat_ms), the tick's time
 bool g_bl = false, g_sat = false;
@@ -80,7 +94,17 @@ CORE_COLD E* get(int t, int w) {
   return nullptr;
 }
 // the override the parts make now (rytm-param-mod 5.3; a p-lock's value is the base the morph blends from)
+CORE_COLD uint16_t q128(float steps) {
+  int iv = (int)(steps * 128.0f + 0.5f);
+  return (uint16_t)(iv < 0 ? 0 : iv > 16383 ? 16383 : iv);
+}
 CORE_COLD void compose(E& e) {
+  e.mfl = 0;
+  if (e.morph && e.rm) {   // P3: the Rytm interpolates; a p-lock stands for the side that does not lock the word
+    bool a_ok = e.has_a || e.lock, b_ok = e.has_b || e.lock;
+    e.ma = e.has_a ? q128(e.a) : e.lock_v, e.mb = e.has_b ? q128(e.b) : e.lock_v;
+    e.mfl = (uint8_t)((a_ok ? 1 : 0) | (b_ok ? 2 : 0));
+  }
   if (e.morph) {
     float base = e.lock ? (float)e.lock_v / 128.0f : 0;
     bool a_ok = e.has_a || e.lock, b_ok = e.has_b || e.lock;
@@ -100,9 +124,12 @@ CORE_COLD void compose(E& e) {
 CORE_COLD bool active(const E& e) { return rp_word_active(e.t, e.w); }
 CORE_COLD int want_off(const E& e) { return active(e) ? off64(e.off) : 0; }
 CORE_COLD int want_mix(const E& e) { return active(e) ? e.mix : 0; }
+CORE_COLD int want_mfl(const E& e) { return g_morph_ok && e.morph && e.rm && active(e) ? e.mfl : 0; }
+// a word the Rytm-side morph holds (a part wanted, or one on the Rytm not yet removed): no 05 for it (the part wins)
+CORE_COLD bool by_part(const E& e) { return want_mfl(e) || e.mfl_sent > 0; }
 CORE_COLD void maybe_free(E& e) {
   if (e.t == 0xFF || e.off != 0 || e.lock || e.morph || e.due) return;
-  if ((e.off_sent != kNone && e.off_sent != 0) || e.mix_sent > 0) return;
+  if ((e.off_sent != kNone && e.off_sent != 0) || e.mix_sent > 0 || e.mfl_sent > 0) return;
   e = E();
 }
 
@@ -116,7 +143,7 @@ CORE_COLD void count(int bytes) {
 // every field is made 7-bit where it is computed; a byte above 0x7f here is a bug: counted (bad), logged, not sent
 // (false: refused as bad; the caller then books nothing as sent)
 CORE_COLD bool send(const uint8_t* b, int n) {   // F0 7D 52 54 5A 01 b... F7
-  uint8_t m[136] = {0xF0, 0x7D, 0x52, 0x54, kHostCmd, 1};
+  uint8_t m[160] = {0xF0, 0x7D, 0x52, 0x54, kHostCmd, 1};
   int k = 6;
   for (int i = 0; i < n; ++i)
     if (b[i] > 0x7F || n > (int)sizeof m - 7) {
@@ -138,10 +165,11 @@ CORE_COLD bool ready() { return g_link && (g_caps & kCapsParamMod) && g_kit >= 0
 CORE_COLD void forget_sent() {
   for (E& e : g_e) {
     if (e.t == 0xFF) continue;
-    e.off_sent = kNone, e.ovr_sent = e.mix_sent = -1;
+    e.off_sent = kNone, e.ovr_sent = e.mix_sent = -1, e.mfl_sent = -1;
     e.due = false;   // a pending p-lock goes with the grid (its due time may be far gone: a long link loss)
     maybe_free(e);
   }
+  g_fad_sent = -1;   // (the Rytm keeps its fader across kits; sent again anyway, before the parts)
 }
 
 // the 06 owed
@@ -200,7 +228,7 @@ CORE_COLD int off_pass(const E& e, uint32_t ms) {
 }
 // an override record's grid pass (0 none; not a due p-lock's): 1 a release (mix to 0), 2 a change, 3 a refresh
 CORE_COLD int ovr_pass(const E& e, uint32_t ms) {
-  if (e.due) return 0;
+  if (e.due || by_part(e)) return 0;
   int mix = want_mix(e);
   if (mix != e.mix_sent) return mix == 0 ? (e.mix_sent > 0 ? 1 : 0) : 2;
   if (mix && e.ovr != e.ovr_sent) return 2;
@@ -263,7 +291,8 @@ CORE_COLD bool send_overrides(uint32_t us, uint32_t ms, bool due_only, bool rel_
   E* r[kRpMaxOverrides];
   int changed = 0;
   int n = choose(r, kRpMaxOverrides, [us, ms, due_only, rel_only](const E& e) {
-    if (e.due) return due_only && (!e.due_us || (int32_t)(us - e.due_us) >= 0) ? 1 : 0;   // (0: at once)
+    // (a word a part holds: the p-lock waits, the part carries it; it lands when the part is removed)
+    if (e.due) return due_only && !by_part(e) && (!e.due_us || (int32_t)(us - e.due_us) >= 0) ? 1 : 0;   // (0: at once)
     if (due_only) return 0;
     int p = ovr_pass(e, ms);
     return rel_only && p != 1 ? 0 : p;
@@ -289,8 +318,74 @@ CORE_COLD bool send_overrides(uint32_t us, uint32_t ms, bool due_only, bool rel_
   return true;
 }
 
+// P3, the Rytm-side morph: a 09 record's pass (0 none): 1 a remove (a part on the Rytm no longer wanted), 2 a change
+// (new, or A / B / flags moved), 3 the keepalive (kMorphRefreshMs)
+CORE_COLD int mph_pass(const E& e, uint32_t ms) {
+  int fl = want_mfl(e);
+  if (!fl) return e.mfl_sent > 0 ? 1 : 0;
+  if (fl != e.mfl_sent || e.ma != e.ma_sent || e.mb != e.mb_sent) return 2;
+  return ms - e.m_ms >= kMorphRefreshMs ? 3 : 0;
+}
+// the fader (0A) and the parts (09), each at most once a grid: 0A on a move (ramped over the fader's own pace: until its
+// next move) or every kRefreshMs while a part lives, first; then the parts that changed (removes first; a change waits
+// for the cap's credit, a remove does not)
+CORE_COLD void send_morph(uint32_t us, uint32_t ms) {
+  bool live = false;
+  for (const E& e : g_e)
+    if (e.t != 0xFF && (want_mfl(e) || e.mfl_sent > 0)) {
+      live = true;
+      break;
+    }
+  if (!live) return;
+  if (us - g_fad_us >= kGridUs && (g_fad != g_fad_sent || ms - g_fad_ms >= kRefreshMs)) {
+    bool move = g_fad != g_fad_sent;
+    int ramp = 1;
+    if (move && g_fad_sent >= 0 && ms - g_fad_chg_ms < kRefreshMs) {   // (a start after a pause, a first 0A: the grid)
+      uint32_t gap = ms - g_fad_chg_ms;
+      ramp = blocks((gap > g_fad_gap && g_fad_gap ? g_fad_gap : gap) * 1000u);
+    }
+    const uint8_t b[5] = {kOpFader, (uint8_t)g_kit, (uint8_t)(g_fad >> 7 & 0x7F), (uint8_t)(g_fad & 0x7F), (uint8_t)ramp};
+    g_fad_us = us;
+    if (send(b, 5)) {
+      if (move) g_fad_gap = g_fad_sent >= 0 && ms - g_fad_chg_ms < kRefreshMs ? ms - g_fad_chg_ms : 0, g_fad_chg_ms = ms;
+      g_fad_sent = g_fad, g_fad_ms = ms;
+      ++g_st.faders;
+    }
+  }
+  if (us - g_mph_us < kGridUs || g_fad_sent < 0) return;   // (review L6: the fader first, after a hello / kit too)
+  const bool rel_only = g_credit < 0;
+  E* r[kRpMaxMorphs];
+  int n = choose(r, kRpMaxMorphs, [ms, rel_only](const E& e) {
+    int p = mph_pass(e, ms);
+    return rel_only && p != 1 ? 0 : p;
+  }, &E::m_ms, 3, nullptr);
+  if (!n) return;
+  uint8_t b[3 + 7 * kRpMaxMorphs] = {kOpMorphSet, (uint8_t)g_kit, (uint8_t)n};
+  for (int i = 0; i < n; ++i) {
+    const E& e = *r[i];
+    int fl = want_mfl(e);
+    uint16_t a = fl ? e.ma : 0, v = fl ? e.mb : 0;
+    uint8_t* q = b + 3 + 7 * i;
+    q[0] = e.t, q[1] = e.w, q[2] = (uint8_t)fl, q[3] = (uint8_t)(a >> 7 & 0x7F), q[4] = (uint8_t)(a & 0x7F);
+    q[5] = (uint8_t)(v >> 7 & 0x7F), q[6] = (uint8_t)(v & 0x7F);
+  }
+  g_mph_us = us;
+  if (!send(b, 3 + 7 * n)) return;
+  for (int i = 0; i < n; ++i) {
+    E& e = *r[i];
+    int fl = want_mfl(e);
+    // removed: the Rytm's override goes out with it; a p-lock that came meanwhile (held back: the part carried the word)
+    // comes back on the grid's ramp as a change, never as a jump at this moment (review LM4)
+    if (!fl && e.mfl_sent > 0) e.mix_sent = 0, e.ovr_sent = -1, e.due = false;
+    e.mfl_sent = (int8_t)fl, e.ma_sent = e.ma, e.mb_sent = e.mb, e.m_ms = ms;
+  }
+  g_st.morphs += (uint32_t)n;
+  for (int i = 0; i < n; ++i) maybe_free(*r[i]);
+}
+
 CORE_COLD const char* op_name(int op) {
-  return op == kOpOffset ? "OFFSET" : op == kOpOverride ? "OVERRIDE" : op == kOpClear ? "CLEAR" : "STATUS";
+  return op == kOpOffset ? "OFFSET" : op == kOpOverride ? "OVERRIDE" : op == kOpClear ? "CLEAR" : op == kOpStatus ? "STATUS"
+         : op == kOpMorphSet ? "MORPH-SET" : op == kOpFader ? "FADER" : "?";
 }
 
 // the machine table (rytm-param-mod M0d [measured, ROM 1.73]): the kit's machine byte (the 33's) is the index m 0..52;
@@ -402,9 +497,21 @@ CORE_COLD void rp_morph(Tid t, bool has_a, float a, bool has_b, float b, float f
   if (!rytm_word(t, &tr, &w) || (w >= 48 && w <= 55)) return;   // (VM / AT: offsets only)
   E* e = get(tr, w);
   if (!e) return;
-  e->morph = true, e->has_a = has_a, e->a = a, e->has_b = has_b, e->b = b, e->f = f, e->step = step, e->upper = upper;
+  e->morph = true, e->rm = false, e->has_a = has_a, e->a = a, e->has_b = has_b, e->b = b, e->f = f, e->step = step,
+  e->upper = upper;
   compose(*e);
 }
+CORE_COLD void rp_morph_set(Tid t, bool has_a, float a, bool has_b, float b) {
+  int tr, w;
+  if (!rytm_word(t, &tr, &w) || (w >= 48 && w <= 55)) return;   // (VM / AT: offsets only)
+  E* e = get(tr, w);
+  if (!e) return;
+  // (f: the 05 composition for rp_view and a fall back to 05 after a hello without the bit; the Rytm uses the 0A fader)
+  e->morph = true, e->rm = true, e->has_a = has_a, e->a = a, e->has_b = has_b, e->b = b, e->f = (float)g_fad / 16383.0f;
+  e->step = false, e->upper = false;
+  compose(*e);
+}
+CORE_COLD void rp_fader(uint16_t f) { g_fad = f > 16383 ? 16383 : f; }
 CORE_COLD void rp_morph_off(Tid t) {
   int tr, w;
   if (!rytm_word(t, &tr, &w)) return;
@@ -419,6 +526,7 @@ CORE_COLD void rp_morph_off(Tid t) {
 
 CORE_COLD void rp_hello(int caps) {
   g_caps = caps, g_link = true, g_clear = 0;
+  g_morph_ok = (ui::remote_caps2() & ui::kCaps2Morph) != 0;   // (remote.cpp sets caps2 before it calls this)
   forget_sent();   // the Rytm cleared every entry at its hello
 }
 CORE_COLD void rp_kit(int kit) {
@@ -459,7 +567,7 @@ CORE_COLD void rp_ack(int op, int status) {
   }
 }
 CORE_COLD void rp_status(const uint8_t* b, int n) {
-  g_status_n = n < 0 ? 0 : n > 7 ? 7 : n;
+  g_status_n = n < 0 ? 0 : n > 8 ? 8 : n;   // (8: P3's morph parts)
   if (g_status_n) memcpy(g_status, b, (size_t)g_status_n);
 }
 
@@ -478,6 +586,7 @@ CORE_COLD void rp_tick(uint32_t us) {
   g_hold = false;
   // the p-locks due now: a jump each at the step's time, outside the grid and its credit check (their bytes count:
   // the debt, floored at 100 ms of the cap, holds the grid's next sends; the average stays under kBytesPerS)
+  send_morph(us, ms);   // P3: the fader and the parts first (a remove before the p-lock it lets back on 05)
   send_overrides(us, ms, true);
   // the grid: one 04 and one 05 at most every kGridUs while the credit lasts; when both are due they take turns going
   // first, so the offsets never starve the overrides (a release among them) or the other way round
@@ -608,8 +717,9 @@ CORE_COLD bool rp_command(const char* p, char* o, int cap) {
                     (unsigned)g_st.clears, (unsigned)g_st.msgs, (unsigned)g_st.refused, (unsigned)g_st.full,
                     (unsigned)g_st.dropped, (unsigned)g_st.bad, (unsigned)g_lead_us);
   if (g_status_n >= 7 && n < cap - 1)
-    sniprintf(o + n, cap - n, "; Rytm: %d slots, ring drops %d, kit drops %d, timeouts %d, flags %d", g_status[0],
-              g_status[1] << 7 | g_status[2], g_status[3] << 7 | g_status[4], g_status[5], g_status[6]);
+    n += sniprintf(o + n, cap - n, "; Rytm: %d slots, ring drops %d, kit drops %d, timeouts %d, flags %d", g_status[0],
+                   g_status[1] << 7 | g_status[2], g_status[3] << 7 | g_status[4], g_status[5], g_status[6]);
+  if (g_status_n >= 8 && n < cap - 1) sniprintf(o + n, cap - n, ", morph parts %d", g_status[7]);
   return true;
 }
 CORE_COLD int rp_json(char* o, int cap) {
@@ -622,7 +732,8 @@ CORE_COLD const RpStats& rp_stats() { return g_st; }
 CORE_COLD bool rp_view(int track, int word, RpView* out) {
   const E* e = find(track, word);
   if (!e) return false;
-  if (out) *out = {e->off_sent, e->ovr, (uint8_t)want_mix(*e), e->lock, e->morph};
+  if (out) *out = {e->off_sent, e->ovr, (uint8_t)want_mix(*e), e->lock, e->morph, e->mfl_sent, e->ma, e->mb,
+                     (uint8_t)(e->morph && e->rm ? e->mfl : 0)};
   return true;
 }
 CORE_COLD int rp_live() {
@@ -637,6 +748,8 @@ CORE_COLD void rp_reset() {
   g_win_ms = g_win_bytes = g_bps = 0, g_said_any = false, g_status_n = 0;
   g_bl = g_sat = false, g_bl_ms = g_sat_ms = g_now_ms = g_ms_rem = 0;
   g_st = RpStats();
+  g_fad = 0, g_fad_sent = -1, g_fad_ms = g_fad_chg_ms = g_fad_gap = g_fad_us = g_mph_us = 0;
+  g_morph_ok = false;
 }
 
 }  // namespace mod

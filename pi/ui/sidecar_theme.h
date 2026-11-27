@@ -69,6 +69,9 @@ typedef struct
 	int		gap;			// between controls
 	int		touch;			// the smallest touch target (about 40 physical px)
 	int		edge_w;			// SIDECAR: a card's / control's border width (1; 2 in the high-contrast look)
+	// SIDECAR's pixel accent (the bold round-dot 5x9 / 5x7 faces, integer scales; 0 in GRID and OLED): knob and tempo values,
+	// the hero pattern, the small face (INSERT FX values, the header strip)
+	const lv_font_t	*f_pxv, *f_pxh, *f_pxs;
 	int		hc;			// SIDECAR: 0 standard, 1 high contrast with the blue accent, 2 with the green one, 3 Viper: phosphor greens (sidecar_theme_contrast)
 } sidecar_theme_t;
 
@@ -151,6 +154,7 @@ void th_titlebar_led (lv_obj_t *t, int palette);		// a status LED at the right e
 lv_obj_t *th_label (lv_obj_t *parent, int x, int y, const lv_font_t *f, uint32_t rgb, const char *text);
 void th_label_set (lv_obj_t *l, const char *text);		// no redraw when unchanged
 void th_label_color (lv_obj_t *l, uint32_t rgb);
+int th_alert_bar (lv_obj_t *l, lv_area_t *bar);	// Viper: 1 and the area of the alert bar behind a label (the host's check), else 0
 // a name or a path into a label of fixed width: cut in the middle with ".." when it is wider (UX review R1: its start and
 // its end both stay readable, "JUNO_A15..STRINGS"); else as th_label_set
 void th_label_fit (lv_obj_t *l, const char *text);

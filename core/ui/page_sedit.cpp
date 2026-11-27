@@ -1,13 +1,15 @@
 // core/ui/page_sedit.cpp - SAMPLE EDIT on the Rytm's screen (core/samp/sedit.h holds the edit; the touchscreen shows
 // the same state). Cold. Pi and Mac (CORE_POLY && CORE_MSAMP builds).
 //
-// Opened by a push of encoder B on a DSP SAMPLE / SAMPLER track's SRC view (the track's sample, its STA..END the region), by the
+// Opened by a push of encoder B on a DSP SAMPLE / SAMPLER track's SRC view (the track's sample, its STA..END the region; on a
+// WAVETABLE track's: table A's card file, else the POOL page's SAMPLES list to pick a sample), by the
 // POOL page's EDIT on a SAMPLES row (the whole sample, no track), or by the SIDECAR MENU (the selected track's sample;
 // the edit open already: back to it). Off the ring: in the page list only while it shows.
 // Drawn: the header with the file's name; the window's outline in rows 10..47 (the region solid, the rest dithered, the
 // start and end markers, the preview's playhead; 0 dBFS dotted when the edit goes over it); zoomed in, the window's
 // place in the sample as a bar in row 48; the region's start and end in seconds and the zoom; the footer the
 // function and YES, the job's progress ("NORMALISE 42%"), or a message for 2 s.
+// MAKE WT in the save choice (FUNC + YES, A picks, B the frames 16 .. 256): the region as a wavetable (docs/SAMPLE-EDIT.md).
 // Knobs (sedit-050 #4): A the start, B the end (on zero crossings; FUNC: the next / previous transient), C the zoom, D
 // the window's place (FUNC: 8 times the step; the bar under the outline shows it), E the function (CROP NORMALISE TRIM
 // FADE IN FADE OUT REVERSE GAIN +3 GAIN -3). Keys: YES does the function; FUNC + YES saves (A picks SAVE+USE / SAVE / CANCEL, YES
@@ -36,8 +38,8 @@ constexpr int kWaveY = 16, kWaveH = 28, kPlaceY = 46, kNamesY = 10, kInfoY = 49;
 constexpr int kTurnMs = 1500;
 constexpr uint32_t kNoteMs = 2000;
 enum Ask : uint8_t { kAskNone, kAskSave, kAskDiscard };
-enum Opt : uint8_t { kOptUse, kOptSave, kOptCancel };
-UI_ROM const char* const kOptNames[3] = {"SAVE+USE", "SAVE", "CANCEL"};
+enum Opt : uint8_t { kOptUse, kOptSave, kOptWt, kOptCancel };
+UI_ROM const char* const kOptNames[4] = {"SAVE+USE", "SAVE", "MAKE WT", "CANCEL"};
 
 struct Pg {
   bool func;          // FUNC held
@@ -50,8 +52,9 @@ struct Pg {
   int turn_e;         // the encoder turned last (-1 none): its name on the title bar and its value in the bottom bar
   uint32_t turn_ms;
   bool was_open;      // an edit open at the last refresh (its close elsewhere drops the page's question)
+  bool wt_back;       // a table was made for a voice: the editor closes itself, and the page goes back to where it came from
 };
-Pg pg = {false, 0, 0, false, "", "", 0, "", -1, 0, false};
+Pg pg = {false, 0, 0, false, "", "", 0, "", -1, 0, false, false};
 sedit::View g_v;   // (4 KB: the outline; not on the stack)
 
 CORE_COLD int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -81,11 +84,16 @@ CORE_COLD void act(int r) {   // an apply / undo / save / preview refused: why, 
   refresh();
   note(g_v.msg[0] ? g_v.msg : "NOT NOW");
 }
-// The save choice's options: SAVE+USE only for an edit opened from a track (and first: the default)
+// The save choice's options: SAVE+USE only for an edit opened from a track (and first: the default); MAKE WT (the region
+// as a wavetable, B picks its frames) the first when the edit came from a WAVETABLE track
 CORE_COLD int opts(uint8_t* o) {
   int n = 0;
+  const bool for_wt = g_v.wt_voice >= 0;
+  if (for_wt) o[n++] = kOptWt;
   if (g_v.has_track) o[n++] = kOptUse;
-  o[n++] = kOptSave, o[n++] = kOptCancel;
+  o[n++] = kOptSave;
+  if (!for_wt) o[n++] = kOptWt;
+  o[n++] = kOptCancel;
   return n;
 }
 CORE_COLD void secs_text(uint32_t frames, uint32_t rate, char* b, int cap) {
@@ -188,19 +196,21 @@ CORE_COLD void sedit_draw(Canvas& c, int page, int npages, uint32_t ms) {
   }
   const char* no = v.undo ? "UNDO" : v.dirty ? "DISCARD" : "BACK";   // what NO does now
   if (pg.ask == kAskSave) {   // the save choice: a box with a line a choice, the pick inverted
-    uint8_t o[3];
+    uint8_t o[4];
     int n = opts(o);
     pg.pick = (uint8_t)clampi(pg.pick, 0, n - 1);
-    static const char* const kDesc[3] = {"TRACK USES IT", "NEW FILE", "NOTHING SAVED"};
-    modal_box(c, Rect{4, 11, 120, 42});
+    static const char* const kDesc[4] = {"TRACK USES IT", "NEW FILE", "", "NOTHING SAVED"};
+    char wd[16];
+    sniprintf(wd, sizeof wd, CORE_STR("B: %u FRAMES"), (unsigned)v.wt_frames);
+    modal_box(c, Rect{4, 11, 120, 44});
     c.put_text(kSlotFree, kRSmall, 64, 14, "SAVE REGION  A: PICK", kAlignCentre);
     dotted_h(c, 5, 122, 21);
     for (int i = 0; i < n; ++i) {
-      int y = 24 + 9 * i;
+      int y = 23 + 8 * i;
       bool on = i == pg.pick;
       if (on) c.fill(Rect{6, (int16_t)(y - 1), 116, 8});
       c.put_text(kSlotFree + 1 + 2 * i, kRSmall, 9, y, kOptNames[o[i]], on ? kTextInvert : kAlignLeft);
-      c.put_text(kSlotFree + 2 + 2 * i, kRSmall, 119, y, kDesc[o[i]], (uint8_t)(kAlignRight | (on ? kTextInvert : 0)));
+      c.put_text(kSlotFree + 2 + 2 * i, kRSmall, 119, y, o[i] == kOptWt ? wd : kDesc[o[i]], (uint8_t)(kAlignRight | (on ? kTextInvert : 0)));
     }
     footer_keys(c, "YES", "OK", "NO", "BACK");
   } else if (pg.ask == kAskDiscard) {
@@ -216,7 +226,7 @@ CORE_COLD void sedit_draw(Canvas& c, int page, int npages, uint32_t ms) {
   } else if (v.st == sedit::kSaving) {
     sniprintf(b, sizeof b, CORE_STR("SAVING %d%%"), v.progress), footer(c, b);
   } else if (v.st == sedit::kBusy) {
-    sniprintf(b, sizeof b, CORE_STR("%s %d%%"), fn, v.progress), footer(c, b);
+    sniprintf(b, sizeof b, CORE_STR("%s %d%%"), v.making ? "MAKE WT" : fn, v.progress), footer(c, b);
   } else if (v.st == sedit::kError) {
     footer(c, v.msg[0] ? v.msg : "ERROR");
   } else if (turning) {   // the touched knob: its name, a bar, its value
@@ -245,9 +255,10 @@ CORE_COLD void sedit_enc(int e, int d, bool func) {
   const sedit::View& v = refresh();
   if (v.st == sedit::kClosed) return;
   if (e <= 4) pg.turn_e = e, pg.turn_ms = now_ms();
-  if (pg.ask == kAskSave) {   // A picks; the rest wait for the answer
-    uint8_t o[3];
+  if (pg.ask == kAskSave) {   // A picks, B the table's frames (16 .. 256); the rest wait for the answer
+    uint8_t o[4];
     if (e == 0) pg.pick = (uint8_t)clampi(pg.pick + d, 0, opts(o) - 1);
+    else if (e == 1) sedit::set_wt_frames(clampi((int)v.wt_frames * (d > 0 ? 2 : 1) / (d > 0 ? 1 : 2), 16, 256));
     return;
   }
   if (pg.ask == kAskDiscard) return;
@@ -283,11 +294,12 @@ CORE_COLD bool sedit_key(int code) {
   }
   if (pg.ask == kAskSave) {
     if (code == kYes) {
-      uint8_t o[3];
+      uint8_t o[4];
       int n = opts(o);
       uint8_t pick = o[clampi(pg.pick, 0, n - 1)];
       pg.ask = kAskNone;
-      if (pick != kOptCancel) act(sedit::save(pick == kOptUse));
+      if (pick == kOptWt) act(sedit::make_wt());
+      else if (pick != kOptCancel) act(sedit::save(pick == kOptUse));
       return true;
     }
     if (code == kNo) pg.ask = kAskNone;
@@ -341,12 +353,22 @@ CORE_COLD bool sedit_shown() {
 UI_ROM const ExtraPage kSeditPage = {"SAMPLE EDIT", sedit_shown, sedit_draw, sedit_enc, sedit_key, 0x1F, false,
                                      nullptr, nullptr, nullptr, true, sedit_key_up};
 
+// remote_tick: true once, when a table made for a voice has closed the editor: the Rytm's page leaves, back to the SRC view
+// (or the page the editor was opened over)
+CORE_COLD bool sedit_page_leaves() {
+  sedit::view(&g_v);
+  if (g_v.wt_back) pg.wt_back = true;
+  if (!pg.wt_back || g_v.st != sedit::kClosed) return false;
+  pg.wt_back = false;
+  return true;
+}
 CORE_COLD void sedit_page_open(int track, int code) {
   const sedit::View& v = refresh();
   bool open = v.st != sedit::kClosed;
-  pg.ask = kAskNone, pg.pick = 0, pg.func = false, pg.note_ms = 0, pg.refused = false, pg.turn_e = -1;
+  pg.ask = kAskNone, pg.pick = 0, pg.func = false, pg.note_ms = 0, pg.refused = false, pg.turn_e = -1, pg.wt_back = false;
   sniprintf(pg.seen, sizeof pg.seen, "%s", v.msg);   // (an old message is not news)
-  if (open && ((track < 0 && code < 0) || (track >= 0 && v.has_track && v.track == track))) {   // back to the edit
+  const bool wt_track = track >= 0 && (remote_track_machine(track) & 0x78) == kWaveMachine && remote_track_machine(track) != 0x7F;
+  if (open && ((track < 0 && code < 0) || (track >= 0 && v.has_track && v.track == track) || (wt_track && v.wt_track == track))) {   // back to the edit
     remote_show_page("SAMPLE EDIT");
     return;
   }
@@ -357,8 +379,18 @@ CORE_COLD void sedit_page_open(int track, int code) {
   }
   if (track < 0 && code < 0) track = remote_selected_track(nullptr);
   int r = -1;
-  if (track >= 0) r = sedit::open_track(track);
-  else if (code >= 0) r = sedit::open_code(code);
+  if (wt_track) {   // a WAVETABLE track: table A's card file; a built-in or OFF: the SAMPLES list to pick a sample from
+    r = sedit::open_wt_track(track);
+    if (r > 0) {
+      sedit::set_wt_voice(remote_track_voice(track));
+      pool_page_pick_sample();
+      return;
+    }
+  } else if (track >= 0) {
+    r = sedit::open_track(track);
+  } else if (code >= 0) {
+    r = sedit::open_code(code);
+  }
   if (r < 0) {
     refresh();
     pg.refused = true;
@@ -366,15 +398,16 @@ CORE_COLD void sedit_page_open(int track, int code) {
   }
   remote_show_page("SAMPLE EDIT");
 }
-// A push of encoder B on a DSP SAMPLE / SAMPLER track's SRC view (A is the list's push; SAMPLER: vb 0x20 too); true: taken
+// A push of encoder B on a DSP SAMPLE / SAMPLER or WAVETABLE track's SRC view (A is the list's push; SAMPLER: vb 0x20 too;
+// WAVETABLE: B is POS, which has no push of its own); true: taken
 CORE_COLD bool sedit_src_push(int track, int code, bool down) {
   int vb = track >= 0 ? remote_track_machine(track) : -1;
-  if (code != 0x71 || vb < 0 || vb == 0x7F || (vb & 0x78) != kDspSample) return false;
+  if (code != 0x71 || vb < 0 || vb == 0x7F || ((vb & 0x78) != kDspSample && (vb & 0x78) != kWaveMachine)) return false;
   if (down) sedit_page_open(track, -1);
   return true;
 }
 #if CORE_UI_TOOLS
-CORE_COLD void sedit_page_reset() { pg = Pg{false, 0, 0, false, "", "", 0, "", -1, 0, false}; }
+CORE_COLD void sedit_page_reset() { pg = Pg{false, 0, 0, false, "", "", 0, "", -1, 0, false, false}; }
 #endif
 
 }  // namespace ui

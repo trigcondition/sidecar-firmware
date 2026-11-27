@@ -16,7 +16,7 @@ reads OFF.
 | D | GATE | 25, 50 (default), 100 % (legato) |
 | E | SWNG | 50 (straight), 58, 66 %: every second note late |
 
-What it plays: a Rytm trig (until its LEN or the pad's release; its CHD chord on 6-OP FM, MULTISAMPLE, WAVETABLE, GRANULAR), the Sidecar sequencer's poly notes (whatever a step holds, until their own LEN), the pads
+What it plays: a Rytm trig (until its LEN or the pad's release; its CHD chord on 6-OP FM, MULTISAMPLE, GRANULAR; a WAVETABLE trig is one note, its P13..P16 are TBL B, POS B, MIX and FTYPE), the Sidecar sequencer's poly notes (whatever a step holds, until their own LEN), the pads
 in CHRO, keyboards on the Pi. With the mode on, keyboards and pads reach any Sidecar machine, not just the polyphonic ones. One note sounds at a time. On a poly track it plays with that track's POLY CONFIG;
 elsewhere on the voice's own machine, mono. With MODE OFF nothing changes.
 

@@ -47,6 +47,13 @@ int main() {
 
   // A fresh card: both files written.
   CHECK(bridge::selftest_content());
+  {   // /status "ins": whole in the buffer it gets, a short valid one (never a cut-off) when the buffer is too small
+    static char big[bridge::kInsJsonCap], small[300];
+    int n = bridge::ins_json(big, sizeof big);
+    CHECK(n > 0 && n < (int)sizeof big && !strncmp(big, "\"ins\":{", 7) && big[n - 1] == '}' && strstr(big, "\"stream\""));
+    n = bridge::ins_json(small, sizeof small);
+    CHECK(!strcmp(small, "\"ins\":{\"err\":\"too long\"}") && n == (int)strlen(small));
+  }
   std::string wav = slurp("/Samples/pi-test/sine440.wav");
   CHECK(wav.size() == 44 + 96000 * 2);
   CHECK(!memcmp(wav.data(), "RIFF", 4) && le32(wav, 4) == 36 + 96000 * 2 && !memcmp(wav.data() + 8, "WAVEfmt ", 8));

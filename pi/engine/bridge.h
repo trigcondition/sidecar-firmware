@@ -84,6 +84,11 @@ bool scene_command(const char* p, char* out, int cap);   // scene, scene=...: th
 bool xy_command(const char* p, char* out, int cap);
 bool learn_command(const char* p, char* out, int cap);   // learn, learn=...: the MIDI-learn routes (core/mod/learn.h)
 int scene_json(char* out, int cap);
+// the master looper (core/loop/loop.h): `loop`, `loop=...`; "\"loop\":{...}" for /status; the render frame count the IN completion
+// stamps its blocks with (seq::frames(): the control core's block counter, an aligned 64-bit read)
+bool loop_command(const char* p, char* out, int cap);
+int loop_json(char* out, int cap);
+uint64_t render_frames();
 // Poly FM (core/poly.h): the Rytm's channel messages (its pads' notes: live chords), the console's `poly` (its stats;
 // false: not a poly command)
 void poly_midi(uint8_t st, uint8_t d1, uint8_t d2);
@@ -158,6 +163,10 @@ void gr_live_in(const int32_t* f, int n, int stride);
 // 3, once a second); a LIVE IN voice's STATUS words ("LIVE -18DB"; 0: the voice is not LIVE IN)
 bool livein_on();
 void livein_in(const int32_t* f, int n, int stride);
+// 0.5.0 SIDECHAIN (core/fx/sidechain.h): sidechain_on() while an insert chain's stage reads a stem or AUDIO IN, then each IN block's
+// frames (as livein_in's) into the key bus
+bool sidechain_on();
+void sidechain_in(const int32_t* f, int n, int stride);
 void livein_fifo(unsigned frames);
 int livein_status(int vi, char* b, int cap);
 // seq-p2 (core/seq/seq.h, rytm_dump.h): cal_on() while the sequencer's latency click is due or on its way back, then each
@@ -201,6 +210,7 @@ uint64_t ins_bench(int a, int b, uint32_t* worst_block, uint32_t* hash = nullptr
 uint64_t ins_bus_bench(uint32_t* worst_block, uint32_t* hash = nullptr);
 // neon_bench.cpp: NEON kernel row (0..) against its C, ticks of the same work in each; its name, null past the last row
 const char* neon_bench(unsigned row, uint64_t* c_ticks, uint64_t* neon_ticks);
+const int kInsJsonCap = 12288;     // the buffer /status gives ins_json (core::ins::kInsJsonCap: bridge.cpp checks; the core test measures its worst case)
 int ins_json(char* out, int cap);   // "\"ins\":{...}" (core/fx/insert.h json: the /status page's)
 const char* ins_bench_name(int type);
 // INSERT AMP (core/fx/amp.h): one NAM A2-Lite instance (a synthetic capture) over 4000 12-frame blocks (1 s); ticks as
@@ -211,6 +221,7 @@ uint64_t mfx_bench(uint32_t* worst_block);   // the master chain without AMP (co
 uint64_t sfxins_bench(int set, uint32_t* worst_block);
 const char* sfxins_bench_name(int set);
 unsigned poly_voices();
+int rytm_bpm10();                  // the Rytm's tempo x 10 (core/seq's last report), 0: not known
 int rytm_pattern(int* transport);   // UX review T1: the Rytm's pattern (-1 not known) and transport (core/seq's view)   // UX review S1: bit vi - a Rytm track on voice vi is a poly track (the Sidecar sequences it)
 uint32_t machine_gen(int voice);       // with machine_name, the guard's key: 0, or a user voice's slot + 1 and the
                                        // plugin loader's epoch (um::code_epoch): another plugin or a reload is new

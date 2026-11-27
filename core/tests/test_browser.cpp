@@ -543,6 +543,50 @@ int main() {
   g_machine = kDspSample;
   printf("browser: SAMPLER - preview, quick load, SMP (P11) commit, FUNC + NO to OFF, 000 IS OFF, SAMPLE EDIT\n");
 
+  // ---- 2026-11-24 TBLB: a WAVETABLE track's list with 4A's 6th byte (12 = P13): the same list and browser, its YES (4A 0 1)
+  // writes P13 with the bank kept and the flags 1; without the byte P1; the byte on a machine without a table B is refused
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x33, 1, 0, 1, 46, kWaveMachine, 0xF7});   // track 0 on WAVETABLE
+  g_machine = kWaveMachine;
+  auto wrote48 = [&](int param, int row, int lo) {
+    for (auto& m : g_sent)
+      if (m.size() == 12 && m[4] == 0x48 && m[6] == 0 && m[7] == param && m[8] == row && m[9] == lo && m[10] == 1) return true;
+    return false;
+  };
+  auto any48 = [&]() {
+    for (auto& m : g_sent)
+      if (m.size() >= 11 && m[4] == 0x48) return true;
+    return false;
+  };
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 1, 4, 0x30, 0, 12, 0xF7});   // D004, P13
+  settle();
+  CHECK(src_bank_state().on && src_bank_state().param == 12 && src_bank_state().bank == 3 && src_bank_state().row == 4);
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 3, 4, 0x30, 0, 12, 0xF7});   // FUNC + YES: the files for the row, the param kept
+  settle();
+  CHECK(src_bank_state().on && src_bank_state().browse && src_bank_state().param == 12);
+  key(0x45);   // NO: back to the list
+  settle();
+  CHECK(src_bank_state().on && !src_bank_state().browse);
+  key(0x42);   // UP: row 3
+  g_sent.clear();
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 0, 4, 0x30, 1, 12, 0xF7});
+  CHECK(wrote48(12, 3, 0x30) && !src_bank_state().on);
+  // no byte: P1
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 1, 4, 0x30, 0, 0xF7});
+  settle();
+  CHECK(src_bank_state().on && src_bank_state().param == 0);
+  g_sent.clear();
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 0, 4, 0x30, 1, 0xF7});
+  CHECK(wrote48(0, 4, 0x30) && !src_bank_state().on);
+  // the list of one parameter does not stay on the next (the byte was 12 once; this open has none)
+  // P13 on DSP SAMPLE: refused, nothing opens or writes
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x33, 1, 0, 1, 45, 0x20, 0xF7});
+  g_machine = kDspSample;
+  g_sent.clear();
+  sysex({0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0, 1, 4, 0x30, 0, 12, 0xF7});
+  settle();
+  CHECK(!src_bank_state().on && !any48());
+  printf("browser: WAVETABLE - 4A's param byte 12 (P13): list, FUNC + YES files, commit 48 k = 12; no byte P1; refused on DSP SAMPLE\n");
+
   // a JUNO preset list: a forwarded FUNC + NO closes it as NO did (L8; the 0.5.0 0026 closes it itself, 4A why 2)
   sysex({0xF0, 0x7D, 0x52, 0x54, 0x33, 1, 0, 1, 41, 0x08, 0xF7});   // track 0 on JUNO
   list_open(0, 0);

@@ -43,6 +43,8 @@ CORE_COLD void fft(float* re, float* im, int n, int sign) {
 CORE_COLD bool pow2(int n) { return n > 0 && !(n & (n - 1)); }
 }  // namespace
 
+CORE_COLD void fft_inplace(float* re, float* im, int n, int sign) { fft(re, im, n, sign); }
+
 CORE_COLD void analyze(const float* x, int n, float* c, float* scratch) {
   memset(c, 0, sizeof(float) * kSpec);
   int hmax = (n - 1) / 2;   // below the frame's own Nyquist

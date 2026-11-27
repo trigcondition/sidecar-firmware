@@ -38,6 +38,19 @@ void begin(bool card);   // boot: closed
 int open_track(int track);
 // A SAMPLES pool row (code = bank * 128 + row), the region the whole sample, no track. 0 loading, -1 refused.
 int open_code(int code);
+// A WAVETABLE track's table A as a sample: a card file opens (0 loading, the new table goes onto the track's TBL), a
+// built-in or OFF has none (1: the caller offers the SAMPLES list, set_wt_voice first), -1 refused.
+int open_wt_track(int track);
+int open_wt_voice(int vi);   // the same by voice (no track known)
+bool wt_table_file(int track, int vi);   // table A is a card file (open_wt_* opens it; else they answer 1); track may be -1
+int open_file(const char* path);   // a card file (a table's too: float WAVs read) as an edit: the whole file, no row, no live play
+void set_wt_voice(int vi);   // the next open of a SAMPLES row (within 2 minutes) belongs to WAVETABLE voice vi (-1: none)
+// MAKE WT (docs/SAMPLE-EDIT.md): the region as a wavetable (core/wavetable/wt_make.h) of wt_frames() frames, written
+// to /WAVETABLES/<stem>-wt<N>.wav and added to the WAVETABLES pool (and onto the voice's TBL when opened from one,
+// the editor then closes itself after 1.8 s). 0 started, -1 refused ("TOO SHORT FOR A TABLE", "BUSY", "NO RAM").
+int make_wt();
+void set_wt_frames(int n);   // 16 32 64 128 256 (others ignored); the default 64
+int wt_frames();
 void close();            // the buffers released, kClosed (a card job in flight is finished first, out of sight)
 // The Rytm's project changed (pool.cpp's switch): closed, so the new project's sample in the same slot never plays the
 // edit; a save in flight still writes its file, which stays out of the new project's pool
@@ -99,6 +112,12 @@ struct View {
   int32_t playhead;     // -1 none
   int16_t unity;        // sedit-050 #3: the outline's level of 1.0 (0 dBFS): 32767, less when the window's peak is over
   uint32_t gen;         // moves when a drawn field changes
+  bool making;          // MAKE WT: a table is being made or written (st busy / saving)
+  bool file;            // opened from a card file (a table's), not a SAMPLES row: no live play
+  bool wt_back;         // a table made for a voice: the editor closes by itself in a moment
+  uint16_t wt_frames;   // the table's frames' choice (16 32 64 128 256)
+  int8_t wt_voice;      // the WAVETABLE voice the edit was opened from (-1 none), its track (-1)
+  int8_t wt_track;
 };
 void view(View* out);
 

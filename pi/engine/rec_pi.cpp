@@ -610,6 +610,7 @@ void ClockSync (void)
 }  // namespace
 
 namespace rec_pi {
+const rec::Backend *CardBackend (void) { return &s_Card; }	// the card through FatFs, for KEEP (loop_keep.h)
 
 // the mods' transport report (core/seq: whatever the Rytm's MIDI TRANSPORT SEND is): the recorder's arm only - the
 // other Transport () users keep the MIDI messages (the sampler's PLAY starts, the send FX's clock)

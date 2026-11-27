@@ -22,7 +22,7 @@ trap 'rm -rf "$T"' EXIT
 # checkout), and test_gadget_ep0 patches a copy of Circle's USB gadget sources; without them they are named as skipped.
 PT=$R/pi/engine/tests
 skip=()
-{ [ "$(uname)" = Darwin ] && [ -f "$R/core/build/libengines.a" ]; } || skip+=(test_bundleweb test_poolweb test_presetweb test_morph_pi test_xypad_pi test_keys_ui test_content test_insfx_pi test_voice_gate)
+{ [ "$(uname)" = Darwin ] && [ -f "$R/core/build/libengines.a" ]; } || skip+=(test_bundleweb test_poolweb test_presetweb test_morph_pi test_xypad_pi test_keys_ui test_content test_insfx_pi test_voice_gate test_loopview_pi test_wgview_pi)
 [ -f "$R/pi/circle/build/circle/addon/fatfs/ff.c" ] || skip+=(test_stor_fatfs test_stor_fatfs_exfat test_stor_fatfs_lfn3)
 [ -f "$R/pi/circle/build/circle/lib/usb/gadget/dwusbgadgetendpoint.cpp" ] || skip+=(test_gadget_ep0)   # patches a copy of Circle's gadget sources
 tests=()

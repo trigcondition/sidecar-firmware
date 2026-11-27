@@ -1,6 +1,6 @@
 // web-next/src/lib/mix.test.ts
-import { describe, expect, it } from "vitest";
-import { EQ_FLAT, eqDb, eqPath, eqText, insertText, mixCmd, slotTypes, strips, typeBlocked, typeOutcome } from "./mix";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EQ_FLAT, SC_CHAINS, eqDb, eqPath, eqText, insertText, mixCmd, monLease, pumpPath, scText, sidechains, slotTypes, strips, typeBlocked, typeOutcome } from "./mix";
 
 const status = {
   machines: ["plaits", "juno", "daisy", "dsps", "fm", "dd", "daisy", "plaits"],
@@ -108,5 +108,104 @@ describe("mix", () => {
     expect(typeOutcome(full, 0, "RINGS")).toBe("taken");
     expect(typeOutcome(strips(st, null)[10], 1, "CLOUD")).toBe("wait"); // room left: not applied yet
     expect(typeOutcome(full, 1, "COMP")).toBe("wait"); // not a send TYPE: no room to refuse it for
+  });
+});
+
+describe("sidechain (0.5.0)", () => {
+  const sc = [
+    { m: "PUMP", s: "BD", p: [90, 0, 20, 60, 40, 50], l: [90, 0, 20, 60, 40, 50], n: ["DPTH", "ATT", "HOLD", "REL", "SHAP", "THR"], st: "NO STEMS" },
+    ...Array.from({ length: 10 }, () => ({ m: "OFF" })),
+    { m: "DUCK", s: "AINLR", p: [50, 70, 10, 50, 99, 0], l: [50, 70, 10, 50, 99, 0], n: ["THR", "RAT", "ATT", "REL", "KBAS", "KWID"], st: "OK", mon: 1 },
+    { m: "OFF" },
+  ];
+  it("reads the 13 stages, and an older build as unsupported", () => {
+    const r = sidechains({ ins: { sc } });
+    expect(r.supported).toBe(true);
+    expect(r.list.map((x) => x.id)).toEqual(SC_CHAINS);
+    expect(r.list).toHaveLength(13);
+    expect(r.list[0]).toMatchObject({ mode: "PUMP", src: "BD", status: "NO STEMS" });
+    expect(r.list[1].mode).toBe("OFF");
+    expect(r.list[11]).toMatchObject({ id: "M1", mode: "DUCK", src: "AINLR" });
+    expect(r.list[11].p).toEqual([50, 70, 10, 50, 99, 0]);
+    expect(r.list[11].mon).toBe(true);
+    expect(r.list[0].mon).toBe(false);
+    const old = sidechains({ ins: {} });
+    expect(old.supported).toBe(false);
+    expect(old.list.every((x) => x.mode === "OFF")).toBe(true);
+    expect(sidechains(null).supported).toBe(false);
+  });
+  it("words the knobs as the Rytm's page does", () => {
+    expect(scText("PUMP", 0, 127)).toBe("100%");
+    expect(scText("PUMP", 1, 0)).toBe("instant");
+    expect(scText("PUMP", 3, 127)).toBe("1.50 s");
+    expect(scText("PUMP", 4, 64)).toBe("linear");
+    expect(scText("PUMP", 4, 20)).toBe("-44");
+    expect(scText("PUMP", 5, 127)).toBe("0 dB");
+    expect(scText("DUCK", 0, 127)).toBe("-40 dB");
+    expect(scText("DUCK", 1, 0)).toBe("1.0:1");
+    expect(scText("DUCK", 4, 0)).toBe("off");
+    expect(scText("DUCK", 4, 1)).toBe("20 Hz");
+    expect(scText("DUCK", 4, 127)).toBe("19.6 kHz");
+    expect(scText("DUCK", 4, 73)).toBe("1.0 kHz");
+    expect(scText("DUCK", 5, 0)).toBe("off");
+    expect(scText("DUCK", 5, 1)).toBe("0.5 oct");
+    expect(scText("DUCK", 5, 127)).toBe("9.9 oct");
+  });
+  it("sends the console lines", () => {
+    expect(mixCmd.scMode("V3", "PUMP")).toBe("ins=V3:sc:mode:pump");
+    expect(mixCmd.scMode("M2", "OFF")).toBe("ins=M2:sc:mode:off");
+    expect(mixCmd.scSrc("B1", "AINLR")).toBe("ins=B1:sc:src:ainlr");
+    expect(mixCmd.scParam("V1", 5, 300)).toBe("ins=V1:sc:p6:127");
+    expect(mixCmd.scParam("V1", 0, -4)).toBe("ins=V1:sc:p1:0");
+    expect(mixCmd.scMon("V2", true)).toBe("ins=V2:sc:mon:on");
+    expect(mixCmd.scMon("M1", false)).toBe("ins=M1:sc:mon:off");
+  });
+  it("draws the pump envelope: full gain, down by the depth, back", () => {
+    const d = pumpPath([127, 0, 20, 60, 64, 50], 360, 90);
+    const ys = [...d.matchAll(/[ML]([\d.]+) ([\d.]+)/g)].map((m) => Number(m[2]));
+    expect(ys[0]).toBe(1); // unity at the top
+    expect(Math.max(...ys)).toBeCloseTo(89, 0); // depth 100%: the bottom
+    expect(ys[ys.length - 1]).toBe(1);
+    const shallow = [...pumpPath([32, 0, 20, 60, 64, 50], 360, 90).matchAll(/[ML]([\d.]+) ([\d.]+)/g)].map((m) => Number(m[2]));
+    expect(Math.max(...shallow)).toBeLessThan(40);
+  });
+});
+
+describe("MON lease (0.5.2)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  it("renews a MON it switched on, every second, with the renew-only line", () => {
+    const sent: string[] = [];
+    const lease = monLease((c) => sent.push(c), () => true);
+    lease.start();
+    lease.set("V2", true);
+    vi.advanceTimersByTime(3000);
+    expect(sent).toEqual(["ins=V2:sc:mon:on", "ins=V2:sc:mon:renew", "ins=V2:sc:mon:renew", "ins=V2:sc:mon:renew"]);
+    expect(sent.filter((c) => c.endsWith(":on"))).toHaveLength(1); // never an ON again
+    lease.stop();
+  });
+  it("sends nothing after an OFF or a chain change, whatever the status says", () => {
+    const sent: string[] = [];
+    const lease = monLease((c) => sent.push(c), () => true); // the status still shows it on (the push is late)
+    lease.start();
+    lease.set("V2", true);
+    lease.off("V2"); // monOff: the chain changed
+    sent.length = 0;
+    vi.advanceTimersByTime(5000);
+    expect(sent).toEqual([]);
+    lease.stop();
+  });
+  it("forgets a chain whose status shows MON off (a T1 off on the Rytm)", () => {
+    const sent: string[] = [];
+    let on = true;
+    const lease = monLease((c) => sent.push(c), () => on);
+    lease.start();
+    lease.set("M1", true);
+    vi.advanceTimersByTime(1000);
+    on = false;
+    sent.length = 0;
+    vi.advanceTimersByTime(3000);
+    expect(sent).toEqual([]);
+    lease.stop();
   });
 });

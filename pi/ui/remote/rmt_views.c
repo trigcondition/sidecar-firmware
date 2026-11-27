@@ -39,7 +39,8 @@
 
 #define STATUS_LIVE(F) F (I32, valid) F (I32A, vload) F (BYTES, muted) F (I32A, load) F (U32, block_max_us) F (U32, block_budget_us) \
 	F (U32, pass_max_us) F (U32, underruns) F (I32, inst_used) F (I32, inst_total) F (I32, inst_cpu100) F (U32, inst_kb) F (U32, fifo_min) \
-	F (U32, fifo_target) F (I32, temp_c) F (I32, temp_warn) F (I32, clock_low_mhz) F (I32, cpu_mhz) F (U32, blocks) F (U32, ui_max_us)
+	F (U32, fifo_target) F (I32, temp_c) F (I32, temp_warn) F (I32, clock_low_mhz) F (I32, cpu_mhz) F (U32, blocks) F (U32, ui_max_us) \
+	F (I32, bpm10)
 #define STATUS_ID(F) F (BYTES, mach) F (BYTES, fx_type) F (BYTES, fx_post) F (I32, rytm) F (I32, ob) F (BYTES, link) F (BYTES, gadget) \
 	F (I32, mac) F (I32, net) F (I32, wifi) F (BYTES, ip) F (BYTES, host) F (BYTES, pair) F (I32, pair_warn) F (BYTES, build) \
 	F (BYTES, circle) F (BYTES, rytm_mod)
@@ -178,7 +179,7 @@ typedef struct { rmt_view_info_t info; const sec_t *sec; } view_t;
 #define NS(a) (uint8_t) (sizeof (a) / sizeof (a)[0])
 static const view_t s_Views[RMT_V_COUNT] = {
 	{{0, 0, 0, 0, 0, 0}, 0},
-	{{RMT_V_STATUS, 2, NS (s_Status), 0x0100, sizeof (sidecar_status_view_t), "status"}, s_Status},
+	{{RMT_V_STATUS, 2, NS (s_Status), 0x0101, sizeof (sidecar_status_view_t), "status"}, s_Status},
 	{{RMT_V_VOICE, 10, NS (s_Voice), 0x0100, sizeof (sidecar_voice_view_t), "voice"}, s_Voice},
 	{{RMT_V_INSFX, 10, NS (s_Insfx), 0x0100, sizeof (sidecar_insfx_view_t), "insfx"}, s_Insfx},
 	{{RMT_V_MFX, 10, NS (s_Mfx), 0x0100, sizeof (sidecar_mfx_view_t), "mfx"}, s_Mfx},

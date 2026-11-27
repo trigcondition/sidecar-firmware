@@ -115,6 +115,10 @@ constexpr uint32_t kSrcUserMs = 100;
 // is. 0026 sends a 2B every second while the view is there, so a cover not renewed for kCoverMs is taken as ended (a lost
 // 2B must never leave the view blank): one whole frame follows. No 2B at all (an older mod): never covered.
 constexpr uint32_t kCoverMs = 3000;
+// A QUICK PERF knob's fader move on the open MORPH page (it arrives as the Rytm's 2D reports, not as a 31 / 32): a commit
+// at most every kQpCommitMs while playing; each commit makes the Rytm run its whole stock draw, so not every frame.
+constexpr uint32_t kQpCommitMs = 50;
+constexpr uint32_t kQpLapseMs = 100;
 constexpr uint8_t kEchoNone = 0x7F;
 // 1023: the connect splash (rytm-mods 0026 1023): the Rytm's hello (35) carries its uptime in 50 ms ticks; when it has
 // been up kSplashMinUp or more (the link came up after the Rytm's boot, not with it: a cable plugged in, the Sidecar
@@ -211,7 +215,7 @@ CORE_COLD bool juno_partner(int t) {
 // used (SAMPLE EDIT: sedit::open_track; the SRC view draws the 2A's), the voice's state left as its reports set it.
 // Only on a voice whose last report was that machine (its flags) and no other track of ours on the voice with the same
 // machine (whose sound the voice plays is the one that trigged last: unknown here).
-CORE_COLD void src_to_voice(int t, int c14) {
+CORE_COLD void src_to_voice(int t, int c14, int k = 0) {
   if (!have_tracks || t < 0 || t >= 12 || track_vb[t] == kNotOurs || c14 < 0) return;
 #if CORE_MSAMP
   const int m = machine_of(track_vb[t]), vi = kTrackVoice[t];
@@ -219,6 +223,10 @@ CORE_COLD void src_to_voice(int t, int c14) {
     if (u != t && kTrackVoice[u] == vi && track_vb[u] != kNotOurs && machine_of(track_vb[u]) == m) return;
   const V& x = v[vi];
   const int e = srclib::code_of14(c14);
+  if (k == 12) {   // 2026-11-24 TBLB: WAVETABLE's table B (P13)
+    if (m == kWaveMachine && x.wt) wt::kit_src_b(vi, e);
+    return;
+  }
   if (m == kWaveMachine && x.wt) wt::kit_src(vi, e);
   else if (m == kGranMachine && x.gr) gr::kit_src(vi, e);
   else if (m == kMultiMachine && x.ms) msamp::kit_src(vi, e);
@@ -410,11 +418,16 @@ struct State {
   // the press, the next repeat
   int rep_code = -1, rep_voice = 0;
   uint32_t rep_t0 = 0, rep_next = 0;
-  // 0.5.0 (spec-050 2.6, EDIT): the scene key (T1..T12: 0..11) held on a page that locks, -1 none; the target a turn
-  // locked last while it is held (the bottom bar shows its locked value), 0 none
-  int scene_key = -1;
+  // 0.5.0 v2 (EDIT, momentary: the owner 2026-11-14): PAGE held on a page that locks (its step held back until it is
+  // let go alone: page_owed); the trig keys the gesture took (T15 / T16 = the side, scene::edit_side(); T1..T12 picked
+  // that side's scene), their releases its too; the target a turn locked last while the side is held (the bottom bar
+  // shows its locked value), 0 none
+  bool page_down = false, page_owed = false;
+  uint8_t push_eaten = 0;   // 0.5.2: the SRC view's pushes (A..H) a held side took (their releases too)
+  uint16_t edit_keys = 0;
   uint16_t edit_tid = 0;
-  bool edit_refused = false;   // review: a knob with no target turned under the held scene key (NOT LOCKABLE)
+  bool edit_refused = false;   // review: a knob with no target turned under the held side (NOT LOCKABLE)
+  bool edit_unset = false;     // v2: a turn with the side's scene unset (SET A: T1-12)
   // rui1051 (the user's report on rui1050: NO on a page opened by its shortcut went to SIDECAR, a second NO out), nav044
   // (0.4.4, the user: "several NOs to leave after visiting more than one tab" - rui1051 walked back through the pages
   // the shortcuts came from): the page shown was put up by a shortcut (UP / TRK + key, UP + T, the host's own page
@@ -438,6 +451,8 @@ struct State {
   bool self = false;         // remote's own 0x03 in voice_report: no hold logic
   bool input = false;        // a key or a turn since the last frame: draw at once
   bool user = false;         // 0.4.3: a key or a turn of the user's (31 / 32) since the last commit: not held while playing
+  bool qp_user = false;      // a QPERF fader move on the open MORPH page since the last commit (kQpCommitMs while playing)
+  uint32_t qp_ms = 0;        // when it was last set: the flag lapses after kQpLapseMs without another move (no commit may follow)
   bool src_user = false;     // 0.4.4: a knob's value on the SRC view (a 2A of one value, or a held step's) since the last commit
   uint32_t commit_ms = 0;    // 0.4.3: the last page / SRC view commit (kPlayCommitMs) and what it showed (page_key)
   int commit_page = -1000;
@@ -455,8 +470,14 @@ struct State {
   bool mask_valid = false;
   bool splash = false;       // 1023: the connect splash runs (the page closed)
   uint32_t now_ms = 0, open_ms = 0;   // the last remote_tick's clock; when the page was last opened (30 on)
+  // 0.5.2 re-hello: Rytm traffic came but no hello (the host started after the Rytm's port-up hellos): 3C with flags bit 0
+  // asks for one (rehello_tick); tries counted, the last at rh_ms
+  bool rh_traffic = false;
+  uint8_t rh_tries = 0;
+  uint32_t rh_ms = 0;
   bool caps36 = false;       // the Rytm's hello said it understands 36 (the splash, the popups)
   int caps = 0;              // fix1049: the hello's caps byte whole (bit 1: 16 send FX label tables, rui1049)
+  uint16_t p13_last = 0;     // 2026-11-24 TBLB: bit t, the last P(k+1) touched on track t was P13 (the names bank follows it)
   int caps2 = 0;             // 0.5.0 FILL: the hello's 4th byte (bit 0 kCaps2Arrows: UP + LEFT / RIGHT as 49 1 1 15 / 16)
   bool presets_told = false; // 0.4.0: the Rytm knows, since its last hello, that JUNO's / FM's PAT lists are drawn here (4A 7F 1)
   bool popup = false, popup_clock = false;   // F1 / F4: a popup owed / running (the page closed)
@@ -617,6 +638,7 @@ CORE_COLD bool scrolls_updown(const ExtraPage* x);   // (below, with the mask's 
 CORE_COLD void lfo_left(int from, int to) {
   const ExtraPage* x = extra_of(from);
   if (from != to && x && !strcmp(x->title, "LFO")) lfo_page_reset();
+  if (from != to && x && (!strcmp(x->title, "INSERT") || !strcmp(x->title, "MASTER"))) sc_mon_page_left();   // 0.5.2: MON ends with the page
 }
 
 CORE_COLD void shortcut_over(int from) {   // a page shown by a shortcut over `from` (the MENU's pick: none)
@@ -713,21 +735,33 @@ CORE_COLD void set_param(int vi, int k, int nv) {
   s.stats.edits++;
 }
 
-// 0.5.0 (spec-050 2.6, EDIT): with the scenes' EDIT on, a voice page and the pages that name their knobs' targets
-// (ExtraPage::enc_tid: INSERT, MASTER) take T1..T12 too; a turn while one is held locks the knob's target into that
-// scene (from the scene's lock, else from the base) instead of editing it. The SEQ page keeps its trig keys (steps).
+// 0.5.0 v2 (EDIT, momentary): on a voice page and the pages that name their knobs' targets (ExtraPage::enc_tid:
+// INSERT, MASTER), PAGE held takes T15 / T16; PAGE + T15 (T16) held is EDIT A (B): a turn locks the knob's target into
+// that side's scene (from the scene's lock, else from the base) instead of editing it, and T1..T12 make scene n that
+// side. T15 / T16 alone stay the Rytm's trigs; PAGE alone steps the page at its release. The SEQ page keeps its trig keys.
 CORE_COLD bool edit_page(const ExtraPage* x) {
-  if (!s.open || !scene::edit()) return false;
+  if (!s.open) return false;
   return x ? x->enc_tid != nullptr : s.voice >= 0 && !src_capable;
 }
 CORE_COLD uint16_t page_trigs(const ExtraPage* x) {
   uint16_t t = x && x->trigs_now ? x->trigs_now() : 0;
-  return edit_page(x) ? (uint16_t)(t | 0x0FFF) : t;
+  if (!edit_page(x)) return t;
+  return (uint16_t)(t | (scene::edit_side() >= 0 ? 0xCFFF : s.page_down ? 0xC000 : 0));
 }
-// the scene key's lock of t moved by `units` (whole units of the target; lo..hi its range there), from the lock, else
-// from the base; the value a voice page's step gives when `voice_nv` >= 0
+CORE_COLD void edit_end() {   // the side let go (or the gesture dropped): EDIT off
+  scene::set_edit_side(-1);
+  s.edit_tid = 0, s.edit_refused = false, s.edit_unset = false;
+}
+// the side's lock of t moved by `units` (whole units of the target; lo..hi its range there), from the lock, else from
+// the base; the value a voice page's step gives when `voice_nv` >= 0
 CORE_COLD void edit_lock(mod::Tid t, int units, int voice_nv) {
-  const scene::Scene& sc = scene::state().s[s.scene_key];
+  const int n = scene::side_scene(scene::edit_side());
+  if (n < 0) {   // the side has no scene: refused (SET A: T1-12)
+    s.edit_unset = true, s.edit_tid = 0;
+    return;
+  }
+  s.edit_unset = false;
+  const scene::Scene& sc = scene::state().s[n];
   int cur = -1;
   for (int i = 0; i < sc.n; ++i)
     if (sc.l[i].t == t) cur = sc.l[i].v;
@@ -742,12 +776,12 @@ CORE_COLD void edit_lock(mod::Tid t, int units, int voice_nv) {
     u += units;
     nv = (u < lo ? lo : u > hi ? hi : u) * 128;
   }
-  if (scene::lock(s.scene_key, t, (uint16_t)nv)) s.edit_tid = t;
+  if (scene::lock(n, t, (uint16_t)nv)) s.edit_tid = t;
 }
 
 CORE_COLD void on_enc(int e, int delta, bool func) {
   s.input = true;
-  const bool lock = s.scene_key >= 0 && edit_page(extra_of(s.voice));
+  const bool lock = scene::edit() && edit_page(extra_of(s.voice));
   if (const ExtraPage* x = extra_of(s.voice)) {
     if (e < 0 || e >= 8 || !(extra_encs(*x) >> e & 1)) return;
     if (!lock) x->enc(e, delta, func);
@@ -765,9 +799,10 @@ CORE_COLD void on_enc(int e, int delta, bool func) {
   if (!delta) return;
   if (lock) {   // EDIT: the scene's lock, from its value (else the base), never the voice
     mod::Tid t = mod::tid(mod::kV, s.voice, k);
-    const scene::Scene& sc = scene::state().s[s.scene_key];
-    for (int i = 0; i < sc.n; ++i)
-      if (sc.l[i].t == t) cur = (sc.l[i].v + 64) / 128;
+    const int n = scene::side_scene(scene::edit_side());
+    if (n >= 0)
+      for (int i = 0; i < scene::state().s[n].n; ++i)
+        if (scene::state().s[n].l[i].t == t) cur = (scene::state().s[n].l[i].v + 64) / 128;
     edit_lock(t, 0, step_value(*p, k, cur < 0 ? 0 : cur > 127 ? 127 : cur, delta, func));
     s.edit_refused = false;
     return;
@@ -785,7 +820,8 @@ CORE_COLD void release_held() {
       if (x && x->key_up) x->key_up(c);
     }
   s.held_page = nullptr;
-  s.scene_key = -1, s.edit_tid = 0, s.edit_refused = false;
+  s.edit_keys = 0, s.page_owed = false;
+  edit_end();
   s.rep_code = -1;   // (and nothing repeats on: the release is lost too)
 }
 
@@ -813,10 +849,19 @@ CORE_COLD bool up_right_fill() {
 }
 
 
+CORE_COLD void key_down(int code);
+
 CORE_COLD void on_key(int code, bool down) {
   if (!down) {   // 0.5.0: a release goes to the page that took its press (key_up), else nowhere
-    if (code == s.scene_key) {   // EDIT's scene key let go
-      s.scene_key = -1, s.edit_tid = 0, s.edit_refused = false, s.input = true;
+    if (code == kKeyPage && s.page_owed) {   // v2: PAGE let go alone: its own step now
+      s.page_owed = false, s.input = true;
+      key_down(kKeyPage);
+      return;
+    }
+    if (code >= 0 && code < 16 && (s.edit_keys >> code & 1)) {   // v2: a key of the EDIT gesture let go
+      s.edit_keys &= (uint16_t)~(1u << code);
+      if (code == 14 + scene::edit_side()) edit_end();
+      s.input = true;
       return;
     }
     if (key_held(code)) {
@@ -827,10 +872,32 @@ CORE_COLD void on_key(int code, bool down) {
     return;
   }
   s.input = true;
-  if (code >= 0 && code < 12 && edit_page(extra_of(s.voice))) {   // EDIT: a scene key
-    s.scene_key = code, s.edit_tid = 0, s.edit_refused = false;
-    return;
+  if (edit_page(extra_of(s.voice))) {   // v2: the EDIT gesture
+    const int side = scene::edit_side();
+    if (code == kKeyPage) {   // held back: it may start the gesture (its step at the release, alone); under EDIT nothing
+      if (side < 0) s.page_owed = true;
+      return;
+    }
+    if ((code == 0x0E || code == 0x0F) && side < 0 && s.page_down) {   // PAGE + T15 / T16: EDIT A / B
+      s.page_owed = false, s.edit_keys |= (uint16_t)(1u << code);
+      edit_end();
+      scene::set_edit_side(code - 0x0E);
+      return;
+    }
+    if (code >= 0 && code < 16 && side >= 0) {   // under the side: T1..T12 make scene n that side; the rest nothing
+      s.edit_keys |= (uint16_t)(1u << code);
+      if (code < scene::kScenes) {
+        const scene::State& st = scene::state();
+        scene::set_ab(side == 0 ? code : st.a, side == 1 ? code : st.b);
+        s.edit_unset = false;
+      }
+      return;
+    }
   }
+  key_down(code);
+}
+
+CORE_COLD void key_down(int code) {
   if (const ExtraPage* x = extra_of(s.voice))
     if (x->key && x->key(code)) {
       if (x->key_up && code >= 0 && code < 256) {
@@ -940,7 +1007,9 @@ CORE_COLD bool seq_updown() { return true; }
 // scrolls with it".
 CORE_COLD bool claims_updown(const ExtraPage* x) {
   if (x && !strcmp(x->title, "SEQ")) return seq_updown();
-  return !standalone(x) || x->updown;
+  // t050-d (the owner: "insert eq and then the down key does nothing"): INSERT stands alone, so UP / DOWN stay the Rytm's
+  // except on its EQ and SIDECHAIN views, where DOWN goes in and out of SIDECHAIN
+  return !standalone(x) || x->updown || (x == &kInsPage && ins_wants_updown());
 }
 // 0.5.0 UI feel: the page really moves with UP / DOWN (its rows, its banks), so UP held on it is a scroll and the combo map
 // (49 1 5 1) stays closed. claims_updown, less the ring pages that leave UP alone (a voice page, SCOPE: DOWN is their next
@@ -1053,9 +1122,9 @@ CORE_COLD void src_unhold(int t) {
 CORE_COLD int page_key() { return s.open ? s.voice : 1000 + s.src_track; }
 CORE_COLD bool commit_held(uint32_t ms) {
   return !s.legacy && s.sent_valid && !s.user && page_key() == s.commit_page && rytm_plays() &&
-         ms - s.commit_ms < (s.src_user ? kSrcUserMs : kPlayCommitMs);
+         ms - s.commit_ms < (s.src_user ? kSrcUserMs : s.qp_user && ms - s.qp_ms < kQpLapseMs ? kQpCommitMs : kPlayCommitMs);
 }
-CORE_COLD void committed(uint32_t ms) { s.commit_ms = ms, s.user = false, s.src_user = false, s.commit_page = page_key(); }
+CORE_COLD void committed(uint32_t ms) { s.commit_ms = ms, s.user = false, s.src_user = false, s.qp_user = false, s.commit_page = page_key(); }
 // The cover is over (a 2B without it, or none for kCoverMs): the Rytm's shadow is not ours any more, so one whole frame
 // and commit of what is current now go out at the next tick, not held.
 CORE_COLD void cover_ended() {
@@ -1097,17 +1166,15 @@ CORE_COLD void frame(uint32_t ms) {
   const ExtraPage* x = extra_of(s.voice);
   if (standalone(x)) at = 0, n = 1;   // ux1027: no siblings, no page dots
   tap_enable(x && x->tap);
-  char tag[12] = "";   // 0.5.0: EDIT on - every page's header says so, with the scene key held
-  if (scene::edit()) {
-    if (s.scene_key >= 0) sniprintf(tag, sizeof tag, "EDIT S%d", s.scene_key + 1);
-    else strcpy(tag, "EDIT");
-  }
-  header_tag(tag);
+  char tag[12] = "";   // 0.5.0 v2: EDIT held (PAGE + T15 / T16) - every page's header says so, with the side
+  if (scene::edit()) sniprintf(tag, sizeof tag, "EDIT %c", scene::edit_side() ? 'B' : 'A');
+  header_tag(p ? "" : tag);   // (a voice page puts it after the voice's name itself)
   int drawn = 1;
   if (p) {
-    char right[12];
+    char right[16];
     vsrc.vi = s.voice;
-    sniprintf(right, sizeof right, "%s", tag[0] ? tag : voice_label(s.voice));
+    if (tag[0]) sniprintf(right, sizeof right, "%s %s", voice_label(s.voice), tag);   // UX 7: the voice kept ("V1 EDIT A")
+    else sniprintf(right, sizeof right, "%s", voice_label(s.voice));
     const bool turned = s.touched >= 0 && turn_live(ms, s.touch_ms, kScreenTurnMs);   // 0.5.0 screens: a turn names the knob for a moment
     if (!voice_screen(work, view, *p, vsrc, right, at, n, turned ? s.touched : -1, false, &drawn)) {
       drawn = view.draw(work, *p, vsrc, right, at, n);
@@ -1120,19 +1187,22 @@ CORE_COLD void frame(uint32_t ms) {
     view.invalidate();   // the status pages are drawn whole; a voice page after them starts clean
     ssrc.draw(work, s.voice == -2 ? 1 : 0, at, n);
   }
-  if (s.scene_key >= 0 && s.edit_refused && edit_page(x)) {   // EDIT: that knob names no target
+  const int edit_n = scene::side_scene(scene::edit_side());
+  if (scene::edit() && s.edit_unset && edit_page(x)) {   // v2: the side has no scene yet
+    footer(work, scene::edit_side() ? "SET B: T1-12" : "SET A: T1-12");
+  } else if (scene::edit() && s.edit_refused && edit_page(x) && edit_n >= 0) {   // EDIT: that knob names no target
     char b[kTextLen + 1];
-    sniprintf(b, sizeof b, "S%d: NOT LOCKABLE", s.scene_key + 1);
+    sniprintf(b, sizeof b, "S%d: NOT LOCKABLE", edit_n + 1);
     footer(work, b);
   }
-  if (s.scene_key >= 0 && s.edit_tid && edit_page(x)) {   // EDIT: the bottom bar shows the scene's locked value
-    const scene::Scene& sc = scene::state().s[s.scene_key];
+  if (scene::edit() && s.edit_tid && edit_page(x) && edit_n >= 0) {   // EDIT: the bottom bar shows the scene's locked value
+    const scene::Scene& sc = scene::state().s[edit_n];
     for (int i = 0; i < sc.n; ++i)
       if (sc.l[i].t == s.edit_tid) {
         char nm[16], val[8], b[kTextLen + 1];
         mod::label(s.edit_tid, nm, sizeof nm);   // (its machine's name for the param: "V1:HRM")
         morph_value_text(s.edit_tid, sc.l[i].v, val, sizeof val);
-        int n2 = sniprintf(b, sizeof b, "S%d %s:%s", s.scene_key + 1, nm, val);
+        int n2 = sniprintf(b, sizeof b, "S%d %s:%s", edit_n + 1, nm, val);
         footer(work, b, n2 <= 16 ? sc.l[i].v >> 7 : -1);
       }
   }
@@ -1148,8 +1218,8 @@ CORE_COLD void frame(uint32_t ms) {
     s.modal_shown = on;
   }
   bool sq = x && !strcmp(x->title, "SEQ");
-  // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides'); SAMPLE EDIT's FUNC + YES (save) too
-  bool fn = sq || (x && (!strcmp(x->title, "MORPH") || !strcmp(x->title, "SAMPLE EDIT") || !strcmp(x->title, "FILL")));   // FILL: FUNC + YES / NO
+  // 0.5.0: MORPH's FUNC + YES (EDIT) needs FUNC (both sides'); SAMPLE EDIT's FUNC + YES (save) too, LOOP's FUNC + T8
+  bool fn = sq || (x && (!strcmp(x->title, "MORPH") || !strcmp(x->title, "SAMPLE EDIT") || !strcmp(x->title, "FILL") || !strcmp(x->title, "LOOP")));   // FILL: FUNC + YES / NO; LOOP: FUNC + T8 (a cut)
   bool updown = claims_updown(x);   // updown044: a page alone only when it uses them
   if (!s.legacy) send_mask(p, x ? extra_encs(*x) : 0, page_trigs(x), fn, sq && seq_data(),
                             !sq || seq_yes(), updown);   // before the frame: the keys and knobs the page shows are its own from now on
@@ -1502,6 +1572,23 @@ CORE_COLD void fill_claim() {   // (L7: only a build with the FILL page claims t
   g_fill_claimed = true, g_claim_ms = s.now_ms;
 #endif
 }
+// 0.5.0 v2 P2: the scene edit on the Rytm's own pages armed after every hello (the Rytm clears it at each); an older
+// mod (no kCaps2Capture) counts 5A 01 0B as a refused command: never sent to it
+CORE_COLD void edit_arm() {
+#if CORE_POLY
+  if (s.caps2 & kCaps2Capture) mod::rytm_edit_arm(true);
+#endif
+}
+// 2026-11-24 TBLB (rytm-mods 0026): "the host draws the bank list of P13" (4A 7D 1), after every hello, only to a Rytm whose hello's
+// caps2 has kCaps2ListP13: it opens a P13 list (4A with the param byte) only after this, so a host that cannot draw it never gets one
+// (an older host would read the frame as P1's); an older mod counts the 4A 7D as a bad message and never asks for one
+CORE_COLD void list_p13_announce() {
+#if CORE_MSAMP
+  if (!(s.caps2 & kCaps2ListP13)) return;
+  const uint8_t m[9] = {0xF0, 0x7D, 0x52, 0x54, 0x4A, 1, 0x7D, 1, 0xF7};
+  to_rytm(m, 9);
+#endif
+}
 CORE_COLD void fill_unclaim() {
   if (!g_fill_claimed) return;
   g_fill_claimed = false;
@@ -1562,7 +1649,7 @@ UI_ROM const PageTwo kPageTwo[] = {
     {kPlaits, 0xFF, {64, 64, 0, 0, 0, 120, 0, 100}},
     {kDaisy, 0xFF, {64, 64, 0, 0, 0, 120, 0, 100}},
     {kMultiMachine, 0xFF, {64, 64, 0, 0, 0, 0, 0, 0}},     // TUNE FINE STRT LOOP / CHD INV SPR VOI
-    {kWaveMachine, 0xFF, {0, 64, 100, 64, 0, 0, 0, 0}},    // ATK DEC SUS ENV / CHD INV SPR VOI
+    {kWaveMachine, 0xFF, {0, 64, 100, 64, 0, 0, 0, 0}},    // ATK DEC SUS ENV / TBLB POSB MIX FTYP
     {kGranMachine, 0xFF, {10, 60, 0, 0, 0, 0, 0, 0}},      // ATK REL HOLD ANIM / CHD INV SPR VOI
     {kFm, 0xF0, {0, 0, 0, 0, 0, 0, 0, 0}},                 // E..H: CHD INV SPR VOI (A..D are FM's own)
 };
@@ -1660,6 +1747,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
   const uint8_t* b = d + 6;
   int n = len - 7;
   if (d[4] == kSrcView || d[4] == kSrcVals || d[4] == kSrcDiag) src_capable = true;
+  if (s.stats.hellos == 0 && d[4] != kHello && !g_going_down && !device::foreign()) s.rh_traffic = true;   // (re-hello below)
 #if CORE_POLY
   // 2026-11-23: Rytm traffic and no hello (the host started after the Rytm's port-up): claim UP + LEFT / RIGHT once; the
   // 2 s claim (remote_tick) goes on from there, and the first hello, if one ever comes, decides as before. Never for a box.
@@ -1744,6 +1832,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         keys_map_drop(), s.map_over = false;   // (UP's map goes with the page)
         release_held();                        // 0.5.0: and every key a page holds
         s.up_down = false;
+        s.page_down = s.page_owed = false;     // (v2 review M1: a PAGE held across the close sends no release here)
 #if CORE_POLY
         seq::page_closed();   // seq-ux: a prompt, TRK + TRIG's view end with the page
         poly_page_closed();   // rui1048
@@ -1786,6 +1875,15 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         return;
       }
       if (!s.open && s.src_track >= 0 && b[0] == 0 && b[1] >= 0x70 && b[1] <= 0x77) {   // rui1036: the SRC view's pushes
+        // 0.5.2: a knob press under PAGE + T15 / T16 is the scene edit's (2D 01 14), not the view's: no slice editor, no list,
+        // no row action; the release of a press it took goes the same way, a side let go in between or not
+        const uint8_t pbit = (uint8_t)(1u << (b[1] - 0x70));
+        if (b[2] != 0 && scene::edit_side() >= 0) s.push_eaten |= pbit;
+        if (s.push_eaten & pbit) {
+          if (b[2] == 0) s.push_eaten &= (uint8_t)~pbit;
+          s.input = true;
+          return;
+        }
 #if CORE_POLY && CORE_MSAMP
         if (chop_src_push(s.src_track, b[1], b[2] != 0)) {   // CHOP: a push of B..H opens the slice editor
           s.input = true;
@@ -1800,6 +1898,8 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         s.input = true;
         return;
       }
+      // v2: PAGE held, whoever takes it (seq mode's sequencer too): PAGE + T15 / T16 start EDIT on a page that locks
+      if (s.open && (b[0] << 7 | b[1]) == kKeyPage) s.page_down = b[2] != 0;
 #if CORE_POLY
       {   // the sequencer's trig keys and PAGE: in seq mode (the page open or not) and on its SEQ page
         const ExtraPage* x = s.open ? extra_of(s.voice) : nullptr;
@@ -1809,7 +1909,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         // review: a release of a key a page holds is that page's whatever page shows now (SEQ too)
         bool page_trig = code < 16 && s.open &&
                          ((b[2] && !(x && !strcmp(x->title, "SEQ")) && (page_trigs(x) >> code & 1)) ||
-                          (!b[2] && (key_held(code) || code == s.scene_key)));
+                          (!b[2] && (key_held(code) || (s.edit_keys >> code & 1))));
         if (!page_trig && seq::ui_key(code, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
@@ -1832,7 +1932,7 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         const ExtraPage* x = s.open ? extra_of(s.voice) : nullptr;
         // rui1048: POLY CONFIG's knobs are its own, also in seq mode (seq::ui_enc takes every turn then)
         // review (0.5.0): MORPH's knobs, and a turn under EDIT's held scene key, are the page's too
-        bool own = (x && (!strcmp(x->title, "POLY") || !strcmp(x->title, "MORPH"))) || (s.scene_key >= 0 && edit_page(x));
+        bool own = (x && (!strcmp(x->title, "POLY") || !strcmp(x->title, "MORPH") || !strcmp(x->title, "LOOP"))) || (scene::edit() && edit_page(x));
         if (!own && seq::ui_enc(b[0], (int)b[1] - 64, b[2] != 0, x && !strcmp(x->title, "SEQ"))) {
           s.input = true;
           return;
@@ -1887,8 +1987,14 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     }
     case kBankList: {   // rui1038: <track> <on> <hi> <lo> <why>
       if (n < 5 || b[0] >= 12 || (b[1] > 1 && b[1] != 3)) break;   // rui1040: on 3 FUNC + YES (the files for the row)
-      int t = b[0];
-      src_bank_list(t, kTrackVoice[t], track_named(t), srclib::code_of14(b[2] << 7 | b[3]), b[1], b[4]);
+      int t = b[0], param = 0;
+      if (n >= 6 && b[1] == 0) {   // a close frame closes whatever its param byte says (the list's own state is reset)
+        if (b[5] == 12) param = 12;
+      } else if (n >= 6) {   // 2026-11-24 TBLB: the optional 6th byte, the list's parameter: 12 (P13, WAVETABLE's table B) is the only value
+        if (b[5] != 12 || (b[1] == 1 && track_named(t) != kWaveMachine)) break;
+        param = 12;
+      }
+      src_bank_list(t, kTrackVoice[t], track_named(t), srclib::code_of14(b[2] << 7 | b[3]), b[1], b[4], param);
       s.input = true;
       return;
     }
@@ -1940,18 +2046,34 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       } else if (!held) {
         s.keep_mask &= (uint16_t)~(1u << t);   // the sound's own values come with it
       }
+      const bool has13 = !held && b[1] <= 12 && 12 < b[1] + b[2];   // 2026-11-24 TBLB: this frame carries P13
+      const int old13 = has13 && (s.src_known[t] >> 12 & 1) ? s.srcv[t][12] << 7 | s.srcl[t][12] : -1;
       for (int i = 0; i < b[2]; ++i) {
         s.srcv[t][b[1] + i] = b[3 + 2 * i] & 0x7F;
         s.srcl[t][b[1] + i] = b[4 + 2 * i] & 0x7F;
         s.src_known[t] |= (uint16_t)(1u << (b[1] + i));
       }
+      bool p1_changed = false;
       if (!held) {   // rui1038: the banked knob's 14 bits (song): P1, or DSP SAMPLE's SMP P11 (rui1045)
         int kb = remote_track_src_param(t);
         if (b[1] <= kb && kb < b[1] + b[2]) {
           const int16_t c14 = (int16_t)((b[3 + 2 * (kb - b[1])] & 0x7F) << 7 | (b[4 + 2 * (kb - b[1])] & 0x7F));
-          if (c14 != s.src14[t]) src_to_voice(t, c14);   // 0.5.0: an idle voice's pick (src_to_voice)
+          p1_changed = c14 != s.src14[t];
+          if (p1_changed) src_to_voice(t, c14);   // 0.5.0: an idle voice's pick (src_to_voice)
           s.src14[t] = c14, s.src14_at[t] = ++s.at_n;
         }
+      }
+      if (has13 && track_vb[t] != kNotOurs && machine_of(track_vb[t]) == kWaveMachine) {   // 2026-11-24 TBLB: WAVETABLE's table B
+        const int w13 = s.srcv[t][12] << 7 | s.srcl[t][12];
+        const bool p13_changed = w13 != old13;
+        // the names bank follows the knob touched last; P1 and P13 changed in one frame (a kit load): P1 first (the names are P1's)
+        if (p1_changed) s.p13_last &= (uint16_t)~(1u << t);
+        else if (p13_changed) s.p13_last |= (uint16_t)(1u << t);
+        // an idle voice's pick of B (as P1's above): only a real change of one knob (the first sight of P13 and a frame of
+        // several values are a kit's load or a report: the voice's own reports set B then)
+        if (p13_changed && old13 >= 0 && b[2] == 1) src_to_voice(t, w13, 12);
+      } else if (p1_changed) {
+        s.p13_last &= (uint16_t)~(1u << t);
       }
 #if CORE_MSAMP
       if (!held && have_tracks && track_vb[t] != kNotOurs && (track_vb[t] & kMidiMachine) && s.src_known[t] == 0xFFFF) {
@@ -1974,6 +2096,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     case kDisplay: {   // rui1036b
       if (n < 2) break;
       if (b[0] == 4 && n >= 2) {   // rui1044: UP held alone on the stock screen (1) / let go (0): the combo map
+        // 0.5.2: the Rytm drops the claim at every USB port drop and the host claimed at a hello only: UP held 0.4 s
+        // shows a quick UP + RIGHT may be unclaimed; claim again (idempotent on the Rytm; not when off / going down)
+        if (b[1] && !g_going_down) fill_claim();
         keys_map(b[1] != 0);
         return;
       }
@@ -2114,8 +2239,11 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
         release_held();   // 0.5.0: a key held across the new link sends no release
         s.up_down = false;
         s.caps36 = (b[2] & 1) != 0, s.caps = b[2], s.caps2 = n >= 4 ? b[3] : 0;
+        s.page_down = s.page_owed = false;   // (v2 review M1: a key held across the new link sends no release)
         mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
         fill_claim();
+        edit_arm();
+        list_p13_announce();
 #if CORE_POLY
         mod::rp_hello(b[2]);   // 0.5.0: the Rytm's own params (caps bit 64; core/mod/rytm_param.h): what was sent is gone
 #endif
@@ -2129,12 +2257,16 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       s.src_track = -1, s.src_told = -1, s.splash = false, s.clock_set = false;
       tap_enable(false);
       s.caps36 = (b[2] & 1) != 0, s.caps = b[2], s.caps2 = n >= 4 ? b[3] : 0;
+      s.page_down = s.page_owed = false;   // (v2 review M1: a key held across the new link sends no release)
       mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
       fill_claim();
+      edit_arm();
+      list_p13_announce();
 #if CORE_POLY
       mod::rp_hello(b[2]);   // 0.5.0: the Rytm's own params (caps bit 64; core/mod/rytm_param.h): what was sent is gone
 #endif
       keys_map_drop(), s.map_over = false;   // (a release lost with the link: no map left up)
+      sc_mon_page_left();                    // 0.5.2: and no MON left on
       release_held();                        // 0.5.0: and every key a page holds
       s.up_down = false;
       // A status popup goes with the old link. The pairing code's modal does not: it is owed until it has been on
@@ -2179,9 +2311,27 @@ static CORE_COLD void key_repeat_tick(uint32_t ms) {
   }
 }
 
+// 0.5.2 re-hello: the Rytm sends its hello only at its USB port-up, so a host that started later has no caps (host command,
+// QPERF, edit arm, the 36s ...). Once Rytm traffic has come and no hello, ask: 3C with flags bit 0 (kCaps2Rehello answers it
+// with one hello; an older mod takes it as a plain keepalive: its 3C reads no payload). Once, then every kRehelloMs, 3 tries.
+// Never for a box (A4 / Digitakt), never going down. A hello ends it (hellos > 0).
+constexpr uint32_t kRehelloMs = 5000;
+constexpr int kRehelloTries = 3;
+CORE_COLD void rehello_tick(uint32_t ms) {
+  if (!s.rh_traffic || s.stats.hellos > 0 || g_going_down || device::foreign() || s.rh_tries >= kRehelloTries) return;
+  if (s.rh_tries && (int32_t)(ms - s.rh_ms) < (int32_t)kRehelloMs) return;
+  const uint8_t flags = 1;
+  send_short(kAlive, &flags, 1);
+  s.rh_tries++, s.rh_ms = ms;
+  if (s.rh_tries == 1) core::log("rui: Rytm traffic but no hello: asking it to say hello again");
+}
+
+// The Rytm's USB MIDI is gone (core::link_lost): the next one starts the asking again (a new Rytm, or one that missed its hello)
+CORE_COLD void remote_link_lost() { s.rh_traffic = false, s.rh_tries = 0, s.rh_ms = 0; }
+
 CORE_COLD void remote_tick(uint32_t ms) {
   if (g_going_down && !g_fill_keys_off) g_fill_keys_off = true, fill_unclaim();   // (a planned reboot: remote.h)
-  // the claim again every ~2 s while linked (the Rytm drops it at each USB port drop; a 4A 7E 1 only sets its flag)
+  // 0.5.2: the claim again every ~2 s while linked (the Rytm drops it at each USB port drop; a 4A 7E 1 only sets its flag)
   if (g_fill_claimed && !g_going_down && (int32_t)(ms - g_claim_ms) >= 2000) fill_claim(), g_claim_ms = ms;
   if (!s.presets_told && s.src_track >= 0) {
     int m = track_machine(s.src_track);
@@ -2192,6 +2342,7 @@ CORE_COLD void remote_tick(uint32_t ms) {
     }
   }
   s.now_ms = ms;
+  rehello_tick(ms);
   vparam_tick(ms);   // the touchscreen's VOICE knob writes' answers (a few compares when none is followed)
   if (s.rep_code >= 0) key_repeat_tick(ms);
   page_two_tick(ms);   // rc5: a machine list choice's page-2 defaults
@@ -2214,6 +2365,10 @@ CORE_COLD void remote_tick(uint32_t ms) {
   if (s.popup && !s.open && s.src_track < 0) { popup_tick(ms); return; }
   if (!s.open && s.src_track >= 0) { src_tick(ms); return; }
   if (!s.open) return;
+#if CORE_POLY && CORE_MSAMP
+  // SAMPLE EDIT closed itself after MAKE WT for a WAVETABLE voice: back to where it was opened from (the SRC view)
+  if (extra_of(s.voice) == &kSeditPage && sedit_page_leaves() && !sedit_back_to() && !go_back()) go(0);
+#endif
   wave_idle(ms);   // a sample overview being read (page_wave.cpp): one column at most
   uint32_t tick = s.legacy ? 50 : kTickMs;
   if (!s.clock_set) s.clock_set = true, s.last_draw = ms - tick, s.last_tx = ms;
@@ -2285,6 +2440,10 @@ CORE_COLD void remote_show_page(const char* title) {
   remote_request(true);
 }
 
+CORE_COLD void remote_morph_qperf_move() {
+  const char* t = remote_page_title();
+  if (t && !strcmp(t, "MORPH")) s.qp_user = true, s.qp_ms = s.now_ms;   // other pages do not change with the fader: they keep the plain cap
+}
 CORE_COLD const char* remote_page_title() {
   const ExtraPage* x = s.open ? extra_of(s.voice) : nullptr;
   return x ? x->title : nullptr;
@@ -2528,6 +2687,12 @@ CORE_COLD uint32_t remote_track_info(int* track, int* machine, char name[13], ui
   if (label) memcpy(label, disp.label, sizeof disp.label);
   return disp.info_gen;
 }
+// 2026-11-24 TBLB: a written P13 (WAVETABLE) is the track's P13 word at once: the names bank follows it and the Rytm's echo is no change
+static void p13_written(int t, int value, int lo) {
+  s.p13_last |= (uint16_t)(1u << t);
+  s.srcv[t][12] = (uint8_t)(value < 0 ? 0 : value > 127 ? 127 : value), s.srcl[t][12] = (uint8_t)(lo & 0x7f);
+  s.src_known[t] |= (uint16_t)(1u << 12);
+}
 CORE_COLD int remote_param_write(int vi, int machine, int k, int value, int lo) {
   int n = 0;
   for (int t = 0; t < 12; ++t) {
@@ -2535,6 +2700,8 @@ CORE_COLD int remote_param_write(int vi, int machine, int k, int value, int lo) 
     uint8_t b[4] = {(uint8_t)t, (uint8_t)(k & 15), (uint8_t)(value < 0 ? 0 : value > 127 ? 127 : value), (uint8_t)(lo & 0x7f)};
     send_short(kWrite, b, lo > 0 ? 4 : 3);   // rui1038: the fraction byte (a bank) only when there is one: older builds too
     if (k == remote_track_src_param(t)) s.src14[t] = (int16_t)(b[2] << 7 | b[3]);
+    if (k == 12 && machine == kWaveMachine) p13_written(t, value, lo);   // 2026-11-24 TBLB: the names bank follows the knob touched last
+    else if (k == remote_track_src_param(t)) s.p13_last &= (uint16_t)~(1u << t);
     ++n;
   }
   return n;
@@ -2545,6 +2712,8 @@ CORE_COLD bool remote_track_write(int t, int k, int value, int lo, int flags) {
                   (uint8_t)(flags & 0x7f)};
   send_short(kWrite, b, flags ? 5 : lo > 0 ? 4 : 3);
   if (k == remote_track_src_param(t)) s.src14[t] = (int16_t)(b[2] << 7 | b[3]);
+  if (k == 12 && machine_of(track_vb[t]) == kWaveMachine) p13_written(t, value, lo);   // 2026-11-24 TBLB (see remote_param_write)
+  else if (k == remote_track_src_param(t)) s.p13_last &= (uint16_t)~(1u << t);
   if (k == 0) s.wr_pat[t] = b[2];   // (its answer: kWrite)
   s.wr_ans[t][b[1]] = 1;
   return true;
@@ -2664,6 +2833,10 @@ CORE_COLD int remote_track_src14_fresh(int t) {
       return s.src14[t];
   return s.src14_at[t] > s.rep_at[kTrackVoice[t]] ? s.src14[t] : -1;
 }
+CORE_COLD int remote_track_src_word(int t, int k) {
+  return t >= 0 && t < 12 && k >= 0 && k < 16 && (s.src_known[t] >> k & 1) ? s.srcv[t][k] << 7 | s.srcl[t][k] : -1;
+}
+CORE_COLD bool remote_track_names_p13(int t) { return t >= 0 && t < 12 && (s.p13_last >> t & 1); }
 CORE_COLD int remote_track_src_value(int t, int k) {
   return t >= 0 && t < 12 && k >= 0 && k < 16 && (s.src_known[t] >> k & 1) ? s.srcv[t][k] : -1;
 }
@@ -2672,6 +2845,12 @@ CORE_COLD void remote_rytm_040(bool on) { g_rytm_040 = on; }
 CORE_COLD bool remote_rytm_040() { return g_rytm_040; }
 CORE_COLD int remote_track_src_param(int t) {
   return t >= 0 && t < 12 && have_tracks && track_vb[t] != kNotOurs && (track_vb[t] & 0x78) == kDspSample ? 10 : 0;
+}
+CORE_COLD bool remote_track_src_list(int t, int k) {
+  if (t < 0 || t >= 12 || !have_tracks || track_vb[t] == kNotOurs) return false;
+  const int m = track_named(t);
+  if (k == 0) return m == kGranMachine || m == kWaveMachine || m == kMultiMachine || m == kChopMachine || m == kJuno || m == kFm;
+  return (k == 10 && sample_machine(m)) || (k == 12 && m == kWaveMachine);
 }
 CORE_COLD int remote_track_param(int t, int k) {
   if (t < 0 || t >= 12) return 0;

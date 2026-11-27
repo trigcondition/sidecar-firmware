@@ -16,6 +16,7 @@ extern recplay::Player g_Play;		// the takes' playback (rec_play.h): mixed onto 
 
 namespace rec_pi {
 void Init (void);			// CKernel::Initialize, after the card is mounted (bridge::begin)
+const rec::Backend *CardBackend (void);	// the card through FatFs (a take's files: the recorder's, and the looper's KEEP, loop_keep.h)
 void Poll (void);			// core 0's loop
 bool Command (const char *pCmd);	// rec, rec=start|stop|arm|ch:LIST|bits:16|24|name:[PREFIX]|vol:SD|USB|USB2|USB3|NVME|
 					// fix:VOL|del:TAKE (a drive's: del:USB:TAKE); play, play=start|stop|scan|take:N|ch:N|

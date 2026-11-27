@@ -29,7 +29,7 @@ void FillView(sidecar_morph_view_t* o, int top) {
   memset(&v, 0, sizeof v);
   v.valid = 1;
   v.fader = st.fader, v.a = st.a, v.b = st.b, v.sel = st.sel;
-  v.edit = sc::edit(), v.locked = sc::locked();
+  v.edit = (unsigned char)(sc::edit_side() + 1), v.locked = sc::locked();   // 0 none, 1 A, 2 B (v2)
   for (int k = 0; k < sc::kScenes && k < SMO_SCENES; ++k) v.nlocks[k] = st.s[k].n;
   const sc::Scene& s = st.s[st.sel >= 0 && st.sel < sc::kScenes ? st.sel : 0];
   top = top < 0 ? 0 : top >= s.n ? (s.n > 0 ? s.n - 1 : 0) : top;
@@ -39,6 +39,7 @@ void FillView(sidecar_morph_view_t* o, int top) {
     mod::name(s.l[i].t, r.name, sizeof r.name);
     mod::label(s.l[i].t, r.label, sizeof r.label);
     core::ui::morph_value_text(s.l[i].t, s.l[i].v, r.value, sizeof r.value);
+    r.stale = core::ui::morph_stale(s.l[i].t);   // (v2 Task 7: shown "V2:P16?", faint)
     mod::Range g = mod::range(s.l[i].t);
     bool off = mod::is_offset(mod::kind_of(s.l[i].t));
     r.lo = (short)(off || g.lo < 0 ? 0 : (int)g.lo), r.hi = (short)(off || g.hi > 127 ? 127 : (int)g.hi);

@@ -285,7 +285,7 @@ static void lfo_on_master_lev_and_send() {
   CHECK(!strcmp(lfo::param_name(lfo::target_from_name("S12"), 1, pn, sizeof pn), "F2"));
   CHECK(!strcmp(lfo::param_name(lfo::target_from_name("X8"), 2, pn, sizeof pn), "B3"));
   CHECK(lfo::target_from_name("O8") == 29 && lfo::target_from_name("M1") == 30 && lfo::target_from_name("X8") == 52 &&
-        lfo::params_of(lfo::target_from_name("M2")) == 12 && lfo::kTargets == 66);
+        lfo::params_of(lfo::target_from_name("M2")) == 18 && lfo::kTargets == 66);
   for (int i = 1; i <= 4; ++i) set(i, "off");
   run_ms(3);
   CHECK(master::played_lev() == 100 && fx::control.send[0][0] == 40 && ins::control.send[1][1] == 30 &&

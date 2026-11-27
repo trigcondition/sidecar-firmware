@@ -40,7 +40,7 @@ int g_fbase = -1;        // MORPH: the fader before the touch, -1 none
 
 CORE_COLD bool ok_axis(int a) { return a >= 0 && a < kAxes; }
 CORE_COLD bool ok_slot(int s) { return s >= 0 && s < kSlots; }
-CORE_COLD bool ok_target(mod::Tid t) { return (SIDECAR_MORPH && t == kMorph) || mod::valid(t); }   // MORPH is not offered in 0.5.0: a saved MORPH slot loads (take_line) and does nothing
+CORE_COLD bool ok_target(mod::Tid t) { return (SIDECAR_MORPH && t == kMorph) || (mod::valid(t) && (SIDECAR_LOOPER || mod::kind_of(t) != mod::kLoop)); }   // MORPH is not offered in 0.5.0: a saved MORPH slot loads (take_line) and does nothing; LOOP the same in 0.5.2 (SIDECAR_LOOPER 0)
 // a target with no base the layer reads: the pad sets it from its range's end (xypad.h)
 CORE_COLD bool value_only(mod::Kind k) { return k == mod::kSeq || k == mod::kArp || k == mod::kLoop || k == mod::kRytm; }
 CORE_COLD bool any_morph() {

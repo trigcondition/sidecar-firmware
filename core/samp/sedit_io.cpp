@@ -10,6 +10,7 @@
 #include "../pool/pcache.h"
 #include "../ui/ui.h"
 #include "../wavetable/wav_read.h"
+#include "../wavetable/wt_make.h"
 #include "dsp.h"
 
 namespace core {
@@ -19,37 +20,44 @@ namespace {
 uint8_t g_stage[cardq::kPiece + 8];                       // the Loader's piece, after at most 7 bytes of a split frame
 uint8_t g_out[samp::kWavHeaderMax + cardq::kPiece + 1];   // the Saver's piece (the header first, a pad byte last)
 char g_stem[256];                                         // edit_name's stem, for the listing on the card core
+bool g_mkdir = false;                                     // the listing makes a missing folder (a table's /WAVETABLES)
+char g_sfx[8] = "-ed";                                    // the name's suffix before its number ("-ed", a table's "-wt")
 
 enum : uint8_t { kIdle, kOpen, kHead, kData, kClose, kDone };                       // the Loader's
 enum : uint8_t { kExists = 1, kRmTmp, kWrite, kShut, kRename, kReport, kUndoShut, kUndoRm, kOver };   // the Saver's
 
-// The length of stem without a trailing "-ed<digits>".
+// The length of stem without a trailing "<g_sfx><digits>".
 int base_len(const char* stem) {
-  int n = (int)strlen(stem), i = n;
+  int n = (int)strlen(stem), i = n, sl = (int)strlen(g_sfx);
   while (i > 0 && stem[i - 1] >= '0' && stem[i - 1] <= '9') --i;
-  if (i == n || i < 3 || strncasecmp(stem + i - 3, "-ed", 3)) return n;
-  return i - 3;
+  if (i == n || i < sl || strncasecmp(stem + i - sl, g_sfx, sl)) return n;
+  return i - sl;
 }
 
 // kFnReq on the card core: the highest k of "<g_stem>-ed<k>.wav" in the folder r->path (0 none, -1 no folder)
 void list_fn(cardq::Req* r) {
   File d;
+  if (g_mkdir && !d.open(r->path, kRead)) {
+    Fs fs;
+    fs.mkdir(r->path);
+  }
+  d.close();
   if (!d.open(r->path, kRead) || !d.isDir()) {
     r->got = -1;
     return;
   }
-  int bl = (int)strlen(g_stem), best = 0;
+  int bl = (int)strlen(g_stem), sl = (int)strlen(g_sfx), best = 0;
   char nm[256];
   bool dir;
   uint64_t size;
   uint16_t fd, ft;
   while (d.nextEntry(nm, sizeof nm, &dir, &size, &fd, &ft)) {
     int l = (int)strlen(nm);
-    if (dir || l < bl + 8 || strncasecmp(nm, g_stem, bl) || strncasecmp(nm + bl, "-ed", 3)) continue;
+    if (dir || l < bl + sl + 5 || strncasecmp(nm, g_stem, bl) || strncasecmp(nm + bl, g_sfx, sl)) continue;
     if (strcasecmp(nm + l - 4, ".wav")) continue;
-    int v = 0, i = bl + 3;
+    int v = 0, i = bl + sl;
     for (; i < l - 4 && nm[i] >= '0' && nm[i] <= '9' && v < 100000; ++i) v = v * 10 + (nm[i] - '0');
-    if (i == bl + 3 || i != l - 4) continue;
+    if (i == bl + sl || i != l - 4) continue;
     if (v > best) best = v;
   }
   d.close();
@@ -83,7 +91,7 @@ CORE_COLD void edit_name_from(const char* stem, const int* taken, int ntaken, ch
   int best = 0;
   for (int i = 0; i < ntaken; ++i)
     if (taken[i] > best) best = taken[i];
-  sniprintf(out, cap, "%.*s-ed%d.wav", base_len(stem), stem, best + 1);
+  sniprintf(out, cap, "%.*s%s%d.wav", base_len(stem), stem, g_sfx, best + 1);
 }
 
 // src_path's folder length (dl) and its stem (minus -ed<k>) into g_stem; 0, -1 too long, -2 no folder
@@ -115,6 +123,8 @@ CORE_COLD static int name_from(const char* src_path, int dl, int top, char* out,
 }
 
 CORE_COLD int edit_name(const char* src_path, char* out, int cap) {
+  sniprintf(g_sfx, sizeof g_sfx, "-ed");
+  g_mkdir = false;
   int dl = 0, e = stem_of(src_path, &dl);
   if (e) return e;
   static cardq::Req r;
@@ -131,9 +141,11 @@ CORE_COLD int edit_name(const char* src_path, char* out, int cap) {
 
 // ---- Namer
 
-CORE_COLD int Namer::begin(const char* src_path, char* out, int cap) {
+CORE_COLD int Namer::begin(const char* src_path, char* out, int cap, const char* sfx, bool make_dir) {
   if (!cardq::idle(&r_)) return kErrBusy;
   on_ = false;
+  g_mkdir = make_dir;
+  sniprintf(g_sfx, sizeof g_sfx, "%s", sfx);
   if (strlen(src_path) >= sizeof src_) return -1;
   int e = stem_of(src_path, &dl_);
   if (e) return e;
@@ -156,8 +168,9 @@ CORE_COLD int Namer::step() {
 
 // ---- Loader
 
-CORE_COLD int Loader::begin(const char* path) {
+CORE_COLD int Loader::begin(const char* path, bool allow_float) {
   if (!cardq::idle(&r_)) return kErrBusy;
+  fl_ = allow_float;
   if (strlen(path) >= sizeof path_) return kErrName;
   sniprintf(path_, sizeof path_, "%s", path);
   r_.state = cardq::kFree;
@@ -186,9 +199,11 @@ CORE_COLD int Loader::step() {
       if (!cardq::async(&r_, cardq::kReadReq, &f_, nullptr, 0, g_stage, ask_)) return ++waits, 1;
       if (r_.got <= 0) return fail(kErrOpen);
       wavread::Info in;
-      if (!wavread::parse(g_stage, (uint32_t)r_.got, &in, size_) || in.be || in.format != 1 ||
-          (in.bits != 16 && in.bits != 24 && in.bits != 32) || in.ch < 1 || in.ch > 2 || !in.frames)
+      if (!wavread::parse(g_stage, (uint32_t)r_.got, &in, size_) || in.be ||
+          !((in.format == 1 && (in.bits == 16 || in.bits == 24 || in.bits == 32)) || (fl_ && in.format == 3 && in.bits == 32)) ||
+          in.ch < 1 || in.ch > 2 || !in.frames)
         return fail(kErrFormat);
+      fmt_ = in.format;
       if (in.frames > pcache::kMaxFrames) return fail(kErrLong);
       void* p = nullptr;
       blk = pcache::alloc_private((uint64_t)in.frames * in.ch * 4, &p);
@@ -206,7 +221,7 @@ CORE_COLD int Loader::step() {
         return ++waits, 1;
       if (r_.got != (int32_t)ask_) return fail(kErrOpen);
       wavread::Info in = {};
-      in.format = 1, in.ch = ch, in.bits = bits;
+      in.format = fmt_, in.ch = ch, in.bits = bits;
       uint32_t n = carry_ + ask_, nf = n / fb_;
       float* o = x + (size_t)frame_ * ch;
       const uint8_t* s = g_stage;
@@ -229,11 +244,13 @@ CORE_COLD int Loader::step() {
 
 // ---- Saver
 
-CORE_COLD int Saver::begin(const char* target, const float* x, int ch, int bits, uint32_t rate, uint32_t frames) {
+CORE_COLD int Saver::begin(const char* target, const float* x, int ch, int bits, uint32_t rate, uint32_t frames, bool table) {
   if (!cardq::idle(&r_)) return kErrBusy;
   st_ = kOver;
   if (strlen(target) + 4 >= sizeof tmp_) return kErrName;
   if ((ch != 1 && ch != 2) || (bits != 16 && bits != 24 && bits != 32)) return kErrFormat;
+  if (table && (ch != 1 || bits != 32)) return kErrFormat;
+  table_ = table;
   sniprintf(target_, sizeof target_, "%s", target);
   sniprintf(tmp_, sizeof tmp_, "%s.tmp", target);
   x_ = x, ch_ = ch, bits_ = bits, rate_ = rate, frames_ = frames;
@@ -273,12 +290,13 @@ CORE_COLD int Saver::step() {
         }
         waiting_ = false;
         uint8_t* o = g_out;
-        if (bytes_ == 0) o += samp::wav_header(g_out, ch_, bits_, rate_, frames_);
+        if (bytes_ == 0) o += table_ ? wt::make::table_wav_header(g_out, rate_, frames_) : samp::wav_header(g_out, ch_, bits_, rate_, frames_);
         uint32_t fb = (uint32_t)ch_ * (bits_ / 8), nf = cardq::kPiece / fb;
         if (nf > frames_ - pos_) nf = frames_ - pos_;
         const float* s = x_ + (size_t)pos_ * ch_;
         for (uint32_t i = 0, e = nf * ch_; i < e; ++i, o += bits_ / 8) {
-          if (bits_ == 16) samp::put16(o, s[i]);
+          if (table_) memcpy(o, &s[i], 4);   // (a table's samples as they are: float32)
+          else if (bits_ == 16) samp::put16(o, s[i]);
           else if (bits_ == 24) samp::put24(o, s[i]);
           else samp::put32(o, s[i]);
         }

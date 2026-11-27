@@ -23,6 +23,9 @@ Exceptions in this tree, as their headers state:
   plugins/modele/                       the MODEL E user machine: GPL-2.0-or-later as a
                                         whole, like ours, because it builds ModelDigi in
                                         (its LICENSE and NOTICE)
+  core/wavetable/wavetable.cpp          WAVETABLE's warps (FORMANT, QUANT, BEND, SQUEEZE, RM) and filters
+                                        (LP / BP / HP 12 and 24 dB, LADDER): derived from Vital (Matt Tytel,
+                                        GPLv3 or later), so GPL-3.0-or-later, as the Pi binaries are (below)
   plugins/ufx_pingpong/, plugins/ufx_phaser/,  the user effects PINGPONG, PHASER and BBD,
   plugins/ufx_bbd/, plugins/ufx_render.py      written for this repo: MIT (each folder's LICENSE)
   plugins/ufx_nimbus/                          the user effect NIMBUS, written for this repo: MIT
@@ -88,5 +91,7 @@ text next to them as firmware/LICENCE.cypress): the Cypress/Infineon CYW43455 Wi
 files (start4.elf, fixup4.dat, device trees; Broadcom/Raspberry Pi binary-redistribution licence, LICENCE.broadcom).
 
 The Raspberry Pi build (Pi 4B and Pi 5) links Circle (GPL-3.0-or-later): a Pi engine binary is
-therefore distributed under GPL version 3, which GPL-2.0-or-later allows. The Pi 5 kernel also links Circle's
+therefore distributed under GPL version 3, which GPL-2.0-or-later allows; the same holds for the parts of WAVETABLE
+derived from Vital (core/wavetable/wavetable.cpp: derived from Vital by Matt Tytel, https://github.com/mtytel/vital,
+commit 636ca0e, GPL-3.0-or-later; THIRD_PARTY_LICENSES). The Teensy builds have no WAVETABLE and carry none of it. The Pi 5 kernel also links Circle's
 addon/rp1dsi (the DSI display and touch driver, GPL-3.0-or-later), with pi/circle/circle-rp1dsi-*.patch.

@@ -41,6 +41,11 @@ class Output {
   void Reset();                                         // transport (consumer) side only: a new stream drops the
                                                         // frames left from the last one and fades in again
   uint32_t Level() const { return fifo_.size(); }
+  // The render frame (the control core's block counter, seq::frames(): every block it renders is pushed) of the next frame
+  // Pull hands out: frames popped so far (Reset's dropped ones too) plus frames a full FIFO refused. The consumer's
+  // (core 0: the USB OUT fill) own counter, so the looper's playback knows which frame of the loop each pulled frame is.
+  // Silence from an empty FIFO is not a frame and does not count.
+  uint64_t PulledFrame() const { return pulled_ + dropped_; }
   // control core: frames taken (FIFO room). r (optional): the R plane (null: R = L, every voice mono); st: the voices
   // whose pair is a real stereo pair in this block (render_voices' bits)
   uint32_t Push(const int16_t (*frames)[kVoices], uint32_t n, const int16_t (*r)[kVoices] = nullptr, uint8_t st = 0);
@@ -121,6 +126,8 @@ class Output {
   alignas(16) unsigned char mix_mem_[1024];
   core::out::Mixer* mix_;
   uint32_t under_ = 0, restart_under_ = 0, streams_ = 0, target_ = 0;
+  uint64_t pulled_ = 0;
+  uint32_t dropped_ = 0;
   Diag d_ = {0, 0, kNone, kNone, 0, kNone, kNone, kNone, kNone, 0};
   bool armed_ = false;                                  // the FIFO reached its target since the last Reset
   float peak_ = 0.0f;

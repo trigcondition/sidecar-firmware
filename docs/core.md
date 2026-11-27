@@ -219,6 +219,55 @@ wet only, soft-limited at -6 dBFS on the 2/3 return (the Rytm adds it at ~0.16) 
   every knob at 0, the CPU per block for each effect),
   `sim/tests/test_core_sendfx.py` (the core against `protocol.py`), `pi/engine/tests/test_sendfx_pi.cpp`.
 
+## The Rytm's hello and the re-hello (`core/ui/remote.cpp`, rytm-mods 0026)
+
+The Rytm says hello (`35 1 <up hi> <up lo> <caps> <caps2>`) only at its USB port-up: 3 times within about 2.5 s. A host that
+starts later never hears one, so caps and caps2 stay 0 and everything gated on them stays off (the host command `5A`, QPERF,
+the edit arm, the `36` splash and popups, the label tables). Two things heal that:
+
+- **The claim fallback (0.5.1.2):** `fill_claim()` treats "no hello yet" as unknown and claims UP + LEFT / RIGHT anyway (never
+  for a box). This works for any mod, old or new.
+- **The re-hello request (0.5.2):** the host sends `3C 1 01 F7`, the keepalive with a flags byte, bit 0 = "hello
+  again". It goes out when the link has seen Rytm traffic but no hello (`stats.hellos == 0`, `/status` `capsKnown` false):
+  once, then at most every 5 s, 3 tries at most; a hello (any) ends it. Never for a box (A4 / Digitakt), never while going
+  down. One log line, once. A Rytm whose hello has caps2 bit 4 answers with exactly one hello (the same bytes as at port-up,
+  the uptime current; at most one a second; it also owes the machine / kit / pattern reports again, as at port-up). The
+  hello sets caps, caps2, caps36 and runs the same code as any hello, so everything gated on them turns on.
+- **An older Rytm mod:** every 0026 build so far handles `3C` as `case 0x3c: break;` and never reads the payload: the request
+  is a plain keepalive. Nothing is counted (not even `rx_bad`), no reply. The host asks 3 times (about 10 s) and stops; the 0.5.1.2
+  claim fallback stays for such a mod.
+
+The hello's **caps2** bit table (the 4th data byte; a bit says "this build has it", 0 = an older Rytm):
+
+| bit | value | name | meaning |
+|---|---|---|---|
+| 0 | 1 | `kCaps2Arrows` | UP + LEFT / RIGHT forwarded as `49 1 1 15 / 16` once claimed (`4A 7E 1`) |
+| 1 | 2 | `kCaps2QpMute` | the QPERF report's flags bit 2 = the macros muted |
+| 2 | 4 | `kCaps2Capture` | the MORPH scene edit on the Rytm's own pages (`5A 01 0B`) |
+| 3 | 8 | `kCaps2Morph` | the Rytm-side morph, `5A 01 09` MORPH-SET / `0A` FADER |
+| 4 | 16 | `kCaps2Rehello` | answers `3C` with flags bit 0 by one hello again |
+| 5 | 32 | `kCaps2ListP13` | opens the host's bank list for WAVETABLE's table B (P13): `4A`'s optional 6th byte; the host announces `4A 7D 1` |
+
+The P13 list (TBLB's pool browser, `core/ui/remote.cpp`, `core/ui/page_wavegrain.cpp`):
+
+- **`4A`'s 6th byte.** The Rytm's `4A 01 <track> <on> <hi> <lo> <why>` may carry one more byte, the list's parameter. `12` (P13,
+  WAVETABLE's table B) is the only value; any other value, or `12` on a track that is not WAVETABLE (on an open), is a bad
+  message and opens no list. Without the byte nothing changes: the list is the machine's own (P1, DSP SAMPLE / SAMPLER P11). The
+  list opened with the byte keeps it for its life: its YES writes P13 (`48 01 <track> 12 <index> <bank<<4> 1`, the bank kept, flags
+  1 as for P1), never P1; its page is titled TABLE B. The list's turns come from encoder 0 or, for this list, encoder 4 (the SMPL
+  page's knob E).
+- **The announce `4A 7D 1`** (host -> Rytm, 9 bytes: `F0 7D 52 54 4A 01 7D 01 F7`) goes out after every hello, and only to a Rytm
+  whose hello's caps2 has bit 5 (value 32). The Rytm opens a P13 list only after it: an older host would read the frame as P1's.
+  An older mod would count the `4A 7D` as a bad message, so it is never sent without the bit.
+- **The names bank.** TBL and TBLB share the Rytm's list 1 names (`47`, one bank): the host sends the bank of whichever of P1 or
+  P13 was touched last (the SRC view's `2A`, a list's commit, a touchscreen pick). The knob not in hand can read a placeholder
+  until touched.
+- **The touchscreen** (host only): `wt=pickb:V:ROW` writes P13 (`48` k = 12) and selects table B; the Rytm's own pick of P13 on an
+  idle voice (`2A` k = 12) selects it as P1's does. Table B is silent at MIX 0 unless WARP is FM or RM (`select_b`).
+
+Tests: `core/tests/test_lockfill.cpp` (the FILL block: no request without traffic, once, the 5 s rate, 3 tries, a simulated
+reply turns the claim and the edit arm on, none for a box, going down, or once caps are known).
+
 ## Ports
 Each board has a `core_port.h`: `core::File` with SdFat's names (the Teensy's *is* `FsFile`), `core::Fs`,
 `CORE_COLD` (Teensy: program flash), `CORE_RAM2` (Teensy: RAM2), `CORE_STR` (Teensy: PSTR); the Mac's port also

@@ -1,0 +1,6 @@
+bal=96
+lev=100
+fade=2
+mute=1
+live=3
+postlat=30

@@ -14,10 +14,10 @@ B        := build
 ENG      := $(B)/engines
 include engines/engines.mk
 RMPSRC   := ../teensy/libraries/RytmPlugins/src
-CXXFLAGS := -std=c++17 -O2 -DCORE_UI_TOOLS=1 -DCORE_POLY=1 -DCORE_MSAMP=1 -DSIDECAR_MORPH=1 -g -Wall -Wextra -Wno-unused-parameter -ffp-contract=fast -fPIC -I. -Ihost -I$(RMPSRC) -I../sdk $(ENG_INC) $(ENG_FLAGS)
+CXXFLAGS := -std=c++17 -O2 -DCORE_UI_TOOLS=1 -DCORE_POLY=1 -DCORE_MSAMP=1 -DSIDECAR_MORPH=1 -DSIDECAR_LOOPER=1 -g -Wall -Wextra -Wno-unused-parameter -ffp-contract=fast -fPIC -I. -Ihost -I$(RMPSRC) -I../sdk $(ENG_INC) $(ENG_FLAGS)
 CFLAGS   := -std=c99 -O2 -g -ffp-contract=fast -fPIC -w $(ENG_INC)
 # The core's own sources (grows task by task) and the Mac port.
-CORE_SRC := engine.cpp project_key.cpp md/md.cpp $(wildcard device/*.cpp) $(wildcard bundle/*.cpp) lfo.cpp hooks.cpp notes.cpp voices.cpp poly.cpp inst.cpp inst_alloc.cpp keys.cpp sysex.cpp host_link.cpp slots.cpp fx/send_fx.cpp fx/send_fx_card.cpp fx/insert.cpp fx/insert_card.cpp fx/master.cpp fx/amp.cpp fx/out.cpp fx/out_measure.cpp ui/canvas.cpp ui/widgets.cpp ui/pages.cpp ui/remote.cpp $(wildcard ui/page_*.cpp) $(wildcard seq/*.cpp) $(wildcard song/*.cpp) $(wildcard rec/*.cpp) pool/card_index.cpp pool/pool.cpp pool/pcache.cpp pool/sample_ram_pool.cpp pool/stream_budget.cpp presets/libs.cpp presets/preset_index.cpp msamp/sfz.cpp msamp/elmulti.cpp msamp/msamp.cpp msamp/sdtest.cpp msamp/cardq.cpp $(wildcard samp/*.cpp) $(wildcard wavetable/*.cpp) $(wildcard granular/*.cpp) livein/livein.cpp midim/midim.cpp arp/arp.cpp $(wildcard chop/*.cpp) $(wildcard lib/*.cpp) $(wildcard fmt/*.cpp) $(wildcard store/*.cpp) $(wildcard mod/*.cpp) host/platform_host.cpp host/newlib_rand.cpp \
+CORE_SRC := engine.cpp project_key.cpp md/md.cpp $(wildcard device/*.cpp) $(wildcard bundle/*.cpp) lfo.cpp hooks.cpp notes.cpp voices.cpp poly.cpp inst.cpp inst_alloc.cpp keys.cpp sysex.cpp host_link.cpp slots.cpp fx/send_fx.cpp fx/send_fx_card.cpp fx/insert.cpp fx/insert_card.cpp fx/master.cpp fx/amp.cpp fx/out.cpp fx/out_measure.cpp ui/canvas.cpp ui/widgets.cpp ui/pages.cpp ui/remote.cpp $(wildcard ui/page_*.cpp) $(wildcard seq/*.cpp) $(wildcard song/*.cpp) $(wildcard rec/*.cpp) pool/card_index.cpp pool/pool.cpp pool/pcache.cpp pool/sample_ram_pool.cpp pool/stream_budget.cpp presets/libs.cpp presets/preset_index.cpp msamp/sfz.cpp msamp/elmulti.cpp msamp/msamp.cpp msamp/sdtest.cpp msamp/cardq.cpp $(wildcard samp/*.cpp) $(wildcard wavetable/*.cpp) $(wildcard granular/*.cpp) livein/livein.cpp midim/midim.cpp arp/arp.cpp $(wildcard chop/*.cpp) $(wildcard lib/*.cpp) $(wildcard fmt/*.cpp) $(wildcard store/*.cpp) $(wildcard mod/*.cpp) $(wildcard loop/*.cpp) host/platform_host.cpp host/newlib_rand.cpp \
             user/um.cpp user/lists.cpp host/um_host.cpp $(addprefix $(RMPSRC)/,rmp_loader.cpp rmp_manifest.cpp rmp_meta.cpp rmp_proto.cpp rmp_resolve.cpp rmp_slots.cpp rmp_presets.cpp rmp_pool.cpp)
 TESTS    := $(patsubst tests/%.cpp,$(B)/%,$(wildcard tests/test_*.cpp))
 ENG_OBJ  := $(patsubst $(ENG)/%,$(B)/eng-obj/%.o,$(ENG_SRC) $(ENG_C_SRC))
@@ -169,10 +169,26 @@ $(NOMORPH)/test_%: tests/nomorph/test_%.cpp $(NOMORPH_CORE_OBJ) $(DEPS_H) $(B)/l
 	@mkdir -p $(NOMORPH)
 	$(CXX) $(CXXFLAGS) $(NOMORPH_FLAGS) -Itests -o $@ $< $(NOMORPH_CORE_OBJ) $(B)/libengines.a
 
+# The 0.5.2 shipping configuration of the master looper (SIDECAR_LOOPER 0, core/sidecar_features.h): the tests above run with the
+# looper ON (the engine is built and kept for the redesign); tests/nolooper runs the core with it off
+NOLOOPER       := $(B)/nolooper
+NOLOOPER_FLAGS := -USIDECAR_LOOPER -DSIDECAR_LOOPER=0
+NOLOOPER_TESTS := $(patsubst tests/nolooper/%.cpp,$(NOLOOPER)/%,$(wildcard tests/nolooper/test_*.cpp))
+NOLOOPER_CORE_OBJ := $(addprefix $(NOLOOPER)/obj/,$(CORE_O))
+$(NOLOOPER)/obj/_up/%.o: ../%.cpp $(DEPS_H) | $(B)/libengines.a
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(NOLOOPER_FLAGS) -Itests -c -o $@ $<
+$(NOLOOPER)/obj/%.o: %.cpp $(DEPS_H) | $(B)/libengines.a
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(NOLOOPER_FLAGS) -Itests -c -o $@ $<
+$(NOLOOPER)/test_%: tests/nolooper/test_%.cpp $(NOLOOPER_CORE_OBJ) $(DEPS_H) $(B)/libengines.a
+	@mkdir -p $(NOLOOPER)
+	$(CXX) $(CXXFLAGS) $(NOLOOPER_FLAGS) -Itests -o $@ $< $(NOLOOPER_CORE_OBJ) $(B)/libengines.a
+
 # Every test run is its own target, so `make -j10 test` runs them side by side (2026-10-26: the one-after-another loop
 # took ~45 min with the builds; every test works in its own mkdtemp folder). A run's output goes to <test>.log and is
 # shown when the test fails; test-serial keeps the old ordered run with all output.
-ALL_TESTS := $(TESTS) $(MC_TESTS) $(SMALL_TESTS) $(NOMORPH_TESTS)
+ALL_TESTS := $(TESTS) $(MC_TESTS) $(SMALL_TESTS) $(NOMORPH_TESTS) $(NOLOOPER_TESTS)
 # The tests that check a wall-clock bound (a control pass under the FIFO, a call under 50 us): run one at a time after
 # the parallel batch, when nothing else loads the CPU (under -j10 test_library_stall measured a 2142 us pass, 1835 alone)
 TIMING_TESTS := $(addprefix $(B)/,test_bundle_stall test_library_stall test_loadstall test_insert test_sat test_library test_tape \
